@@ -190,7 +190,7 @@ export function installPlanPresentation(
     const mutable = canRecover && nativeGate;
     const operations = deviceActiveOperations(device);
     const latest = operations.find(operationOutstanding) ?? operations.at(-1);
-    const setupUnconfirmed = latest?.step === "directive" && latest.directive === undefined;
+    const setupUnconfirmed = latest?.step === "directive" && operationOutstanding(latest);
     const lastDownload = operations.findLast((o) => o.step === "download");
     const receipt = latest?.receipt;
     const ownedStage = deviceStagedReceipt(operations)?.staged;

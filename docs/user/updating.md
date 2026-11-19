@@ -77,10 +77,15 @@ setup request. **Check setup status** shows what the host reports. When the
 host still reports the expected prior setup, the plan can resend the same
 request after reconnecting. Installation still needs your review.
 After closing the queue, use **Check setup status** on the original row for a
-late confirmation. For a download or install request with an expired reservation
-and no receipt, you can choose **Fence original request** when the host is
-reachable. The host confirms that the request cannot start, or returns the
-existing receipt if it already started.
+late confirmation. If offered, **Fence original setup** lets the host confirm
+what happened or prevent that exact pending setup from applying. For a download
+or install request with an expired reservation and no receipt, **Fence original
+request** asks the reachable host to prevent it from starting or return its
+existing receipt.
+
+An older Laptop journal may retain a command after its plan is gone. Open
+**Recovery for commands from missing plans** and use **Check retained receipt**
+if offered. The device stays on hold until its exact outcome can be verified.
 
 For **Cleanup unconfirmed**, use **Inspect cleanup** on that device. If
 inspection proves the previous disk image is absent, **Recover cleanup** can

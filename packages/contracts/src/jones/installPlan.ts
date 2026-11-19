@@ -4,6 +4,7 @@ import { JonesBuildStartedAt } from "./fleetUpdates/source.ts";
 import {
   FleetOperationId,
   FleetPlanDirective,
+  FleetPlanDirectiveFenceEvidence,
   FleetPlanDirectiveInput,
   FleetHostStatus,
 } from "./fleetUpdates/host.ts";
@@ -133,6 +134,13 @@ export const JonesInstallPlanHostOperation = Schema.Struct({
         message: Bounded(1024),
       }),
     ]),
+  ),
+  // Kept separate so older readers can decode the original directive ledger.
+  directiveFence: Schema.optionalKey(
+    Schema.Struct({
+      outcome: Schema.Literals(["fenced", "superseded"]),
+      observedAt: Schema.String,
+    }),
   ),
   review: Schema.optionalKey(JonesInstallPlanReview),
 });
@@ -349,12 +357,17 @@ export const JonesInstallPlanState = Schema.Struct({
       Schema.isMaxLength(JONES_INSTALL_PLAN_HISTORY_LIMIT),
     ),
   ),
+  orphanedCommands: Schema.optionalKey(
+    Schema.Array(JonesInstallPlanCommandReceipt).check(Schema.isMaxLength(1024)),
+  ),
   laptop: JonesInstallPlanLaptopEvidence,
   view: Schema.Struct({
     complete: Schema.Boolean,
     cancelPlan: Schema.optionalKey(Schema.Literal(1)),
     deviceRecovery: Schema.optionalKey(Schema.Literal(1)),
     recoveryHistory: Schema.optionalKey(Schema.Literal(1)),
+    directiveFence: Schema.optionalKey(Schema.Literal(1)),
+    orphanRecovery: Schema.optionalKey(Schema.Literal(1)),
     manualClose: Schema.optionalKey(
       Schema.Struct({
         laptop: RunningBuild,
@@ -373,6 +386,11 @@ const Evidence = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("receipt"), receipt: JonesOperationReceipt }),
   Schema.Struct({ kind: Schema.Literal("directive"), status: FleetHostStatus }),
   Schema.Struct({
+    kind: Schema.Literal("directive-fence"),
+    expectedRevision: Revision,
+    proof: FleetPlanDirectiveFenceEvidence,
+  }),
+  Schema.Struct({
     kind: Schema.Literal("directive-refused"),
     reason: DirectiveRefusal,
     message: Bounded(1024),
@@ -381,6 +399,12 @@ const Evidence = Schema.Union([
 export const JonesInstallPlanRequest = Schema.Union([
   Schema.Struct({ type: Schema.Literal("read"), commandId: Schema.optionalKey(JonesOperationId) }),
   Schema.Struct({ type: Schema.Literal("read-history"), planId: JonesOperationId }),
+  Schema.Struct({
+    type: Schema.Literal("reconcile-orphan"),
+    commandId: JonesOperationId,
+    bodyHash: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+    receipt: JonesOperationReceipt,
+  }),
   Schema.Struct({
     type: Schema.Literal("publication"),
     acceptOrdinaryRecovery: Schema.optionalKey(Schema.Literal(1)),
@@ -488,6 +512,11 @@ export const JonesInstallPlanGrant = Schema.Struct({
     Schema.Struct({ kind: Schema.Literal("operation-stop"), input: JonesOperationStopInput }),
     Schema.Struct({ kind: Schema.Literal("operation-fence"), input: JonesOperationFenceInput }),
     Schema.Struct({ kind: Schema.Literal("plan-directive"), input: FleetPlanDirectiveInput }),
+    Schema.Struct({
+      kind: Schema.Literal("plan-directive-fence"),
+      input: FleetPlanDirectiveInput,
+      expectedRevision: Revision,
+    }),
   ]),
   leaseUntil: Schema.String,
 });

@@ -18,6 +18,7 @@ import {
   deviceSelectionLocked,
   deviceStatusActive,
   operationOutstanding,
+  orphanReceiptCheck,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { cn } from "../../lib/utils";
 import { useInstallPlan, useInstallPlanBinding } from "./useInstallPlan";
@@ -34,6 +35,7 @@ import { ProgressSteps } from "./ProgressSteps";
 import { desktopCanPreviewInstallPlan, selectionFor, targetForDesktop } from "./entrypoints";
 import {
   confirmClosedPlan,
+  hasPlanEnrollment,
   installPlanServices,
   nativePlanIssue,
   readTargetPlan,
@@ -45,6 +47,7 @@ import {
 import {
   canFenceArchivedOperation,
   canStopOperation,
+  checkOrphanedPlanCommand,
   fencePanelOperation,
   inspectPanelCleanup,
   performPanelAction,
@@ -118,7 +121,12 @@ export function InstallStatusPanel({
   if (!snapshot.open || snapshot.native === null) return null;
   if (view?.plan == null) {
     const message = snapshot.native.readOnly?.message ?? snapshot.nativeRefusal ?? snapshot.error;
-    if (message === null && historyId === null && !snapshot.native.recoveryHistory?.length)
+    if (
+      message === null &&
+      historyId === null &&
+      !snapshot.native.recoveryHistory?.length &&
+      !snapshot.native.orphanedCommands?.length
+    )
       return null;
     return (
       <section
@@ -126,7 +134,7 @@ export function InstallStatusPanel({
         className="shrink-0 rounded-lg border border-sidebar-border p-2 text-xs text-muted-foreground"
       >
         <h2>Install status</h2>
-        <HistoryNavigation store={store} snapshot={snapshot} preview={false} />
+        <HistoryNavigation store={store} snapshot={snapshot} binding={binding} preview={false} />
         {message !== null || needsHistory ? (
           <p role="status">{message ?? "Reading recovery history…"}</p>
         ) : null}
@@ -467,6 +475,7 @@ function InstallStatusPlan({
             <HistoryNavigation
               store={store}
               snapshot={snapshot}
+              binding={binding}
               preview={view.preview}
               displayedPlan={plan.planId}
             />
@@ -810,7 +819,7 @@ function InstallStatusPlan({
               const receipt = operation?.receipt;
               const operationId = operation?.operationId;
               const setupUnconfirmed =
-                operation?.step === "directive" && operation.directive === undefined;
+                operation?.step === "directive" && operationOutstanding(operation);
               const launcherUnconfirmed =
                 operation?.step === "install" && receipt?.code === "launcher-unconfirmed";
               const inspectKey =
@@ -852,7 +861,18 @@ function InstallStatusPlan({
                       ? "Fresh status for this device is required."
                       : device.observation.state.capability.operations !== 1
                         ? "This device does not currently support update operations."
-                        : undefined;
+                        : view.archived &&
+                            member !== undefined &&
+                            !hasPlanEnrollment(member, device)
+                          ? "The original device route is unconfirmed. Refresh this device."
+                          : undefined;
+              const fenceReason =
+                recoveryReason ??
+                (setupUnconfirmed &&
+                (snapshot.native?.view.directiveFence !== 1 ||
+                  device?.fleetStatus?.fencePlanDirective !== 1)
+                  ? "The host and Laptop must support fencing this original setup request."
+                  : undefined);
               const recoveryDescription = `${descriptionId}-recovery-${environmentId}`;
               return (
                 <li key={environmentId}>
@@ -1014,6 +1034,13 @@ function InstallStatusPlan({
                       {row?.operationId ? <OperationId value={row.operationId} /> : null}
                       {receipt?.code ? <p>Code: {receipt.code}</p> : null}
                       {receipt?.message ? <p>{receipt.message}</p> : null}
+                      {operation?.directiveFence === undefined ? null : (
+                        <p>
+                          {operation.directiveFence.outcome === "fenced"
+                            ? "The original setup request is fenced."
+                            : "The host confirmed that later setup replaced the original directive."}
+                        </p>
+                      )}
                       {receipt?.stop?.result === "too-late" ? (
                         <p>The download completed before Stop. Review installation separately.</p>
                       ) : receipt?.stop?.result === "not-stoppable-phase" ? (
@@ -1023,7 +1050,7 @@ function InstallStatusPlan({
                         <p>
                           {setupUnconfirmed
                             ? view.archived
-                              ? "Setup for the original request is unconfirmed. Check this device for its exact setup status."
+                              ? "Check the original setup or fence the request to prevent a delayed send."
                               : "The host has yet to confirm its update setup. The plan is still at setup for this device."
                             : receipt?.code === "cleanup-unconfirmed"
                               ? "Inspect cleanup to check whether the disk image from this attempt is still attached."
@@ -1045,10 +1072,12 @@ function InstallStatusPlan({
                       ) : null}
                       {recoveryReason !== undefined &&
                       (stopArchived ||
-                        fenceArchived ||
                         resumeArchived ||
                         (cleanupTarget !== undefined && canInspect)) ? (
                         <p id={recoveryDescription}>{recoveryReason}</p>
+                      ) : null}
+                      {fenceArchived && fenceReason !== undefined ? (
+                        <p id={`${recoveryDescription}-fence`}>{fenceReason}</p>
                       ) : null}
                       {!view.readOnly || view.archived || view.deskReadOnly ? (
                         <div className="flex flex-wrap gap-1">
@@ -1176,11 +1205,12 @@ function InstallStatusPlan({
                               variant="outline"
                               size="micro"
                               disabled={
-                                recoveryReason !== undefined ||
-                                pending.has(`${environmentId}:fence`)
+                                fenceReason !== undefined || pending.has(`${environmentId}:fence`)
                               }
                               aria-describedby={
-                                recoveryReason === undefined ? undefined : recoveryDescription
+                                fenceReason === undefined
+                                  ? undefined
+                                  : `${recoveryDescription}-fence`
                               }
                               onClick={() =>
                                 void perform(`${environmentId}:fence`, () =>
@@ -1191,7 +1221,7 @@ function InstallStatusPlan({
                                 )
                               }
                             >
-                              Fence original request
+                              {setupUnconfirmed ? "Fence original setup" : "Fence original request"}
                             </Button>
                           ) : null}
                           {(row?.actions.abandon || resumeArchived) &&
@@ -1333,22 +1363,31 @@ function InstallStatusPlan({
 function HistoryNavigation({
   store,
   snapshot,
+  binding,
   displayedPlan,
   preview,
 }: {
   readonly store: InstallStatusStore;
   readonly snapshot: InstallStatusSnapshot;
+  readonly binding: InstallPlanBinding | undefined;
   readonly displayedPlan?: string;
   readonly preview: boolean;
 }) {
+  const [checking, setChecking] = useState<string | null>(null);
   const { native, desktop, showLast } = snapshot;
   if (native === null) return null;
   const last = native.last;
   const history = native.recoveryHistory ?? [];
+  const orphans = native.orphanedCommands ?? [];
   const canPreview = native.current === null && desktopCanPreviewInstallPlan(desktop);
   const otherPlan =
     native.current !== null ? native.current.planId !== displayedPlan : canPreview && !preview;
-  if (!otherPlan && (last === null || last.planId === displayedPlan) && history.length === 0)
+  if (
+    !otherPlan &&
+    (last === null || last.planId === displayedPlan) &&
+    history.length === 0 &&
+    orphans.length === 0
+  )
     return null;
   const select = (planId?: string) => {
     store.update({ error: null });
@@ -1393,6 +1432,62 @@ function HistoryNavigation({
                   {entry.targetVersion} · {pending.join(", ")}
                 </span>
               </Button>
+            );
+          })}
+        </details>
+      ) : null}
+      {orphans.length > 0 ? (
+        <details className="space-y-1">
+          <summary className="cursor-pointer rounded-sm px-1 focus-visible:outline-2 focus-visible:outline-ring">
+            Recovery for commands from missing plans
+          </summary>
+          {orphans.map((entry) => {
+            const id = entry.command.commandId;
+            const label =
+              snapshot.devices.find(
+                ({ environmentId }) => environmentId === entry.command.environmentId,
+              )?.label ?? entry.command.environmentId;
+            const checkable =
+              native.view.orphanRecovery === 1 && orphanReceiptCheck(entry) !== undefined;
+            return (
+              <div key={id} className="space-y-1 px-1">
+                <p>
+                  {label} · {entry.command.action} · {entry.command.targetSource.slice(0, 7)}
+                </p>
+                <OperationId value={entry.operationId ?? id} />
+                {checkable ? (
+                  <Button
+                    variant="ghost-muted"
+                    size="micro"
+                    disabled={
+                      checking !== null || binding === undefined || native.readOnly !== undefined
+                    }
+                    onClick={() => {
+                      if (binding === undefined) return;
+                      setChecking(id);
+                      store.update({ error: null });
+                      void checkOrphanedPlanCommand(entry, binding)
+                        .catch((cause: unknown) => {
+                          if (installPlanServices() === binding)
+                            store.update({
+                              error:
+                                cause instanceof Error
+                                  ? cause.message
+                                  : "The command remains on hold.",
+                            });
+                        })
+                        .finally(() => setChecking(null));
+                    }}
+                  >
+                    {checking === id ? "Checking…" : `Check retained receipt on ${label}`}
+                  </Button>
+                ) : (
+                  <p>
+                    Laptop no longer has this plan’s exact operation binding. Updates on this device
+                    remain on hold.
+                  </p>
+                )}
+              </div>
             );
           })}
         </details>

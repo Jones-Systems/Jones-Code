@@ -2,6 +2,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import type {
   JonesInstallPlan,
+  JonesInstallPlanCommandReceipt,
   JonesInstallPlanDevice,
   JonesInstallPlanHostOperation,
   JonesInstallPlanResult,
@@ -22,8 +23,11 @@ import {
   laptopGateIssue,
   laptopInstallNeedsReopen,
   operationOutstanding,
+  orphanReceiptCheck,
+  sameDirectiveBinding,
   supportsOperationReceiptReads,
   validateDirectiveEvidence,
+  validateDirectiveFenceEvidence,
   validateReceipt,
 } from "@t3tools/client-runtime/jones/install-plan";
 import {
@@ -52,6 +56,7 @@ import {
 import type { InstallStatusDevice } from "./panelUi";
 import { archivedPlanFrom, selectedHistoryPlan } from "./panelUi";
 import { LAPTOP_REOPEN_TO_CHECK_INSTALL } from "./copy";
+import { reconcileNativeJonesDuty } from "./executionJournal";
 
 export type PanelAction =
   | "download"
@@ -124,8 +129,8 @@ function latestOperation(device: JonesInstallPlanDevice, archived: boolean) {
 }
 
 export function canFenceArchivedOperation(operation: JonesInstallPlanHostOperation, now: number) {
+  if (operation.request.kind === "plan-directive") return operationOutstanding(operation);
   return (
-    operation.request.kind === "operation-start" &&
     operation.receipt === undefined &&
     Date.parse(operation.lease.leaseUntil) <= now &&
     (operation.fence === undefined || Date.parse(operation.fence.lease.leaseUntil) <= now)
@@ -206,10 +211,24 @@ async function recoverRemoteOperation(
       : latestOperation(device, false);
   const original =
     operation === undefined ? undefined : exactOperationRequest(planId, environmentId, operation);
+  const directive =
+    archived && step === "fence" && operation?.request.kind === "plan-directive"
+      ? operation.request.input
+      : undefined;
   if (
     device === undefined ||
     operation?.operationId !== operationId ||
-    original === undefined ||
+    (original === undefined && directive === undefined) ||
+    (directive !== undefined &&
+      (state.view.directiveFence !== 1 ||
+        device.route !== "follower-operations" ||
+        directive.directiveId !== operationId ||
+        directive.environmentId !== environmentId ||
+        directive.enrollmentId !== device.enrollmentId ||
+        directive.repository !== plan.target.repository ||
+        directive.targetSource !== plan.target.sourceSha ||
+        directive.targetTree !== plan.target.sourceTree ||
+        observed.fleetStatus?.fencePlanDirective !== 1)) ||
     device.membership !== "selected" ||
     device.abandoning === true ||
     (archived && (state.view.recoveryHistory !== 1 || target.expectedRevision === undefined)) ||
@@ -228,6 +247,9 @@ async function recoverRemoteOperation(
       authorizedUpdateStatus(observed, environmentId)?.capability.operations !== 1 ||
       status?.capability.operations !== 1 ||
       !hasCurrentPlanEnrollment(services, device, observed) ||
+      (directive !== undefined &&
+        services.devices().find((item) => item.environmentId === environmentId)?.fleetStatus
+          ?.fencePlanDirective !== 1) ||
       (checkOriginal && !archived && status.operation?.operationId !== operationId)
     )
       throw new Error("Fresh authorized operation capability is required.");
@@ -242,6 +264,7 @@ async function recoverRemoteOperation(
       step,
       explicit: true,
       operationId,
+      ...(directive === undefined ? {} : { enrollmentId: directive.enrollmentId }),
       ...revisionFor(state, plan),
     },
     binding,
@@ -264,6 +287,61 @@ async function recoverRemoteOperation(
       "The native grant is unavailable, mismatched, or expired. Read the exact operation.",
     );
   recheckHost();
+  if (request.kind === "plan-directive-fence" && directive !== undefined) {
+    if (
+      !sameDirectiveBinding(directive, request.input) ||
+      claimed.state.recoveryHistory?.find((entry) => entry.planId === planId)?.revision !==
+        request.expectedRevision
+    )
+      throw new Error("The native fence grant does not match this setup request.");
+    const status = await services.host(environmentId, {
+      action: "fenceDirective",
+      input: request.input,
+    });
+    const proof = status.directiveFence;
+    if (
+      status.fencePlanDirective !== 1 ||
+      proof === undefined ||
+      !validateDirectiveFenceEvidence(directive, proof) ||
+      status.environmentId !== environmentId ||
+      status.enrollment?.enabled !== true ||
+      status.enrollment.environmentId !== environmentId ||
+      status.enrollment.enrollmentId !== directive.enrollmentId
+    )
+      throw new Error("The host did not return an exact setup fence proof.");
+    requireWritablePlan(binding);
+    const result = await requestInstallPlan(
+      {
+        type: "report",
+        planId,
+        environmentId,
+        operationId,
+        evidence: { kind: "directive-fence", expectedRevision: request.expectedRevision, proof },
+      },
+      binding,
+    );
+    const issue = nativePlanIssue(result);
+    if (issue !== undefined)
+      throw new Error(`The host returned exact setup proof. Saving it failed: ${issue}`);
+    const saved = await readTargetPlan(binding, target);
+    const recorded = saved.plan?.devices
+      .find((item) => item.environmentId === environmentId)
+      ?.operations.find((item) => item.operationId === operationId);
+    const exact =
+      recorded?.request.kind === "plan-directive" &&
+      validateDirectiveFenceEvidence(recorded.request.input, proof) &&
+      (proof.outcome === "applied"
+        ? recorded.directive?.kind === "applied" &&
+          recorded.directive.directive.issuedAt === proof.directive.issuedAt
+        : recorded.directiveFence?.outcome === proof.outcome);
+    if (!exact || nativePlanIssue(saved.result) !== undefined)
+      throw new Error(
+        "The host returned exact setup proof. Saving it in recovery history is unconfirmed.",
+      );
+    return;
+  }
+  if (original === undefined)
+    throw new Error("The native grant does not match the original setup fence.");
   let receipt: JonesOperationReceipt;
   if (
     step === "stop" &&
@@ -330,6 +408,72 @@ async function recoverRemoteOperation(
       throw new Error(
         "The host returned the exact receipt. Readback from recovery history is unconfirmed.",
       );
+  }
+}
+
+/** A lost V1 plan can supply only the original command identity and an exact retained host read. */
+export async function checkOrphanedPlanCommand(
+  displayed: JonesInstallPlanCommandReceipt,
+  binding = installPlanServices(),
+) {
+  if (binding === undefined) throw new Error("Install status is not connected.");
+  const { services } = binding;
+  const commandId = displayed.command.commandId;
+  const read = await requestInstallPlan({ type: "read", commandId }, binding);
+  requireWritablePlan(binding, read);
+  const orphan = read.state.orphanedCommands?.find(
+    ({ command }) => command.commandId === commandId,
+  );
+  const check = orphan === undefined ? undefined : orphanReceiptCheck(orphan);
+  if (
+    read.state.view.orphanRecovery !== 1 ||
+    check === undefined ||
+    check.bodyHash !== displayed.bodyHash ||
+    check.operationId !== displayed.operationId ||
+    check.command.environmentId !== displayed.command.environmentId
+  )
+    throw new Error("The retained command changed or has no exact host receipt path.");
+  const { environmentId } = check.command;
+  const observed = await services.observe(environmentId);
+  const state = observed.observation.state;
+  if (
+    observed.environmentId !== environmentId ||
+    observed.observation.freshness !== "fresh" ||
+    state?.environmentId !== environmentId ||
+    !supportsOperationReceiptReads(state.capability)
+  )
+    throw new Error("An exact host receipt cannot be read. Refresh this device's connection.");
+  requireWritablePlan(binding);
+  const found = await services.operation(environmentId, {
+    action: "operationRead",
+    input: { environmentId, operationIds: [check.operationId] },
+  });
+  const receipt = exactReadReceipt(found, check.operationId);
+  if (receipt === null)
+    throw new Error(
+      "The host has no retained receipt for this command. Recovery is still on hold.",
+    );
+  requireWritablePlan(binding);
+  const result = await requestInstallPlan(
+    { type: "reconcile-orphan", commandId, bodyHash: check.bodyHash, receipt },
+    binding,
+  );
+  const issue = nativePlanIssue(result);
+  if (issue !== undefined) throw new Error(issue);
+  if (
+    result.command?.command.commandId !== commandId ||
+    result.command.bodyHash !== check.bodyHash ||
+    result.command.operationId !== check.operationId ||
+    result.command.outcome !== "terminal" ||
+    result.state.orphanedCommands?.some(({ command }) => command.commandId === commandId)
+  )
+    throw new Error("Laptop could not confirm the retained command was settled.");
+  try {
+    await reconcileNativeJonesDuty(result);
+  } catch {
+    throw new Error(
+      "Laptop saved the terminal receipt. This browser could not update its request history.",
+    );
   }
 }
 
@@ -524,13 +668,9 @@ export async function refreshDeviceEvidence(
     !binding.store.get().native?.readOnly &&
     !binding.store.get().nativeRefusal;
   const authority = () => currentAuthorizedUpdateStatus(services, environmentId, observed);
-  const hasScope = () => {
+  const hasReceiptAuthority = () => {
     const status = authority();
-    return (
-      status !== undefined &&
-      supportsOperationReceiptReads(status.capability) &&
-      hasCurrentPlanEnrollment(services, device, observed)
-    );
+    return status !== undefined && supportsOperationReceiptReads(status.capability);
   };
   const save = async (
     evidence: Extract<Parameters<typeof requestInstallPlan>[0], { type: "report" }>["evidence"],
@@ -569,7 +709,7 @@ export async function refreshDeviceEvidence(
   };
 
   if (operation.request.kind === "plan-directive") {
-    if (operation.directive !== undefined) return undefined;
+    if (!operationOutstanding(operation)) return undefined;
     const input = operation.request.input;
     if (
       observation.freshness !== "fresh" ||
@@ -594,7 +734,11 @@ export async function refreshDeviceEvidence(
           ? `${label} still reports its previous setup. The plan can resend the same request.`
           : `${label} reported a different setup. The original request is still unconfirmed.`;
     }
-    if (!canWrite() || !hasScope())
+    if (
+      !canWrite() ||
+      !hasReceiptAuthority() ||
+      !hasCurrentPlanEnrollment(services, device, observed)
+    )
       return explain
         ? `Read matching setup on ${label}. Saving it requires plan access and permission.`
         : undefined;
@@ -609,8 +753,7 @@ export async function refreshDeviceEvidence(
     observation.freshness !== "fresh" ||
     observation.state?.environmentId !== environmentId ||
     input === undefined ||
-    !supportsOperationReceiptReads(observation.state.capability) ||
-    (archived && !hasPlanEnrollment(device, observed))
+    !supportsOperationReceiptReads(observation.state.capability)
   )
     return explain
       ? `Could not read the exact update receipt on ${label}. Refresh its status and try again.`
@@ -647,7 +790,7 @@ export async function refreshDeviceEvidence(
     // Keep the current-plan feedback when the launcher capability changed during a Check.
     if (
       canWrite() &&
-      hasScope() &&
+      hasReceiptAuthority() &&
       validateReceipt(input, receipt) &&
       (operation.receipt === undefined || validateReceipt(operation.receipt, receipt))
     )
@@ -665,7 +808,7 @@ export async function refreshDeviceEvidence(
     return explain
       ? `Read status on ${label}. The receipt did not match this operation.`
       : undefined;
-  if (!canWrite() || !hasScope())
+  if (!canWrite() || !hasReceiptAuthority())
     return explain
       ? `Read the exact receipt on ${label}. Saving it requires plan access and permission.`
       : undefined;

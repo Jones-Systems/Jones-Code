@@ -80,6 +80,12 @@ export function makeFleetUpdatesHttpGroup({
       ).middleware(EnvironmentAuthenticatedAuth),
     )
     .add(
+      HttpApiEndpoint.post("fenceDirective", `${FLEET_UPDATES_HTTP_BASE}/plan-directive/fence`, {
+        ...common,
+        payload: FleetPlanDirectiveInput,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
       HttpApiEndpoint.put("planDirective", `${FLEET_UPDATES_HTTP_BASE}/plan-directive`, {
         ...common,
         payload: FleetPlanDirectiveInput,

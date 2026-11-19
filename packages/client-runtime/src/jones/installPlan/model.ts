@@ -3,6 +3,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesInstallPlan,
   JonesInstallPlanDevice,
+  JonesInstallPlanCommandReceipt,
   JonesInstallPlanHostOperation,
   JonesInstallPlanOrigin,
   JonesInstallPlanSelection,
@@ -17,6 +18,7 @@ import type {
 } from "@t3tools/contracts/jones/jonesOperations";
 import type {
   FleetHostStatus,
+  FleetPlanDirectiveFenceEvidence,
   FleetPlanDirectiveInput,
 } from "@t3tools/contracts/jones/fleet-updates";
 import * as Schema from "effect/Schema";
@@ -173,6 +175,46 @@ export function validateDirectiveEvidence(
     directive.targetTree === input.targetTree &&
     directive.mode === "manual-review"
   );
+}
+
+export function validateDirectiveFenceEvidence(
+  input: FleetPlanDirectiveInput,
+  proof: FleetPlanDirectiveFenceEvidence,
+): boolean {
+  return (
+    proof.protocol === 1 &&
+    sameDirectiveBinding(input, proof.input) &&
+    (proof.outcome !== "applied" ||
+      (proof.directive.directiveId === input.directiveId &&
+        proof.directive.targetSource === input.targetSource &&
+        proof.directive.targetTree === input.targetTree &&
+        proof.directive.mode === "manual-review" &&
+        Number.isFinite(Date.parse(proof.directive.issuedAt))))
+  );
+}
+
+export function sameDirectiveBinding(
+  left: FleetPlanDirectiveInput,
+  right: FleetPlanDirectiveInput,
+) {
+  return equal(left, right);
+}
+
+/** The V1 replay record can identify a remote receipt, but cannot recreate a dispatch body. */
+export function orphanReceiptCheck(receipt: JonesInstallPlanCommandReceipt) {
+  const { command, planId, operationId, bodyHash } = receipt;
+  if (
+    receipt.outcome !== "reserved" ||
+    receipt.requestType !== "claim" ||
+    planId === undefined ||
+    command.planId !== planId ||
+    !Number.isSafeInteger(command.expectedRevision) ||
+    operationId === undefined ||
+    bodyHash === undefined ||
+    (command.action === "install") !== (command.stagedHandle !== undefined)
+  )
+    return undefined;
+  return { command, planId, operationId, bodyHash };
 }
 
 /** A fresh host status still shows the predecessor required by this exact request. */
@@ -394,11 +436,14 @@ export function hasUnconfirmedLauncherOutcome(receipt: JonesOperationReceipt | u
   return receipt?.code === "launcher-unconfirmed" || receipt?.code === "launcher-unreadable";
 }
 
+export function isSettledOperationReceipt(receipt: JonesOperationReceipt): boolean {
+  return terminal.has(receipt.phase) && !hasUnconfirmedLauncherOutcome(receipt);
+}
+
 function outstanding(operation: JonesInstallPlanHostOperation): boolean {
-  if (hasUnconfirmedLauncherOutcome(operation.receipt)) return true;
   return operation.step === "directive"
-    ? operation.directive === undefined
-    : operation.receipt === undefined || !terminal.has(operation.receipt.phase);
+    ? operation.directive === undefined && operation.directiveFence === undefined
+    : operation.receipt === undefined || !isSettledOperationReceipt(operation.receipt);
 }
 
 /** Recovery follows all retained work, even after visual completion or a membership change. */
@@ -468,7 +513,8 @@ export function deviceLedgerState(
   const latest = pending ?? operations.at(-1);
   if (latest !== undefined) {
     if (latest.step === "directive") {
-      if (latest.directive?.kind === "refused") return "not-updated";
+      if (latest.directive?.kind === "refused" || latest.directiveFence !== undefined)
+        return "not-updated";
       if (latest.directive === undefined)
         return Date.parse(latest.lease.leaseUntil) > now ? "directive" : "unknown";
     } else {
@@ -701,7 +747,7 @@ export function nextRunnerStep(
   if (!mutationsSupported) return wait("Fresh download and install capability is required.");
   if (pending !== undefined) {
     if (pending.step === "directive") {
-      // A directive has no operation ledger fence. Its reservation can only be replayed by ID.
+      // Only an explicit recovery action on a closed plan can fence follower setup.
       return { kind: "reservation", operation: pending };
     }
     return Date.parse(pending.lease.leaseUntil) > now

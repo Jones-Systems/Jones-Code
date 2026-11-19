@@ -93,3 +93,34 @@ it("preserves a plan directive across store restart and leader-only writes witho
     expect((await restarted.readFollower())?.directive).toEqual(directive);
     expect(await restarted.readEnrollment()).toEqual(enrollment);
   }));
+
+it("serializes directive transactions across stores and retains the fence on disk", async () =>
+  fixture(async (home) => {
+    const first = createFleetHostStore(home);
+    const second = createFleetHostStore(home);
+    await first.editEnrollment(() => enrollment);
+    const fence = {
+      directiveId: "33333333-3333-4333-8333-333333333333",
+      bindingHash: "c".repeat(64),
+    };
+    const fenced = first.transactDirective((record, observed) => {
+      expect(record).toBeNull();
+      expect(observed).toEqual(enrollment);
+      return {
+        record: {
+          schema: 1,
+          leader: null,
+          operation: null,
+          lastAutomaticActivationAt: null,
+          fencedDirectives: [fence],
+        },
+        result: fence.directiveId,
+      };
+    });
+    const competing = second.transactDirective((record, observed) => {
+      expect(observed).toEqual(enrollment);
+      return { record, result: record?.fencedDirectives?.[0] };
+    });
+    expect(await Promise.all([fenced, competing])).toEqual([fence.directiveId, fence]);
+    expect((await createFleetHostStore(home).readFollower())?.fencedDirectives).toEqual([fence]);
+  }));

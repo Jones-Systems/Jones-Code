@@ -122,9 +122,11 @@ export function hasPlanEnrollment(device: JonesInstallPlanDevice, observed: Inst
   return (
     device.environmentId === observed.environmentId &&
     (device.route === "operations"
-      ? fleetStatus == null ||
-        (fleetStatus.environmentId === device.environmentId &&
-          fleetStatus.enrollment?.enabled !== true)
+      ? fleetStatus === null ||
+        (fleetStatus?.environmentId === device.environmentId &&
+          (fleetStatus.enrollment === null ||
+            (!fleetStatus.enrollment.enabled &&
+              fleetStatus.enrollment.environmentId === device.environmentId)))
       : fleetStatus?.environmentId === device.environmentId &&
         fleetStatus.enrollment?.enabled === true &&
         fleetStatus.enrollment.environmentId === device.environmentId &&
@@ -141,7 +143,7 @@ export function hasCurrentPlanEnrollment(
   return (
     current !== undefined &&
     hasPlanEnrollment(device, observed) &&
-    (current.fleetStatus === undefined || hasPlanEnrollment(device, current))
+    hasPlanEnrollment(device, current)
   );
 }
 

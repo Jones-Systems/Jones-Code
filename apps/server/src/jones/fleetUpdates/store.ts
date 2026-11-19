@@ -59,6 +59,14 @@ export const FleetFollowerRecord = Schema.Struct({
   releasedDirectives: Schema.optionalKey(
     Schema.Array(FleetOperationId).check(Schema.isMaxLength(128)),
   ),
+  fencedDirectives: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        directiveId: FleetOperationId,
+        bindingHash: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+      }),
+    ).check(Schema.isMaxLength(128)),
+  ),
 });
 export type FleetFollowerRecord = typeof FleetFollowerRecord.Type;
 
@@ -76,8 +84,15 @@ export interface FleetHostStore {
   readonly editFollower: (
     change: (old: FleetFollowerRecord | null) => FleetFollowerRecord,
   ) => Promise<FleetFollowerRecord>;
+  readonly transactDirective: <A>(
+    change: (
+      old: FleetFollowerRecord | null,
+      enrollment: FleetEnrollment | null,
+    ) => { readonly record: FleetFollowerRecord | null; readonly result: A },
+  ) => Promise<A>;
 }
 
+const FOLLOWER_BYTES = 64 * 1024;
 const isEnrollment = Schema.is(FleetEnrollment);
 const isFollower = Schema.is(FleetFollowerRecord);
 const isOperation = Schema.is(FleetHostOperation);
@@ -196,6 +211,12 @@ export function createFleetHostStore(baseDir: string): FleetHostStore {
       await ownedDirectory(directory, true);
       return withQualifiedRuntimeLock(baseDir, "jones-fleet", operation);
     });
+  const readFollower = () => read(follower, isFollower, FOLLOWER_BYTES);
+  const writeFollower = async (record: FleetFollowerRecord) => {
+    if (!isFollower(record) || Buffer.byteLength(JSON.stringify(record)) + 1 > FOLLOWER_BYTES)
+      throw new Error("Invalid or oversized fleet follower record.");
+    await replace(follower, record);
+  };
   return {
     readEnrollment: () => locked(() => read(enrollment, isEnrollment)),
     editEnrollment: (change) =>
@@ -215,13 +236,19 @@ export function createFleetHostStore(baseDir: string): FleetHostStore {
         await replace(path, next);
         return next;
       }),
-    readFollower: () => locked(() => read(follower, isFollower)),
+    readFollower: () => locked(readFollower),
     editFollower: (change) =>
       locked(async () => {
-        const next = change(await read(follower, isFollower));
-        if (!isFollower(next)) throw new Error("Invalid fleet follower record.");
-        await replace(follower, next);
+        const next = change(await readFollower());
+        await writeFollower(next);
         return next;
+      }),
+    transactDirective: (change) =>
+      locked(async () => {
+        const current = await readFollower();
+        const { record, result } = change(current, await read(enrollment, isEnrollment));
+        if (record !== null && record !== current) await writeFollower(record);
+        return result;
       }),
   };
 }

@@ -790,6 +790,7 @@ describe("bounded install plan runner", () => {
     "reply",
     "reply after disposal",
     "lost reply",
+    "first-send conflict",
     "no recorded host effect",
   ] as const;
   it.each(directiveReplies)("reconciles the directive after %s", async (result) => {
@@ -873,8 +874,8 @@ describe("bounded install plan runner", () => {
     if (!replied)
       f.host.mockRejectedValueOnce({
         _tag: "FleetHostError",
-        reason: "storage",
-        message: "sync failed",
+        reason: result === "first-send conflict" ? "conflict" : "storage",
+        message: result === "first-send conflict" ? "Host busy." : "sync failed",
       });
     else
       f.host.mockImplementationOnce(async () => {

@@ -17,6 +17,7 @@ import {
   type FleetStageInput,
   type FleetRetireInput,
   type FleetPlanDirectiveInput,
+  type FleetPlanDirectiveFenceEvidence,
   type FleetReleasePlanDirectiveInput,
 } from "@t3tools/contracts/jones/fleet-updates";
 import * as Clock from "effect/Clock";
@@ -98,6 +99,9 @@ export class FleetUpdates extends Context.Service<
     readonly releaseDirective: (
       input: FleetReleasePlanDirectiveInput,
     ) => Effect.Effect<FleetHostStatus, FleetHostError>;
+    readonly fenceDirective: (
+      input: FleetPlanDirectiveInput,
+    ) => Effect.Effect<FleetHostStatus, FleetHostError>;
     readonly follow: Effect.Effect<void>;
   }
 >()("t3/jones/fleetUpdates/service/FleetUpdates") {}
@@ -160,6 +164,62 @@ const leaderFor = (record: FleetFollowerRecord | null, enrollment: FleetEnrollme
     ? record.leader
     : null;
 
+function directiveBindingHash(input: FleetPlanDirectiveInput) {
+  return NodeCrypto.createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.directiveId,
+        input.enrollmentId,
+        input.environmentId,
+        input.repository,
+        input.targetSource,
+        input.targetTree,
+        input.expectedDirectiveId,
+      ]),
+    )
+    .digest("hex");
+}
+
+function directiveMatches(
+  input: FleetPlanDirectiveInput,
+  directive: NonNullable<FleetFollowerRecord["directive"]>,
+) {
+  return (
+    directive.directiveId === input.directiveId &&
+    directive.enrollmentId === input.enrollmentId &&
+    directive.targetSource === input.targetSource &&
+    directive.targetTree === input.targetTree
+  );
+}
+
+function directiveNeedsApplying(
+  record: FleetFollowerRecord | null,
+  input: FleetPlanDirectiveInput,
+) {
+  const history = record?.directiveHistory ?? [];
+  if (
+    record?.releasedDirectives?.includes(input.directiveId) ||
+    record?.fencedDirectives?.some((entry) => entry.directiveId === input.directiveId)
+  )
+    return fail("conflict", "This directive was released or fenced and cannot be applied.");
+  const prior = history.find((entry) => entry.directiveId === input.directiveId)?.prior;
+  if (record?.directive?.directiveId === input.directiveId) {
+    if (
+      !directiveMatches(input, record.directive) ||
+      (prior !== undefined && (prior?.directiveId ?? null) !== input.expectedDirectiveId)
+    )
+      return fail("conflict", "This directive ID is already bound to another request.");
+    return false;
+  }
+  if (
+    (record?.directive?.directiveId ?? null) !== input.expectedDirectiveId ||
+    prior !== undefined ||
+    history.some((entry) => entry.prior?.directiveId === input.directiveId)
+  )
+    return fail("conflict", "The update-plan directive changed; refresh before changing it.");
+  return true;
+}
+
 export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(function* (options: {
   readonly environmentId: FleetHostStatus["environmentId"];
   readonly serviceMode: boolean;
@@ -203,6 +263,36 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     }
     return enrollment;
   });
+  const requireDirectiveAuthority = Effect.fn("FleetUpdates.requireDirectiveAuthority")(function* (
+    input: FleetPlanDirectiveInput,
+  ) {
+    const enrollment = yield* requireEnrollment(input);
+    if (
+      !options.serviceMode ||
+      !updates.fleetOperationsSupported ||
+      input.repository !== "Jones-Systems/Jones-Code"
+    )
+      return yield* fail("binding", "Only a qualified service host manages plan directives.");
+    return enrollment;
+  });
+  const editDirective = <A>(
+    input: FleetPlanDirectiveInput,
+    change: (record: FleetFollowerRecord | null) => {
+      readonly record: FleetFollowerRecord | null;
+      readonly result: A;
+    },
+  ) =>
+    storage(() =>
+      store.transactDirective((record, enrollment) => {
+        if (
+          enrollment?.enabled !== true ||
+          enrollment.environmentId !== input.environmentId ||
+          enrollment.enrollmentId !== input.enrollmentId
+        )
+          throw fail("not-enrolled", "The selected enrollment changed before the directive edit.");
+        return change(record);
+      }),
+    );
   const save = (operation: FleetHostOperation) =>
     storage(() =>
       store.editOperation(operation.input.operationId, (old) => {
@@ -305,7 +395,11 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     )?.directiveId;
     return {
       ...(options.serviceMode && updates.fleetOperationsSupported
-        ? { planDirectiveProtocol: 1 as const, releasePlanDirective: 1 as const }
+        ? {
+            planDirectiveProtocol: 1 as const,
+            releasePlanDirective: 1 as const,
+            fencePlanDirective: 1 as const,
+          }
         : {}),
       ...(releasableDirectiveId === undefined ? {} : { releasableDirectiveId }),
       operationProtocol:
@@ -638,34 +732,11 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
   const planDirective = Effect.fn("FleetUpdates.planDirective")(function* (
     input: FleetPlanDirectiveInput,
   ) {
-    const enrollment = yield* requireEnrollment(input);
-    if (
-      !options.serviceMode ||
-      !updates.fleetOperationsSupported ||
-      input.repository !== "Jones-Systems/Jones-Code"
-    )
-      return yield* fail(
-        "binding",
-        "Only a qualified service host accepts an update-plan directive.",
-      );
+    const enrollment = yield* requireDirectiveAuthority(input);
     const current = yield* storage(store.readFollower);
-    if (current?.releasedDirectives?.includes(input.directiveId))
-      return yield* fail("conflict", "This directive was already released.");
-    if (current?.directive?.directiveId === input.directiveId) {
-      const d = current.directive;
-      if (
-        d.enrollmentId !== enrollment.enrollmentId ||
-        d.targetSource !== input.targetSource ||
-        d.targetTree !== input.targetTree
-      )
-        return yield* fail("conflict", "This directive ID is already bound to another target.");
-      return yield* status();
-    }
-    if ((current?.directive?.directiveId ?? null) !== input.expectedDirectiveId)
-      return yield* fail(
-        "conflict",
-        "The update-plan directive changed; refresh before changing it.",
-      );
+    const needsApplying = directiveNeedsApplying(current, input);
+    if (typeof needsApplying !== "boolean") return yield* needsApplying;
+    if (!needsApplying) return yield* status();
     const operation =
       current?.operation == null
         ? null
@@ -681,17 +752,15 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
         "An update is already active; its exact outcome must be reconciled first.",
       );
     const issuedAt = isoAt(yield* Clock.currentTimeMillis);
-    yield* storage(() =>
-      store.editFollower((old) => {
-        if (
-          (old?.directive?.directiveId ?? null) !== input.expectedDirectiveId ||
-          old?.releasedDirectives?.includes(input.directiveId)
-        )
-          throw fail("conflict", "The update-plan directive changed before it could be saved.");
-        const history = old?.directiveHistory ?? [];
-        if (history.length >= 128) throw fail("storage", "The host's directive history is full.");
-        const leader = old?.leader?.enrollmentId === enrollment.enrollmentId ? old.leader : null;
-        return {
+    const applied = yield* editDirective(input, (old) => {
+      const needsApplying = directiveNeedsApplying(old, input);
+      if (typeof needsApplying !== "boolean") throw needsApplying;
+      if (!needsApplying) return { record: old, result: false };
+      const history = old?.directiveHistory ?? [];
+      if (history.length >= 128) throw fail("storage", "The host's directive history is full.");
+      const leader = old?.leader?.enrollmentId === enrollment.enrollmentId ? old.leader : null;
+      return {
+        record: {
           ...(old ?? emptyFollower),
           directiveHistory: [
             ...history,
@@ -709,13 +778,69 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
                 ? null
                 : { committedSource: leader.committedSource, publishedAt: leader.publishedAt },
           },
-        };
-      }),
-    );
-    followerView = undefined;
-    yield* updates.refreshPolicy;
-    yield* Queue.offer(wakeups, undefined);
+        },
+        result: true,
+      };
+    });
+    if (applied) {
+      followerView = undefined;
+      yield* updates.refreshPolicy;
+      yield* Queue.offer(wakeups, undefined);
+    }
     return yield* status();
+  });
+
+  const fenceDirective = Effect.fn("FleetUpdates.fenceDirective")(function* (
+    input: FleetPlanDirectiveInput,
+  ) {
+    yield* requireDirectiveAuthority(input);
+    const bindingHash = directiveBindingHash(input);
+    const proof = { protocol: 1 as const, input };
+    const directiveFence = yield* editDirective<FleetPlanDirectiveFenceEvidence>(
+      input,
+      (record) => {
+        const fenced = record?.fencedDirectives ?? [];
+        const existing = fenced.find((entry) => entry.directiveId === input.directiveId);
+        if (existing !== undefined) {
+          if (existing.bindingHash !== bindingHash)
+            throw fail("conflict", "This fence ID is already bound to another request.");
+          return { record, result: { ...proof, outcome: "fenced" } };
+        }
+        const current =
+          record?.directive?.directiveId === input.directiveId ? record.directive : undefined;
+        const history = record?.directiveHistory ?? [];
+        const prior = history.filter((entry) => entry.directiveId === input.directiveId);
+        const issued =
+          current ?? history.find((entry) => entry.prior?.directiveId === input.directiveId)?.prior;
+        if (issued != null || prior.length > 0) {
+          if (
+            issued == null ||
+            !directiveMatches(input, issued) ||
+            prior.length !== 1 ||
+            (prior[0]!.prior?.directiveId ?? null) !== input.expectedDirectiveId
+          )
+            throw fail("conflict", "The original directive or predecessor could not be proved.");
+          return {
+            record,
+            result:
+              current === undefined
+                ? { ...proof, outcome: "superseded" }
+                : { ...proof, outcome: "applied", directive: current },
+          };
+        }
+        if (fenced.length >= 128)
+          throw fail("storage", "The host's directive fence history is full.");
+        // The same journal lock covers the application CAS. Keep the current directive and policy.
+        return {
+          record: {
+            ...(record ?? emptyFollower),
+            fencedDirectives: [...fenced, { directiveId: input.directiveId, bindingHash }],
+          },
+          result: { ...proof, outcome: "fenced" },
+        };
+      },
+    );
+    return { ...(yield* status()), directiveFence };
   });
 
   const releaseDirective = Effect.fn("FleetUpdates.releaseDirective")(function* (
@@ -1039,6 +1164,9 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     ),
     releaseDirective: Effect.fn("FleetUpdates.releaseDirective")((input) =>
       gate.withPermits(1)(releaseDirective(input)),
+    ),
+    fenceDirective: Effect.fn("FleetUpdates.fenceDirective")((input) =>
+      gate.withPermits(1)(fenceDirective(input)),
     ),
     follow,
   });

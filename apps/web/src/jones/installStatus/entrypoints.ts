@@ -102,6 +102,7 @@ export function canOpenInstallStatusPill(
     native?.current != null ||
     native?.readOnly !== undefined ||
     (native?.recoveryHistory?.length ?? 0) > 0 ||
+    (native?.orphanedCommands?.length ?? 0) > 0 ||
     (!hasOtherUpdates && (native?.last != null || desktopCanPreviewInstallPlan(desktop)))
   );
 }
@@ -118,6 +119,7 @@ export async function routeInstallStatusPill(
   if (
     native.current !== null ||
     native.readOnly !== undefined ||
+    (native.orphanedCommands?.length ?? 0) > 0 ||
     nativePlanIssue(result) !== undefined
   ) {
     store.open();
@@ -490,6 +492,7 @@ function retainedRecoveryIssue(
   const laptop = state.laptop.environmentId === environmentId;
   const older = state.last;
   const pending =
+    state.orphanedCommands?.some(({ command }) => command.environmentId === environmentId) ||
     state.recoveryHistory?.some((entry) =>
       laptop
         ? entry.pendingLaptop

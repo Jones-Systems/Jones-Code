@@ -99,6 +99,11 @@ const fixture = (
       },
       readFollower: async () => follower,
       editFollower: async (change) => (follower = change(follower)),
+      transactDirective: async (change) => {
+        const { record, result } = change(follower, savedEnrollment);
+        follower = record;
+        return result;
+      },
     };
     const quiet = quietHost();
     let update: JonesUpdateState = {
@@ -941,6 +946,110 @@ describe("plan-managed follower targets", () => {
     targetTree: "c".repeat(40),
     expectedDirectiveId: null,
   };
+  it.effect(
+    "fences a delayed setup before it arrives, keeps current policy, and retains the exact fence after restart",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+        yield* f.service.planDirective(directive);
+        const captured = {
+          ...directive,
+          directiveId: "66666666-6666-4666-8666-666666666666",
+          targetTree: "d".repeat(40),
+          expectedDirectiveId: directive.directiveId,
+        };
+        const policy = f.follower()!.directive;
+        const installed = f.snapshot().installedSource;
+        expect((yield* f.service.status()).fencePlanDirective).toBe(1);
+        expect((yield* f.service.releaseDirective(captured).pipe(Effect.flip)).reason).toBe(
+          "conflict",
+        );
+        yield* f.service.fenceDirective(captured); // Lose the first reply.
+        const restarted = yield* f.create();
+        expect((yield* restarted.fenceDirective(captured)).directiveFence).toEqual({
+          protocol: 1,
+          input: captured,
+          outcome: "fenced",
+        });
+        expect(
+          (yield* restarted
+            .fenceDirective({ ...captured, expectedDirectiveId: null })
+            .pipe(Effect.flip)).reason,
+        ).toBe("conflict");
+        expect((yield* restarted.planDirective(captured).pipe(Effect.flip)).reason).toBe(
+          "conflict",
+        );
+        expect(f.follower()?.directive).toEqual(policy);
+        expect(f.snapshot().installedSource).toEqual(installed);
+        expect(f.install).not.toHaveBeenCalled();
+        const later = { ...captured, directiveId: "77777777-7777-4777-8777-777777777777" };
+        expect((yield* restarted.planDirective(later)).follower?.planDirective?.directiveId).toBe(
+          later.directiveId,
+        );
+      }),
+  );
+
+  it.effect("returns exact applied or superseded setup evidence after a lost send reply", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+      yield* f.service.planDirective(directive); // Lose the reply after the host applied the grant.
+      const restarted = yield* f.create();
+      const before = f.follower();
+      const applied = yield* restarted.fenceDirective(directive);
+      expect(applied.directiveFence).toMatchObject({
+        protocol: 1,
+        input: directive,
+        outcome: "applied",
+        directive: { directiveId: directive.directiveId, targetTree: directive.targetTree },
+      });
+      expect(f.follower()).toBe(before);
+      const successor = {
+        ...directive,
+        directiveId: "66666666-6666-4666-8666-666666666666",
+        expectedDirectiveId: directive.directiveId,
+      };
+      yield* restarted.planDirective(successor);
+      const after = f.follower();
+      expect((yield* restarted.fenceDirective(directive)).directiveFence).toEqual({
+        protocol: 1,
+        input: directive,
+        outcome: "superseded",
+      });
+      expect(
+        (yield* restarted
+          .fenceDirective({ ...directive, targetTree: "d".repeat(40) })
+          .pipe(Effect.flip)).reason,
+      ).toBe("conflict");
+      expect(
+        (yield* restarted
+          .planDirective({ ...directive, expectedDirectiveId: successor.directiveId })
+          .pipe(Effect.flip)).reason,
+      ).toBe("conflict");
+      expect(f.follower()).toBe(after);
+      expect(f.snapshot().installedSource).toEqual(installedSource);
+      expect(f.install).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("refuses to fence under a different enrollment without altering follower state", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+      const replacement = { ...enrollment, enrollmentId: "66666666-6666-4666-8666-666666666666" };
+      yield* f.service.enroll({
+        enrollment: replacement,
+        expectedEnrollmentId: enrollment.enrollmentId,
+      });
+      const before = f.follower();
+      expect((yield* f.service.fenceDirective(directive).pipe(Effect.flip)).reason).toBe(
+        "not-enrolled",
+      );
+      expect(f.follower()).toBe(before);
+    }),
+  );
+
   it.effect("restores the exact prior directive and prevents a late replay", () =>
     Effect.gen(function* () {
       const f = yield* fixture();

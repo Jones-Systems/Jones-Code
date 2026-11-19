@@ -184,7 +184,7 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         Date.parse(grant.leaseUntil) <= driver.now()
       )
         continue;
-      await dispatchGrant(driver, grant, report, directive !== undefined);
+      await dispatchGrant(driver, grant, report);
     } catch {
       // A later pass reconciles only the exact pending operation, under a native lease.
       // A disconnected host does not prevent other selected hosts from making progress.
@@ -196,9 +196,9 @@ async function dispatchGrant(
   driver: InstallPlanDriver,
   grant: JonesInstallPlanGrant,
   report: (operationId: string, receipt: JonesOperationReceipt) => Promise<void>,
-  replayingDirective: boolean,
 ): Promise<void> {
   const request = grant.request;
+  if (request.kind === "plan-directive-fence") return; // Explicit recovery never runs here.
   if (
     request.input.environmentId !== grant.environmentId ||
     (request.kind === "plan-directive" ? request.input.directiveId : request.input.operationId) !==
@@ -220,33 +220,8 @@ async function dispatchGrant(
           operationId: grant.operationId,
           evidence: { kind: "directive", status },
         });
-    } catch (error) {
-      // A storage error can follow a durable write. A replay refusal can also race the original
-      // dispatch, so only settle an initial request on a definitive refusal.
-      if (
-        !driver.cancelled() &&
-        !replayingDirective &&
-        typeof error === "object" &&
-        error !== null &&
-        "_tag" in error &&
-        error._tag === "FleetHostError" &&
-        "reason" in error &&
-        "message" in error &&
-        typeof error.reason === "string" &&
-        typeof error.message === "string" &&
-        ["binding", "not-enrolled", "bootstrap-required", "conflict"].includes(error.reason)
-      )
-        await driver.desktop({
-          type: "report",
-          planId: grant.planId,
-          environmentId: grant.environmentId,
-          operationId: grant.operationId,
-          evidence: {
-            kind: "directive-refused",
-            reason: error.reason as "binding" | "not-enrolled" | "bootstrap-required" | "conflict",
-            message: error.message.slice(0, 1024),
-          },
-        });
+    } catch {
+      // A refusal or lost reply cannot settle every captured send of this ID.
     }
     return;
   }

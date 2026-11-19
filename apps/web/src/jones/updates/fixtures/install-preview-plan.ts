@@ -455,7 +455,7 @@ export function createScriptedInstallPlan(input: {
         ? result({ historyPlan })
         : refuse("plan-mismatch", "This closed fixture plan is unavailable.");
     }
-    if (request.type === "recovery-preflight")
+    if (request.type === "recovery-preflight" || request.type === "reconcile-orphan")
       return refuse("unsupported", "Fixture recovery capability is not advertised.");
     if (request.type === "publication")
       return result({

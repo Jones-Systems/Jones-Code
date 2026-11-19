@@ -3,14 +3,18 @@ import {
   JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES,
   JONES_INSTALL_PLAN_HISTORY_LIMIT,
   type JonesInstallPlan,
+  type JonesInstallPlanCommandReceipt,
   type JonesInstallPlanHostOperation,
   type JonesInstallPlanState,
 } from "@t3tools/contracts/jones/installPlan";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import {
   deviceHasRecoveryDuty,
+  isSettledOperationReceipt,
   operationOutstanding,
+  orphanReceiptCheck,
   planHasLaptopRecoveryDuty,
+  validateReceipt,
 } from "@t3tools/client-runtime/jones/install-plan/model";
 import { closedPlans, retainedPlans, type PlanDocument } from "./store.ts";
 
@@ -61,6 +65,48 @@ function reservedForPlan(document: PlanDocument, planId: string) {
   );
 }
 
+/** V1 could rotate Last out before a reserved client command reached a terminal outcome. */
+export function orphanedPlanCommands(document: PlanDocument) {
+  const retained = new Set(retainedPlans(document).map((plan) => plan.planId));
+  return (document.commands ?? []).filter(
+    ({ receipt }) =>
+      receipt.outcome === "reserved" &&
+      (receipt.planId === undefined || !retained.has(receipt.planId)),
+  );
+}
+
+export function matchesOrphanReceipt(
+  commandReceipt: JonesInstallPlanCommandReceipt,
+  receipt: JonesOperationReceipt,
+): boolean {
+  const check = orphanReceiptCheck(commandReceipt);
+  if (check === undefined) return false;
+  const { command, planId, operationId } = check;
+  const { action, correlation } = receipt;
+  return (
+    receipt.operationId === operationId &&
+    receipt.environmentId === command.environmentId &&
+    correlation?.planId === planId &&
+    correlation.deviceKey === command.environmentId &&
+    action.kind === command.action &&
+    (action.kind === "download" ? action.sourceSha : action.targetSource) ===
+      command.targetSource &&
+    (action.kind === "install" ? action.stagedHandle : undefined) === command.stagedHandle &&
+    isSettledOperationReceipt(receipt) &&
+    validateReceipt(
+      {
+        operationId,
+        environmentId: command.environmentId,
+        correlation,
+        expectedInstalledSource: receipt.expectedInstalledSource,
+        action,
+      },
+      receipt,
+    ) &&
+    bytes(receipt) <= RECEIPT_DETAILS_BYTES
+  );
+}
+
 export function recoveryHistory(
   document: PlanDocument,
 ): NonNullable<JonesInstallPlanState["recoveryHistory"]> {
@@ -98,7 +144,7 @@ export function heldByClosedPlan(document: PlanDocument, environmentId: Environm
     document.commands?.some(
       ({ receipt }) =>
         receipt.outcome === "reserved" &&
-        receipt.planId !== document.current?.planId &&
+        (document.current === null || receipt.planId !== document.current.planId) &&
         receipt.command.environmentId === environmentId,
     ) === true
   );
@@ -133,7 +179,7 @@ export function receiptDetailsFit(
 
 function operationRoom(operation: JonesInstallPlanHostOperation): number {
   if (operation.request.kind === "plan-directive")
-    return operation.directive === undefined ? 8 * KiB : 0;
+    return operationOutstanding(operation) ? 8 * KiB : 0;
   // A terminal operation can still learn its exact late Stop or stage retirement annotation.
   if (!operationOutstanding(operation)) return RECOVERY_ANNOTATION_BYTES;
   return (

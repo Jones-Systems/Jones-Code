@@ -23,6 +23,7 @@ import {
   isPlanComplete,
   validateReceipt,
   validateDirectiveEvidence,
+  validateDirectiveFenceEvidence,
   hasUnconfirmedLauncherOutcome,
   planHasLaptopRecoveryDuty,
   deviceActiveOperations,
@@ -49,6 +50,8 @@ import {
   commitRevision,
   documentRevision,
   heldByClosedPlan,
+  matchesOrphanReceipt,
+  orphanedPlanCommands,
   receiptDetailsFit,
   recoveryHistory,
   replaceRetainedPlan,
@@ -335,6 +338,7 @@ export function createInstallPlanCoordinator(options: {
     const current = document.current;
     const editable = snapshot.readOnly === undefined && current !== null;
     const manualClose = editable ? manualCloseReview(current, evidence) : undefined;
+    const orphans = snapshot.readOnly === undefined ? orphanedPlanCommands(document) : [];
     return {
       schema: 1,
       current,
@@ -345,12 +349,17 @@ export function createInstallPlanCoordinator(options: {
         ? {
             documentRevision: documentRevision(document),
             recoveryHistory: recoveryHistory(document),
+            ...(orphans.length === 0
+              ? {}
+              : { orphanedCommands: orphans.map(({ receipt }) => receipt) }),
           }
         : {}),
       view: {
         complete: editable && isPlanComplete(current),
         ...(editable ? { cancelPlan: 1 as const, deviceRecovery: 1 as const } : {}),
-        ...(snapshot.readOnly === undefined ? { recoveryHistory: 1 as const } : {}),
+        ...(snapshot.readOnly === undefined
+          ? { recoveryHistory: 1 as const, directiveFence: 1 as const, orphanRecovery: 1 as const }
+          : {}),
         ...(manualClose === undefined ? {} : { manualClose }),
       },
       ...(snapshot.readOnly === undefined ? {} : { readOnly: snapshot.readOnly }),
@@ -701,12 +710,18 @@ export function createInstallPlanCoordinator(options: {
       evidence: JonesInstallPlanLaptopEvidence,
       archived: boolean,
     ) => JonesInstallPlan,
-    required = false,
+    selection: {
+      readonly required?: boolean;
+      readonly currentFallback?: (plan: JonesInstallPlan) => boolean;
+    } = {},
   ) => {
     const state = await transact(async (snapshot, evidence) => {
       if (snapshot.readOnly !== undefined) throw new Error("Native plan journal is read-only.");
-      const [plan, ambiguous] = retainedPlans(snapshot.document).filter(matches);
-      if (ambiguous !== undefined || (required && plan === undefined))
+      const [first, ambiguous] = retainedPlans(snapshot.document).filter(matches);
+      const current = snapshot.document.current;
+      const plan =
+        first ?? (current !== null && selection.currentFallback?.(current) ? current : undefined);
+      if (ambiguous !== undefined || (selection.required === true && plan === undefined))
         throw new Error("The native attempt has no unique plan binding.");
       if (plan === undefined) return { ...snapshot, result: stateOf(snapshot, evidence) };
       const next = change(plan, evidence, plan !== snapshot.document.current);
@@ -936,7 +951,14 @@ export function createInstallPlanCoordinator(options: {
   } as const;
   const ownsLaptopOperation = (operationId: string) => (plan: JonesInstallPlan) =>
     plan.laptop.operations.some((operation) => operation.operationId === operationId);
+  const laptopHasOrphan = (document: PlanDocument, environmentId = options.localEnvironmentId()) =>
+    orphanedPlanCommands(document).some(
+      ({ receipt }) =>
+        receipt.command.environmentId === environmentId ||
+        (environmentId === undefined && receipt.requestType !== "claim"),
+    );
   const hasLaptopHold = (document: PlanDocument, issuedOperationId?: string) =>
+    laptopHasOrphan(document) ||
     retainedPlans(document).some((plan) => {
       if (!planHasLaptopRecoveryDuty(plan)) return false;
       const issued =
@@ -1137,7 +1159,8 @@ export function createInstallPlanCoordinator(options: {
             return refuse("bounds", "The Laptop operation history is full.");
           if (
             action !== "stop" &&
-            (pendingLaptop() ||
+            (laptopHasOrphan(document, current.laptop.environmentId) ||
+              pendingLaptop() ||
               (current.laptop.stageAbandonment !== undefined &&
                 current.laptop.stageAbandonment.status !== "retired"))
           )
@@ -1318,6 +1341,38 @@ export function createInstallPlanCoordinator(options: {
         } else if (req.type === "read-history") {
           if (archived === undefined) refuse("plan-mismatch", "This closed plan is unavailable.");
           else extras = { historyPlan: archived };
+        } else if (req.type === "reconcile-orphan") {
+          const entries = document.commands ?? [];
+          const entry = entries.find(({ receipt }) => receipt.command.commandId === req.commandId);
+          if (entry?.body !== req.bodyHash)
+            refuse("invalid-evidence", "This proof does not match the retained client command.");
+          else if (
+            entry.orphanReceipt !== undefined &&
+            validateReceipt(entry.orphanReceipt, req.receipt)
+          )
+            extras = { command: entry.receipt };
+          else if (
+            !orphanedPlanCommands(document).includes(entry) ||
+            !matchesOrphanReceipt(entry.receipt, req.receipt)
+          )
+            refuse(
+              "invalid-evidence",
+              "The retained command needs an exact terminal host receipt.",
+            );
+          else {
+            const receipt = {
+              ...entry.receipt,
+              outcome: "terminal" as const,
+              ...(req.receipt.code === undefined ? {} : { code: req.receipt.code }),
+            };
+            document = {
+              ...document,
+              commands: entries.map((old) =>
+                old === entry ? { ...old, receipt, orphanReceipt: req.receipt } : old,
+              ),
+            };
+            extras = { command: receipt };
+          }
         } else if (req.type === "publication") {
           const code = evidence.activationBlocked
             ? "blocked"
@@ -1370,7 +1425,10 @@ export function createInstallPlanCoordinator(options: {
               planHasLaptopRecoveryDuty(plan))
           )
             refuse("plan-active", "Finish the current plan before starting another.");
-          else if (closedPlans(document).some(planHasLaptopRecoveryDuty))
+          else if (
+            laptopHasOrphan(document, environmentId) ||
+            closedPlans(document).some(planHasLaptopRecoveryDuty)
+          )
             refuse(
               "outstanding-operation",
               "An earlier plan's Laptop work still needs native verification.",
@@ -1863,15 +1921,52 @@ export function createInstallPlanCoordinator(options: {
                 replaceOperation(deviceIndex, index, { ...operation, receipt: proof.receipt });
             } else if (operation.request.kind !== "plan-directive")
               refuse("invalid-evidence", "A directive cannot settle an operation.");
+            else if (proof.kind === "directive-fence") {
+              const { input } = operation.request;
+              const result = proof.proof;
+              if (!recoverArchived || operation.fence === undefined)
+                refuse("invalid-evidence", "This closed plan has no exact directive fence grant.");
+              else if (proof.expectedRevision !== plan.revision)
+                refuse("stale-revision", "The closed plan changed. Refresh the original setup.");
+              else if (
+                !outstanding(operation) ||
+                device.route !== "follower-operations" ||
+                input.enrollmentId !== device.enrollmentId ||
+                !validateDirectiveFenceEvidence(input, result) ||
+                (result.outcome === "applied" &&
+                  Buffer.byteLength(JSON.stringify(result.directive.issuedAt)) > 1024)
+              )
+                refuse("invalid-evidence", "The fence proof does not match this setup request.");
+              else
+                replaceOperation(
+                  deviceIndex,
+                  index,
+                  result.outcome === "applied"
+                    ? {
+                        ...operation,
+                        directive: {
+                          kind: "applied",
+                          observedAt: now(),
+                          directive: result.directive,
+                        },
+                      }
+                    : {
+                        ...operation,
+                        directiveFence: { outcome: result.outcome, observedAt: now() },
+                      },
+                );
+            } else if (proof.kind === "directive-refused")
+              refuse("invalid-evidence", "A refusal does not settle every captured setup request.");
+            else if (operation.directiveFence !== undefined)
+              refuse("invalid-evidence", "The original directive fence is final.");
             else if (operation.directive !== undefined) {
               if (
-                proof.kind !== "directive" ||
                 operation.directive.kind !== "applied" ||
                 proof.status.enrollment?.environmentId !== device.environmentId ||
                 !validateDirectiveEvidence(operation.request.input, proof.status)
               )
                 refuse("invalid-evidence", "Directive evidence is final.");
-            } else if (proof.kind === "directive") {
+            } else {
               if (
                 proof.status.enrollment?.environmentId !== device.environmentId ||
                 !validateDirectiveEvidence(operation.request.input, proof.status) ||
@@ -1888,21 +1983,7 @@ export function createInstallPlanCoordinator(options: {
                     directive: proof.status.follower!.planDirective!,
                   },
                 });
-            } else if (proof.reason === "storage")
-              refuse(
-                "invalid-evidence",
-                "A storage error cannot settle the directive reservation.",
-              );
-            else
-              replaceOperation(deviceIndex, index, {
-                ...operation,
-                directive: {
-                  kind: "refused",
-                  observedAt: now(),
-                  reason: proof.reason,
-                  message: proof.message,
-                },
-              });
+            }
           } else if (req.type === "claim") {
             const lease = {
               claimant: req.claimant,
@@ -1953,12 +2034,20 @@ export function createInstallPlanCoordinator(options: {
                   : "Laptop verification no longer grants this action.",
               );
             else if (req.step === "stop" || req.step === "fence") {
+              const directiveFence =
+                recoverArchived &&
+                req.step === "fence" &&
+                targeted?.request.kind === "plan-directive";
               if (
                 targeted === undefined ||
-                targeted.request.kind !== "operation-start" ||
+                (targeted.request.kind !== "operation-start" && !directiveFence) ||
                 !operations.includes(targeted) ||
                 !matchesOperationTarget(plan, device, targeted) ||
                 (req.enrollmentId !== undefined && req.enrollmentId !== device.enrollmentId) ||
+                (directiveFence &&
+                  (device.route !== "follower-operations" ||
+                    targeted.request.input.enrollmentId !== device.enrollmentId ||
+                    req.enrollmentId !== device.enrollmentId)) ||
                 (recoverArchived && !req.explicit)
               )
                 refuse("invalid-evidence", "No bound target operation exists.");
@@ -2016,13 +2105,17 @@ export function createInstallPlanCoordinator(options: {
                     };
                   }
                 } else if (
-                  targeted.receipt !== undefined ||
-                  !Number.isFinite(Date.parse(targeted.lease.leaseUntil)) ||
-                  Date.parse(targeted.lease.leaseUntil) > options.now()
+                  directiveFence
+                    ? !outstanding(targeted)
+                    : targeted.receipt !== undefined ||
+                      !Number.isFinite(Date.parse(targeted.lease.leaseUntil)) ||
+                      Date.parse(targeted.lease.leaseUntil) > options.now()
                 )
                   refuse(
                     "outstanding-operation",
-                    "Only an expired, unobserved reservation can be fenced.",
+                    directiveFence
+                      ? "This setup reservation already settled."
+                      : "Only an expired, unobserved reservation can be fenced.",
                   );
                 else if (
                   targeted.fence !== undefined &&
@@ -2042,7 +2135,14 @@ export function createInstallPlanCoordinator(options: {
                   extras = {
                     grant: {
                       ...grant(targeted),
-                      request: { kind: "operation-fence", input: targeted.request.input },
+                      request:
+                        targeted.request.kind === "plan-directive"
+                          ? {
+                              kind: "plan-directive-fence",
+                              input: targeted.request.input,
+                              expectedRevision: plan.revision,
+                            }
+                          : { kind: "operation-fence", input: targeted.request.input },
                       leaseUntil: fence.lease.leaseUntil,
                     },
                   };
@@ -2275,7 +2375,7 @@ export function createInstallPlanCoordinator(options: {
           (req.type === "abandon-device" && req.phase === "begin") ||
           (req.type === "claim" && req.step !== "stop" && req.step !== "fence") ||
           (effect !== undefined && !recoverArchived && effect.action !== "stop");
-        if (document !== beforeAdmission && (forwardMutation || extras.command !== undefined)) {
+        if (document !== beforeAdmission && (forwardMutation || command !== undefined)) {
           const admitted = admitPlanWork(
             document,
             req.type === "start" && snapshot.document.schema === 2 && extras.refused === undefined,
@@ -2369,7 +2469,7 @@ export function createInstallPlanCoordinator(options: {
             },
           };
         },
-        true,
+        { required: true },
       );
     },
     recordLaptopWorker: async (input: {
@@ -2405,7 +2505,7 @@ export function createInstallPlanCoordinator(options: {
                 },
               };
         },
-        true,
+        { required: true },
       );
     },
     bindLaptopInstall: async (binding: LaptopInstallBinding): Promise<void> => {
@@ -2461,20 +2561,28 @@ export function createInstallPlanCoordinator(options: {
             },
           };
         },
-        true,
+        { required: true },
       );
       // Shutdown can race the journal write. A durable binding still needs native readback.
       if (disposed) throw new Error("The native install plan coordinator is closing.");
     },
     recordLaptopOutcome: async (outcome: LaptopNativeOutcome): Promise<void> => {
+      const operationFor = (plan: JonesInstallPlan) => {
+        const binding = plan.laptop.binding;
+        return binding?.transactionId === outcome.transactionId
+          ? plan.laptop.operations.find(
+              (entry) => entry.operationId === binding.operationId && entry.step === "install",
+            )
+          : undefined;
+      };
       await nativeChange(
-        (plan) => plan.laptop.binding?.transactionId === outcome.transactionId,
+        (plan) => {
+          const operation = operationFor(plan);
+          return operation !== undefined && localPending(operation);
+        },
         (plan, _evidence, archived) => {
           const binding = plan.laptop.binding!;
-          const operation = plan.laptop.operations.find(
-            (entry) => entry.operationId === binding.operationId && entry.step === "install",
-          );
-          if (operation === undefined || (archived && !localPending(operation))) return plan;
+          const operation = operationFor(plan)!;
           const committed =
             outcome.status === "committed" &&
             outcome.activeGeneration === binding.transactionId &&
@@ -2517,6 +2625,11 @@ export function createInstallPlanCoordinator(options: {
             ...next,
             laptop: { ...laptop, gateClosed: { at: now(), reason: "rolled-back" } },
           };
+        },
+        {
+          // A handled failure can share a transaction ID with a later attempt. Keep it as history.
+          currentFallback: (plan) =>
+            outcome.status === "rolled-back" && operationFor(plan)?.result?.status === "committed",
         },
       );
     },

@@ -311,6 +311,11 @@ describe("install-plan renderer authority", () => {
     for (const evidence of [
       { kind: "directive", status },
       { kind: "directive-refused", reason: "conflict", message: "Enrollment changed" },
+      {
+        kind: "directive-fence",
+        expectedRevision: 9,
+        proof: { protocol: 1, input: directiveInput, outcome: "fenced" },
+      },
     ]) {
       const request = { type: "report", planId, environmentId, operationId, evidence };
       expect(decode(request)).toEqual(request);
@@ -322,6 +327,18 @@ describe("install-plan renderer authority", () => {
         environmentId,
         operationId,
         evidence: { kind: "directive-refused", reason: "unknown-reason", message: "x" },
+      }),
+    ).toThrow();
+    expect(() =>
+      decode({
+        type: "report",
+        planId,
+        environmentId,
+        operationId,
+        evidence: {
+          kind: "directive-fence",
+          proof: { protocol: 1, input: directiveInput, outcome: "fenced" },
+        },
       }),
     ).toThrow();
   });

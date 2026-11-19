@@ -98,6 +98,20 @@ export type FleetPlanDirectiveInput = typeof FleetPlanDirectiveInput.Type;
 export const FleetReleasePlanDirectiveInput = FleetPlanDirectiveInput;
 export type FleetReleasePlanDirectiveInput = typeof FleetReleasePlanDirectiveInput.Type;
 
+const directiveFenceBinding = { protocol: Schema.Literal(1), input: FleetPlanDirectiveInput };
+export const FleetPlanDirectiveFenceEvidence = Schema.Union([
+  Schema.Struct({
+    ...directiveFenceBinding,
+    outcome: Schema.Literal("applied"),
+    directive: FleetPlanDirective,
+  }),
+  Schema.Struct({
+    ...directiveFenceBinding,
+    outcome: Schema.Literals(["fenced", "superseded"]),
+  }),
+]);
+export type FleetPlanDirectiveFenceEvidence = typeof FleetPlanDirectiveFenceEvidence.Type;
+
 /** Work that a restart would cut or lose, so an automatic activation waits for it. */
 export const FleetFollowerBlocker = Schema.Struct({
   kind: Schema.Literals([
@@ -154,6 +168,8 @@ export const FleetHostStatus = Schema.Struct({
   operationProtocol: Schema.NullOr(Schema.Literal(1)),
   planDirectiveProtocol: Schema.optionalKey(Schema.Literal(1)),
   releasePlanDirective: Schema.optionalKey(Schema.Literal(1)),
+  fencePlanDirective: Schema.optionalKey(Schema.Literal(1)),
+  directiveFence: Schema.optionalKey(FleetPlanDirectiveFenceEvidence),
   releasableDirectiveId: Schema.optionalKey(FleetOperationId),
   releasedDirectiveId: Schema.optionalKey(FleetOperationId),
   environmentId: EnvironmentId,

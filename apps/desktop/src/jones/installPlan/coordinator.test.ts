@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 import { it as effectIt } from "@effect/vitest";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, type DesktopUpdateState } from "@t3tools/contracts";
+import type { FleetPlanDirectiveFenceEvidence } from "@t3tools/contracts/jones/fleet-updates";
 import { JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES } from "@t3tools/contracts/jones/installPlan";
 import type {
   JonesInstallPlanCliRequest,
@@ -503,6 +504,114 @@ describe("closed plan recovery", () => {
         });
       }
       expect((await f.coordinator.request(reclaim)).grant).toBeUndefined();
+    },
+  );
+
+  it.each(["fenced", "applied", "superseded"] as const)(
+    "recovers a captured follower setup after closure with exact %s proof",
+    async (outcome) => {
+      const f = fixture();
+      const enrollmentId = id(106);
+      const follower = { ...selection, route: "follower-operations", enrollmentId } as const;
+      const plan = await f.start([follower]);
+      const claim = {
+        type: "claim",
+        planId: plan.planId,
+        environmentId: remote,
+        step: "directive",
+        explicit: false,
+        claimant: "window-a",
+        enrollmentId,
+        expectedDirectiveId: id(107),
+      } as const;
+      const reserved = await f.coordinator.request(claim);
+      const grant = reserved.grant!;
+      if (grant.request.kind !== "plan-directive") throw new Error("Expected setup grant.");
+      const input = grant.request.input;
+      const start = { type: "start", origin: "settings", target, select: [follower] } as const;
+      const closed = await f.coordinator.request(cancelRequest(reserved.state.current!));
+      expect(closed.state.recoveryHistory?.[0]?.pendingDevices).toEqual([
+        { environmentId: remote, label: "Host" },
+      ]);
+      expect(
+        (await f.coordinator.request({ ...claim, operationId: grant.operationId })).grant,
+      ).toBeUndefined();
+      expect((await f.coordinator.request(start)).refused?.code).toBe("outstanding-operation");
+      const fence = {
+        type: "claim",
+        planId: plan.planId,
+        environmentId: remote,
+        claimant: "owner",
+        step: "fence",
+        explicit: true,
+        operationId: grant.operationId,
+        enrollmentId,
+        expectedRevision: closed.state.last!.revision,
+      } as const;
+      const proof: FleetPlanDirectiveFenceEvidence =
+        outcome === "applied"
+          ? {
+              protocol: 1,
+              input,
+              outcome,
+              directive: {
+                directiveId: input.directiveId,
+                targetSource: input.targetSource,
+                targetTree: input.targetTree,
+                mode: "manual-review",
+                issuedAt: timestamp,
+              },
+            }
+          : { protocol: 1, input, outcome };
+      const report = (expectedRevision: number, evidence = proof) =>
+        f.coordinator.request({
+          type: "report",
+          planId: plan.planId,
+          environmentId: remote,
+          operationId: grant.operationId,
+          evidence: { kind: "directive-fence", expectedRevision, proof: evidence },
+        });
+      expect((await report(fence.expectedRevision)).refused?.code).toBe("invalid-evidence");
+      expect(
+        (await f.coordinator.request({ ...fence, enrollmentId: id(108) })).grant,
+      ).toBeUndefined();
+      const issued = await f.coordinator.request(fence);
+      const revision = issued.state.last!.revision;
+      expect(issued.grant?.request).toEqual({
+        kind: "plan-directive-fence",
+        input,
+        expectedRevision: revision,
+      });
+      expect(issued.grant?.leaseUntil).toBe(grant.leaseUntil); // The captured forward lease is still live.
+      expect((await f.coordinator.request({ ...fence, expectedRevision: revision })).grant).toEqual(
+        issued.grant,
+      );
+      expect((await report(fence.expectedRevision)).refused?.code).toBe("stale-revision");
+      expect(
+        (await report(revision, { ...proof, input: { ...input, expectedDirectiveId: null } }))
+          .refused?.code,
+      ).toBe("invalid-evidence");
+      expect(
+        (
+          await f.coordinator.request({
+            type: "report",
+            planId: plan.planId,
+            environmentId: remote,
+            operationId: grant.operationId,
+            evidence: { kind: "directive-refused", reason: "conflict", message: "Host busy." },
+          })
+        ).refused?.code,
+      ).toBe("invalid-evidence");
+      expect((await f.coordinator.request(start)).refused?.code).toBe("outstanding-operation");
+      const saved = await report(revision);
+      expect(saved.refused).toBeUndefined();
+      const operation = saved.state.last?.devices[0]?.operations[0];
+      expect(operation?.request).toEqual(grant.request);
+      expect(
+        outcome === "applied" ? operation?.directive?.kind : operation?.directiveFence?.outcome,
+      ).toBe(outcome);
+      expect(saved.state.recoveryHistory).toEqual([]);
+      expect((await f.coordinator.request(start)).state.current?.planId).not.toBe(plan.planId);
     },
   );
 
@@ -1745,6 +1854,66 @@ describe("Laptop install recovery", () => {
     expect(retried.state.current!.laptop.operations).toHaveLength(2);
   });
 
+  it("records a retry that reuses a failed closed plan's transaction without changing the archive", async () => {
+    const f = fixture();
+    f.controller.install.mockImplementationOnce(async (_handle, _campaign, plan) => {
+      await bind(f, plan!.operationId);
+      return { accepted: false, completed: false, failed: true };
+    });
+    const first = (await startInstall(f)).state.current!;
+    await vi.waitFor(() =>
+      expect(f.snapshot().document.current?.laptop.operations[0]?.result?.status).toBe("failed"),
+    );
+    const closed = await f.coordinator.request({
+      type: "cancel-plan",
+      planId: first.planId,
+      expectedRevision: f.snapshot().document.current!.revision,
+    });
+    const original = closed.state.last!;
+    expect(original.laptop.binding?.transactionId).toBe(transaction);
+    expect(original.laptop.operations[0]?.result).toMatchObject({
+      status: "failed",
+      code: "install-failed",
+    });
+
+    const bound = Promise.withResolvers<void>();
+    f.controller.install.mockImplementationOnce(async (_handle, _campaign, plan) => {
+      await bind(f, plan!.operationId);
+      bound.resolve();
+      return { accepted: true, completed: false, failed: false };
+    });
+    const retry = (await startInstall(f)).state.current!;
+    expect(retry.planId).not.toBe(first.planId);
+    await bound.promise;
+    expect(f.snapshot().document.current?.laptop.binding?.transactionId).toBe(transaction);
+    const committed = {
+      transactionId: transaction,
+      status: "committed",
+      activeGeneration: transaction,
+      activeSource: source,
+      activeTree: tree,
+    } as const;
+    await f.coordinator.recordLaptopOutcome(committed);
+    expect(f.snapshot().document.current?.laptop.operations[0]?.result?.status).toBe("committed");
+    expect(f.snapshot().document.last).toEqual(original);
+
+    f.setEvidence({
+      activeGeneration: transaction,
+      activeSource: source,
+      committedTransactionId: transaction,
+    });
+    const read = await f.coordinator.request({ type: "read" });
+    expect(read.state.current?.laptop.gate?.basis).toBe("plan-install");
+    await f.coordinator.recordLaptopOutcome({
+      ...committed,
+      status: "rolled-back",
+      activeGeneration: "previous",
+      activeSource: old,
+    });
+    expect(f.snapshot().document.current?.laptop.gateClosed?.reason).toBe("rolled-back");
+    expect(f.snapshot().document.last).toEqual(original);
+  });
+
   it("keeps a failed bound handoff held while native activation is unresolved", async () => {
     const f = fixture();
     f.controller.install.mockImplementationOnce(async (_handle, _campaign, plan) => {
@@ -1854,6 +2023,131 @@ describe("Laptop install recovery", () => {
   });
 });
 describe("native client command reservations", () => {
+  it("recovers an orphaned V1 claim from the terminal host receipt and retains its original replay body", async () => {
+    const f = fixture();
+    const original = await f.start();
+    const request = {
+      type: "claim",
+      planId: original.planId,
+      environmentId: remote,
+      claimant: "original-window",
+      step: "download",
+      explicit: true,
+      action: { kind: "download-exact", targetSource: source },
+      expectedInstalledSource: old,
+      command: {
+        commandId: id(89),
+        environmentId: remote,
+        targetSource: source,
+        action: "download-exact",
+        planId: original.planId,
+        expectedRevision: original.revision,
+      },
+    } as const;
+    const reserved = await f.coordinator.request(request);
+    const entry = f.snapshot().document.commands![0]!;
+    const { bodyHash: _unrecorded, ...legacyReceipt } = entry.receipt;
+    const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-orphan-v1-"));
+    persistentRoots.add(home);
+    const open = () => createInstallPlanStore({ home, profile: undefined });
+    const last = { ...original, planId: id(88), devices: [], dismissedAt: timestamp };
+    await open().transact(async () => ({
+      document: {
+        schema: 1,
+        current: null,
+        last,
+        commands: [{ body: entry.body, receipt: legacyReceipt }],
+      },
+      dispositions: f.snapshot().dispositions,
+      result: undefined,
+    }));
+    const coordinator = createInstallPlanCoordinator({ ...f.options, store: open() });
+    const read = () => coordinator.request({ type: "read", commandId: request.command.commandId });
+    const migrated = await read();
+    expect(migrated.state.last).toEqual(last);
+    expect(migrated.state.orphanedCommands).toEqual([reserved.command]);
+    const start = { type: "start", origin: "settings", target, select: [selection] } as const;
+    expect((await coordinator.request(start)).refused?.code).toBe("outstanding-operation");
+    expect((await coordinator.request(request)).grant).toBeUndefined();
+    expect(
+      (await coordinator.request({ ...request, claimant: "different-window" })).refused?.code,
+    ).toBe("invalid-evidence");
+    const terminal = f.receipt(reserved.grant!, "completed");
+    const settle = (receipt: JonesOperationReceipt, bodyHash = entry.body) =>
+      coordinator.request({
+        type: "reconcile-orphan",
+        commandId: request.command.commandId,
+        bodyHash,
+        receipt,
+      });
+    for (const wrong of [
+      { ...terminal, operationId: id(87) },
+      { ...terminal, correlation: { ...terminal.correlation!, planId: last.planId } },
+      { ...terminal, action: { kind: "download-exact" as const, targetSource: old } },
+      { ...terminal, phase: "running" as const, code: "launcher-unconfirmed" },
+    ]) {
+      expect((await settle(wrong)).refused?.code).toBe("invalid-evidence");
+    }
+    expect((await settle(terminal, "f".repeat(64))).refused?.code).toBe("invalid-evidence");
+    expect((await read()).command?.outcome).toBe("reserved");
+    const settled = await settle(terminal);
+    expect(settled.command).toEqual({ ...reserved.command, outcome: "terminal" });
+    expect(settled.state.orphanedCommands).toBeUndefined();
+    expect(settled.state.last).toEqual(last);
+    expect((await settle(terminal)).command).toEqual(settled.command);
+    const restarted = createInstallPlanCoordinator({ ...f.options, store: open() });
+    const replay = await restarted.request(request);
+    expect(replay.command).toEqual(settled.command);
+    expect(replay.grant).toBeUndefined();
+    expect((await restarted.request(start)).state.current?.devices[0]?.environmentId).toBe(remote);
+    await open().transact(async (snapshot) => {
+      expect(snapshot.document.commands?.[0]).toEqual({
+        ...entry,
+        receipt: settled.command,
+        orphanReceipt: terminal,
+      });
+      return { ...snapshot, result: undefined };
+    });
+  });
+
+  it("keeps an orphaned Laptop reservation held when its original native binding is gone", async () => {
+    const f = fixture();
+    await f.options.store.transact(async (snapshot) => ({
+      ...snapshot,
+      document: {
+        schema: 1,
+        current: null,
+        last: null,
+        commands: [
+          {
+            body: "a".repeat(64),
+            receipt: {
+              command: {
+                commandId: id(86),
+                environmentId: laptop,
+                targetSource: source,
+                action: "download",
+              },
+              requestType: "start",
+              planId: id(85),
+              operationId: id(84),
+              outcome: "reserved",
+            },
+          },
+        ],
+      },
+      result: undefined,
+    }));
+    const visible = await f.coordinator.request({ type: "read", commandId: id(86) });
+    expect(visible.state.orphanedCommands).toEqual([visible.command]);
+    expect(await f.coordinator.preparationHeld()).toBe(true);
+    expect(
+      (await f.coordinator.request({ type: "start", origin: "update-button", target, select: [] }))
+        .refused?.code,
+    ).toBe("outstanding-operation");
+    expect(f.controller.download).not.toHaveBeenCalled();
+  });
+
   it("reconciles a lost Laptop handoff across coordinator recreation, refuses changed-body reuse and never starts twice", async () => {
     const f = fixture();
     let finish!: (value: { accepted: boolean; completed: boolean }) => void;

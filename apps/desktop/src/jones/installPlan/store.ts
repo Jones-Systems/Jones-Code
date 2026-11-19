@@ -8,7 +8,11 @@ import {
   JONES_INSTALL_PLAN_HISTORY_LIMIT,
   type JonesInstallPlanState,
 } from "@t3tools/contracts/jones/installPlan";
-import { JonesOperationId, JonesSourceSha } from "@t3tools/contracts/jones/jonesOperations";
+import {
+  JonesOperationId,
+  JonesOperationReceipt,
+  JonesSourceSha,
+} from "@t3tools/contracts/jones/jonesOperations";
 import {
   ownedDirectory,
   readPrivateJson,
@@ -32,6 +36,7 @@ const Commands = Schema.Array(
   Schema.Struct({
     body: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
     receipt: JonesInstallPlanCommandReceipt,
+    orphanReceipt: Schema.optionalKey(JonesOperationReceipt),
   }),
 );
 const LegacyDocument = Schema.Struct({
@@ -87,7 +92,15 @@ const validDocument = (value: unknown): value is PlanDocument =>
   new Set(value.commands?.map((entry) => entry.receipt.command.commandId)).size ===
     (value.commands?.length ?? 0) &&
   (value.commands ?? []).every(
-    (entry) => entry.receipt.bodyHash === undefined || entry.receipt.bodyHash === entry.body,
+    ({ body, receipt, orphanReceipt }) =>
+      (receipt.bodyHash === undefined || receipt.bodyHash === body) &&
+      (orphanReceipt === undefined ||
+        (value.schema === 2 &&
+          receipt.outcome === "terminal" &&
+          receipt.requestType === "claim" &&
+          receipt.operationId === orphanReceipt.operationId &&
+          receipt.command.environmentId === orphanReceipt.environmentId &&
+          receipt.planId === orphanReceipt.correlation?.planId)),
   );
 export type PlanDispositions = typeof Dispositions.Type;
 export interface PlanSnapshot {
