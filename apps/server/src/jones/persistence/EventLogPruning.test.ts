@@ -153,6 +153,14 @@ const readers: ReadonlyArray<Reader> = [
       "provider/UnsentStartProof.test.ts (receipt mismatch, promotion and unavailable unreleased birth)",
   },
   {
+    file: "provider/codex/HistoryDeliveryOutcome.ts",
+    classification: "tolerate",
+    after:
+      "Restoration requires the retained pending event above the prune boundary. Missing evidence leaves the pending handoff in place.",
+    proof:
+      "orchestration-v2/Adapters/CodexAdapterV2.test.ts (durable inline rejection recovery); pruning behavior follows the exact marker and boundary guards",
+  },
+  {
     file: "nativeCreation/NativeCreationExecutionSqlite.ts",
     classification: "tolerate",
     after:
