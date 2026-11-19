@@ -1,0 +1,12 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "design-review",
+  "jonesOwnedPaths": [
+    "apps/web/scripts/build-design-review.mjs",
+    "apps/web/src/jones/designReview/",
+    "docs/operations/design-review.md"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}
