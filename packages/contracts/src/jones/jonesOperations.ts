@@ -106,9 +106,11 @@ export const JonesOperationReceipt = Schema.Struct({
       sourceSha: JonesSourceSha,
       sourceTree: JonesSourceSha,
       artifactId: Schema.Number,
+      createdByOperation: Schema.optionalKey(Schema.Literal(true)),
       version: Schema.optionalKey(TrimmedNonEmptyString),
     }),
   ),
+  stageRetiredAt: Schema.optionalKey(Schema.String),
   updateId: Schema.optionalKey(TrimmedNonEmptyString), // launcher update ID; equals operationId for install
   outcome: Schema.optionalKey(
     Schema.Struct({
@@ -151,6 +153,21 @@ export const JonesOperationReadResult = Schema.Struct({
   ).check(Schema.isMaxLength(32)),
 });
 export type JonesOperationReadResult = typeof JonesOperationReadResult.Type;
+
+export const JonesAbandonStageInput = Schema.Struct({
+  environmentId: EnvironmentId,
+  operationId: JonesOperationId,
+  planId: JonesOperationId,
+  stagedHandle: TrimmedNonEmptyString,
+  confirmed: Schema.Literal(true),
+});
+export type JonesAbandonStageInput = typeof JonesAbandonStageInput.Type;
+
+export const JonesAbandonStageResult = Schema.Struct({
+  receipt: Schema.NullOr(JonesOperationReceipt),
+  reason: Schema.optionalKey(Bounded(1024)),
+});
+export type JonesAbandonStageResult = typeof JonesAbandonStageResult.Type;
 
 export const JonesRecoverCleanupInput = Schema.Struct({
   environmentId: EnvironmentId,

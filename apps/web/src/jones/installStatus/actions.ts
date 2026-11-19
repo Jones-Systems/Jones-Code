@@ -11,6 +11,7 @@ import {
   isNativeJonesInstallReview,
 } from "@t3tools/client-runtime/jones/updates/executor";
 import {
+  operationOutstanding,
   validateDirectiveEvidence,
   validateReceipt,
 } from "@t3tools/client-runtime/jones/install-plan";
@@ -256,7 +257,8 @@ export async function refreshDeviceEvidence(
   options: { readonly refreshInstallOutcome: boolean },
 ) {
   const { services } = binding;
-  const operation = plan.devices.find((d) => d.environmentId === environmentId)?.operations.at(-1);
+  const operations = plan.devices.find((d) => d.environmentId === environmentId)?.operations ?? [];
+  const operation = operations.find(operationOutstanding) ?? operations.at(-1);
   if (operation?.request.kind === "plan-directive") {
     const { observation, fleetStatus } = observed;
     if (
@@ -331,13 +333,29 @@ export async function performPanelAction(
     store.update({ desktop: await services.bridge.getUpdateState() });
     if (environmentId !== "laptop" && plan !== null) {
       services.kick?.(environmentId);
-      const observed = await services.observe(environmentId);
-      store.update({
-        devices: store.get().devices.map((d) => (d.environmentId === environmentId ? observed : d)),
-      });
+      const refresh = async () => {
+        const observed = await services.observe(environmentId);
+        if (services.readStatus === undefined) return observed;
+        const state = await services.readStatus(environmentId);
+        if (state?.environmentId !== environmentId)
+          throw new Error("Could not read current status for this device.");
+        return {
+          ...observed,
+          observation: { state, freshness: "fresh" as const, heardAt: services.now() },
+        };
+      };
+      const update = (observed: InstallStatusDevice) =>
+        store.update({
+          devices: store
+            .get()
+            .devices.map((d) => (d.environmentId === environmentId ? observed : d)),
+        });
+      const observed = await refresh();
+      update(observed);
       await refreshDeviceEvidence(binding, environmentId, plan, observed, {
         refreshInstallOutcome: true,
       });
+      if (services.readStatus !== undefined) update(await refresh());
     }
     return;
   }

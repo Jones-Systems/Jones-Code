@@ -10,6 +10,7 @@ import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import type {
   JonesOperationReadResult,
   JonesOperationReceipt,
+  JonesAbandonStageResult,
   JonesRecoverCleanupResult,
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
@@ -36,6 +37,7 @@ export interface InstallPlanServices {
     | JonesOperationReceipt
     | JonesOperationReadResult
     | JonesRecoveryPreflight
+    | JonesAbandonStageResult
     | JonesRecoverCleanupResult
   >;
   readonly stop: (

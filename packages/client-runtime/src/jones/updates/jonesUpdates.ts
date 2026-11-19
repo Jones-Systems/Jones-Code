@@ -16,6 +16,8 @@ import type {
   JonesOperationStopInput,
   JonesOperationFenceInput,
   JonesOperationReadInput,
+  JonesAbandonStageInput,
+  JonesAbandonStageResult,
   JonesRecoverCleanupInput,
   JonesRecoverCleanupResult,
   JonesRecoveryPreflightInput,
@@ -65,6 +67,7 @@ export type JonesOperationCommand =
   | { action: "operationStart"; input: JonesOperationStartInput }
   | { action: "operationFence"; input: JonesOperationFenceInput }
   | { action: "operationRead"; input: JonesOperationReadInput }
+  | { action: "abandonStage"; input: JonesAbandonStageInput }
   | { action: "recoverCleanup"; input: JonesRecoverCleanupInput }
   | { action: "recoveryPreflight"; input: JonesRecoveryPreflightInput };
 export type JonesStopCommand = { action: "operationStop"; input: JonesOperationStopInput };
@@ -76,13 +79,15 @@ type JonesRequest =
   | { action: "state"; after?: number };
 type JonesRequestResult<I extends JonesRequest> = I extends { action: "operationRead" }
   ? JonesOperationReadResult
-  : I extends { action: "recoverCleanup" }
-    ? JonesRecoverCleanupResult
-    : I extends { action: "recoveryPreflight" }
-      ? JonesRecoveryPreflight
-      : I extends { action: "operationStart" | "operationStop" | "operationFence" }
-        ? JonesOperationReceipt
-        : JonesUpdateState | null;
+  : I extends { action: "abandonStage" }
+    ? JonesAbandonStageResult
+    : I extends { action: "recoverCleanup" }
+      ? JonesRecoverCleanupResult
+      : I extends { action: "recoveryPreflight" }
+        ? JonesRecoveryPreflight
+        : I extends { action: "operationStart" | "operationStop" | "operationFence" }
+          ? JonesOperationReceipt
+          : JonesUpdateState | null;
 
 type JonesDispatchContext = {
   readonly client: Effect.Success<
@@ -119,6 +124,8 @@ const dispatchRequest = Effect.fn("clientRuntime.jonesUpdates.dispatch")(functio
       return yield* client.operationFence({ headers, payload: input.input });
     case "operationRead":
       return yield* client.operationRead({ headers, payload: input.input });
+    case "abandonStage":
+      return yield* client.abandonStage({ headers, payload: input.input });
     case "recoverCleanup":
       return yield* client.recoverCleanup({ headers, payload: input.input });
     case "recoveryPreflight":
@@ -156,6 +163,7 @@ const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
               "operationStop",
               "operationFence",
               "operationRead",
+              "abandonStage",
               "recoverCleanup",
               "recoveryPreflight",
             ].includes(input.action)

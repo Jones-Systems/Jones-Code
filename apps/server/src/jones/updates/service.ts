@@ -23,6 +23,8 @@ import type {
   JonesOperationReadInput,
   JonesOperationReadResult,
   JonesOperationReceipt,
+  JonesAbandonStageInput,
+  JonesAbandonStageResult,
   JonesRecoverCleanupInput,
   JonesRecoverCleanupResult,
   JonesRecoveryPreflightInput,
@@ -110,6 +112,9 @@ export class JonesUpdates extends Context.Service<
     readonly operationRead: (
       input: JonesOperationReadInput,
     ) => Effect.Effect<JonesOperationReadResult, EnvironmentInternalError>;
+    readonly abandonStage: (
+      input: JonesAbandonStageInput,
+    ) => Effect.Effect<JonesAbandonStageResult, EnvironmentInternalError>;
     readonly recoverCleanup: (
       input: JonesRecoverCleanupInput,
     ) => Effect.Effect<JonesRecoverCleanupResult, EnvironmentInternalError>;
@@ -296,7 +301,7 @@ export const layer = Layer.effect(
     const operationMethods = (
       operations: Pick<
         ReturnType<typeof createTargetOperations>,
-        "start" | "stop" | "fence" | "read" | "recoverCleanup"
+        "start" | "stop" | "fence" | "read" | "recoverCleanup" | "abandonStage"
       >,
     ) => ({
       operationStart: Effect.fn("JonesUpdates.operationStart")((input: JonesOperationStartInput) =>
@@ -310,6 +315,9 @@ export const layer = Layer.effect(
       ),
       operationRead: Effect.fn("JonesUpdates.operationRead")((input: JonesOperationReadInput) =>
         operationCall(() => operations.read(input)),
+      ),
+      abandonStage: Effect.fn("JonesUpdates.abandonStage")((input: JonesAbandonStageInput) =>
+        operationCall(() => operations.abandonStage(input)),
       ),
       recoverCleanup: Effect.fn("JonesUpdates.recoverCleanup")((input: JonesRecoverCleanupInput) =>
         operationCall(() => operations.recoverCleanup(input)),
@@ -840,6 +848,11 @@ export const layer = Layer.effect(
         capability: {
           ...serviceCapability,
           ...(fleetOperationsSupported ? { operations: 1 as const } : {}),
+          ...(fleetOperationsSupported &&
+          launcher.qualifiedRetirement === true &&
+          launcher.retireUpdate !== undefined
+            ? { abandonStage: 1 as const }
+            : {}),
           ...(recoveryPolicySupported ? { recoveryPolicy: 1 as const } : {}),
         },
       },
@@ -1153,6 +1166,13 @@ export const layer = Layer.effect(
             refreshPolicy: () => run(refreshPolicy),
             install: (input) => run(installForOperation(input)),
             reconcileNative: (operationId) => run(reconcileOperation(operationId)),
+            ...(launcher.qualifiedOutcomes === true && launcher.reconcileUpdate !== undefined
+              ? {
+                  resolveNativeHandoff: async (operationId: string) =>
+                    (await run(launcher.reconcileUpdate!(operationId)).catch(() => undefined))
+                      ?.outcome ?? "unknown",
+                }
+              : {}),
             onFailure: () => {
               void run(Effect.logWarning("Target operation needs durable reconciliation."));
             },

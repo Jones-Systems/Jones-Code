@@ -13,7 +13,10 @@ import {
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
-import { deviceStatusActive } from "@t3tools/client-runtime/jones/install-plan";
+import {
+  deviceSelectionLocked,
+  deviceStatusActive,
+} from "@t3tools/client-runtime/jones/install-plan";
 import { cn } from "../../lib/utils";
 import { useInstallPlan } from "./useInstallPlan";
 import { installStatusStore, type InstallStatusStore } from "./panelUi";
@@ -36,6 +39,7 @@ import {
   type PanelAction,
 } from "./actions";
 import { finishPlan } from "./finishPlan";
+import { abandonDevice } from "./abandonDevice";
 import { ManualInstallClosure } from "./ManualInstallClosure";
 import { INSTALL_PLAN_GO, INSTALL_PLAN_WAIT, lastUpdateLabel } from "./copy";
 
@@ -88,9 +92,9 @@ export function InstallStatusPanel({
     const device = devices.get(environmentId);
     const member = plan.devices.find((d) => d.environmentId === environmentId);
     const selection = device === undefined ? undefined : selectionFor(device);
-    const locked = (member?.operations.length ?? 0) > 0;
+    const locked = member !== undefined && deviceSelectionLocked(plan, member);
     const reason = locked
-      ? "Already started. Open this device to stop its download."
+      ? "Open device details for recovery options."
       : selection === undefined
         ? (device?.observation.message ??
           (device?.canOperate === false
@@ -164,7 +168,7 @@ export function InstallStatusPanel({
             error: locked
               .map(
                 (d) =>
-                  `${choices.find((c) => c.environmentId === d.environmentId)?.label ?? "Device"} started before the edit applied, so it stays in. Open it to stop the download.`,
+                  `${choices.find((c) => c.environmentId === d.environmentId)?.label ?? "Device"} started before the edit applied. Open device details for recovery options.`,
               )
               .join(" "),
           });
@@ -489,6 +493,14 @@ export function InstallStatusPanel({
                       >
                         Done
                       </Button>
+                      <Button
+                        variant="ghost-muted"
+                        size="micro"
+                        disabled={pending.has("edit")}
+                        onClick={() => setDraft(null)}
+                      >
+                        Cancel
+                      </Button>
                     </>
                   ) : (
                     <Button
@@ -562,7 +574,7 @@ export function InstallStatusPanel({
                       <Checkbox
                         aria-label={`Include ${label}`}
                         checked={included}
-                        disabled={choice.locked || choice.selection === undefined}
+                        disabled={choice.locked || (!included && choice.selection === undefined)}
                         aria-describedby={
                           choice.reason === undefined
                             ? undefined
@@ -580,12 +592,16 @@ export function InstallStatusPanel({
                     <Tooltip>
                       <TooltipTrigger
                         render={
-                          <button type="button" className={rowClass} aria-disabled={editing} />
+                          <button
+                            type="button"
+                            className={rowClass}
+                            disabled={pending.has("edit")}
+                          />
                         }
                         aria-label={`${label} update details`}
                         aria-expanded={open}
                         onClick={() => {
-                          if (editing) return;
+                          if (editing) setDraft(null);
                           if (open) returnToOverview();
                           else setDetail(environmentId);
                         }}
@@ -631,7 +647,7 @@ export function InstallStatusPanel({
                             </>
                           ) : null}
                         </span>
-                        {!open && !editing ? (
+                        {!open ? (
                           <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
                         ) : null}
                       </TooltipTrigger>
@@ -819,6 +835,26 @@ export function InstallStatusPanel({
                               {pending.has(`${environmentId}:stop`)
                                 ? "Requesting stop…"
                                 : `Stop download on ${label}`}
+                            </Button>
+                          ) : null}
+                          {row?.actions.abandon ? (
+                            <Button
+                              variant="outline"
+                              size="micro"
+                              disabled={pending.has(`${environmentId}:abandon`)}
+                              onClick={() =>
+                                void perform(`${environmentId}:abandon`, () =>
+                                  abandonDevice(environmentId, plan.planId),
+                                )
+                              }
+                            >
+                              {pending.has(`${environmentId}:abandon`)
+                                ? "Abandoning update…"
+                                : plan.devices.find(
+                                      (device) => device.environmentId === environmentId,
+                                    )?.abandoning
+                                  ? "Resume abandonment"
+                                  : "Abandon update"}
                             </Button>
                           ) : null}
                           {row?.actions.end ? (

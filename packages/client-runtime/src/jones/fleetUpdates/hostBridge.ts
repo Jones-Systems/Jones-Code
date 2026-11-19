@@ -5,6 +5,7 @@ import type {
   FleetStageInput,
   FleetRetireInput,
   FleetPlanDirectiveInput,
+  FleetReleasePlanDirectiveInput,
 } from "@t3tools/contracts/jones/fleet-updates";
 import * as Effect from "effect/Effect";
 import type { ConnectionCatalogEntry } from "../../connection/catalog.ts";
@@ -22,6 +23,7 @@ export type FleetHostRequest =
   | { readonly action: "retire"; readonly input: FleetRetireInput }
   | { readonly action: "activate"; readonly input: FleetActivateInput }
   | { readonly action: "leader"; readonly input: FleetLeaderInput }
+  | { readonly action: "releaseDirective"; readonly input: FleetReleasePlanDirectiveInput }
   | { readonly action: "planDirective"; readonly input: FleetPlanDirectiveInput };
 
 /** Uses the narrow authenticated update transport even when orchestration is incompatible. */
@@ -81,6 +83,8 @@ export const requestFleetHost = Effect.fn("clientRuntime.fleetUpdates.requestFle
           return client.activate({ headers, payload: input.input });
         case "leader":
           return client.leader({ headers, payload: input.input });
+        case "releaseDirective":
+          return client.releaseDirective({ headers, payload: input.input });
         case "planDirective":
           return client.planDirective({ headers, payload: input.input });
       }

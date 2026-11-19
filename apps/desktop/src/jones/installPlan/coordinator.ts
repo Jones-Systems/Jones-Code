@@ -22,6 +22,8 @@ import {
   isPlanComplete,
   validateReceipt,
   validateDirectiveEvidence,
+  deviceActiveOperations,
+  operationOutstanding,
 } from "@t3tools/client-runtime/jones/install-plan/model";
 import { RecoveryPreflightRefused } from "../updates/recoveryPreflight.ts";
 import type { JonesDesktopUpdateController } from "../updates/JonesDesktopUpdates.ts";
@@ -61,10 +63,7 @@ const terminal = new Set([
 const localPending = (operation: JonesInstallPlanLaptopOperation) =>
   operation.result === undefined ||
   ["running", "stop-requested", "held"].includes(operation.result.status);
-const outstanding = (operation: JonesInstallPlanHostOperation) =>
-  operation.step === "directive"
-    ? operation.directive === undefined
-    : operation.receipt === undefined || !terminal.has(operation.receipt.phase);
+const outstanding = operationOutstanding;
 const cancelledLaptopPending = (plan: JonesInstallPlan | null) =>
   plan?.cancelled === true && plan.laptop.operations.some(localPending);
 const same = (left: unknown, right: unknown): boolean => {
@@ -235,7 +234,7 @@ export function createInstallPlanCoordinator(options: {
       laptop: evidence,
       view: {
         complete: editable && isPlanComplete(current),
-        ...(editable ? { cancelPlan: 1 as const } : {}),
+        ...(editable ? { cancelPlan: 1 as const, deviceRecovery: 1 as const } : {}),
         ...(manualClose === undefined ? {} : { manualClose }),
       },
       ...(snapshot.readOnly === undefined ? {} : { readOnly: snapshot.readOnly }),
@@ -1177,11 +1176,8 @@ export function createInstallPlanCoordinator(options: {
           else if (
             active.size > 0 ||
             options.controller.busy !== null ||
-            plan.devices.some((device) =>
-              device.operations.some(
-                (operation) =>
-                  outstanding(operation) || operation.receipt?.code === "launcher-unconfirmed",
-              ),
+            plan.devices.some(
+              (device) => device.abandoning === true || device.operations.some(outstanding),
             )
           )
             refuse(
@@ -1223,15 +1219,104 @@ export function createInstallPlanCoordinator(options: {
             (device) => device.environmentId === req.environmentId,
           );
           const device = plan.devices[deviceIndex];
+          const operations = device === undefined ? [] : deviceActiveOperations(device);
           if (device === undefined || device.membership !== "selected")
             refuse("not-selectable", "This device is not selected.");
-          else if (req.type === "end") {
-            const downloaded = device.operations.findLast(
+          else if (req.type === "abandon-device") {
+            const download = operations.findLast(
               (operation) => operation.step === "download",
+            )?.receipt;
+            const directive = operations.findLast(
+              (operation) => operation.directive?.kind === "applied",
             );
+            const release = req.directiveRelease;
+            if (req.expectedRevision !== plan.revision)
+              refuse("stale-revision", "The plan changed. Refresh the device before abandoning.");
+            else if (
+              operations.some(outstanding) ||
+              operations.some(
+                (operation) =>
+                  operation.step === "install" && operation.receipt?.phase === "completed",
+              )
+            )
+              refuse(
+                "outstanding-operation",
+                "Settle the device's work before abandoning. An installed build requires a separate update.",
+              );
+            else if (req.phase === "begin") {
+              if (!device.abandoning)
+                save({
+                  ...plan,
+                  revision: plan.revision + 1,
+                  devices: plan.devices.map((d, i) =>
+                    i === deviceIndex ? { ...d, abandoning: true } : d,
+                  ),
+                });
+            } else if (
+              !device.abandoning ||
+              (download?.phase === "completed" && download.stageRetiredAt === undefined) ||
+              (directive !== undefined &&
+                (release?.environmentId !== device.environmentId ||
+                  release.enrollment?.enrollmentId !== device.enrollmentId ||
+                  !release.enrollment?.enabled ||
+                  release.releasedDirectiveId !== directive.operationId ||
+                  release.follower?.planDirective?.directiveId === directive.operationId))
+            )
+              refuse(
+                "invalid-evidence",
+                "The staged selection or follower directive still requires recovery.",
+              );
+            else {
+              const {
+                abandoning: _abandoning,
+                ended: _ended,
+                verifiedElsewhere: _verified,
+                ...record
+              } = device;
+              save({
+                ...plan,
+                revision: plan.revision + 1,
+                devices: plan.devices.map((d, i) =>
+                  i === deviceIndex
+                    ? {
+                        ...record,
+                        membership: "removed",
+                        removedAt: now(),
+                        archivedOperationCount: device.operations.length,
+                      }
+                    : d,
+                ),
+              });
+            }
+          } else if (req.type === "end") {
+            const downloaded = operations.findLast((operation) => operation.step === "download");
             if (plan.revision !== req.expectedRevision)
               refuse("stale-revision", "The plan changed.");
-            else if (
+            else if (req.runningTarget !== undefined) {
+              const { build, observedAt } = req.runningTarget;
+              const age = options.now() - observedAt;
+              if (
+                age < 0 ||
+                age > LEASE_MS ||
+                build.sourceSha !== plan.target.sourceSha ||
+                build.sourceTree !== plan.target.sourceTree ||
+                device.operations.some(outstanding)
+              )
+                refuse(
+                  "invalid-evidence",
+                  "Check the exact running build and settle pending work first.",
+                );
+              else
+                save({
+                  ...plan,
+                  revision: plan.revision + 1,
+                  devices: plan.devices.map((d, i) =>
+                    i === deviceIndex
+                      ? { ...d, verifiedElsewhere: { version: build.version, observedAt } }
+                      : d,
+                  ),
+                });
+            } else if (
               downloaded?.receipt?.phase !== "completed" ||
               device.operations.some(outstanding)
             )
@@ -1406,8 +1491,15 @@ export function createInstallPlanCoordinator(options: {
                   };
                 }
               }
-            } else if (device.ended !== undefined)
-              refuse("outstanding-operation", "This device's update has ended.");
+            } else if (
+              device.ended !== undefined ||
+              device.verifiedElsewhere !== undefined ||
+              device.abandoning
+            )
+              refuse(
+                "outstanding-operation",
+                "This device's update has ended or is being abandoned.",
+              );
             else if (pending !== undefined) {
               const identical =
                 pending.step === req.step &&
@@ -1430,7 +1522,11 @@ export function createInstallPlanCoordinator(options: {
                 req.enrollmentId === undefined ||
                 req.enrollmentId !== device.enrollmentId ||
                 req.expectedDirectiveId === undefined ||
-                device.operations.some((operation) => operation.step === "directive")
+                operations.some(
+                  (operation) =>
+                    operation.step === "directive" && operation.directive?.kind !== "refused",
+                ) ||
+                (!req.explicit && operations.some((operation) => operation.step === "directive"))
               )
                 refuse(
                   "not-selectable",
@@ -1467,9 +1563,7 @@ export function createInstallPlanCoordinator(options: {
             } else {
               const action = req.action;
               const source = action?.kind === "download" ? action.sourceSha : action?.targetSource;
-              const downloaded = device.operations.findLast(
-                (operation) => operation.step === "download",
-              );
+              const downloaded = operations.findLast((operation) => operation.step === "download");
               if (
                 action === undefined ||
                 req.expectedInstalledSource === undefined ||
@@ -1480,14 +1574,21 @@ export function createInstallPlanCoordinator(options: {
               else if (
                 device.route === "follower-operations" &&
                 req.expectedInstalledSource !== plan.target.sourceSha &&
-                !device.operations.some((operation) => operation.directive?.kind === "applied")
+                !operations.some((operation) => operation.directive?.kind === "applied")
               )
                 refuse("directive-required", "Apply the manual-review directive first.");
               else if (
                 req.step === "download" &&
                 downloaded !== undefined &&
-                (downloaded.receipt?.phase === "completed" ||
-                  (!req.explicit && downloaded.receipt?.phase !== "fenced"))
+                ((!req.explicit && downloaded.receipt?.phase !== "fenced") ||
+                  (downloaded.receipt?.phase === "completed" &&
+                    downloaded.receipt.stageRetiredAt === undefined &&
+                    !(
+                      previous?.step === "install" &&
+                      ["rolled-back", "refused", "failed", "interrupted"].includes(
+                        previous.receipt?.phase ?? "",
+                      )
+                    )))
               )
                 refuse(
                   "outstanding-operation",
@@ -1499,6 +1600,7 @@ export function createInstallPlanCoordinator(options: {
                   req.review === undefined ||
                   action.kind !== "install" ||
                   downloaded?.receipt?.phase !== "completed" ||
+                  downloaded.receipt.stageRetiredAt !== undefined ||
                   downloaded.receipt.staged?.stagedHandle !== action.stagedHandle ||
                   downloaded.receipt.staged.sourceSha !== plan.target.sourceSha ||
                   downloaded.receipt.staged.sourceTree !== plan.target.sourceTree ||

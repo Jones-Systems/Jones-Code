@@ -191,6 +191,34 @@ export function stampProgressReportedAt<S extends JonesUpdateState | null>(
   return { ...state, progress: { ...state.progress, reportedAt: new Date(nowMs).toISOString() } };
 }
 
+/** A late receipt may repair an inferred restart failure for the same install only. */
+export function reconcileLateInstallProgress(
+  record: JonesUpdateProgress | undefined,
+  operationId: string,
+  outcome: NonNullable<
+    import("@t3tools/contracts/jones/jonesOperations").JonesOperationReceipt["outcome"]
+  >,
+  nowMs: number,
+): JonesUpdateProgress | undefined {
+  if (
+    record?.kind !== "install" ||
+    record.operationId !== operationId ||
+    record.phase !== "failed" ||
+    (record.error?.code !== "outcome-unavailable" && record.error?.code !== "interrupted")
+  )
+    return record;
+  const { error: _inferredError, ...progress } = record;
+  return reconcileProgressAtStartup(
+    { ...progress, phase: phaseOf(record.kind, record.stepKey) },
+    {
+      id: operationId,
+      status: outcome.status === "blocked" ? "failed" : outcome.status,
+      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+    },
+    nowMs,
+  );
+}
+
 export interface ProgressStartupOutcome {
   readonly status: "committed" | "rolled-back" | "failed";
   readonly id: string;

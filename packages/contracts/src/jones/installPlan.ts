@@ -143,7 +143,14 @@ export const JonesInstallPlanDevice = Schema.Struct({
   addedAt: Schema.String,
   removedAt: Schema.optionalKey(Schema.String),
   operations: Schema.Array(JonesInstallPlanHostOperation).check(Schema.isMaxLength(16)),
+  abandoning: Schema.optionalKey(Schema.Literal(true)),
+  archivedOperationCount: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(16)),
+  ),
   ended: Schema.optionalKey(Schema.Struct({ at: Schema.String })), // "Stop update" on a staged device
+  verifiedElsewhere: Schema.optionalKey(
+    Schema.Struct({ version: TrimmedNonEmptyString, observedAt: Schema.Int }),
+  ),
 });
 export type JonesInstallPlanDevice = typeof JonesInstallPlanDevice.Type;
 
@@ -293,6 +300,7 @@ export const JonesInstallPlanState = Schema.Struct({
   view: Schema.Struct({
     complete: Schema.Boolean,
     cancelPlan: Schema.optionalKey(Schema.Literal(1)),
+    deviceRecovery: Schema.optionalKey(Schema.Literal(1)),
     manualClose: Schema.optionalKey(
       Schema.Struct({
         laptop: RunningBuild,
@@ -378,6 +386,17 @@ export const JonesInstallPlanRequest = Schema.Union([
     planId: JonesOperationId,
     environmentId: EnvironmentId,
     expectedRevision: Schema.Number,
+    runningTarget: Schema.optionalKey(
+      Schema.Struct({ build: RunningBuild, observedAt: Schema.Int }),
+    ),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("abandon-device"),
+    phase: Schema.Literals(["begin", "finish"]),
+    planId: JonesOperationId,
+    environmentId: EnvironmentId,
+    expectedRevision: Schema.Number,
+    directiveRelease: Schema.optionalKey(FleetHostStatus),
   }),
   Schema.Struct({
     type: Schema.Literal("dismiss"),

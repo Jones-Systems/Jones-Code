@@ -29,6 +29,7 @@ import {
   advanceProgress,
   completeProgress,
   failProgress,
+  reconcileLateInstallProgress,
   startProgress,
   withOperationId,
 } from "./progress.ts";
@@ -334,8 +335,18 @@ export class JonesUpdater {
   }
 
   recordOperation(operation: JonesOperationReceipt): void {
-    if (this.state.operation === undefined || this.state.operation.updatedAt <= operation.updatedAt)
-      this.publish({ operation });
+    if (this.state.operation !== undefined && this.state.operation.updatedAt > operation.updatedAt)
+      return;
+    const progress =
+      operation.outcome === undefined
+        ? this.state.progress
+        : reconcileLateInstallProgress(
+            this.state.progress,
+            operation.operationId,
+            operation.outcome,
+            Date.now(),
+          );
+    this.publish({ operation, ...(progress === undefined ? {} : { progress }) });
   }
 
   /** Notify observers after the host rereads this attempt's supplemental settlement evidence. */

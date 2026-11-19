@@ -124,7 +124,19 @@ export function validateReceipt(
     )
       return false;
   }
-  if (terminal.has(prev.phase)) return equal(prev, next);
+  if (terminal.has(prev.phase)) {
+    if (
+      prev.phase === "completed" &&
+      prev.staged?.createdByOperation === true &&
+      prev.stageRetiredAt === undefined &&
+      next.stageRetiredAt !== undefined &&
+      Number.isFinite(Date.parse(next.stageRetiredAt))
+    ) {
+      const { stageRetiredAt: _retired, ...rest } = next;
+      return equal(prev, { ...rest, updatedAt: prev.updatedAt });
+    }
+    return equal(prev, next);
+  }
   if (next.phase === "fenced") return false; // acceptance can never be erased by a fence
   if (terminal.has(next.phase)) return true;
   const later: Record<string, readonly string[]> = {
@@ -239,6 +251,23 @@ export function startPlan(input: {
   };
 }
 
+export function deviceActiveOperations(device: JonesInstallPlanDevice) {
+  return device.operations.slice(device.archivedOperationCount ?? 0);
+}
+
+/** Selection edits never undo host effects or lose operation history. */
+export function deviceSelectionLocked(plan: JonesInstallPlan, device: JonesInstallPlanDevice) {
+  if (device.membership === "removed") return false;
+  const operations = deviceActiveOperations(device);
+  return (
+    device.abandoning === true ||
+    operations.some(
+      (operation) => outstanding(operation) || operation.directive?.kind === "applied",
+    ) ||
+    ["blocked", "held", "unknown", "staged"].includes(deviceState(plan, device))
+  );
+}
+
 export function applyEdit(
   plan: JonesInstallPlan,
   edit: {
@@ -278,7 +307,7 @@ export function applyEdit(
       (selection !== undefined && edit.deselect.includes(id))
     ) {
       applied.push({ environmentId: id, result: "not-selectable", reason: "Invalid selection." });
-    } else if (old !== undefined && old.operations.length > 0) {
+    } else if (old !== undefined && deviceSelectionLocked(plan, old)) {
       applied.push({
         environmentId: id,
         result: selection === undefined ? "locked-started" : "unchanged",
@@ -286,12 +315,22 @@ export function applyEdit(
     } else if (selection !== undefined) {
       if (old?.membership === "selected") applied.push({ environmentId: id, result: "unchanged" });
       else {
-        const next: JonesInstallPlanDevice = {
-          ...selection,
-          membership: "selected",
-          addedAt: now,
-          operations: [],
-        };
+        const next: JonesInstallPlanDevice =
+          old === undefined
+            ? { ...selection, membership: "selected", addedAt: now, operations: [] }
+            : {
+                ...selection,
+                membership: "selected",
+                addedAt: now,
+                operations: old.operations,
+                ...(old.archivedOperationCount === undefined
+                  ? {}
+                  : { archivedOperationCount: old.archivedOperationCount }),
+                ...(old.ended === undefined ? {} : { ended: old.ended }),
+                ...(old.verifiedElsewhere === undefined
+                  ? {}
+                  : { verifiedElsewhere: old.verifiedElsewhere }),
+              };
         if (index < 0) devices.push(next);
         else devices[index] = next;
         applied.push({ environmentId: id, result: "added" });
@@ -311,6 +350,11 @@ export function operationOutstanding(operation: JonesInstallPlanHostOperation): 
 }
 
 function outstanding(operation: JonesInstallPlanHostOperation): boolean {
+  if (
+    operation.receipt?.code === "launcher-unconfirmed" ||
+    operation.receipt?.code === "launcher-unreadable"
+  )
+    return true;
   return operation.step === "directive"
     ? operation.directive === undefined
     : operation.receipt === undefined || !terminal.has(operation.receipt.phase);
@@ -361,8 +405,11 @@ export function deviceState(
   device: JonesInstallPlanDevice,
   now: number = Number.POSITIVE_INFINITY,
 ): InstallPlanDeviceState {
-  const pending = device.operations.find(outstanding);
-  const latest = pending ?? device.operations.at(-1);
+  if (device.membership === "removed") return "removed";
+  const operations = deviceActiveOperations(device);
+  const pending = operations.find(outstanding);
+  if (pending === undefined && device.verifiedElsewhere !== undefined) return "updated-elsewhere";
+  const latest = pending ?? operations.at(-1);
   if (latest !== undefined) {
     if (latest.step === "directive") {
       if (latest.directive?.kind === "refused") return "not-updated";
@@ -382,6 +429,7 @@ export function deviceState(
           : receipt.phase === "adopting"
             ? "verifying"
             : "downloading";
+      if (receipt.stageRetiredAt !== undefined) return "stopped";
       if (receipt.phase === "completed")
         return latest.step === "install" ? "done" : device.ended !== undefined ? "ended" : "staged";
       if (receipt.phase === "rolled-back") return "rolled-back";
@@ -392,8 +440,7 @@ export function deviceState(
       return receipt.phase === "stopped" ? "stopped" : "not-updated";
     }
   }
-  if (device.membership === "removed") return "removed";
-  return device.operations.length === 0 &&
+  return operations.length === 0 &&
     laptopSettled(plan) &&
     (plan.laptop.gate === undefined || plan.laptop.gateClosed !== undefined)
     ? "not-started"
@@ -407,6 +454,9 @@ export function deviceState(
  */
 const SUPERSEDABLE_BY_RUNNING_TARGET: ReadonlySet<InstallPlanDeviceState> = new Set([
   "not-updated",
+  "not-started",
+  "queued",
+  "fenced",
   "stopped",
   "ended",
   "staged",
@@ -430,7 +480,7 @@ export function deviceStateWithRunningTarget(
 }
 
 export function deviceSettled(plan: JonesInstallPlan, device: JonesInstallPlanDevice): boolean {
-  if (device.operations.some(outstanding)) return false;
+  if (device.abandoning || device.operations.some(outstanding)) return false;
   return [
     "removed",
     "not-started",
@@ -473,12 +523,16 @@ export function matchesPlanTarget(
 export function planCompletion(
   plan: JonesInstallPlan,
   observations: ReadonlyMap<EnvironmentId, JonesUpdateObservation>,
+  deviceRecovery = false,
 ) {
   const candidates = plan.devices.filter((device) => {
     const observation = observations.get(device.environmentId);
     return (
       device.membership === "selected" &&
-      deviceState(plan, device) === "staged" &&
+      (deviceRecovery
+        ? deviceStateWithRunningTarget(plan, device, true) === "updated-elsewhere" &&
+          device.verifiedElsewhere === undefined
+        : deviceState(plan, device) === "staged") &&
       !device.operations.some(outstanding) &&
       observation?.freshness === "fresh" &&
       matchesPlanTarget(plan, device, observation.state)
@@ -487,7 +541,14 @@ export function planCompletion(
   const completable = isPlanComplete({
     ...plan,
     devices: plan.devices.map((device) =>
-      candidates.includes(device) ? { ...device, ended: { at: plan.createdAt } } : device,
+      candidates.includes(device)
+        ? {
+            ...device,
+            ...(deviceRecovery
+              ? { verifiedElsewhere: { version: plan.target.version, observedAt: 0 } }
+              : { ended: { at: plan.createdAt } }),
+          }
+        : device,
     ),
   });
   return { candidates, completable };
@@ -528,7 +589,8 @@ export function nextRunnerStep(
   if (
     plan.dismissedAt !== undefined ||
     plan.supersededAt !== undefined ||
-    device.membership !== "selected"
+    device.membership !== "selected" ||
+    device.abandoning === true
   )
     return wait("Plan is inactive for this device.");
   if (
@@ -537,7 +599,8 @@ export function nextRunnerStep(
     observation.state.capability.operations !== 1
   )
     return wait("Fresh operation support is required.");
-  const pending = device.operations.find(outstanding);
+  const operations = deviceActiveOperations(device);
+  const pending = operations.find(outstanding);
   if (pending !== undefined) {
     if (pending.receipt !== undefined) return { kind: "read", operation: pending };
     if (pending.step === "directive") {
@@ -550,7 +613,10 @@ export function nextRunnerStep(
   }
   if (plan.laptop.gate === undefined || plan.laptop.gateClosed !== undefined)
     return wait("Waits for Laptop.");
-  if (device.ended !== undefined) return wait("This device's update was ended.");
+  if (device.ended !== undefined || device.verifiedElsewhere !== undefined)
+    return wait("This device's update was ended.");
+  if (matchesPlanTarget(plan, device, observation.state))
+    return wait("The selected source is already running.");
   const selectable = selectability(observation, fleetStatus);
   if (
     !selectable.selectable ||
@@ -558,16 +624,16 @@ export function nextRunnerStep(
     selectable.enrollmentId !== device.enrollmentId
   )
     return wait(selectable.selectable ? "The selected host route changed." : selectable.reason);
-  const lastDownload = device.operations.filter((o) => o.step === "download").at(-1);
+  const lastDownload = operations.findLast((o) => o.step === "download");
   if (lastDownload !== undefined && lastDownload.receipt?.phase !== "fenced")
     return wait("Download already attempted; another attempt needs an explicit action.");
   const state = observation.state;
   if (
     device.route === "follower-operations" &&
     state.installedSource?.sha !== plan.target.sourceSha &&
-    !device.operations.some((o) => o.step === "directive" && o.directive?.kind === "applied")
+    !operations.some((o) => o.step === "directive" && o.directive?.kind === "applied")
   ) {
-    if (device.operations.some((o) => o.step === "directive" && o.directive?.kind === "refused"))
+    if (operations.some((o) => o.step === "directive" && o.directive?.kind === "refused"))
       return wait("The host refused its directive.");
     if (
       fleetStatus == null ||

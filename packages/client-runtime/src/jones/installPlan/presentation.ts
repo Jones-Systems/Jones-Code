@@ -10,6 +10,9 @@ import {
   matchesPlanTarget,
   planCompletion,
   deviceStateWithRunningTarget,
+  deviceActiveOperations,
+  deviceSelectionLocked,
+  operationOutstanding,
   isPlanComplete,
   type InstallPlanDeviceState,
 } from "./model.ts";
@@ -107,12 +110,14 @@ export function installPlanPresentation(
     const mutable =
       !readOnly &&
       device.membership === "selected" &&
+      !device.abandoning &&
       nativeGate &&
       observed?.observation.freshness === "fresh" &&
       observed.canOperate &&
       observed.observation.state?.capability.operations === 1;
-    const latest = device.operations.at(-1);
-    const lastDownload = device.operations.filter((o) => o.step === "download").at(-1);
+    const operations = deviceActiveOperations(device);
+    const latest = operations.find(operationOutstanding) ?? operations.at(-1);
+    const lastDownload = operations.findLast((o) => o.step === "download");
     const receipt = latest?.receipt;
     const recoveredDownload =
       receipt?.code === "cleanup-recovered" &&
@@ -122,7 +127,8 @@ export function installPlanPresentation(
       latest?.step === "download" &&
       (recoveredDownload || receipt?.phase === "failed" || receipt?.phase === "refused");
     const retryInstall =
-      latest?.step === "install" && (receipt?.phase === "failed" || receipt?.phase === "refused");
+      latest?.step === "install" &&
+      ["failed", "refused", "rolled-back"].includes(receipt?.phase ?? "");
     const stage = lastDownload?.receipt?.staged;
     const hostState = observed?.observation.state;
     const confirmedInstall = device.operations.some(
@@ -203,14 +209,31 @@ export function installPlanPresentation(
       ...(progress === undefined ? {} : { progress }),
       ...(latest === undefined ? {} : { operationId: latest.operationId }),
       actions: {
-        remove: !readOnly && device.membership === "selected" && device.operations.length === 0,
+        remove:
+          !readOnly && device.membership === "selected" && !deviceSelectionLocked(plan, device),
+        abandon:
+          !readOnly &&
+          state.view.deviceRecovery === 1 &&
+          device.membership === "selected" &&
+          operations.length > 0 &&
+          observed?.canOperate === true &&
+          observed.observation.freshness === "fresh" &&
+          !operations.some(operationOutstanding) &&
+          !confirmedInstall &&
+          (lastDownload?.receipt?.phase !== "completed" ||
+            lastDownload.receipt.stageRetiredAt !== undefined ||
+            (lastDownload.receipt.staged?.createdByOperation === true &&
+              hostState?.capability.abandonStage === 1)) &&
+          (!operations.some((operation) => operation.directive?.kind === "applied") ||
+            observed.fleetStatus?.releasePlanDirective === 1),
         download:
           mutable &&
-          ["stopped", "not-updated"].includes(phase) &&
+          (["stopped", "not-updated", "fenced"].includes(phase) ||
+            (retryInstall && !matchingRetryStage && hostState?.stagedHandle === undefined)) &&
           status?.actions.download === true,
         install:
           mutable &&
-          phase === "staged" &&
+          (phase === "staged" || phase === "rolled-back") &&
           !alreadyRunning &&
           status?.actions.install === true &&
           (!retryInstall || matchingRetryStage),
@@ -239,7 +262,9 @@ export function installPlanPresentation(
     laptopState.provenance.sourceTree === plan.target.sourceTree;
   const retryLaptopInstall =
     laptopOperation?.step === "install" &&
-    ["failed", "refused", "interrupted"].includes(laptopOperation.result?.status ?? "") &&
+    ["failed", "refused", "interrupted", "rolled-back"].includes(
+      laptopOperation.result?.status ?? "",
+    ) &&
     !state.laptop.activationBlocked &&
     laptopState?.phase === "staged" &&
     laptopState.stagedHandle !== undefined &&
@@ -339,6 +364,7 @@ export function installPlanPresentation(
         planCompletion(
           plan,
           new Map([...(options.devices ?? [])].map(([id, value]) => [id, value.observation])),
+          state.view.deviceRecovery === 1,
         ).completable),
     laptop: {
       phase: laptopPhase,

@@ -9,6 +9,8 @@ import type {
   JonesOperationReadResult,
   JonesOperationReceipt,
   JonesRecoveryPreflightInput,
+  JonesAbandonStageInput,
+  JonesAbandonStageResult,
   JonesRecoverCleanupInput,
   JonesRecoverCleanupResult,
 } from "@t3tools/contracts/jones/jonesOperations";
@@ -52,6 +54,7 @@ export function createTargetOperations(options: {
     },
   ) => Promise<JonesUpdateState>;
   readonly reconcileNative: (id: string) => Promise<OperationReconciliation>;
+  readonly resolveNativeHandoff?: (id: string) => Promise<"accepted" | "rejected" | "unknown">;
   readonly onFailure: () => void;
   readonly recovery?: {
     readonly validate: (
@@ -173,13 +176,36 @@ export function createTargetOperations(options: {
           !(r.phase === "completed" && r.outcome === undefined))
       )
         return r;
-      const native = await options.reconcileNative(id);
-      if (!nativeInstallMatches(r, native)) return r;
+      let native = await options.reconcileNative(id);
+      // The launcher queues this query after the server's original handoff. File absence
+      // alone cannot settle the attempt or allow a second install.
+      let rejected = false;
+      if (
+        !terminal(r) &&
+        (native.state === "absent" ||
+          (nativeInstallMatches(r, native) &&
+            native.state === "blocked" &&
+            native.updateId === undefined)) &&
+        options.resolveNativeHandoff !== undefined
+      ) {
+        const resolved = await options.resolveNativeHandoff(id);
+        rejected = resolved === "rejected";
+        native = await options.reconcileNative(id);
+      }
+      const matches = nativeInstallMatches(r, native);
       const { outcome } = native;
       const fields: Partial<JonesOperationReceipt> | undefined =
-        native.state === "rejected"
-          ? { phase: "refused", code: "launcher-rejected" }
-          : native.updateId === id && outcome !== undefined && outcome.status === native.state
+        (matches && native.state === "rejected") || (rejected && native.state === "absent")
+          ? {
+              phase: "refused",
+              code: "launcher-rejected",
+              message:
+                "The launcher did not accept this install. Review the current build before retrying.",
+            }
+          : matches &&
+              native.updateId === id &&
+              outcome !== undefined &&
+              outcome.status === native.state
             ? {
                 phase: outcome.status === "committed" ? "completed" : outcome.status,
                 updateId: id,
@@ -189,7 +215,7 @@ export function createTargetOperations(options: {
       if (fields === undefined || (terminal(r) && fields.phase !== r.phase)) return r;
       const requested = r.action.recovery?.policy;
       const recovery =
-        requested !== undefined && r.recovery === undefined && native.state !== "rejected"
+        requested !== undefined && r.recovery === undefined && fields.phase !== "refused"
           ? { requested, observed: await options.recovery?.observed(id) }
           : undefined;
       const changed = new Error("Install receipt changed during native readback.");
@@ -351,8 +377,15 @@ export function createTargetOperations(options: {
     }
     const staged = stageReceipt(receipt, state);
     if (staged !== undefined) {
+      const createdByOperation = preparationStarted && receipt.phase === "adopting";
       if (receipt.phase !== "adopting") receipt = await patch(id, { phase: "adopting" });
-      await change(id, (r) => ({ ...finishStop(r, "completed", "too-late"), staged }));
+      await change(id, (r) => ({
+        ...finishStop(r, "completed", "too-late"),
+        staged: {
+          ...staged,
+          ...(createdByOperation ? { createdByOperation: true as const } : {}),
+        },
+      }));
     } else if (receipt.phase === "adopting") {
       updater.setHeldJobs([jobId]);
       await patch(id, {
@@ -672,6 +705,51 @@ export function createTargetOperations(options: {
         cleanupInspection: { operationId, status: "eligible", recoveryToken: token },
       };
     },
+    abandonStage: (input: JonesAbandonStageInput): Promise<JonesAbandonStageResult> =>
+      gate(async () => {
+        const r = await ledger.read(input.operationId);
+        const s = updater.snapshot();
+        const refused = (reason: string) => ({ receipt: null, reason });
+        if (
+          input.confirmed !== true ||
+          input.environmentId !== s.environmentId ||
+          r?.environmentId !== input.environmentId ||
+          r.correlation?.planId !== input.planId ||
+          r.action.kind === "install" ||
+          r.phase !== "completed" ||
+          r.staged?.createdByOperation !== true ||
+          r.staged.stagedHandle !== input.stagedHandle
+        )
+          return refused("This plan does not own the staged selection.");
+        if (r.stageRetiredAt !== undefined) return { receipt: r };
+        if (
+          s.capability.abandonStage !== 1 ||
+          active.size > 0 ||
+          recoveryFailed ||
+          s.installedSource?.sha !== r.expectedInstalledSource ||
+          (s.stagedHandle !== undefined &&
+            (s.stagedHandle !== r.staged.stagedHandle ||
+              s.provenance?.sourceTree !== r.staged.sourceTree))
+        )
+          return refused(
+            "The running build, stage, or update activity changed. Refresh the device.",
+          );
+        const retired = await updater.retireStagedOperation({
+          operationId: r.operationId,
+          environmentId: r.environmentId,
+          stagedHandle: r.staged.stagedHandle,
+          targetSource: r.staged.sourceSha,
+          expectedInstalledSource: r.expectedInstalledSource,
+          currentVersion: s.currentVersion,
+        });
+        if (!retired.retired)
+          return refused(
+            (retired.reason ?? "The native stage could not be retired.").slice(0, 1024),
+          );
+        return {
+          receipt: await patch(r.operationId, { stageRetiredAt: new Date().toISOString() }),
+        };
+      }),
     recoverCleanup: (input: JonesRecoverCleanupInput): Promise<JonesRecoverCleanupResult> =>
       gate(async () => {
         const refused = { recoveredCleanup: null };
@@ -742,6 +820,10 @@ export const unsupportedTargetOperations = {
   }),
   read: async (input: JonesOperationReadInput): Promise<JonesOperationReadResult> => ({
     receipts: input.operationIds.map((operationId) => ({ operationId, receipt: null })),
+  }),
+  abandonStage: async (_input: JonesAbandonStageInput): Promise<JonesAbandonStageResult> => ({
+    receipt: null,
+    reason: "Staged update retirement is unavailable on this host.",
   }),
   recoverCleanup: async (_input: JonesRecoverCleanupInput): Promise<JonesRecoverCleanupResult> => ({
     recoveredCleanup: null,
