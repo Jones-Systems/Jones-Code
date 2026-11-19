@@ -48,6 +48,7 @@ it("fails closed on a misbound, duplicate, malformed or incomplete macOS census"
   for (const [raw, detail] of [
     [census(124), "process-identity"],
     [census(123).replace("\n2\t", "\n1\t"), "duplicate-thread"],
+    [census(123) + "0\t\n", "thread-row"],
     [census(123) + "5\tgg\n", "thread-row"],
     [census(123) + "5\tff\n", "name-encoding"],
     [census(123) + "5\t0a\n", "name-control"],

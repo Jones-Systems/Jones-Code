@@ -132,7 +132,6 @@ export function makeMacNativePoolCensus(
       namedPools.some((name) => /^fff-search-[0-9]+$/.test(name)) &&
       censusPools.length === namedPools.length &&
       censusPools.every((name, index) => name === namedPools[index]);
-    // The reference uses kernel thread IDs and the census uses opaque handles.
     // Compare all native names and population sizes across the reference window.
     const verified =
       matchesReference &&
