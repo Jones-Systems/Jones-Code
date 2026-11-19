@@ -1,4 +1,3 @@
-import * as NodeFSP from "node:fs/promises";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { vi } from "vite-plus/test";
@@ -8,6 +7,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
@@ -1334,7 +1334,7 @@ describe("plan-managed follower targets", () => {
         yield* f.service.releaseDirective(directive);
 
         const journal = path.join(home, "runtime", "jones-fleet", "follower.json");
-        const before = yield* Effect.promise(() => NodeFSP.stat(journal, { bigint: true }));
+        const before = yield* fs.stat(journal);
         const restarted = yield* fixture({ store: createFleetHostStore(home) });
         const status = yield* restarted.service.status();
         expect(status.releasedDirectiveId).toBeUndefined();
@@ -1342,9 +1342,11 @@ describe("plan-managed follower targets", () => {
         const replay = yield* restarted.service.releaseDirective(directive);
         expect(replay.releasedDirectiveId).toBe(directive.directiveId);
         expect(replay.follower?.planDirective).toBeUndefined();
-        const after = yield* Effect.promise(() => NodeFSP.stat(journal, { bigint: true }));
-        expect(after.ino).toBe(before.ino);
-        expect(after.mtimeNs).toBe(before.mtimeNs);
+        const after = yield* fs.stat(journal);
+        expect(Option.getOrThrow(after.ino)).toBe(Option.getOrThrow(before.ino));
+        expect(Option.getOrThrow(after.mtime).getTime()).toBe(
+          Option.getOrThrow(before.mtime).getTime(),
+        );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
