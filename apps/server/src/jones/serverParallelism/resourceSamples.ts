@@ -127,15 +127,20 @@ export function parseLinuxThreadScheduling(
     throw new Error("Captured thread identity/scheduling changed");
   return { ...first, cpusAllowed };
 }
+export type MacNativePoolCensusRejection =
+  | "output-boundary"
+  | "process-identity"
+  | "thread-count"
+  | "thread-row"
+  | "duplicate-thread"
+  | "name-encoding"
+  | "name-control";
+
 export type MacNativePoolCensusFailure =
   | { readonly reason: "helper-exit"; readonly exitCode: number }
+  | { readonly reason: "invalid-output"; readonly detail: MacNativePoolCensusRejection }
   | {
-      readonly reason:
-        | "invalid-output"
-        | "helper-timeout"
-        | "helper-signal"
-        | "helper-output-limit"
-        | "helper-error";
+      readonly reason: "helper-timeout" | "helper-signal" | "helper-output-limit" | "helper-error";
     };
 
 export interface NativePoolObservation {

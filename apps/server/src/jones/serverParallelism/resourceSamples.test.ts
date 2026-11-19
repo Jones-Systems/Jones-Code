@@ -45,16 +45,20 @@ it("fails closed on a misbound, duplicate, malformed or incomplete macOS census"
       name: name || "<unnamed>",
     })),
   });
-  for (const raw of [
-    census(124),
-    census(123).replace("\n2\t", "\n1\t"),
-    census(123) + "5\tff\n",
-    census(123).slice(0, -1),
-    "123\t42\t123456\n",
-  ]) {
+  for (const [raw, detail] of [
+    [census(124), "process-identity"],
+    [census(123).replace("\n2\t", "\n1\t"), "duplicate-thread"],
+    [census(123) + "0\t\n", "thread-row"],
+    [census(123) + "5\tgg\n", "thread-row"],
+    [census(123) + "5\tff\n", "name-encoding"],
+    [census(123) + "5\t0a\n", "name-control"],
+    [census(123).slice(0, -1), "output-boundary"],
+    ["123\t42\t123456\n", "thread-count"],
+  ] as const) {
     expect(parseMacNativePoolCensus(123, raw)).toMatchObject({
       identity: null,
       observation: { status: "unavailable", threads: [] },
+      failure: { reason: "invalid-output", detail },
     });
   }
 });
@@ -143,6 +147,65 @@ it("keeps the fallback when a non-watcher thread starts during the comparison", 
   expect(read).toHaveBeenCalledTimes(2);
 });
 
+const unavailableReference = (pid: number): NativePoolObservation => ({
+  ...referencePool(pid),
+  status: "unavailable",
+  threads: [],
+  error: "native-pool-observer-unavailable",
+});
+
+it.each([false, true])(
+  "retries an unavailable reference once and keeps the failed observation (watcher growth: %s)",
+  async (watcherGrowth) => {
+    const names = watcherGrowth ? [...censusNames, "fff-watcher-own"] : censusNames;
+    const reference = vi
+      .fn(async (pid: number) => ({ ...referencePool(pid, names), raw: "retry reference" }))
+      .mockImplementationOnce(async (pid) => ({
+        ...unavailableReference(pid),
+        raw: "failed read",
+      }));
+    const read = vi
+      .fn(async (pid: number) => census(pid, 42, names))
+      .mockImplementationOnce(async (pid) => census(pid));
+    const sampler = makeMacNativePoolCensus("/fixture", reference, read);
+
+    expect(await sampler.sample(123)).toMatchObject({
+      status: "unavailable",
+      raw: "failed read",
+      threads: [],
+    });
+    expect(sampler.comparison()).toMatchObject({
+      verified: true,
+      reference: "retry reference",
+      referenceStatus: "complete",
+      initial: {
+        verified: false,
+        reference: "failed read",
+        referenceStatus: "unavailable",
+        referenceError: "native-pool-observer-unavailable",
+      },
+    });
+    expect((await sampler.sample(124)).method).toBe("macos-proc-info");
+    expect(reference).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledTimes(4);
+  },
+);
+
+it("keeps using the reference after the single retry fails", async () => {
+  const reference = vi.fn(async (pid: number) => unavailableReference(pid));
+  const read = vi.fn(async (pid: number) => census(pid));
+  const sampler = makeMacNativePoolCensus("/fixture", reference, read);
+
+  expect(await sampler.sample(123)).toEqual(unavailableReference(123));
+  expect(sampler.comparison()).toMatchObject({
+    verified: false,
+    initial: { referenceStatus: "unavailable" },
+  });
+  expect(await sampler.sample(124)).toEqual(unavailableReference(124));
+  expect(reference).toHaveBeenCalledTimes(3);
+  expect(read).toHaveBeenCalledTimes(3);
+});
+
 it("uses the reference when process identity changes during verification", async () => {
   const reference = vi.fn(async (pid: number) => referencePool(pid));
   const unstable = vi
@@ -153,6 +216,22 @@ it("uses the reference when process identity changes during verification", async
   expect((await sampler.sample(124)).method).toBe("macos-sample");
   expect(sampler.comparison()?.verified).toBe(false);
   expect(unstable).toHaveBeenCalledTimes(2);
+});
+
+it("does not retry a failed reference across a process identity change", async () => {
+  const reference = vi.fn(async (pid: number) => unavailableReference(pid));
+  const read = vi
+    .fn(async (pid: number) => census(pid, 43))
+    .mockImplementationOnce(async (pid) => census(pid, 42));
+  const sampler = makeMacNativePoolCensus("/fixture", reference, read);
+
+  expect(await sampler.sample(123)).toEqual(unavailableReference(123));
+  expect(sampler.comparison()).toMatchObject({
+    verified: false,
+    referenceStatus: "unavailable",
+  });
+  expect(reference).toHaveBeenCalledTimes(1);
+  expect(read).toHaveBeenCalledTimes(2);
 });
 
 it("keeps the failed bracket read in the comparison receipt", async () => {
@@ -194,7 +273,7 @@ it("records why each verified fast census fell back without exposing helper diag
   read.mockResolvedValueOnce(census(125));
   expect(await sampler.sample(124)).toEqual({
     ...referencePool(124),
-    fastCensusFailure: { reason: "invalid-output" },
+    fastCensusFailure: { reason: "invalid-output", detail: "process-identity" },
   });
   expect((await sampler.sample(124)).method).toBe("macos-proc-info");
   expect(sampler.comparison()?.verified).toBe(true);
