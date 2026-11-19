@@ -82,13 +82,17 @@ function isDesktopPlatform(platform: NodeJS.Platform): platform is DesktopAppAct
   return platform === "darwin" || platform === "linux" || platform === "win32";
 }
 
-async function sendDesktopAppActivationRequest(input: {
+export async function sendDesktopAppControlRequest<
+  Response extends { readonly requestId: string },
+>(input: {
   readonly address: DesktopAppControlAddress;
-  readonly fallbackAddress?: DesktopAppControlAddress;
+  readonly fallbackAddress?: DesktopAppControlAddress | undefined;
   readonly userId: number | undefined;
-  readonly request: DesktopAppActivationRequest;
+  readonly request: { readonly requestId: string };
+  readonly isResponse: (value: unknown) => value is Response;
+  readonly maxResponseBytes?: number;
   readonly timeoutMs?: number;
-}): Promise<DesktopAppActivationResponse> {
+}): Promise<Response> {
   if (input.address.directory !== null) {
     const stat = await NodeFSP.lstat(input.address.directory);
     if (
@@ -109,7 +113,7 @@ async function sendDesktopAppActivationRequest(input: {
 
     const finish = (
       result:
-        | { readonly type: "success"; readonly response: DesktopAppActivationResponse }
+        | { readonly type: "success"; readonly response: Response }
         | { readonly type: "failure"; readonly error: Error },
     ) => {
       if (settled) return;
@@ -133,7 +137,7 @@ async function sendDesktopAppActivationRequest(input: {
     });
     socket.on("data", (chunk) => {
       buffer += chunk;
-      if (Buffer.byteLength(buffer, "utf8") > MAX_RESPONSE_BYTES) {
+      if (Buffer.byteLength(buffer, "utf8") > (input.maxResponseBytes ?? MAX_RESPONSE_BYTES)) {
         finish({ type: "failure", error: new Error("The desktop app response is too large.") });
         return;
       }
@@ -150,7 +154,7 @@ async function sendDesktopAppActivationRequest(input: {
         });
         return;
       }
-      if (!isDesktopAppActivationResponse(parsed)) {
+      if (!input.isResponse(parsed)) {
         finish({ type: "failure", error: new Error("The desktop app response is invalid.") });
         return;
       }
@@ -174,11 +178,10 @@ async function sendDesktopAppActivationRequest(input: {
         clearTimeout(timeout);
         socket.destroy();
         resolve(
-          sendDesktopAppActivationRequest({
+          sendDesktopAppControlRequest({
+            ...input,
             address: input.fallbackAddress,
-            userId: input.userId,
-            request: input.request,
-            ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+            fallbackAddress: undefined,
           }),
         );
         return;
@@ -240,8 +243,9 @@ const runAppCommand = Effect.fn("cli.app")(function* (flags: {
 
   const response = yield* Effect.tryPromise({
     try: () =>
-      sendDesktopAppActivationRequest({
+      sendDesktopAppControlRequest({
         address,
+        isResponse: isDesktopAppActivationResponse,
         userId,
         ...(fallbackAddress === undefined ? {} : { fallbackAddress }),
         request,
