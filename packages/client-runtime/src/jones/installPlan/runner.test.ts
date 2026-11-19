@@ -1084,6 +1084,13 @@ describe("bounded install plan runner", () => {
       };
       if (result === "lost reply") {
         f.desktop.mockResolvedValue({ state: state() });
+        const { fleetStatus: _unavailable, ...withoutFleet } = limited;
+        f.observe.mockResolvedValueOnce(withoutFleet);
+        f.desktop.mockClear();
+        await advanceInstallPlan(resumed);
+        expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read"]);
+        expect(f.host).toHaveBeenCalledTimes(1);
+
         f.observe.mockResolvedValue({ ...limited, canOperate: false, fleetStatus: applied });
         f.canDispatch.mockReturnValue(false);
         await advanceInstallPlan(resumed);

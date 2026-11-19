@@ -1,3 +1,4 @@
+import * as NodeFSP from "node:fs/promises";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { vi } from "vite-plus/test";
@@ -105,6 +106,7 @@ const fixture = (
         return next;
       },
       readFollower: async () => follower,
+      readConfirmedFollower: async () => follower,
       editFollower: async (change) => (follower = change(follower)),
       transactDirective: async (change) => {
         const { record, result } = change(follower, savedEnrollment);
@@ -146,6 +148,7 @@ const fixture = (
     const retireStaged = vi.fn<FleetHostUpdater["retireStagedOperation"]>(() =>
       Effect.succeed({ retired: true }),
     );
+    const refreshPolicy = vi.fn(() => undefined);
     const updates: FleetHostUpdater = {
       fleetOperationsSupported: true,
       state: () => Effect.succeed(update),
@@ -173,7 +176,7 @@ const fixture = (
       retireStagedOperation: retireStaged,
       installForOperation: install,
       reconcileOperation: () => Effect.sync(() => native),
-      refreshPolicy: Effect.sync(() => undefined),
+      refreshPolicy: Effect.sync(refreshPolicy),
     };
     let nextOperation = 0;
     const create = () =>
@@ -189,6 +192,7 @@ const fixture = (
     return {
       service: yield* create(),
       create,
+      refreshPolicy,
       install,
       operations,
       store,
@@ -1001,6 +1005,27 @@ describe("plan-managed follower targets", () => {
       }),
   );
 
+  it.effect(
+    "publishes only confirmed setup status and refreshes policy after an exact apply retry",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+        yield* f.service.planDirective(directive);
+        const retained = f.follower();
+        const readConfirmedFollower = vi
+          .spyOn(f.store, "readConfirmedFollower")
+          .mockRejectedValueOnce(new Error("Directory sync refused."));
+        expect((yield* f.service.status().pipe(Effect.flip)).reason).toBe("storage");
+        expect(readConfirmedFollower).toHaveBeenCalledOnce();
+        f.refreshPolicy.mockClear();
+        const replay = yield* f.service.planDirective(directive);
+        expect(replay.follower?.planDirective?.directiveId).toBe(directive.directiveId);
+        expect(f.refreshPolicy).toHaveBeenCalledOnce();
+        expect(f.follower()).toBe(retained);
+      }),
+  );
+
   it.effect("denies rollback replay through the Round 1 reader and application CAS", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1295,6 +1320,33 @@ describe("plan-managed follower targets", () => {
         (yield* f.service.releaseDirective(directive)).follower?.planDirective,
       ).toBeUndefined();
     }),
+  );
+
+  it.effect("replays a release after restart without rewriting the follower journal", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({ prefix: "jones-release-replay-" });
+        const f = yield* fixture({ store: createFleetHostStore(home) });
+        yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+        yield* f.service.planDirective(directive);
+        yield* f.service.releaseDirective(directive);
+
+        const journal = path.join(home, "runtime", "jones-fleet", "follower.json");
+        const before = yield* Effect.promise(() => NodeFSP.stat(journal, { bigint: true }));
+        const restarted = yield* fixture({ store: createFleetHostStore(home) });
+        const status = yield* restarted.service.status();
+        expect(status.releasedDirectiveId).toBeUndefined();
+        expect(status.releasableDirectiveId).toBeUndefined();
+        const replay = yield* restarted.service.releaseDirective(directive);
+        expect(replay.releasedDirectiveId).toBe(directive.directiveId);
+        expect(replay.follower?.planDirective).toBeUndefined();
+        const after = yield* Effect.promise(() => NodeFSP.stat(journal, { bigint: true }));
+        expect(after.ino).toBe(before.ino);
+        expect(after.mtimeNs).toBe(before.mtimeNs);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("preserves a legacy directive with unknown predecessor history", () =>

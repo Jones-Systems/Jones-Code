@@ -85,6 +85,7 @@ export interface FleetHostStore {
     change: (old: FleetHostOperation | null) => FleetHostOperation,
   ) => Promise<FleetHostOperation>;
   readonly readFollower: () => Promise<FleetFollowerRecord | null>;
+  readonly readConfirmedFollower: () => Promise<FleetFollowerRecord | null>;
   readonly editFollower: (
     change: (old: FleetFollowerRecord | null) => FleetFollowerRecord,
   ) => Promise<FleetFollowerRecord>;
@@ -240,6 +241,13 @@ export function createFleetHostStore(baseDir: string): FleetHostStore {
         return next;
       }),
     readFollower: () => locked(readFollower),
+    readConfirmedFollower: () =>
+      locked(async () => {
+        const record = await readFollower();
+        // Status can confirm a directive after a rename whose directory sync failed.
+        if (record?.directive !== undefined) await syncDirectory(directory);
+        return record;
+      }),
     editFollower: (change) =>
       locked(async () => {
         const next = change(await readFollower());

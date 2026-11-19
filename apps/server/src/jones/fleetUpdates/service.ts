@@ -428,7 +428,9 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     const operation =
       operationId === undefined ? null : yield* storage(() => store.readOperation(operationId));
     const record =
-      options.serviceMode && enrollment?.enabled ? yield* storage(store.readFollower) : null;
+      options.serviceMode && enrollment?.enabled
+        ? yield* storage(store.readConfirmedFollower)
+        : null;
     const follower = followerStatus(enrollment, record);
     const directiveId = follower?.planDirective?.directiveId;
     const releasableDirectiveId =
@@ -832,11 +834,9 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
         result: true,
       };
     });
-    if (applied) {
-      followerView = undefined;
-      yield* updates.refreshPolicy;
-      yield* Queue.offer(wakeups, undefined);
-    }
+    if (applied) followerView = undefined;
+    yield* updates.refreshPolicy;
+    yield* Queue.offer(wakeups, undefined);
     return yield* status();
   });
 

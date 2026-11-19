@@ -129,7 +129,7 @@ it("serializes directive transactions across stores and retains the fence on dis
     expect((await createFleetHostStore(home).readFollower())?.fencedDirectives).toEqual([fence]);
   }));
 
-it("requires a directory sync before returning proof for an already-renamed fence", async () =>
+it("requires a directory sync before returning proof from a write with a failed sync", async () =>
   fixture(async (home) => {
     const directory = NodePath.join(home, "runtime", "jones-fleet");
     const journal = NodePath.join(directory, "follower.json");
@@ -137,6 +137,15 @@ it("requires a directory sync before returning proof for an already-renamed fenc
       directiveId: "33333333-3333-4333-8333-333333333333",
       bindingHash: "c".repeat(64),
       rollbackDenied: true as const,
+    };
+    const directive = {
+      directiveId: "22222222-2222-4222-8222-222222222222",
+      enrollmentId: enrollment.enrollmentId,
+      targetSource: "b".repeat(40),
+      targetTree: "c".repeat(40),
+      mode: "manual-review" as const,
+      issuedAt: "2026-10-27T00:00:00Z",
+      leaderAtIssue: null,
     };
     await createFleetHostStore(home).editEnrollment(() => enrollment);
     const reconcile = () =>
@@ -146,6 +155,7 @@ it("requires a directory sync before returning proof for an already-renamed fenc
           leader: null,
           operation: null,
           lastAutomaticActivationAt: null,
+          directive,
           fencedDirectives: [fence],
           releasedDirectives: [fence.directiveId],
         },
@@ -177,13 +187,18 @@ it("requires a directory sync before returning proof for an already-renamed fenc
       });
       expect(syncAttempts).toBe(1);
 
-      failSync = false;
-      await expect(reconcile()).resolves.toBe(fence.directiveId);
+      const restarted = createFleetHostStore(home);
+      await expect(restarted.readConfirmedFollower()).rejects.toThrow(failure);
       expect(syncAttempts).toBe(2);
+
+      failSync = false;
+      expect((await restarted.readConfirmedFollower())?.directive).toEqual(directive);
+      await expect(reconcile()).resolves.toBe(fence.directiveId);
+      expect(syncAttempts).toBe(4);
 
       failSync = true;
       await expect(reconcile()).rejects.toThrow(failure);
-      expect(syncAttempts).toBe(3);
+      expect(syncAttempts).toBe(5);
       expect(rename).toHaveBeenCalledTimes(1);
     } finally {
       open.mockRestore();

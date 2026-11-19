@@ -182,10 +182,12 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
     status.enrollment.enrollmentId === directive.enrollmentId &&
     status.releasedDirectiveId === directive.directiveId &&
     status.follower?.planDirective?.directiveId !== directive.directiveId;
+  // The exact release can have committed before its reply reached this plan.
   if (
     directive !== undefined &&
     !releaseMatches(fleet) &&
-    (fleet?.releasePlanDirective !== 1 || fleet.releasableDirectiveId !== directive.directiveId)
+    (fleet?.releasePlanDirective !== 1 ||
+      (!target.resume && fleet.releasableDirectiveId !== directive.directiveId))
   )
     throw new Error("This host cannot restore the original follower directive.");
 

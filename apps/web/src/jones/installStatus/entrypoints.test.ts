@@ -592,6 +592,143 @@ describe("bound Install status actions", () => {
     }
   });
 
+  it.each([
+    "lost release reply",
+    "unconfirmed fresh abandonment",
+    "unsupported release on resume",
+    "refused release on resume",
+  ] as const)("binds follower abandonment to exact release evidence after %s", async (scenario) => {
+    const f = bindFixture();
+    const current = f.state.current!;
+    const enrollmentId = earlierOperationId;
+    const directive = {
+      directiveId: hostOperationId,
+      environmentId: hostId,
+      enrollmentId,
+      repository: target.repository,
+      targetSource: source,
+      targetTree: target.sourceTree,
+      expectedDirectiveId: null,
+    } as const;
+    const resume = scenario !== "unconfirmed fresh abandonment";
+    const device = {
+      ...current.devices[0]!,
+      route: "follower-operations" as const,
+      enrollmentId,
+      ...(resume ? { abandoning: true as const } : {}),
+      operations: [
+        {
+          operationId: directive.directiveId,
+          step: "directive" as const,
+          request: { kind: "plan-directive" as const, input: directive },
+          lease: { claimant: "window:a", reservedAt: at, leaseUntil: grant.leaseUntil },
+          directive: {
+            kind: "applied" as const,
+            observedAt: at,
+            directive: {
+              directiveId: directive.directiveId,
+              targetSource: directive.targetSource,
+              targetTree: directive.targetTree,
+              mode: "manual-review" as const,
+              issuedAt: at,
+            },
+          },
+        },
+      ],
+    };
+    let retained: JonesInstallPlan = {
+      ...current,
+      revision: 7,
+      ...(resume ? { dismissedAt: at } : {}),
+      devices: [device],
+    };
+    const state = () => ({
+      ...native(resume ? null : retained, resume ? retained : null),
+      documentRevision: retained.revision,
+      view: { complete: false, recoveryHistory: 1 as const, deviceRecovery: 1 as const },
+    });
+    const observed = await f.services.observe(hostId);
+    let released = false;
+    const fleetStatus = () => ({
+      environmentId: hostId,
+      operationProtocol: 1 as const,
+      ...(scenario === "unsupported release on resume" ? {} : { releasePlanDirective: 1 as const }),
+      enrollment: {
+        environmentId: hostId,
+        enrollmentId,
+        enabled: true,
+        continueRunningThreads: false,
+      },
+      operation: null,
+      update: observed.observation.state,
+      ...(!released && scenario === "lost release reply"
+        ? { releasableDirectiveId: directive.directiveId }
+        : {}),
+    });
+    const observe = () => ({ ...observed, fleetStatus: fleetStatus() });
+    const host = vi.fn<InstallPlanServices["host"]>(async () => {
+      if (scenario === "refused release on resume") throw new Error("Release was refused.");
+      if (!released) {
+        released = true;
+        throw new Error("The release response was lost.");
+      }
+      return { ...fleetStatus(), releasedDirectiveId: directive.directiveId };
+    });
+    f.installPlan.mockImplementation(async (request) => {
+      if (request.type === "abandon-device" && request.phase === "finish") {
+        expect(request.directiveRelease?.releasedDirectiveId).toBe(directive.directiveId);
+        const { abandoning: _abandoning, ...member } = device;
+        retained = {
+          ...retained,
+          revision: 8,
+          devices: [{ ...member, membership: "removed" }],
+        };
+      }
+      return {
+        state: state(),
+        ...(request.type === "read-history" ? { historyPlan: retained } : {}),
+      };
+    });
+    const unbind = bindInstallPlanServices(
+      {
+        ...f.services,
+        devices: () => [observe()],
+        observe: async () => observe(),
+        confirm: async () => true,
+        host,
+      },
+      f.store,
+    );
+    f.store.update({ native: state() });
+    try {
+      const attempt = deviceAbandonTarget(retained, hostId, resume)!;
+      if (scenario !== "lost release reply") {
+        await expect(abandonDevice(attempt)).rejects.toThrow(
+          scenario === "refused release on resume"
+            ? "Release was refused."
+            : "cannot restore the original follower directive",
+        );
+        expect(retained.devices[0]?.abandoning).toBe(resume ? true : undefined);
+        expect(host).toHaveBeenCalledTimes(scenario === "refused release on resume" ? 1 : 0);
+        expect(
+          f.installPlan.mock.calls.every(([request]) => request.type !== "abandon-device"),
+        ).toBe(true);
+        return;
+      }
+      await expect(abandonDevice(attempt)).rejects.toThrow("release response was lost");
+      expect(retained.devices[0]?.abandoning).toBe(true);
+      await abandonDevice(attempt);
+      expect(host.mock.calls).toEqual([
+        [hostId, { action: "releaseDirective", input: directive }],
+        [hostId, { action: "releaseDirective", input: directive }],
+      ]);
+      expect(retained.devices[0]?.membership).toBe("removed");
+    } finally {
+      unbind();
+      f.unbind();
+    }
+  });
+
   it("confirms closure of the exact plan even after another plan becomes Last update", async () => {
     const f = bindFixture();
     const first = {
