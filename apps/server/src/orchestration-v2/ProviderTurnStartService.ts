@@ -46,7 +46,7 @@ import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
 import { startFailureCauseMessage } from "../jones/provider/startFailureMessage.ts";
 import {
-  CodexInlineHandoffRejection,
+  CodexInlineHistoryPending,
   makeCodexHistoryDeliveryPersistence,
   promptWasNotApplied,
 } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
@@ -114,7 +114,11 @@ import {
   historicalMessage,
   latestNativeContextUsage,
 } from "@t3tools/provider-core/server/handoffBudget";
-import { deliverContextHandoffs, withInlineContext } from "./ContextHandoffDelivery.ts";
+import {
+  ContextHandoffDeliveryUncertainError,
+  deliverContextHandoffs,
+  withInlineContext,
+} from "./ContextHandoffDelivery.ts";
 import { deliverWithHandoffRecovery } from "../jones/provider/codex/ContextHandoffRecovery.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -146,6 +150,7 @@ export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStart
 
 /** Runs that ended without completing: their provider turn may still project as running. */
 const isProviderAdapterTurnStartError = Schema.is(ProviderAdapter.ProviderAdapterTurnStartError);
+const isContextHandoffDeliveryUncertain = Schema.is(ContextHandoffDeliveryUncertainError);
 
 const NON_COMPLETING_TERMINAL_RUN_STATUSES: ReadonlySet<OrchestrationV2Run["status"]> = new Set([
   "failed",
@@ -2154,8 +2159,12 @@ export const layer: Layer.Layer<
       ) {
         const loaded = yield* Effect.result(guardClaim(load));
         if (loaded._tag === "Success") return loaded.success;
+        const uncertainHistoryDelivery =
+          isProviderAdapterTurnStartError(loaded.failure) &&
+          isContextHandoffDeliveryUncertain(loaded.failure.cause);
         if (
           input.willRetry === true &&
+          !uncertainHistoryDelivery &&
           !terminalStartFailure(loaded.failure) &&
           findSteerFailure(loaded.failure) === undefined &&
           !ProviderAdapter.hasUnknownRuntimeBinding(loaded.failure)
@@ -2788,7 +2797,10 @@ export const layer: Layer.Layer<
                   threadId: projection.thread.id,
                   providerThreadId: providerThread.id,
                   runId,
-                  cause: "Uncertain native history injection",
+                  cause:
+                    session.driver === "codex"
+                      ? new ContextHandoffDeliveryUncertainError()
+                      : "Uncertain native history injection",
                 }),
               )
             : session.resumeThread({
@@ -3455,19 +3467,12 @@ export const layer: Layer.Layer<
           yield* assertAdmission(runningProviderThread);
           yield* operation.pipe(
             Effect.provideService(
-              CodexInlineHandoffRejection,
-              codexHistory !== undefined && delivery.context !== "" && nativeThreadId != null
-                ? (binding, proofIsCurrent) =>
-                    binding.nativeThreadId === nativeThreadId &&
-                    binding.providerThreadId === runningProviderThread.id &&
-                    binding.runId === run.id &&
-                    binding.attemptId === attempt.id
-                      ? codexHistory.restoreRejectedInline(handoffs, proofIsCurrent)
-                      : Effect.succeed("withheld" as const)
-                : undefined,
+              CodexInlineHistoryPending,
+              codexHistory !== undefined && delivery.context !== "",
             ),
             Effect.tapError((error) =>
-              refusedBeforePrompt(error) || promptWasNotApplied(error)
+              refusedBeforePrompt(error) ||
+              promptWasNotApplied(error, { beforeDispatchOnly: codexHistory !== undefined })
                 ? restoreUnsent
                 : Effect.void,
             ),

@@ -2,7 +2,7 @@ import { codexContinuityContext } from "../../jones/goals/continuity/codexTransp
 import { RequiredNativeSession } from "../../jones/taskContinuation/requiredNativeSession.ts";
 import { pipe } from "effect/Function";
 import {
-  CodexInlineHandoffRejection,
+  CodexInlineHistoryPending,
   HistoryNotApplied,
   PromptNotApplied,
   historyInjectionRejection,
@@ -9416,8 +9416,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }
               : {}),
           };
-          const restoreRefusedInline =
-            retryOrdinal === 0 ? yield* CodexInlineHandoffRejection : undefined;
+          const inlineHistoryPending = retryOrdinal === 0 && (yield* CodexInlineHistoryPending);
           if (continuity !== undefined && !(yield* continuity.checkContinuation))
             return yield* new GoalContinuityError({ reason: "recovery_required" });
           if (!currentCapacityBinding(request))
@@ -9471,12 +9470,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             error: CodexErrors.CodexAppServerError,
             proof: CodexStartRejectionProof,
           ) {
-            if (
-              (restoreRefusedInline !== undefined &&
-                (yield* restoreRefusedInline(binding, proof.isCurrent)) !== "restored") ||
-              !proof.release()
-            )
-              return yield* unverifiedRejection();
+            // A wire rejection can be contradicted while SQLite commits. Keep the
+            // existing pending event and live hold until there is independent proof.
+            if (inlineHistoryPending)
+              return yield* toProtocolError("Codex inline history delivery remains uncertain.");
+            // Without inline history this only releases the live dispatch. Later
+            // activity can constrain later dispatches without undoing a stored write.
+            if (!proof.release()) return yield* unverifiedRejection();
             request.startDispatched = false;
             return yield* error;
           });

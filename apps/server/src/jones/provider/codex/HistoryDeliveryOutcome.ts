@@ -1,6 +1,5 @@
 import type { OrchestrationV2ContextHandoff, OrchestrationV2StoredEvent } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
-import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -11,7 +10,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import type { EventSinkV2Shape } from "../../../orchestration-v2/EventSink.ts";
 import { readEventLogPrunedThrough } from "../../persistence/EventLogPruneBoundary.ts";
-import type { CodexCapacityContinuationBinding } from "./CodexCapacityContinuation.ts";
 
 /** Evidence from the current call only; never evidence about a persisted pending marker. */
 export class HistoryNotApplied extends Schema.TaggedError<HistoryNotApplied>()(
@@ -54,47 +52,45 @@ export const historyWasNotApplied = (error: unknown): boolean => {
   return false;
 };
 
-/** Only current-attempt proof authorizes undoing an unsent inline marker. */
-export const promptWasNotApplied = (error: unknown): boolean => {
+/** Wire rejection can release live admission but cannot undo a durable pending marker. */
+export const promptWasNotApplied = (
+  error: unknown,
+  { beforeDispatchOnly = false } = {},
+): boolean => {
   const seen = new Set<unknown>();
   let current = error;
   while (typeof current === "object" && current !== null && !seen.has(current)) {
     seen.add(current);
-    if (isPromptNotApplied(current) || Predicate.isTagged(current, "CodexStartupNotDispatched"))
-      return true;
     if (
-      isCodexRequestError(current) &&
-      current.method === "turn/start" &&
-      (current.operation === "encode-payload" ||
-        (current.operation === "receive-response" &&
-          (current.code === -32600 || current.code === -32601 || current.code === -32602)))
+      isPromptNotApplied(current) ||
+      (current instanceof Error && Predicate.isTagged(current, "CodexStartupNotDispatched"))
     )
       return true;
+    // The cause of a provider response can contain arbitrary native JSON.
+    if (current instanceof Error && isCodexRequestError(current))
+      return (
+        current.method === "turn/start" &&
+        (current.operation === "encode-payload" ||
+          (!beforeDispatchOnly &&
+            current.operation === "receive-response" &&
+            (current.code === -32600 || current.code === -32601 || current.code === -32602)))
+      );
     current = "cause" in current ? current.cause : undefined;
   }
   return false;
 };
 
-/** A capability for the original prompt's inline ledger, captured by its producer waiter. */
-export const CodexInlineHandoffRejection = Context.Reference<
-  | ((
-      binding: CodexCapacityContinuationBinding,
-      proofIsCurrent: () => boolean,
-    ) => Effect.Effect<"restored" | "withheld" | "failed">)
-  | undefined
->("jones/CodexInlineHandoffRejection", { defaultValue: () => undefined });
-
-class InlineRestorationWithheld extends Schema.TaggedError<
-  InlineRestorationWithheld,
-  { readonly brand: unique symbol }
->()("InlineRestorationWithheld", {}) {}
+/** The original start carries inline history with a restart-visible pending delivery. */
+export const CodexInlineHistoryPending = Context.Reference<boolean>(
+  "jones/CodexInlineHistoryPending",
+  { defaultValue: () => false },
+);
 
 class InlineRestorationSqlFailure extends Schema.TaggedError<
   InlineRestorationSqlFailure,
   { readonly brand: unique symbol }
 >()("InlineRestorationSqlFailure", { cause: Schema.Defect() }) {}
 
-const isInlineRestorationWithheld = Schema.is(InlineRestorationWithheld);
 const isInlineRestorationSqlFailure = Schema.is(InlineRestorationSqlFailure);
 
 const hasSqlCause = (error: unknown): boolean => {
@@ -150,92 +146,38 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
     OrchestrationV2ContextHandoff["id"],
     OrchestrationV2StoredEvent | undefined
   >();
-  const restore = (handoff: OrchestrationV2ContextHandoff) =>
-    Effect.suspend(() => {
-      const marker = pending.get(handoff.id);
-      if (marker === undefined) return Effect.void;
-      return withProviderBatch(
-        Effect.gen(function* () {
-          if (yield* ownsPendingHistoryDelivery(marker)) yield* write(handoff);
-        }),
-      );
-    });
-  const restoreRejectedInline = Effect.fn("HistoryDeliveryOutcome.restoreRejectedInline")(
-    function* (
-      handoffs: ReadonlyArray<OrchestrationV2ContextHandoff>,
-      proofIsCurrent: () => boolean,
-    ) {
-      const originals = new Map(handoffs.map((handoff) => [handoff.id, handoff]));
-      const withheld = new InlineRestorationWithheld();
-      const requireProof = Effect.suspend(() => (proofIsCurrent() ? Effect.void : withheld));
-      let committed = false;
-      const attempt = withProviderBatch(
-        Effect.gen(function* () {
-          yield* requireProof;
-          if (pending.size === 0 || originals.size !== handoffs.length) return yield* withheld;
-          for (const [id, marker] of pending) {
-            const original = originals.get(id);
-            if (
-              marker === undefined ||
-              original === undefined ||
-              !(yield* ownsPendingHistoryDelivery(marker))
-            )
-              return yield* withheld;
-            yield* requireProof;
-            if ((yield* write(original)).length !== 1) return yield* withheld;
-          }
-          const database = yield* Effect.serviceOption(SqlClient.SqlClient);
-          if (Option.isNone(database)) return yield* withheld;
-          yield* database.value.afterCommit(
-            Effect.sync(() => {
-              committed = true;
-            }),
-          );
-          // This can still roll back the batch, including earlier savepoints.
-          // EventSink can await its publication lane and SQLite COMMIT after this
-          // check. Revocation then still holds live admission, yet the restored
-          // row can survive a restart that loses the in-memory hold.
-          yield* requireProof;
-        }).pipe(
-          Effect.mapError((cause) =>
-            hasSqlCause(cause) ? new InlineRestorationSqlFailure({ cause }) : cause,
-          ),
+  const restore = Effect.fn("HistoryDeliveryOutcome.restoreUnsent")(function* (
+    handoff: OrchestrationV2ContextHandoff,
+  ) {
+    const marker = pending.get(handoff.id);
+    if (marker === undefined) return;
+    const database = yield* Effect.serviceOption(SqlClient.SqlClient);
+    const inTransaction =
+      Option.isSome(database) &&
+      Option.isSome(yield* Effect.serviceOption(database.value.transactionService));
+    const attempt = withProviderBatch(
+      Effect.gen(function* () {
+        if (yield* ownsPendingHistoryDelivery(marker)) yield* write(handoff);
+      }).pipe(
+        Effect.mapError((cause) =>
+          hasSqlCause(cause) ? new InlineRestorationSqlFailure({ cause }) : cause,
         ),
-      );
-      const restoreAttempt = Effect.suspend(() => (proofIsCurrent() ? attempt : withheld));
-      const result = yield* Effect.exit(
-        restoreAttempt.pipe(
-          Effect.catchCause((cause) => {
-            const [failure] = cause.reasons;
-            // Retry one SQL-only batch failure after confirmed rollback. A
-            // COMMIT/rollback error or mixed cause is outside that evidence.
-            return cause.reasons.length === 1 &&
-              failure?._tag === "Fail" &&
-              isInlineRestorationSqlFailure(failure.error)
-              ? restoreAttempt
-              : Effect.failCause(cause);
-          }),
-        ),
-      );
-      if (Exit.isSuccess(result)) {
-        if (!committed || !proofIsCurrent()) return "withheld" as const;
-        pending.clear();
-        return "restored" as const;
-      }
-      const [failure] = result.cause.reasons;
-      if (
-        result.cause.reasons.length === 1 &&
-        failure?._tag === "Fail" &&
-        isInlineRestorationWithheld(failure.error)
-      )
-        return "withheld" as const;
-      if (Cause.hasInterruptsOnly(result.cause)) return yield* Effect.interrupt;
-      yield* Effect.logWarning(
-        "Failed to restore rejected Codex inline history; admission is held",
-      );
-      return "failed" as const;
-    },
-  );
+      ),
+    );
+    // A nested provider batch cannot establish rollback of its enclosing transaction.
+    if (inTransaction) return yield* attempt;
+    return yield* attempt.pipe(
+      Effect.catchCause((cause) => {
+        const [failure] = cause.reasons;
+        // Retry a statement failure only after rollback, and compare ownership again.
+        return cause.reasons.length === 1 &&
+          failure?._tag === "Fail" &&
+          isInlineRestorationSqlFailure(failure.error)
+          ? attempt
+          : Effect.failCause(cause);
+      }),
+    );
+  });
   return {
     persist: (handoff: OrchestrationV2ContextHandoff): ReturnType<typeof restore> =>
       write(handoff).pipe(
@@ -244,7 +186,6 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
         }),
       ),
     restore,
-    restoreRejectedInline,
   };
 }
 

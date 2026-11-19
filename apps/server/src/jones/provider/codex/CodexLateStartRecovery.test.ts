@@ -170,6 +170,37 @@ describe("Codex late start admission recovery", () => {
     expect(ledger.blocked).toBe(true);
   });
 
+  it("attributes activity after rejection release to later dispatch ownership", () => {
+    const ledger = makeCodexLateStartRecovery();
+    const currentGeneration = () => binding.runtimeGeneration;
+    const original = ledger.begin(binding, []);
+    ledger.markUnknown(original);
+    const rejectionFor = (dispatch: typeof original, id: number) => {
+      const error = { code: -32602, message: "Invalid params" };
+      ledger.observeFrame(binding.runtimeGeneration, { id, error });
+      return ledger.reject(
+        dispatch,
+        currentGeneration,
+        CodexAppServerRequestError.fromProtocolError(error, "turn/start", String(id)),
+      );
+    };
+    const originalProof = rejectionFor(original, 7);
+    if (originalProof.kind !== "not_applied") throw new Error("Expected exact rejection proof");
+    expect(originalProof.release()).toBe(true);
+
+    const next = ledger.begin(binding, []);
+    ledger.observeFrame(binding.runtimeGeneration, {
+      method: "turn/started",
+      params: { threadId: binding.nativeThreadId, turn: { id: "unattributed-turn" } },
+    });
+    ledger.markUnknown(original);
+    expect(originalProof.release()).toBe(false);
+    expect(ledger.blocked).toBe(false);
+    ledger.markUnknown(next);
+    expect(rejectionFor(next, 8).kind).toBe("unverified");
+    expect(ledger.blocked).toBe(true);
+  });
+
   it.each([-32600, -32601])("keeps code %s proof scoped to the original wait", (code) => {
     const ledger = makeCodexLateStartRecovery();
     const reject = () => {

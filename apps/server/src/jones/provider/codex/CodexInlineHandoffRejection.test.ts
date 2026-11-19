@@ -21,10 +21,10 @@ import * as CodexReplay from "effect-codex-app-server/replay";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -46,7 +46,6 @@ import * as EventSink from "../../../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProviderReplayHarness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as Sqlite from "../../../persistence/Sqlite.ts";
-import { EVENT_LOG_PRUNED_THROUGH_PROJECTION } from "../../persistence/EventLogPruneBoundary.ts";
 import { CODEX_START_ACK_TIMEOUT_MS } from "./CodexLateStartRecovery.ts";
 
 const CODEX_TEST_MODEL_SELECTION = {
@@ -59,20 +58,49 @@ const CODEX_TEST_RUNTIME_POLICY = ProviderAdapter.ProviderAdapterV2RuntimePolicy
   cwd: "/workspace",
 });
 
+const send = (
+  orchestrator: Orchestrator.OrchestratorV2Shape,
+  threadId: ThreadId,
+  id: string,
+  text: string,
+) =>
+  orchestrator.dispatch({
+    type: "message.dispatch",
+    commandId: CommandId.make(id),
+    threadId,
+    messageId: MessageId.make(id),
+    text,
+    attachments: [],
+    createdBy: "user",
+    creationSource: "web",
+    dispatchMode: { type: "start_immediately" },
+  });
+
 describe("Codex inline handoff rejection recovery", () => {
   it.effect.each([
-    { code: -32602, late: true, recovery: "restore" },
-    { code: -32600, late: false, recovery: "restore" },
-    { code: -32602, late: true, recovery: "contradiction" },
-    { code: -32602, late: true, recovery: "contradiction after provisional write" },
+    { code: -32602, late: true, recovery: "no inline pending marker" },
+    { code: -32600, late: false, recovery: "no inline pending marker" },
+    { code: -32602, late: true, recovery: "pending without observed contradiction" },
+    { code: -32600, late: false, recovery: "pending without observed contradiction" },
+    { code: -32602, late: true, recovery: "contradiction while writer is held" },
+    { code: -32602, late: true, recovery: "contradiction before outer commit" },
+    { code: -32600, late: false, recovery: "contradiction before outer commit" },
     { code: -32602, late: true, recovery: "newer identical marker" },
-    { code: -32602, late: true, recovery: "pruned marker" },
-    { code: -32602, late: true, recovery: "one SQL write failure" },
   ] as const)("handles $recovery after exact $code (late: $late)", ({ code, late, recovery }) =>
     Effect.gen(function* () {
       const scenario = `inline-handoff-refusal-${code}-${recovery}`;
+      const canContinue = recovery === "no inline pending marker";
+      const atCommit = recovery === "contradiction before outer commit";
+      const reopenDatabase = atCommit || recovery === "pending without observed contradiction";
+      const contradicts = recovery.startsWith("contradiction");
       const fileSystem = yield* FileSystem.FileSystem;
       const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "jones-codex-history-" });
+      const path = yield* Path.Path;
+      const database = reopenDatabase
+        ? Sqlite.layerFromPath(path.join(cwd, "replay.sqlite")).pipe(
+            Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          )
+        : Sqlite.layerMemory;
       const nativeThreadId = "inline-handoff-conversation";
       const threadId = ThreadId.make(scenario);
       const handoffId = ContextHandoffId.make("late-inline-handoff");
@@ -88,7 +116,9 @@ describe("Codex inline handoff rejection recovery", () => {
           nativeTurnId,
           prompt: text,
           cwd,
-          sentPrompt: withInlineContext(renderHistory(history.messages, history.context), text),
+          sentPrompt: canContinue
+            ? text
+            : withInlineContext(renderHistory(history.messages, history.context), text),
         });
       const first = preambleFor("Original request", "rejected-turn");
       const followUp = codexReplayPreamble({
@@ -144,7 +174,6 @@ describe("Codex inline handoff rejection recovery", () => {
           },
         ],
         coverage: [
-          `Context handoff (full_thread_summary):\n${coverage}`,
           "Context handoff (delta_since_target_last_seen):",
           `Provider context handoff. Thread: ${threadId}. Covered app runs: 1-1.`,
           `Source item range: ${userItemId} through ${failureItemId}.`,
@@ -152,7 +181,7 @@ describe("Codex inline handoff rejection recovery", () => {
         ].join("\n"),
         budget: 16_000,
       });
-      const inject = (id: number, accepted = false): CodexReplay.CodexAppServerReplayEntry[] => [
+      const inject = (id: number, followUp = false): CodexReplay.CodexAppServerReplayEntry[] => [
         {
           type: "expect_outbound",
           frame: {
@@ -160,7 +189,7 @@ describe("Codex inline handoff rejection recovery", () => {
             method: "thread/inject_items",
             params: {
               threadId: nativeThreadId,
-              items: accepted
+              items: followUp
                 ? historyResponseItems(recoveredHistory.messages, recoveredHistory.context)
                 : historyResponseItems(history.messages, history.context),
             },
@@ -168,13 +197,11 @@ describe("Codex inline handoff rejection recovery", () => {
         },
         {
           type: "emit_inbound",
-          frame: accepted
+          frame: canContinue
             ? { id, result: {} }
             : { id, error: { code: -32601, message: "Native injection unavailable" } },
         },
       ];
-      const shouldRestore = recovery === "restore" || recovery === "one SQL write failure";
-      const contradicts = recovery.startsWith("contradiction");
       const transcript = makeCodexReplayTranscript({
         scenario,
         entries: [
@@ -211,7 +238,7 @@ describe("Codex inline handoff rejection recovery", () => {
                 },
               ]
             : []),
-          ...(shouldRestore
+          ...(canContinue
             ? [
                 {
                   type: "expect_outbound" as const,
@@ -253,45 +280,29 @@ describe("Codex inline handoff rejection recovery", () => {
       });
       const sent = yield* Deferred.make<void>();
       const allowRejection = yield* Deferred.make<void>();
+      const rejectionObserved = yield* Deferred.make<void>();
+      const allowActivity = yield* Deferred.make<void>();
       const writerParked = yield* Deferred.make<void>();
       const allowWriter = yield* Deferred.make<void>();
-      const restoreQueued = yield* Deferred.make<void>();
-      const restoreFinished = yield* Deferred.make<void>();
-      const provisionalWrite = yield* Deferred.make<void>();
+      const possibleRestoreFinished = yield* Deferred.make<void>();
       const activityObserved = yield* Deferred.make<void>();
       const sessionOpened = yield* Deferred.make<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
-      let watchRestore = false;
-      let watchRestoreWrite = false;
-      let restorationFailed = false;
+      let parkNextCommit = false;
+      let commitIntercepted = false;
       const databaseLayer = Layer.effect(
         SqlClient.SqlClient,
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           const withTransaction: typeof sql.withTransaction = (body) =>
             Effect.suspend(() => {
-              if (watchRestoreWrite) {
-                watchRestoreWrite = false;
-                // The restore's nested savepoint has succeeded. The outer writer
-                // can still roll it back after the reader revokes the proof.
-                return sql.withTransaction(body).pipe(
-                  Effect.tap(() => Deferred.succeed(provisionalWrite, undefined)),
-                  Effect.tap(() => Deferred.await(allowWriter)),
-                );
-              }
-              if (!watchRestore) return sql.withTransaction(body);
-              watchRestore = false;
-              watchRestoreWrite = recovery === "contradiction after provisional write";
-              return Deferred.succeed(restoreQueued, undefined).pipe(
-                Effect.andThen(sql.withTransaction(body)),
-                Effect.onExit((exit) =>
-                  Effect.gen(function* () {
-                    restorationFailed = Exit.isFailure(exit);
-                    if (recovery === "one SQL write failure")
-                      yield* sql`DROP TRIGGER fail_inline_restore`.pipe(Effect.orDie);
-                    yield* Deferred.succeed(restoreFinished, undefined);
-                  }),
-                ),
-              );
+              if (!parkNextCommit) return sql.withTransaction(body);
+              parkNextCommit = false;
+              commitIntercepted = true;
+              // If the rejection starts a writer, park after its whole body, including
+              // the publication lane and any final proof check, but before outer COMMIT.
+              return sql
+                .withTransaction(body.pipe(Effect.tap(() => Deferred.await(allowWriter))))
+                .pipe(Effect.ensuring(Deferred.succeed(possibleRestoreFinished, undefined)));
             });
           return new Proxy(sql, {
             get(target, key, receiver) {
@@ -301,38 +312,22 @@ describe("Codex inline handoff rejection recovery", () => {
             },
           });
         }),
-      ).pipe(Layer.provide(Sqlite.layerMemory));
+      ).pipe(Layer.provide(database));
       const effectiveTranscript = withConfigReads(transcript);
       const driver = yield* CodexReplay.makeReplayDriver(effectiveTranscript, {
         beforeEmitInbound: (entry) =>
           entry.label === "original rejection"
             ? Deferred.succeed(sent, undefined).pipe(Effect.andThen(Deferred.await(allowRejection)))
             : entry.label === "contradictory turn activity"
-              ? Deferred.await(
-                  recovery === "contradiction after provisional write"
-                    ? provisionalWrite
-                    : restoreQueued,
-                )
+              ? Deferred.await(allowActivity)
               : Effect.void,
       });
-      yield* Effect.gen(function* () {
+      const retained = yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const sql = yield* SqlClient.SqlClient;
         const sink = yield* EventSink.EventSinkV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const getProjection = () => orchestrator.getThreadProjection(threadId);
-        const send = (id: string, text: string) =>
-          orchestrator.dispatch({
-            type: "message.dispatch",
-            commandId: CommandId.make(id),
-            threadId,
-            messageId: MessageId.make(id),
-            text,
-            attachments: [],
-            createdBy: "user",
-            creationSource: "web",
-            dispatchMode: { type: "start_immediately" },
-          });
         yield* orchestrator.dispatch({
           type: "thread.create",
           commandId: CommandId.make(`create-${scenario}`),
@@ -347,7 +342,7 @@ describe("Codex inline handoff rejection recovery", () => {
           createdBy: "user",
           creationSource: "web",
         });
-        yield* send("original-inline-prompt", "Original request");
+        yield* send(orchestrator, threadId, "original-inline-prompt", "Original request");
         const run = (yield* getProjection()).runs[0];
         if (run?.providerThreadId == null)
           return yield* Effect.die("The start has no provider thread.");
@@ -395,13 +390,14 @@ describe("Codex inline handoff rejection recovery", () => {
             Effect.andThen(Effect.die("The first start stopped before it sent the prompt.")),
           ),
         );
-        assert.equal((yield* getProjection()).contextHandoffs[0]?.delivery?.status, "pending");
+        const deliveryStatus = canContinue ? "injected" : "pending";
+        assert.equal((yield* getProjection()).contextHandoffs[0]?.delivery?.status, deliveryStatus);
         if (late) {
           yield* TestClock.adjust(CODEX_START_ACK_TIMEOUT_MS);
           yield* Fiber.join(starting);
           const timedOut = yield* getProjection();
           assert.equal(timedOut.runs[0]?.status, "failed");
-          assert.equal(timedOut.contextHandoffs[0]?.delivery?.status, "pending");
+          assert.equal(timedOut.contextHandoffs[0]?.delivery?.status, deliveryStatus);
         }
         const timedOut = yield* getProjection();
         const pending = timedOut.contextHandoffs[0]!;
@@ -432,23 +428,9 @@ describe("Codex inline handoff rejection recovery", () => {
               SELECT payload_json AS payload FROM orchestration_events WHERE sequence = ${newer!.sequence}`;
           assert.equal(rows[0]?.payload, marker.payload);
         }
-        if (recovery === "pruned marker") {
-          yield* sql`
-              INSERT INTO orchestration_v2_projection_metadata
-                (projection_name, schema_version, last_sequence, updated_at)
-              VALUES (${EVENT_LOG_PRUNED_THROUGH_PROJECTION}, 1, ${marker.sequence}, ${DateTime.formatIso(now)})`;
-        }
-        if (recovery === "one SQL write failure") {
-          // A real SQLite append failure. The transaction observer removes the fault
-          // only after the first restore has rolled back.
-          yield* sql`CREATE TEMP TRIGGER fail_inline_restore BEFORE INSERT ON orchestration_events
-              WHEN NEW.event_type = 'context-handoff.updated'
-                AND json_extract(NEW.payload_json, '$.delivery') IS NULL
-              BEGIN SELECT RAISE(ABORT, 'synthetic restore failure'); END`;
-        }
         const expectedMarker = yield* currentMarker;
         const heldWriter =
-          recovery === "contradiction"
+          recovery === "contradiction while writer is held"
             ? yield* sink
                 .withProviderBatch(
                   Deferred.succeed(writerParked, undefined).pipe(
@@ -458,24 +440,29 @@ describe("Codex inline handoff rejection recovery", () => {
                 .pipe(Effect.forkChild({ startImmediately: true }))
             : undefined;
         if (heldWriter !== undefined) yield* Deferred.await(writerParked);
-        watchRestore = late;
+        parkNextCommit = atCommit;
         yield* Deferred.succeed(allowRejection, undefined);
+        yield* Deferred.await(rejectionObserved);
+        yield* TestClock.adjust(0);
         if (contradicts) {
-          // Confirm reader activity before releasing the parked writer.
+          yield* Deferred.succeed(allowActivity, undefined);
           yield* Deferred.await(activityObserved);
           yield* Deferred.succeed(allowWriter, undefined);
         }
         if (heldWriter !== undefined) yield* Fiber.join(heldWriter);
-        if (late) yield* Deferred.await(restoreFinished);
+        if (commitIntercepted) yield* Deferred.await(possibleRestoreFinished);
         yield* TestClock.adjust(0);
         yield* Fiber.join(starting);
-        if (recovery === "one SQL write failure") assert.isTrue(restorationFailed);
-        if (!shouldRestore) {
+        parkNextCommit = false;
+        if (!canContinue) {
           const after = yield* getProjection();
           assert.deepEqual(after.contextHandoffs[0], pending, "the pending marker must survive");
           assert.deepEqual(yield* currentMarker, expectedMarker);
-          assert.deepEqual(after.runs, timedOut.runs, "the failed run must remain failed");
-          assert.deepEqual(after.attempts, timedOut.attempts);
+          assert.equal(after.runs[0]?.status, "failed");
+          if (late) {
+            assert.deepEqual(after.runs, timedOut.runs, "the failed run must remain failed");
+            assert.deepEqual(after.attempts, timedOut.attempts);
+          }
           const runtime = yield* Deferred.await(sessionOpened);
           const refusal = yield* runtime
             .ensureThread({
@@ -491,11 +478,9 @@ describe("Codex inline handoff rejection recovery", () => {
             failure: null,
             cursor: effectiveTranscript.entries.length,
           });
-          return;
+          return { handoffs: after.contextHandoffs, runs: after.runs, attempts: after.attempts };
         }
-        const restored = (yield* getProjection()).contextHandoffs[0];
-        assert.equal(restored?.id, handoffId);
-        assert.isUndefined(restored?.delivery);
+        assert.equal((yield* getProjection()).contextHandoffs[0]?.delivery?.status, "injected");
 
         const waiting = yield* orchestrator.streamDomainEvents.pipe(
           Stream.filter(
@@ -508,7 +493,7 @@ describe("Codex inline handoff rejection recovery", () => {
           Stream.runHead,
           Effect.forkChild({ startImmediately: true }),
         );
-        yield* send("new-inline-prompt", "New authorized request");
+        yield* send(orchestrator, threadId, "new-inline-prompt", "New authorized request");
         yield* worker.drain();
         const replay = yield* Ref.get(driver.state);
         assert.isNull(replay.failure, String(replay.failure));
@@ -543,6 +528,12 @@ describe("Codex inline handoff rejection recovery", () => {
               onSessionOpened: (runtime) =>
                 Deferred.doneUnsafe(sessionOpened, Effect.succeed(runtime)),
               observeFrame: (frame) => {
+                if (
+                  Predicate.hasProperty(frame, "error") &&
+                  Predicate.isObject(frame.error) &&
+                  frame.error.message === "Rejected original prompt"
+                )
+                  Deferred.doneUnsafe(rejectionObserved, Effect.void);
                 if (Predicate.hasProperty(frame, "id") && frame.id === "after-rejection")
                   Deferred.doneUnsafe(activityObserved, Effect.void);
               },
@@ -550,6 +541,55 @@ describe("Codex inline handoff rejection recovery", () => {
             { runEffectWorker: false, databaseLayer },
           ),
         ),
+        Effect.scoped,
+      );
+      if (!reopenDatabase) return;
+      if (retained === undefined) return yield* Effect.die("Expected a retained pending marker");
+
+      // Discard the old adapter, session manager and SQLite connection. The new
+      // runtime must reject the authorized send before opening a native conversation.
+      const restartTranscript = makeCodexReplayTranscript({
+        scenario: `${scenario}-restart`,
+        entries: [],
+      });
+      const restartDriver = yield* CodexReplay.makeReplayDriver(restartTranscript);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const read = () => orchestrator.getThreadProjection(threadId);
+        const reopened = yield* read();
+        assert.deepEqual(reopened.contextHandoffs, retained.handoffs);
+        assert.deepEqual(reopened.runs, retained.runs);
+        assert.deepEqual(reopened.attempts, retained.attempts);
+        yield* send(orchestrator, threadId, "after-restart", "Authorized after a restart");
+        yield* worker.drain();
+        const after = yield* read();
+        assert.deepEqual(after.contextHandoffs, retained.handoffs);
+        assert.deepEqual(
+          after.runs.map((run) => run.status),
+          ["failed", "failed"],
+        );
+        assert.deepEqual(after.runs[0], retained.runs[0]);
+        assert.deepEqual(
+          after.attempts.filter((attempt) => attempt.runId === originalRunId),
+          retained.attempts,
+        );
+        assert.include(
+          after.turnItems
+            .filter((item) => item.type === "error")
+            .find((item) => item.runId === after.runs[1]?.id)?.failure.message ?? "",
+          "Conversation history delivery is uncertain",
+        );
+        assert.deepEqual(yield* Ref.get(restartDriver.state), { failure: null, cursor: 0 });
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistryAndServices(
+            { name: restartTranscript.scenario, runtimePolicyOverride: { cwd } },
+            CodexAdapterV2Testkit.layer({ transcript: restartTranscript, driver: restartDriver }),
+            { runEffectWorker: false, databaseLayer: database },
+          ),
+        ),
+        Effect.scoped,
       );
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
