@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
+import { resolveAuthFleetClaudeMaintenanceTarget } from "../../jones/provider/authFleetClaudeMaintenance.ts";
 import { resolveClaudeHomePath } from "./ClaudeHome.ts";
 
 const NATIVE_RELEASES = "https://downloads.claude.ai/claude-code-releases";
@@ -107,7 +108,10 @@ export const makeClaudeMaintenanceResolution = Effect.fn("ClaudeMaintenance.make
     ProviderMaintenanceResolverServices | HttpClient.HttpClient
   >();
   const resolveInstallation = yield* makeCachedProviderMaintenanceResolution(
-    resolveProviderMaintenanceCapabilitiesEffect(update, options).pipe(
+    resolveAuthFleetClaudeMaintenanceTarget(options).pipe(
+      Effect.flatMap((target) =>
+        resolveProviderMaintenanceCapabilitiesEffect(update, target ?? options),
+      ),
       Effect.provideContext(services),
     ),
   );

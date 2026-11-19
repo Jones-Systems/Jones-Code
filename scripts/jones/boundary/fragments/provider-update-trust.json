@@ -4,6 +4,8 @@
   "jonesOwnedPaths": [
     "packages/client-runtime/src/jones/providerUpdates/index.ts",
     "packages/client-runtime/src/jones/providerUpdates/index.test.ts",
+    "apps/server/src/jones/provider/authFleetClaudeMaintenance.ts",
+    "apps/server/src/jones/provider/authFleetClaudeMaintenance.test.ts",
     "apps/server/src/jones/provider/providerUpdateVerification.ts",
     "apps/server/src/jones/provider/providerUpdateVerification.test.ts",
     "apps/web/src/jones/updates/ProviderUpdateEnvironmentRows.test.tsx",
@@ -16,6 +18,7 @@
   "hookPaths": [
     "packages/provider-core/src/server/maintenanceResolver.ts",
     "packages/provider-core/src/server/maintenanceResolver.test.ts",
+    "apps/server/src/provider/Drivers/ClaudeMaintenance.ts",
     "apps/server/src/provider/CodexInstallation.ts",
     "apps/server/src/provider/CodexInstallation.test.ts",
     "apps/web/src/components/ProviderUpdateLaunchNotification.logic.ts",
@@ -30,6 +33,10 @@
   ],
   "tombstones": ["apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx"],
   "allowedImports": [
+    {
+      "from": "apps/server/src/provider/Drivers/ClaudeMaintenance.ts",
+      "to": "apps/server/src/jones/provider/authFleetClaudeMaintenance.ts"
+    },
     {
       "from": "apps/web/src/components/ProviderUpdateLaunchNotification.logic.ts",
       "to": "packages/client-runtime/src/jones/providerUpdates/index.ts"
