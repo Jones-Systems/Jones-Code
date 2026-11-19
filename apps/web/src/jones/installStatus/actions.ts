@@ -399,19 +399,30 @@ export async function refreshDeviceEvidence(
       return options.refreshInstallOutcome
         ? `Could not read the exact update receipt on ${observed.label}. Refresh its status and try again.`
         : undefined;
-    const currentCapability = currentAuthorizedUpdateStatus(services, environmentId)?.capability;
+    const wantsLauncherCheck = options.refreshInstallOutcome && input.action.kind === "install";
+    const current = wantsLauncherCheck
+      ? services.devices().find((device) => device.environmentId === environmentId)
+      : undefined;
+    const live = current?.observation;
+    // A direct status read can succeed while the background stream is stale.
+    const latest =
+      (live?.freshness === "fresh" || live?.freshness === "unsupported") &&
+      live.heardAt !== undefined &&
+      (observation.heardAt === undefined || live.heardAt > observation.heardAt)
+        ? live
+        : observation;
+    const checkLauncher =
+      observed.canOperate &&
+      current?.canOperate === true &&
+      latest.freshness === "fresh" &&
+      latest.state?.environmentId === environmentId &&
+      supportsOperationReceiptReads(latest.state.capability);
     const result = await services.operation(environmentId, {
       action: "operationRead",
       input: {
         environmentId,
         operationIds: [operation.operationId],
-        ...(options.refreshInstallOutcome &&
-        input.action.kind === "install" &&
-        observed.canOperate &&
-        currentCapability !== undefined &&
-        supportsOperationReceiptReads(currentCapability)
-          ? { refreshInstallOutcome: operation.operationId }
-          : {}),
+        ...(checkLauncher ? { refreshInstallOutcome: operation.operationId } : {}),
       },
     });
     if ("receipts" in result) {
@@ -432,6 +443,8 @@ export async function refreshDeviceEvidence(
           binding,
         );
     }
+    if (wantsLauncherCheck && !checkLauncher)
+      return `Requested the retained update receipt from ${observed.label}. Checking its launcher requires fresh status and permission.`;
   }
 }
 

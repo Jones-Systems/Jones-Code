@@ -377,8 +377,13 @@ describe("bound Install status actions", () => {
         receipts: [{ operationId: hostOperationId, receipt }],
       }));
       let canOperate = false;
+      let liveObservation: InstallStatusDevice["observation"] = authorized.observation;
       const binding = {
-        services: { ...f.services, devices: () => [{ ...authorized, canOperate }], operation },
+        services: {
+          ...f.services,
+          devices: () => [{ ...authorized, observation: liveObservation, canOperate }],
+          operation,
+        },
         store: f.store,
       };
       const check = (observed: InstallStatusDevice, refreshInstallOutcome: boolean) =>
@@ -410,6 +415,29 @@ describe("bound Install status actions", () => {
           operationId: hostOperationId,
           evidence: { kind: "receipt", receipt },
         });
+        const directlyRead = {
+          ...authorized,
+          observation: { ...authorized.observation, heardAt: 20 },
+        };
+        liveObservation = { freshness: "stale", state: status, heardAt: 10 };
+        await check(directlyRead, true);
+        expect(operation).toHaveBeenLastCalledWith(hostId, {
+          action: "operationRead",
+          input: { ...exactRead, refreshInstallOutcome: hostOperationId },
+        });
+
+        liveObservation = {
+          freshness: "fresh",
+          heardAt: 21,
+          state: { ...status, capability: { check: true, download: false, install: false } },
+        };
+        const limited = await check(directlyRead, true);
+        expect(operation).toHaveBeenLastCalledWith(hostId, {
+          action: "operationRead",
+          input: exactRead,
+        });
+        expect(limited).toContain("Checking its launcher requires fresh status and permission.");
+
         await check({ ...authorized, observation: { freshness: "stale", state: status } }, true);
         await check(
           {
@@ -418,7 +446,7 @@ describe("bound Install status actions", () => {
           },
           true,
         );
-        expect(operation).toHaveBeenCalledTimes(3);
+        expect(operation).toHaveBeenCalledTimes(5);
         expect(f.stop).not.toHaveBeenCalled();
       } finally {
         f.unbind();
