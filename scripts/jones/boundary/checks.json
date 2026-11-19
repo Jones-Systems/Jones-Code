@@ -2418,6 +2418,7 @@
     {
       "id": "jones-provider-update-trust",
       "tests": [
+        "apps/server/src/jones/provider/authFleetClaudeMaintenance.test.ts",
         "apps/server/src/provider/CodexInstallation.test.ts",
         "packages/client-runtime/src/jones/providerUpdates/index.test.ts",
         "apps/server/src/jones/provider/providerUpdateVerification.test.ts",
@@ -2431,6 +2432,7 @@
         "apps/web/src/jones/updates/ProviderUpdateNotice.browser.test.tsx"
       ],
       "commands": [
+        "vp test run apps/server/src/jones/provider/authFleetClaudeMaintenance.test.ts apps/server/src/provider/Drivers/ClaudeMaintenance.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/provider/CodexInstallation.test.ts packages/client-runtime/src/jones/providerUpdates/index.test.ts apps/server/src/jones/provider/providerUpdateVerification.test.ts apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts apps/web/src/jones/updates/ProviderUpdateEnvironmentRows.test.tsx apps/server/src/provider/providerMaintenanceRunner.test.ts packages/provider-core/src/server/maintenanceResolver.test.ts apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "vp test run apps/web/src/jones/updates/providerUpdateController.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project browser src/jones/updates/ProviderUpdateNotice.browser.test.tsx --maxWorkers=1 --no-file-parallelism",

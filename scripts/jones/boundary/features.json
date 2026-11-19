@@ -1495,6 +1495,7 @@
     {
       "id": "provider-update-trust",
       "tests": [
+        "apps/server/src/jones/provider/authFleetClaudeMaintenance.test.ts",
         "apps/server/src/provider/CodexInstallation.test.ts",
         "packages/client-runtime/src/jones/providerUpdates/index.test.ts",
         "apps/server/src/jones/provider/providerUpdateVerification.test.ts",
