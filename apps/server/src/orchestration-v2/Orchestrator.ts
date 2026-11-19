@@ -66,7 +66,8 @@ import { buildUserInputRequestRecord } from "../jones/orchestration/userInputReq
 import { questionId as checkoutRecoveryQuestionId } from "../jones/workspaceRecreation/Recovery.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 import * as CapturedRuntimeStop from "../jones/runtime/RuntimeStop.ts";
-import type * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
+import * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
+import * as QueuedAction from "../jones/orchestration/QueuedActionBasis.ts";
 import { TaskContinuationCommit } from "../jones/taskContinuation/commitContext.ts";
 import {
   readMonitorSettlementBlocker,
@@ -1861,6 +1862,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const tables = makeJonesTablePresence(sql);
   const idleWorktreeAdmission = IdleWorktreeAdmission.makeIdleWorktreeAdmission(sql);
   const queueHolds = makeQueueHoldStore(sql, tables);
+  const runtimeStopFences = RuntimeStopStore.makeRuntimeStopMethods(sql, tables);
   const capturedStop = yield* Effect.serviceOption(CapturedRuntimeStop.CurrentRuntimeStop);
   const automaticTitles = yield* AutomaticTitles.make;
   const settlementRestores = makeSettlementRestoreStore(sql, tables);
@@ -2612,7 +2614,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       queuedRunId === undefined
         ? nextQueuedRun(projection)
         : projection.runs.find((run) => run.id === queuedRunId && run.status === "queued");
-    if (queuedRun === undefined) return;
+    if (queuedRun === undefined) return false;
     // A steer that fell back to the queue keeps its user item, hidden while the
     // run is queued. Republish it before the failure so clients whose bounded
     // snapshot omitted it can show the prompt beside the error.
@@ -2643,7 +2645,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       code: handoffUnsupported ? "context_handoff_unsupported" : "queued_start_failed",
       class: handoffUnsupported ? "validation_error" : "unknown",
     });
-    yield* writeSystemEvents([
+    const events: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">> = [
       ...retainedUserItems.map((item) => ({
         type: "turn-item.updated" as const,
         threadId,
@@ -2721,7 +2723,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: { ...queuedRun, status: "failed", queuePosition: null, completedAt: now },
       },
-    ]);
+    ];
+    return yield* eventSink.withProviderBatch(
+      Effect.gen(function* () {
+        const current = yield* projectionStore.getRun(threadId, queuedRun.id);
+        if (current?.status !== "queued" || current.activeAttemptId !== queuedRun.activeAttemptId)
+          return false;
+        // This also covers retained fences written by builds that left the queue runnable.
+        if (yield* runtimeStopFences.hasRunFence(threadId, queuedRun.id)) {
+          if (current.queueHeld === true) return false;
+          yield* writeSystemEvents(
+            [CapturedRuntimeStop.capturedStopQueueHoldEvent(current, now)],
+            [],
+            { queueHold: { reason: "stop", runIds: [current.id] } },
+          );
+          return true;
+        }
+        yield* writeSystemEvents(events);
+        return false;
+      }),
+    );
   });
 
   const isStaleQuestionWake = Effect.fn("Orchestrator.isStaleQuestionWake")(function* (
@@ -2845,25 +2866,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
   });
 
-  const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(
+  type StartQueuedOptions = {
+    readonly failedRunId?: RunId;
+    readonly endedRunId?: RunId;
+    readonly queuedRunId?: RunId;
+    /** Treat the latest executed run as the one that just ended, as its run-end handler would. */
+    readonly latestRunEnded?: boolean;
+    readonly completedRestartContinuation?: OrchestrationV2Run;
+    readonly userStarted?: boolean;
+    readonly reviewed?: {
+      readonly commandId: CommandId;
+      readonly runId: RunId;
+      readonly messageId: MessageId;
+      readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
+      readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
+    };
+  };
+  const attemptNextQueuedRun = Effect.fn("Orchestrator.attemptNextQueuedRun")(
     function* (
       threadId: ThreadId,
-      options?: {
-        readonly failedRunId?: RunId;
-        readonly endedRunId?: RunId;
-        readonly queuedRunId?: RunId;
-        /** Treat the latest executed run as the one that just ended, as its run-end handler would. */
-        readonly latestRunEnded?: boolean;
-        readonly completedRestartContinuation?: OrchestrationV2Run;
-        readonly userStarted?: boolean;
-        readonly reviewed?: {
-          readonly commandId: CommandId;
-          readonly runId: RunId;
-          readonly messageId: MessageId;
-          readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
-          readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
-        };
-      },
+      options: StartQueuedOptions | undefined,
+      selected: { runId: RunId | undefined },
     ) {
       if (options?.completedRestartContinuation !== undefined)
         yield* releaseRestartHolds(threadId, options.completedRestartContinuation);
@@ -2900,16 +2923,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandType: "thread.imported-history.start",
           cause: "Reviewed queue head no longer matches its exact run and message.",
         });
-      while (
-        options?.reviewed === undefined &&
-        storedQueuedRun !== undefined &&
-        isStalePullRequestWatchWake(projection, storedQueuedRun)
-      ) {
-        yield* writeSystemEvents(
-          queuedRunCancellationEvents(projection, storedQueuedRun, yield* DateTime.now),
-        );
-        projection = yield* readCommandProjection(threadId);
-        storedQueuedRun = nextQueuedRun(projection);
+      if (options?.reviewed === undefined) {
+        while (
+          storedQueuedRun !== undefined &&
+          isStalePullRequestWatchWake(projection, storedQueuedRun)
+        ) {
+          yield* writeSystemEvents(
+            queuedRunCancellationEvents(projection, storedQueuedRun, yield* DateTime.now),
+          );
+          projection = yield* readCommandProjection(threadId);
+          storedQueuedRun = nextQueuedRun(projection);
+        }
       }
       // A wake that outlived some of its pull requests tells only the current ones.
       const currentWake =
@@ -2940,6 +2964,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (storedQueuedRun === undefined) {
         return;
       }
+      selected.runId = storedQueuedRun.id;
       const queuedMessage = projection.messages.find(
         (candidate) => candidate.id === storedQueuedRun.userMessageId,
       );
@@ -3802,13 +3827,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ],
       );
     },
-    (effect, threadId, options?) =>
+    (effect, threadId, options, selected) =>
       effect.pipe(
+        Effect.as(false),
         Effect.catch(
           (
             cause,
           ): Effect.Effect<
-            void,
+            boolean,
             OrchestratorDispatchError | Effect.Error<ReturnType<typeof failQueuedRunStart>>
           > =>
             options?.reviewed !== undefined
@@ -3822,11 +3848,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : isUpdateAdmissionRefusal(cause)
                 ? Effect.logInfo("Queued V2 run held while this host hands off to an update", {
                     threadId,
-                  })
-                : failQueuedRunStart(threadId, cause, options?.queuedRunId),
+                  }).pipe(Effect.as(false))
+                : failQueuedRunStart(threadId, cause, selected.runId),
         ),
       ),
   );
+
+  const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(function* (
+    threadId: ThreadId,
+    options?: StartQueuedOptions,
+  ) {
+    let heldByStop: boolean;
+    do {
+      heldByStop = yield* attemptNextQueuedRun(threadId, options, { runId: options?.queuedRunId });
+      if (options?.queuedRunId !== undefined) return;
+    } while (heldByStop);
+  });
 
   // Under load a resumed provider can time out before taking the prompt; the restart still owes the turn.
   const retryContinuationStart = Effect.fn("Orchestrator.retryContinuationStart")(function* (
@@ -12736,8 +12773,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     >,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    planning: QueuedAction.Planning,
   ) {
-    const projection = yield* loadProjectionForCommand(
+    const projection = yield* loadQueuedActionProjection(
       command,
       [
         "runs",
@@ -12753,6 +12791,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ],
       // User messages measure a restart's model switch. Steering reads root and live nodes only.
       { turnItemTypes: ["user_message"], messageRoles: ["user"], omitSettledLeafNodes: true },
+      planning,
     );
     if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
       return yield* new OrchestratorDispatchError({
@@ -13039,10 +13078,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchQueuedRunReorder = Effect.fn("Orchestrator.dispatchQueuedRunReorder")(function* (
     command: Extract<OrchestrationV2ServerCommand, { readonly type: "queued-run.reorder" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    planning: QueuedAction.Planning,
   ) {
-    const projection = yield* loadProjectionForCommand(command, ["runs", "messages"], {
-      messageRoles: ["user"],
-    });
+    const projection = yield* loadQueuedActionProjection(
+      command,
+      ["runs", "messages"],
+      { messageRoles: ["user"] },
+      planning,
+    );
     const queuedRuns = queuedRunsInDeliveryOrder(projection);
     const moving = queuedRuns.find((run) => run.id === command.runId);
     if (moving === undefined) {
@@ -13127,8 +13170,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     // Settling disposes a cancelled wake's whole cohort, so a sibling's late result cannot unsettle it.
     disposes: "wake" | "cohort" = "wake",
+    planning?: QueuedAction.Planning,
   ) {
-    const projection = yield* loadProjectionForCommand(
+    const projection = yield* loadQueuedActionProjection(
       command,
       ["runs", "messages", "nodes", "attempts", "subagents", "turnItems"],
       // Cancelling reads the queued run's own message and root node, never a settled leaf.
@@ -13138,6 +13182,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         messageRunIds: [command.runId],
         omitSettledLeafNodes: true,
       },
+      planning,
     );
     const queuedRun = projection.runs.find((candidate) => candidate.id === command.runId);
     if (queuedRun === undefined || queuedRun.status !== "queued") {
@@ -13214,8 +13259,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     >,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    planning: QueuedAction.Planning,
   ) {
-    const projection = yield* loadProjectionForCommand(
+    const projection = yield* loadQueuedActionProjection(
       command,
       [
         "runs",
@@ -13228,9 +13274,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         "runtimeRequests",
       ],
       { runStatuses: ["queued", "running"], messageRoles: ["user"], omitSettledLeafNodes: true },
+      planning,
     );
     const automatic = yield* AutomaticQueuedToolBoundary;
-    const batch = validateQueuedSteerBatch(projection, command, automatic !== undefined);
+    planning.automaticBatchDelivery = automatic !== undefined;
+    const batch = validateQueuedSteerBatch(projection, command, planning.automaticBatchDelivery);
     if ("error" in batch)
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -13339,6 +13387,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2ServerCommand, { readonly type: "queued-run.edit" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    planning: QueuedAction.Planning,
   ) {
     if (command.text.trim().length === 0) {
       return yield* new OrchestratorDispatchError({
@@ -13347,10 +13396,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Queued run ${command.runId} cannot be edited to an empty message.`,
       });
     }
-    const projection = yield* loadProjectionForCommand(command, ["runs", "messages", "turnItems"], {
-      turnItemTypes: ["user_message"],
-      messageRoles: ["user"],
-    });
+    const projection = yield* loadQueuedActionProjection(
+      command,
+      ["runs", "messages", "turnItems"],
+      { turnItemTypes: ["user_message"], messageRoles: ["user"] },
+      planning,
+    );
     const queuedRun = projection.runs.find((candidate) => candidate.id === command.runId);
     if (queuedRun === undefined || queuedRun.status !== "queued") {
       return yield* new OrchestratorDispatchError({
@@ -13472,6 +13523,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (cause) => new OrchestratorProjectionError({ threadId: commandThreadId(command), cause }),
       ),
     );
+
+  const loadQueuedActionProjection = <K extends ProjectionRecordField>(
+    command: QueuedAction.Command,
+    fields: ReadonlyArray<K | "runs">,
+    filter: ProjectionRecordFilter,
+    planning: QueuedAction.Planning | undefined,
+  ) => {
+    const records = loadProjectionForCommand(command, fields, filter);
+    return planning === undefined
+      ? records
+      : QueuedAction.read(sql, runtimeStopFences, command, records, planning).pipe(
+          Effect.mapError((cause) =>
+            isOrchestratorProjectionError(cause)
+              ? cause
+              : new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+          ),
+        );
+  };
 
   const preparedRunState = (
     command: Extract<
@@ -16974,7 +17043,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     childThreadId: ThreadId,
     options?: { readonly settledContinuationOf?: RunId; readonly syncRunId?: RunId },
   ) {
-    const childControls = yield* projectionStore.getThreadRecords(
+    // Run state and outstanding child work must come from the same snapshot.
+    const childControls = yield* publicProjectionStore.getThreadRecords(
       childThreadId,
       ["runs", "messages", "subagents", "providerThreads", "providerTurns", "attempts"],
       { messageRoles: ["user"] },
@@ -17339,6 +17409,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         readonly reason: string;
       };
       readonly updateDelegatedCompletionOnlyRunId?: RunId;
+      readonly queuedActionBasis?: QueuedAction.Basis;
     },
     OrchestratorV2Error
   > {
@@ -17350,6 +17421,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
     const effects = yield* Ref.make<Array<PendingOrchestrationEffectV2>>([]);
+    const queuePlanning: QueuedAction.Planning = {};
     let cancelUnsettledEffects:
       | {
           readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
@@ -17909,21 +17981,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
         break;
       case "queued-message.promote-batch-to-steer":
-        yield* dispatchQueuedMessagePromoteBatchToSteer(command, events, effects);
+        yield* dispatchQueuedMessagePromoteBatchToSteer(command, events, effects, queuePlanning);
         break;
       case "queued-message.promote-to-steer":
         cancelUnsettledEffects = yield* dispatchQueuedMessagePromoteToSteer(
           command,
           events,
           effects,
+          queuePlanning,
         );
         break;
       case "queued-run.start":
       case "queue.resume": {
-        const projection = yield* loadProjectionForCommand(
+        const projection = yield* loadQueuedActionProjection(
           command,
           ["runs", "turnItems", "providerSessions", "messages"],
           { turnItemTypes: ["error"], messageRoles: ["user"] },
+          queuePlanning,
         );
         if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
           return yield* new OrchestratorDispatchError({
@@ -18011,13 +18085,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       }
       case "queued-run.reorder":
-        yield* dispatchQueuedRunReorder(command, events);
+        yield* dispatchQueuedRunReorder(command, events, queuePlanning);
         break;
       case "queued-run.cancel":
-        yield* dispatchQueuedRunCancel(command, events);
+        yield* dispatchQueuedRunCancel(command, events, "wake", queuePlanning);
         break;
       case "queued-run.edit":
-        yield* dispatchQueuedRunEdit(command, events, effects);
+        yield* dispatchQueuedRunEdit(command, events, effects, queuePlanning);
         break;
       case "checkpoint.rollback":
         yield* dispatchCheckpointRollback(command, events, effects);
@@ -18084,10 +18158,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       default:
         return yield* dispatchUnsupported(command);
     }
+    const plannedEvents = yield* Ref.get(events);
     return {
       ...(legacyDeletionTarget === undefined ? {} : { legacyDeletionTarget }),
-      events: yield* Ref.get(events),
+      events: plannedEvents,
       effects: yield* Ref.get(effects),
+      ...(queuePlanning.snapshot === undefined
+        ? {}
+        : {
+            queuedActionBasis: QueuedAction.forCommand(
+              queuePlanning.snapshot,
+              plannedEvents,
+              queuePlanning.automaticBatchDelivery,
+            ),
+          }),
       ...(cancelUnsettledEffects === undefined ? {} : { cancelUnsettledEffects }),
       ...(updateDelegatedCompletionOnlyRunId === undefined
         ? {}
@@ -18913,6 +18997,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           threadId: commandThreadId(command),
           commandType: command.type,
           acceptedAt,
+          ...(plan.queuedActionBasis === undefined
+            ? {}
+            : { queuedActionBasis: plan.queuedActionBasis }),
           events:
             cancelledTask === undefined
               ? plan.events

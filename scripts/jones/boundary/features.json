@@ -1013,6 +1013,8 @@
       "id": "runtime-stop",
       "tests": [
         "apps/server/src/jones/runtime/RuntimeStop.test.ts",
+        "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
         "apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts",
         "packages/contracts/src/jones/runtimeStop.test.ts",
         "packages/client-runtime/src/operations/currentRuntimeStop.test.ts",
@@ -1020,7 +1022,7 @@
         "packages/client-runtime/src/jones/runtimeDetachCompatibility.test.ts",
         "apps/server/src/jones/provider/CapturedRuntimeStop.test.ts"
       ],
-      "scope": "Captured current-runtime stop identity, durable observation and queued-start fencing, adapter-bound stop execution, and saved client correlation. Optional immutable retirement observers retain one invocation across caller timeout, cancellation and inactive producers; exact exit and manager cleanup complete the original receipt. Completed stopped-binding proof selects a fresh logical session for a subsequent ordinary send. Existing completed-unknown receipts stay immutable, unsupported captures remain unavailable, and background coverage remains partial."
+      "scope": "Captured current-runtime Stop owns durable observation, adapter execution, queued-start fences and saved client correlation. Its acceptance settles exact first starts with zero claims or a writer-ordered predispatch witness. Warm prepared releases require the accepted release, original producer generation and persisted root scope. Exact fenced queued runs settle or retain a queue hold. Queue actions revalidate their affected inputs and Stop fences before committing events and effects. Delegated follow-up finalization reads the run and nested work together. The worker keeps the existing retirement and cancellation barriers after executor entry. Completed stopped-binding proof selects a fresh logical session for a subsequent send. Background coverage remains partial."
     },
     {
       "id": "deletion-worktree-removal",

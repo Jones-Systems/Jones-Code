@@ -5,6 +5,7 @@ import { URGENT_ACTION_EFFECT_TYPES } from "../jones/orchestration/actionWorkerA
 import type { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { confirmedNativeCompletion } from "../jones/nativeCreation/NativeEffectCompletion.ts";
 import { sameOperationRequest } from "../jones/workspaceLifecycle/NativeOperation.ts";
+import { makeRuntimeStartDispatch } from "../jones/runtime/RuntimeStartDispatch.ts";
 import { CommandId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -130,11 +131,17 @@ export interface EffectOutboxV2Shape {
   >;
   readonly claimNext: (input: {
     readonly workerId: string;
+    /** Workers that cross startDispatch.begin can request a first-start witness. */
+    readonly trackStartDispatch?: boolean;
     readonly excludeRestartContinuations?: boolean;
     readonly maxRunningTitleGenerations?: number;
     readonly excludeTitleGeneration?: boolean;
     readonly urgentOnly?: boolean;
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
+  readonly startDispatch?: {
+    readonly hasWitness: (claim: OrchestrationEffectV2) => boolean;
+    readonly begin: (claim: OrchestrationEffectV2) => Effect.Effect<boolean, EffectOutboxError>;
+  };
   readonly nextClaimableAt: (input?: {
     readonly maxRunningTitleGenerations?: number;
     readonly excludeTitleGeneration?: boolean;
@@ -248,10 +255,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     const completionChanges = yield* PubSub.sliding<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
     const settledSignals = new Map<string, Deferred.Deferred<void>>();
+    const startDispatch = makeRuntimeStartDispatch();
     const signalSettled = (effectIds: ReadonlyArray<string>) =>
       Effect.forEach(
         effectIds,
         (effectId) => {
+          startDispatch.forget(effectId);
           const signal = settledSignals.get(effectId);
           if (signal === undefined) return Effect.void;
           settledSignals.delete(effectId);
@@ -610,6 +619,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       claimNext: Effect.fnUntraced(
         function* ({
           workerId,
+          trackStartDispatch = false,
           excludeRestartContinuations = false,
           maxRunningTitleGenerations,
           excludeTitleGeneration = false,
@@ -618,9 +628,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           // Idle claims return empty; tracing their full SQL on every poll overwhelms useful traces.
-          const claimStatement = guardedRows(
-            sql`candidate.thread_id`,
-            (allowed) => sql<EffectRow>`
+          const claimStatement = guardedRows(sql`candidate.thread_id`, (allowed) =>
+            sql<EffectRow>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'running',
@@ -638,7 +647,13 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               LIMIT 1
             )
             RETURNING *
-          `,
+          `.pipe(
+              Effect.tap((rows) =>
+                Effect.sync(() => {
+                  if (rows[0] !== undefined) startDispatch.claim(rows[0], trackStartDispatch);
+                }),
+              ),
+            ),
           );
           while (true) {
             const rows = yield* claimStatement.pipe(Effect.withTracerEnabled(false));
@@ -666,6 +681,30 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           isEffectOutboxError(cause) ? cause : new EffectOutboxError({ operation: "claim", cause }),
         ),
       ),
+      startDispatch: {
+        hasWitness: startDispatch.hasWitness,
+        begin: Effect.fn("EffectOutbox.beginStartDispatch")(
+          function* (claim) {
+            const rows = yield* guardedRows(
+              sql`orchestration_v2_effect_outbox.thread_id`,
+              (allowed) =>
+                sql`SELECT 1 FROM orchestration_v2_effect_outbox
+                  WHERE effect_id = ${claim.id} AND status = 'running'
+                    AND ${capturedClaim(claim)} AND ${allowed}`.pipe(
+                  Effect.tap(() => Effect.sync(() => startDispatch.enter(claim))),
+                ),
+            );
+            return rows.length === 1;
+          },
+          (effect, { id: effectId }) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new EffectOutboxError({ operation: "begin-start-dispatch", effectId, cause }),
+              ),
+            ),
+        ),
+      },
       nextClaimableAt: Effect.fnUntraced(
         function* (input?: {
           readonly maxRunningTitleGenerations?: number;
@@ -782,6 +821,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           `,
           );
           if (rows.length === 1) {
+            startDispatch.forget(effectId);
             cancellationSignals.delete(effectId);
             yield* PubSub.publish(completionChanges, undefined);
             yield* notifyAvailable();
