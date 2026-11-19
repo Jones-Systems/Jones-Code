@@ -544,9 +544,12 @@ export function InstallStatusPanel({
               const open = focusedDevice === environmentId;
               const updated = row?.phase === "done" || row?.phase === "updated-elsewhere";
               const held = row?.phase === "held" || row?.phase === "unknown";
-              const receipt = plan.devices
+              const operation = plan.devices
                 .find((d) => d.environmentId === environmentId)
-                ?.operations.at(-1)?.receipt;
+                ?.operations.at(-1);
+              const receipt = operation?.receipt;
+              const setupUnconfirmed =
+                operation?.step === "directive" && operation.directive === undefined;
               const inspectKey =
                 receipt?.phase === "held" &&
                 receipt.code === "cleanup-unconfirmed" &&
@@ -555,6 +558,10 @@ export function InstallStatusPanel({
                   ? `${plan.planId}:${environmentId}:${receipt.operationId}:${receipt.updatedAt}:cleanup`
                   : null;
               const cleanup = cleanupInspection?.key === inspectKey ? cleanupInspection : null;
+              const canCheckArchived =
+                snapshot.native?.readOnly === undefined &&
+                plan.cancelled === true &&
+                (inspectKey !== null || setupUnconfirmed);
               return (
                 <li key={environmentId}>
                   <div className="flex min-w-0 items-center gap-1">
@@ -707,11 +714,13 @@ export function InstallStatusPanel({
                       ) : null}
                       {held ? (
                         <p>
-                          {receipt?.code === "cleanup-unconfirmed"
-                            ? "The host has yet to confirm cleanup from this attempt."
-                            : "The host has yet to confirm the outcome of this attempt."}{" "}
-                          Check the operation receipt. If the hold remains, open Connections for
-                          this host.
+                          {setupUnconfirmed
+                            ? plan.cancelled === true
+                              ? "The host had yet to confirm setup when this plan was cancelled."
+                              : "The host has yet to confirm its update setup. The plan is still at setup for this device."
+                            : receipt?.code === "cleanup-unconfirmed"
+                              ? "Inspect cleanup to check whether the disk image from this attempt is still attached."
+                              : "The host has yet to confirm the outcome of this attempt. Check the operation receipt. If the hold remains, open Connections for this host."}
                         </p>
                       ) : null}
                       {cleanup !== null ? (
@@ -727,7 +736,7 @@ export function InstallStatusPanel({
                                   : "Inspection could not confirm cleanup. The update remains on hold."}
                         </p>
                       ) : null}
-                      {!view.readOnly ? (
+                      {!view.readOnly || canCheckArchived ? (
                         <div className="flex flex-wrap gap-1">
                           {inspectKey !== null && receipt !== undefined && device?.canOperate ? (
                             <Button
@@ -840,10 +849,12 @@ export function InstallStatusPanel({
                             onClick={() => action(environmentId, "check")}
                           >
                             {pending.has(`${environmentId}:check`)
-                              ? "Checking outcome…"
-                              : held
-                                ? "Check update outcome"
-                                : "Refresh now"}
+                              ? "Checking…"
+                              : setupUnconfirmed
+                                ? "Check setup status"
+                                : held
+                                  ? "Check update outcome"
+                                  : "Refresh now"}
                           </Button>
                         </div>
                       ) : null}
@@ -869,7 +880,7 @@ export function InstallStatusPanel({
                     if (binding === undefined) throw new Error("Install status is not connected.");
                     if (
                       !(await binding.services.confirm(
-                        "Cancel this update plan? Queued updates will be dropped and install history will be kept.",
+                        "Cancel this update plan? Queued updates will be dropped. Any setup already sent can still reach the host. Install history and cleanup holds will be kept.",
                       ))
                     )
                       return;

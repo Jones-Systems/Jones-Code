@@ -44,6 +44,21 @@ keeps installed builds in place and retains unresolved native work for later
 verification. Use **Check update outcome** from the Laptop row in **Last
 update** if the outcome is still unconfirmed.
 
+**Update setup unconfirmed** means an enrolled host has yet to confirm its
+setup request. **Check setup status** shows what the host reports. When the
+host still reports the expected prior setup, the plan can resend the same
+request after reconnecting. Installation still needs your review.
+Once the setup reservation expires, you can cancel the plan and check for a
+late setup confirmation from **Last update**. A setup request already sent
+may still reach the host. The cancelled plan starts no further downloads or
+installs.
+
+For **Cleanup unconfirmed**, use **Inspect cleanup** on that device. If
+inspection proves the previous disk image is absent, **Recover cleanup** can
+release the hold. The device then needs a separate download retry. You can
+cancel queued work while the cleanup hold is present and return to it in
+**Last update**. Release that hold before starting another plan.
+
 The panel also refreshes each machine's status by itself: about every minute
 while a machine is downloading, installing or restarting, and about every ten
 minutes otherwise, less often while the window is in the background. Automatic
@@ -80,8 +95,9 @@ remaining downloaded stages are already running the selected source. Done ends
 those stages in the plan and dismisses it without installing anything. If proof
 changes or a request is not confirmed, the panel stays open; use Done again only
 after reading the current status. Confirmed partial progress is kept. Other
-downloaded stages and unresolved results keep the plan open. Reopening **Last update** is
-read-only. The next plan starts with Laptop only.
+downloaded stages and unresolved results keep the plan open. **Last update**
+shows history and can reconcile the pending outcomes described above. The next
+plan starts with Laptop only.
 
 ### Clear an old plan after a manual install
 
