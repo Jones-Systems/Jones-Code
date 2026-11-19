@@ -54,6 +54,14 @@
       "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/orchestration/QueuedActionBasis.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/QueuedActionBasis.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
       "to": "apps/server/src/jones/runtime/RuntimeStop.ts"
     },

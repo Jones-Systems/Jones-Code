@@ -40,6 +40,7 @@ export interface RuntimeStopCommitContext {
 }
 // These methods use EventSink's existing transaction and command receipt owner.
 const compiledDecodeEffect1 = Schema.decodeEffect(Schema.fromJsonString(RuntimeStopIdentity));
+const encodeRunIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(RunId)));
 
 const compiledLatestSchema5 = Schema.is(RuntimeStopError);
 
@@ -147,6 +148,18 @@ export const makeRuntimeStopMethods = (
     const rows =
       yield* sql`SELECT 1 FROM jones_runtime_stop_fences WHERE thread_id=${threadId} AND run_id=${runId} LIMIT 1`;
     return rows.length !== 0;
+  });
+  const readRunFences = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    runIds: ReadonlyArray<RunId>,
+  ) {
+    if (runIds.length === 0 || !(yield* available)) return [];
+    return yield* sql<{ readonly run_id: RunId; readonly command_id: CommandId }>`
+      SELECT fence.run_id, fence.command_id
+      FROM json_each(${encodeRunIds(runIds)}) AS affected
+      CROSS JOIN jones_runtime_stop_fences AS fence
+        ON fence.thread_id = ${threadId} AND fence.run_id = affected.value
+      ORDER BY fence.run_id, fence.command_id`;
   });
   const assertStartAllowed = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -332,6 +345,7 @@ export const makeRuntimeStopMethods = (
     complete,
     assertStartAllowed,
     hasRunFence,
+    readRunFences,
     hasStoppedRuntime,
     readStoppedRuntime,
   };
