@@ -296,7 +296,7 @@ it.effect("keeps a withdrawn approved request visible while its access grant sur
           originThreadId: "synthetic-origin-thread",
           destinationThreadId: null,
           sessionId: "peer-a",
-          operation: "t3_thread_launch",
+          operation: "t3_thread_send",
           runtimeMode: "approval-required",
           interactionMode: "default",
         },
