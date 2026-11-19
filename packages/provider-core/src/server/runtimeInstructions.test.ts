@@ -64,14 +64,17 @@ describe("buildRuntimeInstructions", () => {
   it("links PRs the agent creates, takes over, or pushes to, and no others", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
 
-    assert.include(instructions, "Link each PR you create, take over, or push to");
+    assert.include(
+      instructions,
+      "As your next call, use link_pull_request for each PR you create, take over, or push to.",
+    );
     assert.include(instructions, "every stack layer");
-    assert.include(instructions, "Skip PRs you only read or review");
-    assert.include(instructions, "If linking fails, say so.");
+    assert.include(instructions, "Skip read-only and background PRs.");
+    assert.include(instructions, "Use full URLs and report failures.");
     assert.notInclude(instructions, "git log -1");
     assert.notInclude(instructions, "work on");
     assert.include(instructions, "list_thread_pull_requests");
-    assert.include(instructions, "link any PR from your work that is missing");
+    assert.include(instructions, "find and link missing work PRs");
   });
 
   it("waits on a PR only with the watch, never with a poll loop", () => {
@@ -83,10 +86,15 @@ describe("buildRuntimeInstructions", () => {
     assert.notInclude(instructions, "On a wake");
     assert.include(
       instructions,
-      "Call watch_pull_request when asked to monitor or babysit, or when work you were asked to do, such as a merge, still waits on checks or reviews, even after an earlier unwatch",
+      "Call watch_pull_request when asked to monitor or babysit, or when assigned work still needs checks or reviews.",
     );
     assert.notInclude(instructions, "merge it now");
-    assert.include(instructions, "Otherwise act now or hand back.");
+    assert.include(instructions, "Rearm if new work needs observation.");
+    assert.include(instructions, "Recheck on a watch event, owner request, or new PR action.");
+    assert.include(
+      instructions,
+      "An automatic goal turn alone needs no PR check or status update.",
+    );
     assert.include(instructions, "then watch and end your turn");
     assert.include(instructions, "never watch, even if the brief says babysit");
     assert.include(
