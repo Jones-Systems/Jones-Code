@@ -169,7 +169,7 @@ export function classifyFailure(result) {
     }
   }
   const transport =
-    /(?:Temporary failure resolving|Could not resolve|Could not connect|Unable to connect|Connection (?:timed out|timeout|reset|failed)|[Cc]onnection refused|Network is unreachable|[Tt]imeout was reached|[Cc]onnecting to .*timed out|\b(?:502[ \t]+Bad Gateway|503[ \t]+Service Unavailable|504[ \t]+Gateway Time-?out)\b)/;
+    /(?:Temporary failure resolving|Could not resolve|Could not connect|Unable to connect|Connection (?:timed out|timeout|reset|failed)|[Cc]onnection refused|Network is unreachable|[Tt]imeout was reached|[Cc]onnecting to .*timed out|\b(?:502[ \t]+Bad Gateway|503[ \t]+Service Unavailable|504[ \t]+Gateway (?:Time-out|Timeout))\b)/;
   const summary =
     /^[EW]: (?:Some index files failed to download\. They have been ignored, or old ones used instead\.|Unable to fetch some archives, maybe run apt-get update or try with --fix-missing\??)$/;
   if (

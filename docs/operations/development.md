@@ -506,8 +506,9 @@ case kills only its captured fixture parent, then proves child absence through t
 same conservative OS probe as restart admission. Source/bundle/Linux checks do not
 substitute for Electron/SEA/macOS packaging evidence.
 
-`snapshot.mjs <absolute report> [thread-count]` measures real shell capture, deferred
-decode, schema projection, synchronous JSON encoding and compression separately.
+`snapshot.mjs <absolute report> [thread-count]` measures shell capture through the
+file-backed SQLite reader, deferred decode, schema projection, synchronous JSON
+encoding and compression separately. The synthetic database lives in scoped scratch.
 Only measured contiguous encoding or qualified decode/projection/loop attribution
 activates a snapshot-offload follow-up. A payload-size guess does not activate it.
 

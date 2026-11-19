@@ -23,13 +23,17 @@ import * as Changes from "./DependencyChanges.ts";
 import * as StartRefusals from "../startRefusal/Store.ts";
 import type { OpenRequest } from "./DependencyCommit.ts";
 
-const database = Sqlite.layerMemory;
-const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
-  Layer.provideMerge(StartRefusals.layer.pipe(Layer.provideMerge(database))),
-);
-export const layer = Layer.merge(stores, EventSink.layer.pipe(Layer.provide(stores))).pipe(
-  Layer.provideMerge(Changes.layer),
-);
+function makeLayer<E, R>(database: Layer.Layer<SqlClient.SqlClient, E, R>) {
+  const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
+    Layer.provideMerge(StartRefusals.layer.pipe(Layer.provideMerge(database))),
+  );
+  return Layer.merge(stores, EventSink.layer.pipe(Layer.provide(stores))).pipe(
+    Layer.provideMerge(Changes.layer),
+  );
+}
+
+export const layer = makeLayer(Sqlite.layerMemory);
+export const layerFromPath = (path: string) => makeLayer(Sqlite.layerFromPath(path));
 export const time = DateTime.makeUnsafe("2026-10-26T16:00:00.000Z");
 const decodeThread = Schema.decodeUnknownSync(OrchestrationV2AppThread);
 const decodeRun = Schema.decodeUnknownSync(OrchestrationV2Run);

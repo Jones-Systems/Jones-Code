@@ -216,7 +216,6 @@ import {
   makeProviderRetryTurnItem,
   PROVIDER_RETRY_BUDGET_MS,
 } from "@t3tools/provider-core/server/failure";
-import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import {
   isProviderNativeImageAttachment,
   providerMessageTextWithAttachmentPaths,
@@ -2206,7 +2205,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
       return Effect.succeed(CodexProviderCapabilitiesV2);
     }),
     planSelectionTransition: Effect.fn("CodexAdapterV2.planSelectionTransition")(function () {
-      return Effect.succeed(turnScopedSelectionTransition());
+      return Effect.succeed({
+        type: "apply_on_next_turn",
+        keepActiveSteeringSelection: true,
+      } as const);
     }),
     openSession: Effect.fn("CodexAdapterV2.openSession")(
       function* (input) {

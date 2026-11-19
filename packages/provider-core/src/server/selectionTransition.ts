@@ -7,7 +7,11 @@ export interface ProviderSelectionTransitionInput {
 }
 
 export type ProviderSelectionTransitionPlan =
-  | { readonly type: "apply_on_next_turn" }
+  | {
+      readonly type: "apply_on_next_turn";
+      /** Steering can deliver input to the live turn using its existing selection. */
+      readonly keepActiveSteeringSelection?: true;
+    }
   | { readonly type: "restart_session" }
   | { readonly type: "create_with_handoff" }
   | { readonly type: "reject"; readonly reason: string };
