@@ -3,6 +3,7 @@ import * as NodeZlib from "node:zlib";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as NodeTimers from "node:timers";
 import * as NodeTimersPromises from "node:timers/promises";
+import * as NodeUtil from "node:util";
 import { ThreadId, OrchestrationV2ShellSnapshotJson } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -13,6 +14,7 @@ import * as Fixture from "../threadResultDependencies/testkit.ts";
  * and existing wire schema before root decides whether to activate that slice.
  */
 const compiledEncodeEffect1 = Schema.encodeEffect(OrchestrationV2ShellSnapshotJson);
+const gzipOnPool = NodeUtil.promisify(NodeZlib.gzip);
 const loopResolutionMs = 10;
 const maxPhaseLoopTicks = 4_096;
 const threadCpuMs = (usage: ReturnType<typeof process.threadCpuUsage>) =>
@@ -32,7 +34,10 @@ function startPhaseLoopTrace() {
   return { trace, stop: () => NodeTimers.clearInterval(timer) };
 }
 
-export async function measureSnapshotPipeline(threadCount = 2_000) {
+export async function measureSnapshotPipeline(
+  threadCount = 2_000,
+  asynchronousCompression = false,
+) {
   if (!Number.isSafeInteger(threadCount) || threadCount < 100 || threadCount > 10_000)
     throw new Error("Bounded snapshot fixture requires 100..10000 threads");
   return Effect.runPromise(
@@ -86,10 +91,14 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           const encodedAt = performance.now();
           // @effect-diagnostics-next-line preferSchemaOverJson:off -- Measure the actual synchronous wire stringify separately from schema projection.
           const bytes = JSON.stringify(projected);
-          const encodeMs = performance.now() - encodedAt;
-          const compressedAt = performance.now(),
-            compressed = NodeZlib.gzipSync(bytes);
-          const compressionMs = performance.now() - compressedAt;
+          const encodeFinishedAt = performance.now();
+          const encodeMs = encodeFinishedAt - encodedAt;
+          const compressedAt = performance.now();
+          const compressed = asynchronousCompression
+            ? yield* Effect.promise(() => gzipOnPool(bytes))
+            : NodeZlib.gzipSync(bytes);
+          const compressionFinishedAt = performance.now();
+          const compressionMs = compressionFinishedAt - compressedAt;
           // A later tick must close the interval that includes the final synchronous phase.
           const loopWorkEndSampleCount = loop.count;
           yield* waitForLoopSamples;
@@ -109,6 +118,8 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
               capture: { startMs: capturedAt, endMs: captureFinishedAt },
               decode: { startMs: decodedAt, endMs: decodeFinishedAt },
               schemaProjection: { startMs: projectedAt, endMs: projectionFinishedAt },
+              encode: { startMs: encodedAt, endMs: encodeFinishedAt },
+              compression: { startMs: compressedAt, endMs: compressionFinishedAt },
             },
             encodeMs,
             compressionMs,

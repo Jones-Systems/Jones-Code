@@ -19,19 +19,24 @@ const sourceTree = rev("HEAD^{tree}");
 const env = { ...process.env, JONES_SP_SOURCE_SHA: source, JONES_SP_SOURCE_TREE: sourceTree };
 const fixture = NodePath.join(import.meta.dirname, "snapshot.mjs");
 const preload = NodePath.join(import.meta.dirname, "snapshot-timing-preload.mjs");
-const tracePath = NodePath.join(output, "snapshot-sql.json");
 const results = [];
+const arms = [
+  { name: "control", compression: "sync", instrumented: false },
+  { name: "async-compression", compression: "async", instrumented: false },
+  { name: "async-compression-sql-trace", compression: "async", instrumented: true },
+  { name: "sql-trace", compression: "sync", instrumented: true },
+];
 
-for (const name of ["control", "sql-trace"]) {
-  const instrumented = name === "sql-trace";
+for (const { name, compression, instrumented } of arms) {
   const reportPath = NodePath.join(output, "snapshot-" + name + ".json");
+  const traceName = instrumented ? "snapshot-" + name + "-calls.json" : null;
   const log = NodeFS.openSync(NodePath.join(output, "snapshot-" + name + ".log"), "wx", 0o600);
   try {
     const run = NodeChildProcess.spawnSync(
       process.execPath,
-      [...(instrumented ? ["--import", preload] : []), fixture, reportPath, "2000"],
+      [...(instrumented ? ["--import", preload] : []), fixture, reportPath, "2000", compression],
       {
-        env: instrumented ? { ...env, JONES_SP_SNAPSHOT_SQL: tracePath } : env,
+        env: traceName ? { ...env, JONES_SP_SNAPSHOT_SQL: NodePath.join(output, traceName) } : env,
         stdio: ["ignore", log, log],
         timeout: 120_000,
         killSignal: "SIGKILL",
@@ -39,6 +44,8 @@ for (const name of ["control", "sql-trace"]) {
     );
     results.push({
       name,
+      compression,
+      traceName,
       status: run.status,
       signal: run.signal,
       error: run.error?.message,
@@ -50,7 +57,8 @@ for (const name of ["control", "sql-trace"]) {
   }
 }
 
-const cleanupProved = results.length === 2 && results.every((result) => result.capturedExit);
+const cleanupProved =
+  results.length === arms.length && results.every((result) => result.capturedExit);
 const read = (relative) => {
   try {
     return JSON.parse(NodeFS.readFileSync(NodePath.join(output, relative), "utf8"));
@@ -58,22 +66,24 @@ const read = (relative) => {
     return null;
   }
 };
-const trace = read("snapshot-sql.json");
 const complete =
   cleanupProved &&
   results.every((result) => {
     const report = read("snapshot-" + result.name + ".json");
+    const trace = result.traceName && read(result.traceName);
     return (
       report?.source === source &&
       report.threadCount === 2000 &&
+      report.compression === result.compression &&
       report.samples?.length === 3 &&
-      (result.status === 0 || result.status === 1)
+      (result.status === 0 || result.status === 1) &&
+      (!result.traceName ||
+        (trace?.source === source &&
+          trace.overflow === false &&
+          Array.isArray(trace.calls) &&
+          trace.calls.length > 0))
     );
-  }) &&
-  trace?.source === source &&
-  trace.overflow === false &&
-  Array.isArray(trace.calls) &&
-  trace.calls.length > 0;
+  });
 NodeFS.writeFileSync(
   NodePath.join(output, "qualification.json"),
   JSON.stringify(

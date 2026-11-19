@@ -2,9 +2,9 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { measureSnapshotPipeline } from "../../../apps/server/src/jones/serverParallelism/snapshotQualification.ts";
 import { snapshotDecision, snapshotPhaseLoopBounds } from "./snapshotDecision.mjs";
-const [output, count = "2000"] = process.argv.slice(2);
-if (!output || !NodePath.isAbsolute(output))
-  throw new Error("snapshot.mjs <absolute report.json> [thread-count]");
+const [output, count = "2000", compression = "sync"] = process.argv.slice(2);
+if (!output || !NodePath.isAbsolute(output) || !["sync", "async"].includes(compression))
+  throw new Error("snapshot.mjs <absolute report.json> [thread-count] [sync|async]");
 const required = JSON.parse(
   await NodeFSP.readFile(new URL("../../../package.json", import.meta.url), "utf8"),
 ).engines.node;
@@ -21,7 +21,7 @@ const rootActions = {
 };
 let report;
 try {
-  const measurement = await measureSnapshotPipeline(Number(count));
+  const measurement = await measureSnapshotPipeline(Number(count), compression === "async");
   const decision = snapshotDecision(measurement);
   const { activationDecision, activationReason } = decision;
   report = {
@@ -30,6 +30,7 @@ try {
     phaseLoopBounds: snapshotPhaseLoopBounds(measurement),
     source: process.env.JONES_SP_SOURCE_SHA ?? null,
     threadCount: Number(count),
+    compression,
     outcome:
       activationDecision === "not-activated"
         ? "passed"
