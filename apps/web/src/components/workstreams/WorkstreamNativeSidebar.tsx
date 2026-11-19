@@ -49,7 +49,7 @@ export interface NativeThreadExternalDrop {
   readonly dropExternal: (
     point: { x: number; y: number },
     thread: EnvironmentThreadShell,
-    options?: { fromMember: boolean },
+    options?: { fromMember?: boolean; unpin?: () => Promise<boolean> },
   ) => Promise<boolean> | null;
   readonly clear: () => void;
 }
@@ -94,6 +94,7 @@ export function WorkstreamNativeSidebar({
     destinationId: string | null,
     neighbor: EnvironmentThreadShell | null,
     after: boolean,
+    unpin?: () => Promise<boolean>,
   ) => Promise<boolean>;
 }) {
   const allWorkstreams = useAtomValue(controller.state);
@@ -223,7 +224,12 @@ export function WorkstreamNativeSidebar({
     );
     return target;
   };
-  const place = async (thread: EnvironmentThreadShell, target: Target, external = false) => {
+  const place = async (
+    thread: EnvironmentThreadShell,
+    target: Target,
+    external = false,
+    unpin?: () => Promise<boolean>,
+  ) => {
     if (busy.current || !canMove(thread) || !validTarget(target)) return false;
     if (
       external &&
@@ -233,7 +239,10 @@ export function WorkstreamNativeSidebar({
       return false;
     const neighbor =
       threads.find((entry) => personalThreadKey(entry) === target.neighborKey) ?? null;
-    if (!placeThread && (external || groupId(thread) !== target.id)) return move(thread, target.id);
+    if (!placeThread && (external || groupId(thread) !== target.id)) {
+      const assigned = await move(thread, target.id);
+      return assigned && (unpin ? await unpin() : true);
+    }
     if (!placeThread && !neighbor) return false;
     if (neighbor && ((!external && !canReorder(thread)) || !canReorder(neighbor))) return false;
     const key = personalThreadKey(thread);
@@ -252,7 +261,7 @@ export function WorkstreamNativeSidebar({
     let saved: boolean | undefined = false;
     busy.current = true;
     try {
-      if (placeThread) saved = await placeThread(thread, target.id, neighbor, target.after);
+      if (placeThread) saved = await placeThread(thread, target.id, neighbor, target.after, unpin);
       else if (neighbor) {
         await reorder(thread, neighbor, target.after);
         saved = true;
@@ -329,7 +338,7 @@ export function WorkstreamNativeSidebar({
           }
           const target = locate(point, thread, !options?.fromMember);
           clearDrop();
-          return target ? place(thread, target, !options?.fromMember) : null;
+          return target ? place(thread, target, !options?.fromMember, options?.unpin) : null;
         },
         clear: () => {
           externalTarget.current = null;

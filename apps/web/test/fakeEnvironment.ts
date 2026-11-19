@@ -617,6 +617,7 @@ export function installFakeEnvironment(
     /** Commands left unanswered even when accepting, until `rejectPendingCommand`. */
     readonly holdCommand?: (command: OrchestrationV2Command) => boolean;
     readonly providers?: ReadonlyArray<unknown>;
+    readonly activeThreadReorder?: boolean;
   },
 ): Disposable {
   threads = fixtures;
@@ -624,6 +625,15 @@ export function installFakeEnvironment(
     ...makeServerConfig(options?.providers ?? [CODEX_PROVIDER]),
     keybindings: options?.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
   };
+  if (options?.activeThreadReorder) {
+    baseServerConfig = {
+      ...baseServerConfig,
+      environment: {
+        ...baseServerConfig.environment,
+        capabilities: { ...baseServerConfig.environment.capabilities, threadActiveReorder: true },
+      },
+    };
+  }
   dispatched = [];
   acceptCommands = options?.acceptCommands === true;
   projects = [
