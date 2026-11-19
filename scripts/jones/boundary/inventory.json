@@ -2478,6 +2478,7 @@
     "packages/provider-core/src/server/orchestrationInstructions.ts": "hook",
     "packages/provider-core/src/server/runtimeInstructions.test.ts": "jones-tests-in-upstream",
     "packages/provider-core/src/server/runtimeInstructions.ts": "hook",
+    "packages/provider-core/src/server/mcpSession.ts": "accepted-shared",
     "packages/provider-core/src/server/snapshotProbe.ts": "accepted-shared",
     "packages/provider-core/src/server/subagentProjection.ts": "accepted-shared",
     "packages/provider-core/src/server/textGeneration.ts": "hook",

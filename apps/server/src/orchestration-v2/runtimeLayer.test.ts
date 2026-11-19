@@ -6202,6 +6202,128 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
   });
 
   it.effect.each([
+    "green on the first read",
+    "green after running",
+    "merged while waiting",
+  ] as const)("wakes a goal once when watched CI is %s", (mode) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const { threadId, key } = yield* createWatchedThread(`goal-ci-${mode.replaceAll(" ", "-")}`);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`${threadId}:send`),
+        threadId,
+        messageId: MessageId.make(`${threadId}:message`),
+        text: "Wait for CI.",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const before = yield* orchestrator.getThreadProjection(threadId);
+      const [run] = before.runs;
+      const provider = before.providerThreads.find(
+        (candidate) => candidate.id === before.thread.activeProviderThreadId,
+      );
+      assert.isDefined(run);
+      assert.isDefined(provider);
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:goal`),
+            type: "provider-thread.updated",
+            threadId,
+            occurredAt: now,
+            payload: {
+              ...provider,
+              goal: {
+                objective: "Merge after CI",
+                status: "paused",
+                tokensUsed: 10,
+                tokenBudget: null,
+                timeUsedSeconds: 1,
+              },
+            },
+          },
+          {
+            id: EventId.make(`${threadId}:run`),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      let finished = mode === "green on the first read";
+      const detail = watchedPullRequestDetail({
+        projectId: before.thread.projectId,
+        number: key.number,
+        at: DateTime.formatIso(now),
+      });
+      const reactor = yield* PullRequestWatchReactor.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeCrypto.layer,
+            Layer.mock(PullRequestService.PullRequestService)({
+              watchFingerprint: () => Effect.succeed(null),
+              detail: () =>
+                Effect.sync(() => ({
+                  ...detail,
+                  state: finished && mode === "merged while waiting" ? "merged" : "open",
+                  checks: [
+                    {
+                      name: "Check",
+                      status: finished ? "success" : "pending",
+                      required: true,
+                      description: null,
+                      url: null,
+                    },
+                  ],
+                })),
+              activity: () =>
+                Effect.succeed({
+                  comments: [],
+                  commentCount: 0,
+                  commentsTruncated: false,
+                  reviewThreads: [],
+                  commits: [],
+                }),
+            }),
+          ),
+        ),
+      );
+      const wakes = orchestrator
+        .getThreadRecords(threadId, ["messages"])
+        .pipe(
+          Effect.map(({ messages }) =>
+            messages.flatMap((message) =>
+              message.notification?.source.kind === "monitor" ? [message.notification.summary] : [],
+            ),
+          ),
+        );
+      if (!finished) {
+        yield* reactor.sweep;
+        yield* reactor.sweep;
+        assert.deepEqual(yield* wakes, []);
+        finished = true;
+      }
+      yield* reactor.sweep;
+      yield* TestClock.adjust("10 minutes");
+      yield* reactor.sweep;
+      assert.deepEqual(yield* wakes, [
+        mode === "green on the first read"
+          ? "#7: check wait ended"
+          : mode === "green after running"
+            ? "#7: checks passed"
+            : "#7: merged, stopped watching",
+      ]);
+    }),
+  );
+
+  it.effect.each([
     "unwatch",
     "unlink",
     "new watch",

@@ -1,4 +1,5 @@
 import { observationInFlight } from "../jones/pullRequestWatch/checkObservation.ts";
+import { threadHasWaitingGoal, watchAwaitsChecks } from "../jones/pullRequestWatch/goalWait.ts";
 import {
   CommandId,
   MessageId,
@@ -540,13 +541,42 @@ export const make = Effect.gen(function* () {
       reason: "closed",
     });
 
+  const goalMayBeWaiting = ({ thread, watch }: WatchTarget) =>
+    watchAwaitsChecks(watch)
+      ? projections
+          .getThreadRecords(thread.id, ["providerThreads"])
+          .pipe(Effect.map(threadHasWaitingGoal))
+      : Effect.succeed(false);
+
+  const merged = Effect.fnUntraced(function* (groupKey: string, target: WatchTarget) {
+    if (!(yield* goalMayBeWaiting(target))) {
+      yield* record(target, null).pipe(Effect.tap(() => ended(target, "merged")));
+      return;
+    }
+    yield* hold({
+      groupKey,
+      target,
+      next: null,
+      endedWatch: target.watch,
+      wake: {
+        text: `Pull request #${target.link.number} (${target.link.url}) merged, so Jones Code stopped watching it.`,
+        notification: {
+          source: { kind: "monitor" },
+          outcome: "completed",
+          summary: `#${target.link.number}: merged, stopped watching`,
+        },
+      },
+      reason: "merged",
+    });
+  });
+
   const endsWithoutRead = ({ thread, link }: WatchTarget): WatchEndReason | undefined =>
-    link.snapshot?.state === "merged"
-      ? "merged"
-      : thread.settledOverride === "settled" || thread.settledAt !== null
-        ? "settled"
-        : thread.lineage.relationshipToParent === "subagent"
-          ? "subagent"
+    thread.settledOverride === "settled" || thread.settledAt !== null
+      ? "settled"
+      : thread.lineage.relationshipToParent === "subagent"
+        ? "subagent"
+        : link.snapshot?.state === "merged"
+          ? "merged"
           : undefined;
 
   const eachTarget = <E>(
@@ -652,9 +682,7 @@ export const make = Effect.gen(function* () {
     if (detail.state !== "open") {
       lastReads.delete(group.key);
       return yield* eachTarget(group, (target) =>
-        detail.state === "closed"
-          ? closed(group.key, target)
-          : record(target, null).pipe(Effect.tap(() => ended(target, "merged"))),
+        detail.state === "closed" ? closed(group.key, target) : merged(group.key, target),
       );
     }
 
@@ -697,35 +725,45 @@ export const make = Effect.gen(function* () {
       status: fingerprint?.status ?? null,
       remarks: fingerprint?.remarks ?? null,
     });
-    yield* eachTarget(group, (target) => {
-      const report = evaluatePullRequestWatch(target.watch, detail, remarks, now);
-      if (report.changes.length > 0) {
-        const wake = {
-          ...pullRequestWatchMessage({
-            number: target.link.number,
-            url: target.link.url,
-            baseBranch: detail.baseBranch,
-            headSha: report.next.headSha,
-            report,
-          }),
-          includesRemarks: report.changes.some((change) => change.kind === "remarks"),
-        };
-        // An ending watch keeps what this pass saw, so watching again starts from it.
-        return hold(
-          report.exhausted
-            ? {
-                groupKey: group.key,
-                target,
-                next: null,
-                endedWatch: report.next,
-                wake,
-                reason: "comment-limit",
-              }
-            : { groupKey: group.key, target, next: report.next, wake },
-        );
-      }
-      return watchesEqual(report.next, target.watch) ? Effect.void : record(target, report.next);
-    });
+    yield* eachTarget(
+      group,
+      Effect.fnUntraced(function* (target) {
+        const evaluated = evaluatePullRequestWatch(target.watch, detail, remarks, now);
+        // A baseline or an inconclusive terminal snapshot can release a CI wait without check news.
+        const report =
+          evaluated.changes.length === 0 &&
+          evaluated.next.checksPending === false &&
+          (yield* goalMayBeWaiting(target))
+            ? { ...evaluated, changes: [{ kind: "checks-settled" as const }] }
+            : evaluated;
+        if (report.changes.length > 0) {
+          const wake = {
+            ...pullRequestWatchMessage({
+              number: target.link.number,
+              url: target.link.url,
+              baseBranch: detail.baseBranch,
+              headSha: report.next.headSha,
+              report,
+            }),
+            includesRemarks: report.changes.some((change) => change.kind === "remarks"),
+          };
+          // An ending watch keeps what this pass saw, so watching again starts from it.
+          return yield* hold(
+            report.exhausted
+              ? {
+                  groupKey: group.key,
+                  target,
+                  next: null,
+                  endedWatch: report.next,
+                  wake,
+                  reason: "comment-limit",
+                }
+              : { groupKey: group.key, target, next: report.next, wake },
+          );
+        }
+        if (!watchesEqual(report.next, target.watch)) yield* record(target, report.next);
+      }),
+    );
   });
 
   /** Every watch, or with `changed`, only that pull request's after its host reported a change. */
@@ -776,8 +814,10 @@ export const make = Effect.gen(function* () {
     yield* Effect.forEach(
       ending,
       ([target, reason]) =>
-        record(target, null).pipe(
-          Effect.tap(() => ended(target, reason)),
+        (reason === "merged"
+          ? merged(`${target.thread.projectId} ${threadPullRequestKeyOf(target.link)}`, target)
+          : record(target, null).pipe(Effect.tap(() => ended(target, reason)))
+        ).pipe(
           Effect.catchCause(
             logFailure("pull request watch stop failed", {
               threadId: target.thread.id,

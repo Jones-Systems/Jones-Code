@@ -289,9 +289,11 @@
         "packages/source-control-github/src/server/GitHubPullRequestProvider.test.ts",
         "apps/server/src/pullRequest/PullRequestService.test.ts",
         "apps/server/src/orchestration-v2/pullRequestWatch.test.ts",
-        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
       ],
-      "scope": "Jones-owned same-head REST observation and completion classification distinguish complete enumeration from required-set knowledge. The exact existing Jones-Code github.com/main CI Check policy is bound explicitly; all other targets retain unknown gate completeness. Shared API/provider/service/cache hooks preserve optional metadata. The GitHub provider reuses a complete same-head workflow enumeration to project unfinished rows through the shared decoder helper, with the existing fallback for incomplete evidence. The reactor only extends its existing inFlight predicate. Existing API, provider, service and runtime harnesses prove real composition and persistent watch dedupe; extracting those harness tests would duplicate upstream fixtures. No retry, sweep, connection, merge policy, DB, workflow, dependency or installed-runtime changes."
+      "scope": "Jones-owned same-head REST observation and completion classification distinguish complete enumeration from required-set knowledge. The exact existing Jones-Code github.com/main CI Check policy is bound explicitly; all other targets retain unknown gate completeness. Shared API/provider/service/cache hooks preserve optional metadata. The GitHub provider reuses a complete same-head workflow enumeration to project unfinished rows through the shared decoder helper, with the existing fallback for incomplete evidence. The provider session uses durable watch evidence to tell goals when the watcher owes a wake. The reactor releases goal waits even if the first read is already terminal or the PR merged while checks were running. Codex reuses its existing session-local goal hold and gives precedence to explicit Pause and Stop. Shared runtime harness cases verify the live projection and watcher dispatch, and the existing Codex replay covers native yield and resumption. The watcher sweep and merge policy stay the same."
     },
     {
       "id": "anonymous-checkout",

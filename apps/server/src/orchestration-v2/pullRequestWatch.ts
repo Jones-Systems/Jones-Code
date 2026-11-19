@@ -21,6 +21,7 @@ const SNIPPET_LENGTH = 200;
 export type PullRequestWatchChange =
   | { readonly kind: "checks-failed"; readonly failed: ReadonlyArray<PullRequestCheck> }
   | { readonly kind: "checks-passed"; readonly count: number; readonly required: boolean }
+  | { readonly kind: "checks-settled" }
   | ObservedPass
   | { readonly kind: "checks-awaiting-approval"; readonly checks: ReadonlyArray<PullRequestCheck> }
   | { readonly kind: "remarks"; readonly remarks: ReadonlyArray<PullRequestComment> }
@@ -401,6 +402,10 @@ function changeLines(
         `- Checks are waiting for approval or action from a maintainer${context.commit}:`,
         ...listed(change.checks, (check) => `  - ${check.name}${check.url ? ` ${check.url}` : ""}`),
       ];
+    case "checks-settled":
+      return [
+        `- The watcher sees no running checks${context.commit}. Verify the current required results before proceeding.`,
+      ];
     case "checks-passed":
       if ("observed" in change)
         return [
@@ -439,6 +444,7 @@ function changeLines(
 const SUMMARY: Record<PullRequestWatchChange["kind"], string> = {
   "checks-failed": "checks failed",
   "checks-passed": "checks passed",
+  "checks-settled": "check wait ended",
   "checks-awaiting-approval": "checks await approval",
   remarks: "new comments",
   "no-checks": "no checks reported",
@@ -448,9 +454,9 @@ const SUMMARY: Record<PullRequestWatchChange["kind"], string> = {
 };
 
 const WATCHING_CLOSING =
-  "Look into each item and act on it as your task requires. This PR stays linked and watched, so do not link, watch, or list it again. End your turn when you are done, and T3 Code wakes you on the next change. When you hand the work back to the user, call unwatch_pull_request first so the thread returns to their inbox.";
+  "Look into each item and act on it as your task requires. This PR stays linked and watched. If CI is still pending and there is no other work, end your turn quietly. T3 Code wakes you on the next actionable change. When you hand the work back to the user, call unwatch_pull_request first so the thread returns to their inbox.";
 const WATCHING_CLOSING_PLURAL =
-  "Look into each item and act on it as your task requires. Each PR T3 Code still watches stays linked and watched, so do not link, watch, or list them again. End your turn when you are done, and T3 Code wakes you on the next change. When you hand the work back to the user, call unwatch_pull_request for each first so the thread returns to their inbox.";
+  "Look into each item and act on it as your task requires. Each PR T3 Code still watches stays linked and watched. If CI is still pending and there is no other work, end your turn quietly. T3 Code wakes you on the next actionable change. When you hand the work back to the user, call unwatch_pull_request for each first so the thread returns to their inbox.";
 
 export interface PullRequestWatchWake {
   readonly text: string;
