@@ -2376,7 +2376,7 @@
         "scripts/jones/ci/selection.node-test.cjs",
         "scripts/jones/ci/check-results.node-test.cjs"
       ],
-      "scope": "Consumes the unchanged upstream dependency classifier with conservative full runs for non-PR, stack, unreadable or unknown changes. Required Check accepts a skipped job only after successful explicit selection. Linux package suites are disjoint; standalone checks remain unconditional and native enrollment keeps its independent gate."
+      "scope": "Consumes the unchanged upstream dependency classifier with conservative full runs for non-PR, stack, unreadable or unknown changes. Required Check accepts a skipped job only after successful explicit selection. Linux package suites are disjoint, standalone checks remain unconditional, and native enrollment keeps its independent gate. The six web shards share the complete web test command and bound work per Chromium process."
     },
     {
       "id": "native-electron-workflows",
