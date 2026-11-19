@@ -300,6 +300,58 @@ describe("planWorkstreamThreadReorder", () => {
     ]);
   });
 
+  it("splits a tie to the left between fixed keyed bounds and skips a reserved key", () => {
+    const input = fixture(
+      ["lo", "b1", "b2", "u"],
+      [],
+      [
+        ["lo", "c"],
+        ["b1", "m"],
+        ["b2", "m"],
+        ["u", "t"],
+        ["retained", pinOrderKeyBetween("c", "m")],
+      ],
+    );
+    input.writableKeys.delete("lo");
+    input.writableKeys.delete("b2");
+    const assignments = planWorkstreamThreadReorder({
+      ...input,
+      movedId: "u",
+      neighborId: "b1",
+      after: true,
+    });
+    expect(assignments?.map(({ id }) => id)).toEqual(["b1", "u"]);
+    let rows = input.rows;
+    for (const { id, orderKey } of assignments!) {
+      expect(orderKey).not.toBe(input.keysById.get("retained"));
+      rows = rows.map((row) => (row.id === id ? { ...row, activeOrderKey: orderKey } : row));
+      expect(groupOrder(rows, input.groupIdByKey, null).filter((id) => id !== "u")).toEqual([
+        "lo",
+        "b1",
+        "b2",
+      ]);
+    }
+    expect(groupOrder(rows, input.groupIdByKey, null)).toEqual(["lo", "b1", "u", "b2"]);
+  });
+
+  it("can split a tie beyond a frozen keyless prefix", () => {
+    const input = fixture(
+      ["a", "frozen", "b1", "b2", "u"],
+      [],
+      [
+        ["b1", "m"],
+        ["b2", "m"],
+        ["u", "t"],
+      ],
+    );
+    input.writableKeys.delete("frozen");
+    expect(
+      planWorkstreamThreadReorder({ ...input, movedId: "u", neighborId: "b1", after: true })?.map(
+        ({ id }) => id,
+      ),
+    ).toEqual(["b2", "u"]);
+  });
+
   it("refuses materialization ahead of a frozen keyless row in the same group", () => {
     const input = fixture(["frozen", "a1", "a2"], []);
     expect(

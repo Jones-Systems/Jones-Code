@@ -33,6 +33,7 @@ function fixture(
     ["b1", "b"],
   ],
   pinnedId?: string,
+  movedId = "moved",
 ) {
   let rows = ids.map(
     (id, index) =>
@@ -105,7 +106,7 @@ function fixture(
     after = false,
     overrides: Partial<PersonalThreadPlacementInput> = {},
   ): PersonalThreadPlacementInput => ({
-    thread: row("moved"),
+    thread: row(movedId),
     destinationId,
     neighbor: neighborId === null ? null : row(neighborId),
     after,
@@ -163,7 +164,7 @@ function fixture(
       rows = rows.map((thread) => (thread.id === id ? { ...thread, activeOrderKey: key } : thread));
     },
     unpin: () => {
-      rows = rows.map((thread) => (thread.id === "moved" ? { ...thread, pinnedAt: null } : thread));
+      rows = rows.map((thread) => (thread.id === movedId ? { ...thread, pinnedAt: null } : thread));
     },
   };
 }
@@ -296,6 +297,102 @@ describe("placePersonalThread", () => {
       }
     },
   );
+
+  it.each(
+    [
+      { destinationId: null, endpoint: "tail", upper: "z", keyless: ["a"] },
+      { destinationId: "a", endpoint: "fixed", upper: "z", keyless: ["a1", "a2"] },
+      { destinationId: "a", endpoint: "fixed", upper: "n", keyless: ["a1", "a2"] },
+    ].flatMap((scenario) => [false, true].map((rejectSecond) => ({ ...scenario, rejectSecond }))),
+  )(
+    "splits tied keys below a hidden read-only endpoint (lane=$destinationId, upper=$upper, rejectSecond=$rejectSecond)",
+    async ({ destinationId, endpoint, upper, keyless, rejectSecond }) => {
+      const siblings = [...keyless, "b1", "b2", endpoint];
+      const ids = [...keyless, "b1", "b2", "u", endpoint];
+      const f = fixture(
+        ids,
+        destinationId === null ? [] : siblings.map((id) => [id, destinationId]),
+        undefined,
+        "u",
+      );
+      f.setOrderKey("b1", "m");
+      f.setOrderKey("b2", "m");
+      f.setOrderKey("u", "t");
+      f.setOrderKey(endpoint, upper);
+      f.denied.add(endpoint);
+      if (rejectSecond) f.failOrderAt(2);
+
+      const input = f.input(destinationId, "b1", true);
+      const siblingOrders: string[][] = [];
+      expect(
+        await placePersonalThread({
+          ...input,
+          activeThreads: input.activeThreads.filter(({ id }) => id !== endpoint),
+          reorder: async (thread, key) => {
+            const saved = await input.reorder(thread, key);
+            if (saved) siblingOrders.push(f.groupOrder(destinationId).filter((id) => id !== "u"));
+            return saved;
+          },
+        }),
+      ).toBe(!rejectSecond);
+
+      expect(f.assignmentWrites).toEqual(destinationId === null ? [] : [destinationId]);
+      expect(f.positionFailures.map(({ assignmentSaved }) => assignmentSaved)).toEqual(
+        rejectSecond ? [destinationId !== null] : [],
+      );
+      expect(f.orderWrites.map(({ id }) => id)).toEqual(rejectSecond ? ["b2"] : ["b2", "u"]);
+      for (const order of siblingOrders) expect(order).toEqual(siblings);
+      for (const id of keyless) expect(f.row(id).activeOrderKey).toBeNull();
+      expect(f.row("b1").activeOrderKey).toBe("m");
+      expect(f.row(endpoint).activeOrderKey).toBe(upper);
+
+      const savedRows = structuredClone(ids.toReversed().map(f.row));
+      const reloaded = groupPersonalThreads(
+        structuredClone(input.state),
+        sortActiveThreadsByOrderKey(savedRows),
+      );
+      const lane =
+        destinationId === null
+          ? reloaded.ungrouped
+          : reloaded.groups.find(({ workstream }) => workstream.id === destinationId)!.threads;
+      const reloadedIds = lane.map(({ id }) => id);
+      expect(reloadedIds.filter((id) => id !== "u")).toEqual(siblings);
+      if (!rejectSecond) expect(reloadedIds).toEqual([...keyless, "b1", "u", "b2", endpoint]);
+    },
+  );
+
+  it("rejects a tie between equal fixed bounds before saving membership, unpinning, or writing keys", async () => {
+    const f = fixture(
+      ["b0", "b1", "b2", "u"],
+      [
+        ["b0", "a"],
+        ["b1", "a"],
+        ["b2", "a"],
+      ],
+      "u",
+      "u",
+    );
+    for (const id of ["b0", "b1", "b2"]) f.setOrderKey(id, "m");
+    f.setOrderKey("u", "t");
+    f.denied.add("b0");
+    f.denied.add("b2");
+    let unpins = 0;
+    expect(
+      await placePersonalThread(
+        f.input("a", "b1", true, {
+          unpin: async () => {
+            unpins += 1;
+            return true;
+          },
+        }),
+      ),
+    ).toBe(false);
+    expect(f.assignmentWrites).toEqual([]);
+    expect(unpins).toBe(0);
+    expect(f.orderWrites).toEqual([]);
+    expect(f.groupOrder("a")).toEqual(["b0", "b1", "b2"]);
+    expect(f.row("u").pinnedAt).toBe(at);
+  });
 
   it("places a grouped thread into a mixed Unassigned prefix and keeps the other keys", async () => {
     const f = fixture(

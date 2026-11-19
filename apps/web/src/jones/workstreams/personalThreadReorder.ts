@@ -2,6 +2,8 @@ import { pinOrderKeyBetween } from "@t3tools/client-runtime/state/thread-sort";
 
 import { planWritableSidebarReorder } from "./sidebarThreadDrop";
 
+type OrderAssignment = { id: string; orderKey: string };
+
 function planKeylessMemberPlacement(
   order: readonly string[],
   movedIndex: number,
@@ -17,7 +19,7 @@ function planKeylessMemberPlacement(
   }
 
   const reserved = new Set(keysById.values());
-  const assignments: Array<{ id: string; orderKey: string }> = [];
+  const assignments: OrderAssignment[] = [];
   let upper = firstKeyed === -1 ? null : (keysById.get(order[firstKeyed]!) ?? null);
   // Keyless members sort first. Save the affected tail from the end so each
   // applied write preserves the relative order of the other members.
@@ -31,6 +33,46 @@ function planKeylessMemberPlacement(
     upper = key;
   }
   return assignments;
+}
+
+function planTiedKeyWindow(
+  order: readonly string[],
+  movedIndex: number,
+  keysById: ReadonlyMap<string, string | null | undefined>,
+  writableKeys: ReadonlySet<string>,
+): OrderAssignment[] | null {
+  const keyAt = (index: number) => {
+    const id = order[index];
+    return id === undefined ? null : (keysById.get(id) ?? null);
+  };
+  const tiedKey = keyAt(movedIndex - 1);
+  if (tiedKey === null || keyAt(movedIndex + 1) !== tiedKey) return null;
+
+  const reserved = new Set(keysById.values());
+  let best: OrderAssignment[] | null = null;
+  // A strict interval opens only after clearing the tie on one side of the slot.
+  // Try both sides, preferring the smaller window and keeping earlier rows on a tie.
+  for (const direction of [1, -1]) {
+    let edge = movedIndex + direction;
+    while (keyAt(edge) === tiedKey && writableKeys.has(order[edge]!)) edge += direction;
+    const boundary = keyAt(edge);
+    const size = Math.abs(edge - movedIndex);
+    if (boundary === tiedKey || (best && best.length <= size)) continue;
+
+    const start = direction === 1 ? movedIndex : edge + 1;
+    const upper = direction === 1 ? boundary : tiedKey;
+    let lower = direction === 1 ? tiedKey : boundary;
+    const assignments: OrderAssignment[] = [];
+    for (let index = start; index < start + size; index++) {
+      let key = pinOrderKeyBetween(lower, upper);
+      while (key !== null && reserved.has(key)) key = pinOrderKeyBetween(key, upper);
+      if (key === null) break;
+      assignments.push({ id: order[index]!, orderKey: key });
+      lower = key;
+    }
+    if (assignments.length === size) best = assignments;
+  }
+  return best;
 }
 
 export function planWorkstreamThreadReorder(input: {
@@ -70,17 +112,22 @@ export function planWorkstreamThreadReorder(input: {
   const keyless = planKeylessMemberPlacement(next, movedIndex, keysById, writableKeys);
   if (keyless !== undefined) return keyless;
 
-  const assignments = planWritableSidebarReorder(next, keysById, movedId, writableKeys);
-  if (assignments === null) return null;
-
-  const assignedIds = new Set(assignments.map(({ id }) => id));
-  let hasAssignedBefore = false;
-  for (const id of next) {
-    // Active keyless rows sort first, so a frozen keyless row cannot follow a new key.
-    if (hasAssignedBefore && !writableKeys.has(id) && keysById.get(id) == null) return null;
-    hasAssignedBefore ||= assignedIds.has(id);
+  let assignments = planWritableSidebarReorder(next, keysById, movedId, writableKeys);
+  if (assignments !== null) {
+    const assignedIds = new Set(assignments.map(({ id }) => id));
+    let hasAssignedBefore = false;
+    for (const id of next) {
+      // Active keyless rows sort first, so a frozen keyless row cannot follow a new key.
+      if (hasAssignedBefore && !writableKeys.has(id) && keysById.get(id) == null) {
+        assignments = null;
+        break;
+      }
+      hasAssignedBefore ||= assignedIds.has(id);
+    }
   }
-  if (assignments.length < 2) return assignments;
+  // The local split touches only the moved row and keyed siblings past the keyless prefix.
+  assignments ??= planTiedKeyWindow(next, movedIndex, keysById, writableKeys);
+  if (assignments === null || assignments.length < 2) return assignments;
 
   const leftward: Array<(typeof assignments)[number]> = [];
   const rightward: typeof leftward = [];
