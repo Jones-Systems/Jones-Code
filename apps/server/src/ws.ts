@@ -215,6 +215,7 @@ import { invalidateSettingsSecrets } from "./sourceControl/sourceControlHostSecr
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import { makeDestinationShellLaunch } from "./jones/cleanup/RuntimeUseTerminal.ts";
 import { makePrepareTerminalLaunch } from "./workspace/restoreMissingWorktree.ts";
 import { terminalOutputStream, withOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
@@ -1618,6 +1619,7 @@ export const layerWsRpc = (
       const prepareTerminalLaunch = yield* makePrepareTerminalLaunch(
         threadManagement.getThreadShell,
       );
+      const prepareDestinationShell = yield* makeDestinationShellLaunch;
       const conversationHandoffs = yield* WorktreeMcpService.make;
       // A conversation-bound checkout is attached first; upstream recovery then leases its root.
       const attachTerminalInput = <
@@ -1628,6 +1630,7 @@ export const layerWsRpc = (
         conversationHandoffs.attachForTerminal(ThreadId.make(input.threadId)).pipe(
           Effect.map((cwd) => (cwd === null ? input : { ...input, cwd, worktreePath: cwd })),
           Effect.mapError((cause) => new TerminalCwdStatError({ cwd: input.cwd ?? "", cause })),
+          Effect.flatMap(prepareDestinationShell),
           Effect.flatMap((resolved) => prepareTerminalLaunch(resolved)),
         );
       const previewManager = yield* PreviewManager.PreviewManager;

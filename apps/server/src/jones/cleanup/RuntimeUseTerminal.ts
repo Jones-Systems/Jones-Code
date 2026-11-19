@@ -1,10 +1,14 @@
 import type { NativeSetupControl } from "../../terminal/NativeSetupControl.ts";
 import { readRuntimeUsePreparedTerminal } from "./RuntimeUsePreparedTerminal.ts";
-import { OrchestrationV2AppThreadJson } from "@t3tools/contracts";
+import { OrchestrationV2AppThreadJson, TerminalCwdStatError } from "@t3tools/contracts";
+import { SHELL_RUN_THREAD_ID } from "@t3tools/contracts/jones/shellDestinationFence";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { ServerConfig } from "../../config.ts";
 import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import { overlaps } from "../ordinaryCheckout/CheckoutTarget.ts";
 import {
@@ -21,11 +25,42 @@ const decodeThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
 );
 
+const destinationShellWorkspace = (join: Path.Path["Service"]["join"], stateDir: string) =>
+  join(stateDir, "destination-shell");
+
+export const makeDestinationShellLaunch = Effect.gen(function* () {
+  const config = yield* ServerConfig;
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const cwd = destinationShellWorkspace(path.join, config.stateDir);
+  return Effect.fn("RuntimeUseTerminal.prepareDestinationShell")(function* <
+    Input extends {
+      readonly threadId: string;
+      readonly cwd?: string | undefined;
+      readonly worktreePath?: string | null | undefined;
+    },
+  >(input: Input) {
+    if (input.threadId !== SHELL_RUN_THREAD_ID || input.cwd === undefined) return input;
+    if (input.worktreePath != null || input.cwd !== config.cwd)
+      return yield* new TerminalCwdStatError({
+        cwd: input.cwd,
+        cause: "runtime_use_terminal_scope_changed",
+      });
+    // Keep destination-shell runtime receipts outside the host's project tree.
+    yield* fs
+      .makeDirectory(cwd, { recursive: true, mode: 0o700 })
+      .pipe(Effect.mapError((cause) => new TerminalCwdStatError({ cwd, cause })));
+    return { ...input, cwd };
+  });
+});
+
 /** One logical terminal start, including its existing shell fallbacks. Neither
  * PTY exit nor terminal close proves retirement of detached terminal writers. */
 export const make = Effect.gen(function* () {
   const held = yield* Effect.serviceOption(HeldRuntimeOwner);
   const storage = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const config = yield* Effect.serviceOption(ServerConfig);
+  const path = yield* Path.Path;
   const guard = Effect.fn("RuntimeUseTerminal.guard")(function* <A, E, R>(
     input: {
       readonly logicalStartId: string;
@@ -40,6 +75,15 @@ export const make = Effect.gen(function* () {
     if (Option.isNone(held)) return yield* start(Effect.void);
     if (Option.isNone(storage))
       return yield* new RuntimeUseError({ reason: "runtime_use_owner_without_actual_database" });
+    const destinationShell = input.threadId === SHELL_RUN_THREAD_ID;
+    if (
+      destinationShell &&
+      (Option.isNone(config) ||
+        input.cwd !== destinationShellWorkspace(path.join, config.value.stateDir) ||
+        input.worktreePath !== null ||
+        input.nativeSetupControl !== undefined)
+    )
+      return yield* new RuntimeUseError({ reason: "runtime_use_terminal_scope_changed" });
     const sql = storage.value;
     const owner = yield* bindHeldDatabaseOwner(held.value.token).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
@@ -53,6 +97,7 @@ export const make = Effect.gen(function* () {
     )
       return yield* new RuntimeUseError({ reason: "runtime_use_terminal_cwd_outside_workspace" });
     const read = Effect.gen(function* () {
+      if (destinationShell) return { destinationShell: workspace.canonicalPath };
       const rows = yield* sql<{
         readonly thread_id: string;
         readonly project_id: string;

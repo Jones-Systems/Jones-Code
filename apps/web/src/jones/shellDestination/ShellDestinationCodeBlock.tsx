@@ -259,7 +259,7 @@ export function ShellDestinationCodeBlock({
         >
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-1.5">
             <span className="min-w-0 break-words text-2xs text-muted-foreground">
-              {destination.label} · {run.cwd} · {runStatus}
+              {destination.label} · {matchingSession?.cwd ?? run.cwd} · {runStatus}
             </span>
             <div className="flex shrink-0 items-center gap-1">
               <Button

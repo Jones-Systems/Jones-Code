@@ -18,7 +18,7 @@ import {
   shellRunStore,
 } from "./runStore";
 
-type TestTerminal = { threadId: string; terminalId: string; status: string };
+type TestTerminal = { threadId: string; terminalId: string; status: string; cwd?: string };
 const state = vi.hoisted(() => ({
   environments: [] as DestinationEnvironment[],
   sessions: [] as TestTerminal[],
@@ -189,6 +189,7 @@ function setupFixture() {
         threadId: input.threadId,
         terminalId: input.terminalId,
         status: "running",
+        cwd: "/app-data/destination-shell",
       },
     ];
     publishMetadata();
@@ -454,6 +455,7 @@ describe("destination shell Markdown UI", () => {
       environmentId: "mini",
       input: { threadId: "jones-shell-run", cwd: "/destination-only" },
     });
+    expect(view.container.textContent).toContain("Mini · /app-data/destination-shell · running");
     const terminal = view.container.querySelector("textarea")!;
     expect(terminal.getAttribute("data-attach-existing")).toBe("true");
     terminal.blur();
