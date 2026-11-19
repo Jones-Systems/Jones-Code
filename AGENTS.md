@@ -132,6 +132,14 @@ still apply; the policy does not authorize bypasses or ruleset changes.
 Follow [test data](docs/operations/development.md#test-data) for synthetic
 fixtures and explicitly authorized, isolated snapshots.
 
+## Requests panel on the installed laptop build
+
+M Jones reports that the Requests panel is currently nonfunctional on his
+laptop running Jones Code `0.1.9-preview.20261118.44414757277.1`. Use direct
+`t3_thread_send` for ordinary messages to known threads. Remove this note
+after Requests review and notification routing are verified on the shipped
+replacement build on that setup.
+
 ## Documentation
 
 Follow the [documentation rules](docs/operations/contributor-guidance.md#documentation)

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
+import { Link } from "@tanstack/react-router";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   attentionKey,
@@ -12,9 +13,9 @@ import { useEnvironments } from "../../state/environments";
 import { admissionBindingKey, actionableAdmissions } from "./store";
 import { RequestReviewRow } from "./RequestReviewRow";
 import { useAdmission } from "./useAdmission";
-import { useReviewController } from "./reviewRuntime";
+import { reviewSupportKnownMissing, useReviewController } from "./reviewRuntime";
 import { useFrozenRows, useReview } from "./reviewHooks";
-import { requestHref, threadHref } from "./navigation";
+import { requestLink, threadLink } from "./navigation";
 import { admissionPresentation } from "./presentation";
 import { ReviewControls } from "./ReviewControls";
 import { RequestThreadTitle, RequestThreadStatus } from "./RequestThreadStatus";
@@ -182,9 +183,9 @@ function StackHeader({
       >
         {collapsed ? "▸" : "▾"} {title}
       </Button>
-      <a className="mr-3 p-2 text-3xs" href={requestHref(receiver)} aria-label="Open Requests">
+      <Link className="mr-3 p-2 text-3xs" {...requestLink(receiver)} aria-label="Open Requests">
         ↗
-      </a>
+      </Link>
       <Button size="sm" variant="ghost" aria-label="Dismiss stack" onClick={dismiss}>
         ×
       </Button>
@@ -259,15 +260,15 @@ function IncomingStack({
                 disabled={blocked}
                 grants={state.capabilities?.features.has("grants") ?? false}
                 decide={(input) => {
-                  void state.controller.mutate(input);
+                  if (!reviewSupportKnownMissing(receiver)) void state.controller.mutate(input);
                 }}
               />
             );
           })}
           {count > 3 ? (
-            <a href={requestHref(receiver)} className="text-xs underline">
+            <Link {...requestLink(receiver)} className="text-xs underline">
               {count - 3} more in Requests
-            </a>
+            </Link>
           ) : null}
         </div>
       ) : null}
@@ -311,13 +312,13 @@ function IncomingRow({
             {view.operation}
           </span>
         </button>
-        <a
+        <Link
           className="shrink-0 p-2 text-3xs"
           aria-label="Open exact request"
-          href={requestHref(receiver, item.record.id, item.record.bindingDigest)}
+          {...requestLink(receiver, item.record.id, item.record.bindingDigest)}
         >
           ↗
-        </a>
+        </Link>
       </div>
       {!collapsed ? (
         <>
@@ -442,17 +443,23 @@ function CreatedRow({
           />
         </button>
         <span className="ml-auto text-right text-xs">{status}</span>
-        <a
-          className="p-2 text-3xs"
-          aria-label={available ? "Open exact thread" : "Open exact request"}
-          href={
-            available
-              ? threadHref(receiver, item.threadId!)
-              : requestHref(receiver, item.record.id, item.record.bindingDigest)
-          }
-        >
-          ↗
-        </a>
+        {available ? (
+          <Link
+            className="p-2 text-3xs"
+            aria-label="Open exact thread"
+            {...threadLink(receiver, available)}
+          >
+            ↗
+          </Link>
+        ) : (
+          <Link
+            className="p-2 text-3xs"
+            aria-label="Open exact request"
+            {...requestLink(receiver, item.record.id, item.record.bindingDigest)}
+          >
+            ↗
+          </Link>
+        )}
       </div>
       {!collapsed ? (
         <>
@@ -531,9 +538,9 @@ function LegacyStack({ receiver }: { receiver: EnvironmentId }) {
   const frozen = useFrozenRows(rows.slice(0, 3), admissionBindingKey);
   return (
     <div className="space-y-2" {...frozen.handlers}>
-      <a href={requestHref(receiver)} aria-label="Open Requests" className="text-3xs">
+      <Link {...requestLink(receiver)} aria-label="Open Requests" className="text-3xs">
         ↗
-      </a>
+      </Link>
       {frozen.rows.map((record) => (
         <RequestReviewRow
           key={admissionBindingKey(record)}

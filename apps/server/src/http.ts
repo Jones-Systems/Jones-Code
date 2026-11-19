@@ -3,6 +3,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
+  REMOTE_ADMISSION_POLICY_PATH,
 } from "@t3tools/contracts";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
 import { injectMcpAppCookieBootstrap, injectMcpAppThemeBootstrap } from "@t3tools/shared/mcpApp";
@@ -259,7 +260,7 @@ export const layerBrowserApiCors = Layer.unwrap(
     const config = yield* ServerConfig.ServerConfig;
     const devOrigin = config.devUrl?.origin;
     // Credentialed dev requests need explicit Vite/Electron origins; packaged desktop uses the default wildcard.
-    const cors = HttpMiddleware.cors({
+    const options = {
       ...(devOrigin
         ? {
             allowedOrigins: [devOrigin, ...DESKTOP_RENDERER_ORIGINS, ...config.devAllowedOrigins],
@@ -270,13 +271,21 @@ export const layerBrowserApiCors = Layer.unwrap(
       allowedHeaders: browserApiCorsAllowedHeaders,
       exposedHeaders: [],
       maxAge: 600,
+    };
+    const cors = HttpMiddleware.cors(options);
+    const admissionPolicyCors = HttpMiddleware.cors({
+      ...options,
+      allowedMethods: [...browserApiCorsAllowedMethods, "PUT"],
     });
     return HttpRouter.middleware(
       (httpEffect) => {
         const withCors = cors(httpEffect);
-        return Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
-          request.url.split("?", 1)[0] === MCP_HTTP_PATH ? httpEffect : withCors,
-        );
+        const withAdmissionPolicyCors = admissionPolicyCors(httpEffect);
+        return Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
+          const path = request.url.split("?", 1)[0];
+          if (path === MCP_HTTP_PATH) return httpEffect;
+          return path === REMOTE_ADMISSION_POLICY_PATH ? withAdmissionPolicyCors : withCors;
+        });
       },
       { global: true },
     );

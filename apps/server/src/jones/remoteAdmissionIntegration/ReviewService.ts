@@ -417,7 +417,7 @@ export function makeReviewService(
     return yield* signals
       ? signals.waitFor({
           read,
-          isReady: (response) => !input.after || response.changes.length > 0,
+          isReady: (response) => !input.after || response.after !== input.after,
           timeoutMs: input.timeoutMs ?? 0,
         })
       : read;

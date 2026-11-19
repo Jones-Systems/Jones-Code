@@ -932,9 +932,10 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(fleetUpdatesHttpApiLayer),
       Layer.provide(importedHistoryHttpApiLayer),
       Layer.provide(
-        Layer.merge(
+        Layer.mergeAll(
           JonesHttp.remoteAdmissionHttpApiLayer,
           JonesHttp.remoteAdmissionReviewHttpApiLayer,
+          JonesHttp.requestManagementHttpApiLayer,
         ),
       ),
       Layer.provide(providerQueueHttpApiLayer),

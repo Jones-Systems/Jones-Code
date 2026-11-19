@@ -346,6 +346,26 @@ export function createReviewController(client: ReviewClient) {
       if (ordinal === readOrdinal) publish({ loading: false });
     }
   };
+  const reconcileFeed = async (signal: AbortSignal) => {
+    if (signal.aborted) return;
+    await load();
+    if (
+      signal.aborted ||
+      state.view === "current" ||
+      state.loadFailed ||
+      state.pending.size > 0 ||
+      policyWriting
+    )
+      return;
+    const ordinal = readOrdinal;
+    const epoch = mutationEpoch;
+    const attention = await client.page("current");
+    if (signal.aborted || ordinal !== readOrdinal || epoch !== mutationEpoch) return;
+    publish({
+      incoming: attention.records.filter((item) => !item.blocked && item.record.status === "held"),
+      currentHeldCount: attention.counts.currentHeldAdmissions,
+    });
+  };
   const mutate = async (input: Mutation) => {
     const key =
       input.action === "decide"
@@ -542,6 +562,9 @@ export function createReviewController(client: ReviewClient) {
           cursor = head;
         }
         persistAttention();
+        // Current holds are actionable on reconnect even when no later change arrives.
+        // The head cursor still prevents first-load replay of old creation results.
+        await reconcileFeed(owner.signal);
         let historyReset = false;
         while (!owner.signal.aborted) {
           let batch: ChangeBatch;
@@ -562,7 +585,7 @@ export function createReviewController(client: ReviewClient) {
             if (owner.signal.aborted) break;
             cursor = head;
             persistAttention();
-            await load();
+            await reconcileFeed(owner.signal);
             continue;
           }
           if (owner.signal.aborted) break;
@@ -578,17 +601,7 @@ export function createReviewController(client: ReviewClient) {
               results.set(JSON.stringify([bindingKey(item.record), item.attempt]), item);
           publish({ results: [...results.values()] });
           persistAttention();
-          await load();
-          if (state.view !== "current" && state.pending.size === 0) {
-            const attention = await client.page("current");
-            if (!owner.signal.aborted)
-              publish({
-                incoming: attention.records.filter(
-                  (item) => !item.blocked && item.record.status === "held",
-                ),
-                currentHeldCount: attention.counts.currentHeldAdmissions,
-              });
-          }
+          await reconcileFeed(owner.signal);
         }
       } catch {
         if (!owner.signal.aborted)

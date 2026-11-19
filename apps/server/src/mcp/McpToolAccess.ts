@@ -163,11 +163,10 @@ const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
   Effect.flatMap((scope) => McpInvocationContext.requireThreadScope(scope, "This tool")),
 );
 
-export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare(
-    (params: P) => handle(params),
-    () => Effect.void,
-  );
+export const reads = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  beforeForwarding?: RemoteCheck<P>,
+) => declare((params: P) => handle(params), beforeForwarding ?? (() => Effect.void));
 
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);

@@ -18,6 +18,7 @@ export function RequestCard({
   timestampFormat,
   policyRevision,
   blocked,
+  initiallyExpanded = false,
   onDecide,
   nowMs,
 }: {
@@ -27,11 +28,12 @@ export function RequestCard({
   readonly timestampFormat: TimestampFormat;
   readonly policyRevision: string;
   readonly blocked: string | null;
+  readonly initiallyExpanded?: boolean | undefined;
   readonly onDecide: (input: RemoteAdmissionDecision) => void;
   readonly nowMs?: number;
 }) {
   const id = useId();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(initiallyExpanded);
   const stalePolicy = record.envelope.receiverPolicy.revision !== policyRevision;
   const approvalBlocked =
     blocked ??

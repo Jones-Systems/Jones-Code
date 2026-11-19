@@ -445,6 +445,7 @@ it.effect(
         [162, "OrdinaryPreparation"],
         [163, "RemoteSendReceipts"],
         [164, "LegacyBootstrap"],
+        [165, "RequestManagement"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

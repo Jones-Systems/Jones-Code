@@ -7,6 +7,7 @@ import { useSyncExternalStore } from "react";
 import { receiverAttention } from "./attentionPersistence";
 
 const controllers = new Map<EnvironmentId, ReturnType<typeof createReviewController>>();
+const unsupportedReceivers = new Map<EnvironmentId, "held" | "legacy">();
 const listeners = new Set<() => void>();
 let revision = 0;
 const subscribe = (listener: () => void) => {
@@ -16,6 +17,10 @@ const subscribe = (listener: () => void) => {
   };
 };
 const getRevision = () => revision;
+const publish = () => {
+  ++revision;
+  for (const listener of listeners) listener();
+};
 /** Installation is observable: legacy consumers switch only after capability discovery. */
 export function installReviewClient(receiver: EnvironmentId, client: ReviewClient) {
   if (controllers.has(receiver))
@@ -23,10 +28,42 @@ export function installReviewClient(receiver: EnvironmentId, client: ReviewClien
   const controller = createReviewController(client);
   controller.setAttentionPersistence(receiverAttention(receiver));
   controllers.set(receiver, controller);
-  ++revision;
-  for (const listener of listeners) listener();
+  publish();
 }
-export const reviewControllerFor = (receiver: EnvironmentId) => controllers.get(receiver) ?? null;
+export const retainedReviewControllerFor = (receiver: EnvironmentId) =>
+  controllers.get(receiver) ?? null;
+export const reviewControllerFor = (receiver: EnvironmentId) =>
+  unsupportedReceivers.get(receiver) === "legacy" ? null : retainedReviewControllerFor(receiver);
+export const reviewSupportKnownMissing = (receiver: EnvironmentId) =>
+  unsupportedReceivers.has(receiver);
+export const useReviewSupportKnownMissing = (receiver: EnvironmentId) =>
+  useSyncExternalStore(
+    subscribe,
+    () => reviewSupportKnownMissing(receiver),
+    () => false,
+  );
+
+export function restoreReviewSupport(receiver: EnvironmentId) {
+  if (unsupportedReceivers.delete(receiver)) publish();
+}
+
+export function fallBackToLegacyReview(receiver: EnvironmentId): boolean {
+  const controller = reviewControllerFor(receiver);
+  if (!controller) return false;
+  const { pending, uncertain, policyBarrier } = controller.getSnapshot();
+  // Retain the protocol and its readback controls while an effect is unsettled.
+  if (pending.size || uncertain.size || policyBarrier) {
+    if (unsupportedReceivers.get(receiver) !== "held") {
+      unsupportedReceivers.set(receiver, "held");
+      publish();
+    }
+    return false;
+  }
+  controller.stopResults();
+  unsupportedReceivers.set(receiver, "legacy");
+  publish();
+  return true;
+}
 export const useReviewRegistry = () => useSyncExternalStore(subscribe, getRevision, getRevision);
 export const useReviewController = (receiver: EnvironmentId) =>
   useSyncExternalStore(

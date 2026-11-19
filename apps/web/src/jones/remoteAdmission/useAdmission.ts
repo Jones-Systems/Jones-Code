@@ -2,7 +2,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { admissionAttention, createAdmissionStore } from "./store";
 import { useEnvironmentIds } from "../../state/environments";
-import { reviewControllersFor, useReviewRegistry } from "./reviewRuntime";
+import { reviewControllerFor, reviewControllersFor, useReviewRegistry } from "./reviewRuntime";
 import { remoteAdmissionRequest } from "./runtime";
 
 const stores = new Map<EnvironmentId, ReturnType<typeof createAdmissionStore>>();
@@ -10,13 +10,20 @@ const watchers = new Map<
   ReturnType<typeof createAdmissionStore>,
   { count: number; stop: () => void }
 >();
-function storeFor(environmentId: EnvironmentId) {
+export function admissionStoreFor(environmentId: EnvironmentId) {
   let store = stores.get(environmentId);
   if (!store) {
-    store = createAdmissionStore((request) => remoteAdmissionRequest(environmentId, request));
+    store = createAdmissionStore((request) => remoteAdmissionRequest(environmentId, request), {
+      canDecide: () => reviewControllerFor(environmentId) === null,
+    });
     stores.set(environmentId, store);
   }
   return store;
+}
+
+export function hasLegacyReviewBarrier(environmentId: EnvironmentId) {
+  const state = stores.get(environmentId)?.getSnapshot();
+  return Boolean(state && (state.busy || state.unconfirmed.size));
 }
 
 function watch(store: ReturnType<typeof createAdmissionStore>) {
@@ -47,7 +54,7 @@ function watch(store: ReturnType<typeof createAdmissionStore>) {
 }
 
 export function useAdmission(environmentId: EnvironmentId) {
-  const store = storeFor(environmentId);
+  const store = admissionStoreFor(environmentId);
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the selected environment admission watcher for the mounted consumer.
   useEffect(() => watch(store), [store]);
@@ -57,7 +64,7 @@ export function useAdmission(environmentId: EnvironmentId) {
 export function useAdmissionOverview() {
   const registryRevision = useReviewRegistry();
   const environmentIds = useEnvironmentIds();
-  const entries = environmentIds.map(storeFor);
+  const entries = environmentIds.map(admissionStoreFor);
   const reviews = reviewControllersFor(environmentIds, registryRevision);
   const overview = {
     subscribe: (listener: () => void) => {
