@@ -2,9 +2,13 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import { createFleetHostStore } from "./store.ts";
+
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
+}));
 
 const enrollment = {
   enrollmentId: "11111111-1111-4111-8111-111111111111",
@@ -123,4 +127,66 @@ it("serializes directive transactions across stores and retains the fence on dis
     });
     expect(await Promise.all([fenced, competing])).toEqual([fence.directiveId, fence]);
     expect((await createFleetHostStore(home).readFollower())?.fencedDirectives).toEqual([fence]);
+  }));
+
+it("requires a directory sync before returning proof for an already-renamed fence", async () =>
+  fixture(async (home) => {
+    const directory = NodePath.join(home, "runtime", "jones-fleet");
+    const journal = NodePath.join(directory, "follower.json");
+    const fence = {
+      directiveId: "33333333-3333-4333-8333-333333333333",
+      bindingHash: "c".repeat(64),
+      rollbackDenied: true as const,
+    };
+    await createFleetHostStore(home).editEnrollment(() => enrollment);
+    const reconcile = () =>
+      createFleetHostStore(home).transactDirective((record) => ({
+        record: record ?? {
+          schema: 1,
+          leader: null,
+          operation: null,
+          lastAutomaticActivationAt: null,
+          fencedDirectives: [fence],
+          releasedDirectives: [fence.directiveId],
+        },
+        result: fence.directiveId,
+      }));
+
+    const failure = new Error("synthetic journal directory sync failure");
+    let failSync = true;
+    let syncAttempts = 0;
+    const originalOpen = NodeFSP.open;
+    const rename = vi.spyOn(NodeFSP, "rename");
+    const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === directory) {
+        const sync = handle.sync.bind(handle);
+        handle.sync = async () => {
+          ++syncAttempts;
+          if (failSync) throw failure;
+          await sync();
+        };
+      }
+      return handle;
+    });
+    try {
+      await expect(reconcile()).rejects.toThrow(failure);
+      expect(JSON.parse(await NodeFSP.readFile(journal, "utf8"))).toMatchObject({
+        fencedDirectives: [fence],
+        releasedDirectives: [fence.directiveId],
+      });
+      expect(syncAttempts).toBe(1);
+
+      failSync = false;
+      await expect(reconcile()).resolves.toBe(fence.directiveId);
+      expect(syncAttempts).toBe(2);
+
+      failSync = true;
+      await expect(reconcile()).rejects.toThrow(failure);
+      expect(syncAttempts).toBe(3);
+      expect(rename).toHaveBeenCalledTimes(1);
+    } finally {
+      open.mockRestore();
+      rename.mockRestore();
+    }
   }));

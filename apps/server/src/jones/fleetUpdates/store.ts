@@ -25,6 +25,8 @@ const StoredDirective = Schema.Struct({
   ),
 });
 
+export const DIRECTIVE_HISTORY_LIMIT = 128;
+
 /**
  * What this host knows about following its laptop. The leader is bound to the enrollment that
  * published it, so re-enrolling discards it. The automatic-activation time is host-wide and
@@ -54,18 +56,20 @@ export const FleetFollowerRecord = Schema.Struct({
   directiveHistory: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({ directiveId: FleetOperationId, prior: Schema.NullOr(StoredDirective) }),
-    ).check(Schema.isMaxLength(128)),
+    ).check(Schema.isMaxLength(DIRECTIVE_HISTORY_LIMIT)),
   ),
   releasedDirectives: Schema.optionalKey(
-    Schema.Array(FleetOperationId).check(Schema.isMaxLength(128)),
+    Schema.Array(FleetOperationId).check(Schema.isMaxLength(DIRECTIVE_HISTORY_LIMIT)),
   ),
   fencedDirectives: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({
         directiveId: FleetOperationId,
         bindingHash: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+        /** Written with the denial in releasedDirectives. Older fences lack this proof. */
+        rollbackDenied: Schema.optionalKey(Schema.Literal(true)),
       }),
-    ).check(Schema.isMaxLength(128)),
+    ).check(Schema.isMaxLength(DIRECTIVE_HISTORY_LIMIT)),
   ),
 });
 export type FleetFollowerRecord = typeof FleetFollowerRecord.Type;
@@ -98,6 +102,15 @@ const isFollower = Schema.is(FleetFollowerRecord);
 const isOperation = Schema.is(FleetHostOperation);
 const isOperationId = Schema.is(FleetOperationId);
 
+async function syncDirectory(path: string) {
+  const directory = await NodeFSP.open(path, "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}
+
 export async function ownedDirectory(path: string, privateMode: boolean) {
   await NodeFSP.mkdir(path, { recursive: true, mode: 0o700 });
   const stat = await NodeFSP.lstat(path);
@@ -109,12 +122,7 @@ export async function ownedDirectory(path: string, privateMode: boolean) {
   ) {
     throw new Error("Fleet receipt directory ownership is unknown.");
   }
-  const parent = await NodeFSP.open(NodePath.dirname(path), "r");
-  try {
-    await parent.sync();
-  } finally {
-    await parent.close();
-  }
+  await syncDirectory(NodePath.dirname(path));
 }
 
 export async function read<T>(
@@ -165,12 +173,7 @@ export async function replace(path: string, value: unknown) {
       await file.close();
     }
     await NodeFSP.rename(temporary, path);
-    const directory = await NodeFSP.open(NodePath.dirname(path), "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
+    await syncDirectory(NodePath.dirname(path));
   } finally {
     await NodeFSP.unlink(temporary).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
@@ -248,6 +251,8 @@ export function createFleetHostStore(baseDir: string): FleetHostStore {
         const current = await readFollower();
         const { record, result } = change(current, await read(enrollment, isEnrollment));
         if (record !== null && record !== current) await writeFollower(record);
+        // A previous rename may be visible even if its directory sync failed.
+        else await syncDirectory(directory);
         return result;
       }),
   };
