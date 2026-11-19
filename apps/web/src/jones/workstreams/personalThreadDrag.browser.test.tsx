@@ -1,11 +1,12 @@
 import "~/index.css";
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import {
   createPersonalWorkstreamsController,
+  groupPersonalThreads,
   personalThreadKey,
   type PersonalWorkstreamsController,
   type PersonalWorkstreamsState,
@@ -79,6 +80,7 @@ function fixture() {
       _destinationId: string | null,
       _neighbor: EnvironmentThreadShell | null,
       _after: boolean,
+      _unpin?: () => Promise<boolean>,
     ) => true,
   );
   const reorder = vi.fn(async () => {});
@@ -189,17 +191,22 @@ const insertion = () => document.querySelector<HTMLElement>("[data-personal-thre
 
 describe("personal thread pointer placement", () => {
   it.each([
-    { pinned: false, release: "pointerup", sameGroup: false },
-    { pinned: false, release: "pointermove", sameGroup: true },
-    { pinned: true, release: "pointerup", sameGroup: false },
+    { pinned: false, release: "pointerup", sameGroup: false, rejectUnpin: false },
+    { pinned: false, release: "pointermove", sameGroup: true, rejectUnpin: false },
+    { pinned: true, release: "pointerup", sameGroup: false, rejectUnpin: false },
+    { pinned: true, release: "pointerup", sameGroup: false, rejectUnpin: true },
   ])(
-    "reads back membership and saved neighbor order ($pinned, $release, $sameGroup)",
-    async ({ pinned, release, sameGroup }) => {
+    "reads back membership and saved neighbor order ($pinned, $release, $sameGroup, $rejectUnpin)",
+    async ({ pinned, release, sameGroup, rejectUnpin }) => {
       const registry = AtomRegistry.make();
       const at = "2026-11-17T12:00:00.000Z";
       const shellKey = (thread: EnvironmentThreadShell) =>
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
       const moved = { ...source, pinnedAt: pinned ? at : null };
+      const hidden = makeThread("hidden");
+      const members = sameGroup ? [first, last, moved] : [first, last, hidden];
+      const stationary = pinned ? [hidden, first, last] : members.filter((row) => row !== moved);
+      const trace: string[] = [];
       const controller = createPersonalWorkstreamsController({
         registry,
         origin: "drag-integration",
@@ -215,7 +222,7 @@ describe("personal thread pointer placement", () => {
                 rev: 1,
                 origin: "drag-integration",
               })),
-              assignments: (sameGroup ? [first, last, moved] : [first, last]).map((thread) => ({
+              assignments: members.map((thread) => ({
                 threadId: thread.id,
                 workstreamId: "Drag Alpha",
                 revision: 1,
@@ -226,17 +233,20 @@ describe("personal thread pointer placement", () => {
             return () => {};
           },
           put: vi.fn(),
-          assign: async (_connection, input) => ({
-            outcome: "applied",
-            sequence: 1,
-            assignment: {
-              threadId: input.threadId,
-              workstreamId: input.workstream?.id ?? null,
-              revision: input.expectedRevision + 1,
-              updatedAt: at,
-            },
-            workstream: input.workstream,
-          }),
+          assign: async (_connection, input) => {
+            trace.push("assign");
+            return {
+              outcome: "applied",
+              sequence: 1,
+              assignment: {
+                threadId: input.threadId,
+                workstreamId: input.workstream?.id ?? null,
+                revision: input.expectedRevision + 1,
+                updatedAt: at,
+              },
+              workstream: input.workstream,
+            };
+          },
         },
       });
       controller.setEnvironments([
@@ -250,18 +260,54 @@ describe("personal thread pointer placement", () => {
         },
       };
       const bridge: { current: NativeThreadExternalDrop | null } = { current: null };
+      let savedRows = [...stationary, moved].map((thread, index) => ({
+        ...thread,
+        activeOrderKey:
+          thread === hidden && !pinned
+            ? "m"
+            : thread === moved && !pinned && !sameGroup
+              ? "t"
+              : null,
+        createdAt: new Date(Date.UTC(2026, 10, 20 - index)).toISOString(),
+      }));
+      const alphaOrder = () =>
+        groupPersonalThreads(
+          registry.get(controller.state),
+          sortActiveThreadsByOrderKey(savedRows.filter((row) => row.pinnedAt == null)),
+        ).groups[0]!.threads.map(({ id }) => id);
+      const acknowledged: Array<{ id: string; key: string; siblings: string[] }> = [];
+      let resolveUnpin!: () => void;
+      const unpinReply = new Promise<void>((resolve) => {
+        resolveUnpin = resolve;
+      });
+      const onUnpinError = vi.fn();
+      let unpin: () => Promise<void> = async () => {
+        throw new Error("Pinned fixture was not mounted");
+      };
       function Integration() {
         const state = useAtomValue(controller.state);
-        const [rows, setRows] = useState(
-          [moved, first, last].map((thread, index) => ({
-            ...thread,
-            activeOrderKey: sameGroup ? null : ["b", "d", "f"][index]!,
-            createdAt: [at, "2026-11-19T12:00:00.000Z", "2026-11-18T12:00:00.000Z"][index]!,
-          })),
-        );
+        const [rows, setRows] = useState(savedRows);
+        const persist = (
+          target: EnvironmentThreadShell,
+          patch: Partial<(typeof savedRows)[number]>,
+        ) => {
+          savedRows = savedRows.map((row) => (row.id === target.id ? { ...row, ...patch } : row));
+          setRows(savedRows);
+        };
+        const unpinArrival = async () => {
+          trace.push("unpin");
+          await unpinReply;
+          if (rejectUnpin) throw new Error("Synthetic server rejected unpin");
+          persist(moved, { pinnedAt: null });
+          trace.push("unpinned");
+        };
+        useLayoutEffect(() => {
+          unpin = unpinArrival;
+        });
         const active = sortActiveThreadsByOrderKey(
           rows.filter((thread) => thread.pinnedAt == null),
         );
+        const visible = active.filter((thread) => thread.id !== hidden.id);
         return (
           <>
             <ul>
@@ -279,7 +325,7 @@ describe("personal thread pointer placement", () => {
             </ul>
             <WorkstreamNativeSidebar
               controller={controller}
-              threads={active}
+              threads={visible}
               summaryThreads={rows}
               externalDropRef={bridge}
               renderThread={(thread) => (
@@ -288,28 +334,33 @@ describe("personal thread pointer placement", () => {
               canOperate={() => true}
               canReorder={() => true}
               reorder={async () => {}}
-              placeThread={(thread, destinationId, neighbor, after) =>
+              placeThread={(thread, destinationId, neighbor, after, unpin) =>
                 placePersonalThread({
                   thread,
                   destinationId,
                   neighbor,
                   after,
                   state,
-                  activeThreads: active,
+                  activeThreads: visible,
                   orderRoster: rows,
                   activeKeysById: new Map(
                     rows.map((entry) => [shellKey(entry), entry.activeOrderKey]),
                   ),
-                  reorderableKeys: new Set(active.map(shellKey)),
+                  reorderableKeys: new Set(rows.map(shellKey)),
                   allowReorder: true,
                   controller,
                   canOperate: () => true,
+                  unpin,
                   reorder: async (target, orderKey) => {
-                    setRows((current) =>
-                      current.map((entry) =>
-                        entry.id === target.id ? { ...entry, activeOrderKey: orderKey } : entry,
-                      ),
-                    );
+                    trace.push(`reorder ${target.id}=${orderKey}`);
+                    if (savedRows.find((entry) => entry.id === target.id)?.pinnedAt != null)
+                      return false;
+                    persist(target, { activeOrderKey: orderKey });
+                    acknowledged.push({
+                      id: target.id,
+                      key: orderKey,
+                      siblings: alphaOrder().filter((id) => id !== moved.id),
+                    });
                     return true;
                   },
                   onAssignmentFailure: (failure) => {
@@ -321,13 +372,6 @@ describe("personal thread pointer placement", () => {
                 })
               }
             />
-            <button
-              onClick={() =>
-                setRows((current) => current.map((entry) => ({ ...entry, pinnedAt: null })))
-              }
-            >
-              Unpin saved arrival
-            </button>
           </>
         );
       }
@@ -339,7 +383,7 @@ describe("personal thread pointer placement", () => {
       );
       const neighbor = row(screen.container, first);
       const originalTop = neighbor.getBoundingClientRect().top;
-      const destination = point(neighbor, 0.2);
+      const destination = point(neighbor, pinned ? 0.8 : 0.2);
       if (pinned)
         await act(() => {
           expect(bridge.current!.locateExternal(destination, moved)).toBe(true);
@@ -347,8 +391,8 @@ describe("personal thread pointer placement", () => {
       else await start(row(screen.container, moved), destination);
       const gap = insertion()!;
       expect(gap.getBoundingClientRect().height).toBe(73);
-      expect(neighbor.getBoundingClientRect().top - originalTop).toBe(73);
-      expect(gap.nextElementSibling).toBe(neighbor);
+      expect(neighbor.getBoundingClientRect().top - originalTop).toBe(pinned ? 0 : 73);
+      expect(pinned ? gap.previousElementSibling : gap.nextElementSibling).toBe(neighbor);
       expect(
         registry.get(controller.state).assignmentsByThreadKey.get(personalThreadKey(moved))
           ?.workstreamId,
@@ -360,13 +404,27 @@ describe("personal thread pointer placement", () => {
           });
         else await act(() => pointer(document, "pointermove", point(gap, fraction)));
         expect(insertion()).toBe(gap);
-        expect(neighbor.getBoundingClientRect().top - originalTop).toBe(73);
+        expect(neighbor.getBoundingClientRect().top - originalTop).toBe(pinned ? 0 : 73);
       }
       if (pinned) {
-        await act(async () => {
-          expect(await bridge.current!.dropExternal(point(gap), moved)).toBe(true);
-        });
-        await userEvent.click(page.getByRole("button", { name: "Unpin saved arrival" }));
+        try {
+          await act(() => {
+            expect(
+              dropPinnedThreadOnWorkstream({
+                bridge: bridge.current,
+                point: point(gap),
+                thread: moved,
+                unpin,
+                onError: onUnpinError,
+              }),
+            ).toBe(true);
+          });
+          await vi.waitFor(() => expect(trace.length).toBeGreaterThan(1));
+          expect(trace).toEqual(["assign", "unpin"]);
+          expect(acknowledged).toEqual([]);
+        } finally {
+          await act(resolveUnpin);
+        }
       } else {
         const landing = point(gap);
         await act(() => pointer(document, release, landing, 0));
@@ -376,14 +434,42 @@ describe("personal thread pointer placement", () => {
         registry.get(controller.state).assignmentsByThreadKey.get(personalThreadKey(moved))
           ?.workstreamId,
       ).toBe("Drag Alpha");
+      expect(insertion()).toBeNull();
+      if (rejectUnpin) {
+        expect(onUnpinError).toHaveBeenCalledOnce();
+        expect(trace).toEqual(["assign", "unpin"]);
+        expect(savedRows.find(({ id }) => id === moved.id)?.pinnedAt).toBe(at);
+        expect(alphaOrder()).toEqual(stationary.map(({ id }) => id));
+        return;
+      }
+      const expected = pinned ? [hidden, first, moved, last] : [moved, ...stationary];
+      if (pinned)
+        expect(trace).toEqual([
+          "assign",
+          "unpin",
+          "unpinned",
+          "reorder last=n",
+          "reorder source=h",
+        ]);
+      for (const write of acknowledged) {
+        expect(write.siblings, `after ${write.id}=${write.key}`).toEqual(
+          stationary.map(({ id }) => id),
+        );
+      }
+      expect(alphaOrder()).toEqual(expected.map(({ id }) => id));
+      if (!pinned && !sameGroup)
+        expect(acknowledged.map(({ id, key }) => [id, key])).toEqual([
+          [last.id, "g"],
+          [first.id, "d"],
+          [moved.id, "c"],
+        ]);
       expect(
         [
           ...section(screen.container, "Drag Alpha").querySelectorAll<HTMLElement>(
             "[data-personal-thread]",
           ),
         ].map((entry) => entry.dataset.personalThread),
-      ).toEqual([moved, first, last].map(personalThreadKey));
-      expect(insertion()).toBeNull();
+      ).toEqual(expected.filter((entry) => entry !== hidden).map(personalThreadKey));
     },
   );
 
@@ -438,6 +524,7 @@ describe("personal thread pointer placement", () => {
         id,
         null,
         false,
+        undefined,
       );
     },
   );
@@ -539,7 +626,13 @@ describe("personal thread pointer placement", () => {
     );
     expect(lifted.getBoundingClientRect().top).toBeCloseTo(originalRect.top + after.y - origin.y);
     await act(() => pointer(document, "pointerup", after, 0));
-    expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(source, "Drag Alpha", first, true);
+    expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(
+      source,
+      "Drag Alpha",
+      first,
+      true,
+      undefined,
+    );
     expect(setup.controller.assign).not.toHaveBeenCalled();
     expect(setup.reorder).not.toHaveBeenCalled();
     expect(document.querySelector("[data-personal-thread-drag]")).toBeNull();
@@ -573,7 +666,13 @@ describe("personal thread pointer placement", () => {
       const landing = point(insertion()!);
       await act(() => pointer(document, release, landing, 0));
       if (release === "pointermove") await act(() => pointer(document, "pointerup", landing, 0));
-      expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(moved, null, neighbor, after);
+      expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(
+        moved,
+        null,
+        neighbor,
+        after,
+        undefined,
+      );
     },
   );
 
@@ -584,13 +683,19 @@ describe("personal thread pointer placement", () => {
     const before = point(row(screen.container, first), 0.2);
     await start(from, before);
     await act(() => pointer(document, "pointerup", before, 0));
-    expect(setup.placeThread).toHaveBeenLastCalledWith(last, "Drag Alpha", first, false);
+    expect(setup.placeThread).toHaveBeenLastCalledWith(last, "Drag Alpha", first, false, undefined);
     const header = section(screen.container, "Drag Alpha").querySelector("button")!;
     const at = point(header);
     await start(row(screen.container, source), at);
     expect(insertion()).toBeNull();
     await act(() => pointer(document, "pointerup", at, 0));
-    expect(setup.placeThread).toHaveBeenLastCalledWith(source, "Drag Alpha", null, false);
+    expect(setup.placeThread).toHaveBeenLastCalledWith(
+      source,
+      "Drag Alpha",
+      null,
+      false,
+      undefined,
+    );
   });
 
   it("keeps Unassigned in automatic order when active reordering is unavailable", async () => {
@@ -615,7 +720,7 @@ describe("personal thread pointer placement", () => {
     await start(row(screen.container, first), before);
     expect(insertion()?.nextElementSibling).toBe(unassignedRow);
     await act(() => pointer(document, "pointerup", before, 0));
-    expect(setup.placeThread).toHaveBeenLastCalledWith(first, null, source, false);
+    expect(setup.placeThread).toHaveBeenLastCalledWith(first, null, source, false, undefined);
     const list = section(screen.container, "Drag Alpha").querySelector<HTMLElement>(
       "[data-personal-thread-list]",
     )!;
@@ -626,7 +731,7 @@ describe("personal thread pointer placement", () => {
     expect(insertion()?.previousElementSibling).toBe(row(screen.container, last));
     expect(insertion()?.dataset.personalThreadInsertion).toBe("after");
     await act(() => pointer(document, "pointerup", blank, 0));
-    expect(setup.placeThread).toHaveBeenLastCalledWith(source, "Drag Alpha", last, true);
+    expect(setup.placeThread).toHaveBeenLastCalledWith(source, "Drag Alpha", last, true, undefined);
   });
 
   it("shows an empty expanded insertion slot and only membership feedback when collapsed", async () => {
@@ -640,13 +745,19 @@ describe("personal thread pointer placement", () => {
     );
     await act(() => pointer(document, "pointermove", point(insertion()!)));
     await act(() => pointer(document, "pointerup", point(insertion()!), 0));
-    expect(setup.placeThread).toHaveBeenLastCalledWith(source, "Drag Empty", null, true);
+    expect(setup.placeThread).toHaveBeenLastCalledWith(source, "Drag Empty", null, true, undefined);
     await userEvent.click(page.getByRole("button", { name: "Collapse Drag Alpha", exact: true }));
     const collapsed = point(section(screen.container, "Drag Alpha").querySelector("button")!);
     await start(row(screen.container, source), collapsed);
     expect(insertion()).toBeNull();
     await act(() => pointer(document, "pointerup", collapsed, 0));
-    expect(setup.placeThread).toHaveBeenLastCalledWith(source, "Drag Alpha", null, false);
+    expect(setup.placeThread).toHaveBeenLastCalledWith(
+      source,
+      "Drag Alpha",
+      null,
+      false,
+      undefined,
+    );
   });
 
   it.each([
@@ -698,7 +809,7 @@ describe("personal thread pointer placement", () => {
     expect(insertion()?.nextElementSibling).toBe(lastRow);
     const release = id === null ? "pointermove" : "pointerup";
     await act(() => pointer(document, release, point(lastRow, 0.8), 0));
-    expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(source, id, last, true);
+    expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(source, id, last, true, undefined);
     expect(insertion()).toBeNull();
   });
 
@@ -768,7 +879,13 @@ describe("personal thread pointer placement", () => {
     await start(row(screen.container, source), at);
     expect(insertion()).toBeNull();
     await act(() => pointer(document, "pointerup", at, 0));
-    expect(setup.placeThread).toHaveBeenLastCalledWith(source, "Drag Alpha", null, false);
+    expect(setup.placeThread).toHaveBeenLastCalledWith(
+      source,
+      "Drag Alpha",
+      null,
+      false,
+      undefined,
+    );
     setup.placeThread.mockClear();
     setup.setCanOperate(false);
     await start(row(screen.container, source), at);
@@ -800,20 +917,15 @@ describe("personal thread pointer placement", () => {
         }),
       ).toBe(true);
     });
-    expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(pinned, "Drag Alpha", first, false);
+    expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(
+      pinned,
+      "Drag Alpha",
+      first,
+      false,
+      expect.any(Function),
+    );
     expect(unpin).not.toHaveBeenCalled();
     expect(setup.controller.assign).not.toHaveBeenCalled();
-    setup.placeThread.mockResolvedValue(true);
-    await act(() => {
-      dropPinnedThreadOnWorkstream({
-        bridge: setup.externalDropRef.current,
-        point: at,
-        thread: pinned,
-        unpin,
-        onError: vi.fn(),
-      });
-    });
-    expect(unpin).toHaveBeenCalledTimes(1);
   });
 
   it.each(["Drag Alpha", null])(
@@ -849,6 +961,7 @@ describe("personal thread pointer placement", () => {
         destinationId,
         first,
         false,
+        undefined,
       );
     },
   );

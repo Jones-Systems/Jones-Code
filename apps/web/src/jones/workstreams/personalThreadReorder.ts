@@ -67,10 +67,8 @@ export function planWorkstreamThreadReorder(input: {
   next.splice(movedIndex, 0, movedId);
   if (next.every((key, index) => key === order[index])) return [];
 
-  if ((groupIdByKey.get(movedId) ?? null) === groupId) {
-    const keyless = planKeylessMemberPlacement(next, movedIndex, keysById, writableKeys);
-    if (keyless !== undefined) return keyless;
-  }
+  const keyless = planKeylessMemberPlacement(next, movedIndex, keysById, writableKeys);
+  if (keyless !== undefined) return keyless;
 
   const assignments = planWritableSidebarReorder(next, keysById, movedId, writableKeys);
   if (assignments === null) return null;

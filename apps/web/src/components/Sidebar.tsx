@@ -2351,6 +2351,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       destinationId: string | null,
       neighbor: EnvironmentThreadShell | null,
       after: boolean,
+      unpin?: () => Promise<boolean>,
     ): Promise<boolean> => {
       if (sidebarRowsAreHeld()) return false;
       const liveThread = readThreadShell(scopeThreadRef(thread.environmentId, thread.id));
@@ -2379,6 +2380,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         allowReorder: !workingShelfEnabled,
         controller: workstreamController.controller,
         canOperate: canOperateThreads,
+        unpin,
         reorder: async (target, orderKey) => {
           const result = await reorderActiveThread(
             scopeThreadRef(target.environmentId, target.id),

@@ -25,6 +25,7 @@ export interface PersonalThreadPlacementInput {
   readonly allowReorder: boolean;
   readonly controller: Pick<PersonalWorkstreamsController, "assign" | "canAssign">;
   readonly canOperate: (threads: readonly EnvironmentThreadShell[]) => boolean;
+  readonly unpin?: (() => Promise<boolean>) | undefined;
   readonly reorder: (thread: EnvironmentThreadShell, orderKey: string) => Promise<boolean>;
   readonly onAssignmentFailure: (failure: PersonalWorkstreamsFailure) => void;
   readonly onPositionFailure: (assignmentSaved: boolean, cause: unknown) => void;
@@ -50,11 +51,17 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
   const currentGroup = visiblePersonalWorkstreamId(input.state, thread);
   const changesGroup = currentGroup !== destinationId;
   if (changesGroup && !controller.canAssign(thread)) return false;
+  const confirmUnpin = thread.pinnedAt == null ? undefined : input.unpin;
 
   let assignments: NonNullable<ReturnType<typeof planWorkstreamThreadReorder>> = [];
   let membersByKey: ReadonlyMap<string, EnvironmentThreadShell> | undefined;
   if (neighbor !== null) {
-    if (!input.allowReorder || neighbor.pinnedAt != null) return false;
+    if (
+      !input.allowReorder ||
+      neighbor.pinnedAt != null ||
+      (thread.pinnedAt != null && (!confirmUnpin || !input.reorderableKeys.has(movedId)))
+    )
+      return false;
     // Order keys outlive status filters. Keep hidden active siblings in the plan.
     const activeMembers = sortActiveThreadsByOrderKey(
       input.orderRoster.filter((member) => member.pinnedAt == null),
@@ -80,7 +87,7 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
         input.reorderableKeys.has(key) && input.canOperate([member]) ? [key] : [],
       ),
     );
-    if (thread.pinnedAt != null) writable.add(movedId);
+    if (confirmUnpin) writable.add(movedId);
     const plan = planWorkstreamThreadReorder({
       activeOrder: [...membersByKey.keys()],
       keysById: input.activeKeysById,
@@ -104,6 +111,8 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
     }
     assignmentSaved = true;
   }
+  // Active reorder rejects a pinned arrival. Wait for the unpin receipt before touching any keys.
+  if (confirmUnpin && !(await confirmUnpin())) return false;
   for (const assignment of assignments) {
     try {
       const target = assignment.id === movedId ? thread : membersByKey?.get(assignment.id);
