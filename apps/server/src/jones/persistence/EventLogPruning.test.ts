@@ -42,6 +42,14 @@ const readers: ReadonlyArray<Reader> = [
       "startRefusal/Orchestrator.integration.test.ts (upstream-like pruning after crash before reservation); startRefusal/Store.test.ts (missing settlement proof)",
   },
   {
+    file: "runtime/RuntimeStop.ts",
+    classification: "tolerate",
+    after:
+      "Missing start, attempt or binding evidence prevents settlement of the run as never claimed. The physical Stop and its existing fences remain eligible.",
+    proof:
+      "runtime/RuntimeStop.test.ts (unclaimed, claimed and different-generation starts); missing event behavior follows the receipt and binding checks",
+  },
+  {
     file: "goals/GoalControl.ts",
     classification: "tolerate",
     after:
