@@ -158,7 +158,7 @@ NodeTest.test(
   },
 );
 
-NodeTest.test("the GitHub AWS runner can fall back after an APT download deadline", async () => {
+NodeTest.test("GitHub AWS falls back after HTTP 503 and an APT deadline", async () => {
   const awsMirrors =
     "http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\nhttps://security.ubuntu.com/ubuntu/\tpriority:3\n";
   const s = scenario({
@@ -170,7 +170,14 @@ NodeTest.test("the GitHub AWS runner can fall back after an APT download deadlin
       ),
     },
     intercept: (_argv, _settings, count) =>
-      count === 2 ? network({ stderr: "", timedOut: true }) : undefined,
+      count === 2
+        ? network({
+            code: null,
+            stderr:
+              "Err:2 http://us-east-2.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libsecret-1-dev amd64\n  503  Service Unavailable [IP: 192.0.2.1 80]\n",
+            timedOut: true,
+          })
+        : undefined,
   });
   await setupApt(s.options);
 
