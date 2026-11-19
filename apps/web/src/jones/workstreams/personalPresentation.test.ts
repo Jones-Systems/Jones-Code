@@ -8,6 +8,7 @@ import {
   personalSidebarRoster,
   personalSidebarRosterTotals,
   personalSidebarSummaryThreads,
+  personalSidebarUnsettledThreads,
   summarizePersonalThreads,
 } from "./personalPresentation";
 
@@ -72,6 +73,13 @@ it("counts each non-settled member once, including snoozed, pinned and working m
   const totals = personalSidebarRosterTotals(state, [...members, active, snoozed]);
   expect(totals.get("sync")).toBe(5);
   expect(totals.get("empty")).toBe(0);
+  expect(personalSidebarUnsettledThreads(members)).toEqual([
+    active,
+    pinned,
+    working,
+    snoozed,
+    otherEnvironment,
+  ]);
   // Attention candidates still exclude snoozed and settled rows; the footnote does not.
   expect(personalSidebarSummaryThreads(members, at)).toHaveLength(4);
   expect(personalSidebarRosterTotals(state, [active]).get("sync")).toBe(1);

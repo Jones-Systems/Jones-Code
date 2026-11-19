@@ -2,6 +2,27 @@ import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import type { NativeThreadExternalDrop } from "../../components/workstreams/WorkstreamNativeSidebar";
 
+export function isWorkstreamDropLane(
+  list: HTMLElement,
+  point: { x: number; y: number },
+  draggedThreadKey?: string,
+) {
+  const { ownerDocument } = list;
+  // The sortable source card can cover the lane beneath the pointer.
+  const hit =
+    draggedThreadKey === undefined
+      ? ownerDocument.elementFromPoint(point.x, point.y)
+      : ownerDocument
+          .elementsFromPoint(point.x, point.y)
+          .find(
+            (element) =>
+              element.closest<HTMLElement>("[data-thread-item]")?.dataset.threadItem !==
+              draggedThreadKey,
+          );
+  const lane = hit?.closest("[data-native-workstream]");
+  return lane != null && list.contains(lane);
+}
+
 export function planWritableSidebarReorder(
   order: readonly string[],
   keysById: ReadonlyMap<string, string | null | undefined>,

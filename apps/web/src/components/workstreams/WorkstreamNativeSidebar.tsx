@@ -8,6 +8,7 @@ import {
   type RefObject,
 } from "react";
 import { useAtomValue } from "@effect/atom-react";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   groupPersonalThreads,
   personalThreadKey,
@@ -305,21 +306,20 @@ export function WorkstreamNativeSidebar({
     if (externalDropRef)
       externalDropRef.current = {
         locateExternal: (point, thread, options) => {
+          const key = personalThreadKey(thread);
+          const sidebarKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
           const source = [
             ...document.querySelectorAll<HTMLElement>("[data-thread-item], [data-personal-thread]"),
           ].find(
-            (row) =>
-              row.dataset.threadItem === personalThreadKey(thread) ||
-              row.dataset.personalThread === personalThreadKey(thread),
+            (row) => row.dataset.threadItem === sidebarKey || row.dataset.personalThread === key,
           );
           draggedHeight.current = source?.getBoundingClientRect().height ?? 0;
           const target = locate(point, thread, !options?.fromMember);
           const previous = externalTarget.current;
           externalTarget.current = target
             ? {
-                key: personalThreadKey(thread),
-                sourceId:
-                  previous?.key === personalThreadKey(thread) ? previous.sourceId : groupId(thread),
+                key,
+                sourceId: previous?.key === key ? previous.sourceId : groupId(thread),
                 target,
               }
             : null;
@@ -368,10 +368,6 @@ export function WorkstreamNativeSidebar({
       return;
     let target: Target | null = null;
     const source = event.currentTarget as HTMLElement;
-    const { ownerDocument } = source;
-    const view = ownerDocument.defaultView!;
-    const { pointerId } = event;
-    const boundaryListeners = new AbortController();
     const key = personalThreadKey(thread);
     const startedGroup = groupId(thread);
     const currentThread = () =>
@@ -395,18 +391,8 @@ export function WorkstreamNativeSidebar({
       event: event.nativeEvent,
       options: {
         distance: SIDEBAR_DRAG_DISTANCE,
-        onAttach: (gesture) => {
-          // Once the pointer leaves the document or loses capture, a buttonless move
-          // can be a return after an unseen release.
-          const cancel = (event: PointerEvent) => {
-            if (event.pointerId === pointerId) gesture.cancel();
-          };
-          const { signal } = boundaryListeners;
-          ownerDocument.documentElement.addEventListener("pointerleave", cancel, { signal });
-          ownerDocument.addEventListener("lostpointercapture", cancel, { capture: true, signal });
-        },
+        cancelOnViewportExit: () => true,
         onFinish: () => {
-          boundaryListeners.abort();
           autoScroll?.dispose();
           sensor.current = null;
           lifted.current?.dispose();
@@ -440,15 +426,6 @@ export function WorkstreamNativeSidebar({
         }
       },
       onMove: (point) => {
-        if (
-          point.x < 0 ||
-          point.x >= view.innerWidth ||
-          point.y < 0 ||
-          point.y >= view.innerHeight
-        ) {
-          sensor.current?.cancel();
-          return;
-        }
         autoScroll?.move(point);
         const outside = outsideSidebar(point);
         lifted.current?.setVisible(!outside);

@@ -6,6 +6,7 @@ import { SidebarAppearanceLauncher } from "../jones/sidebarAppearance/SidebarApp
 import {
   personalSidebarRoster,
   personalSidebarSummaryThreads,
+  personalSidebarUnsettledThreads,
 } from "../jones/workstreams/personalPresentation";
 import {
   registerThreadMenuOwner,
@@ -43,7 +44,10 @@ import {
 } from "./chat/threadContextDrag";
 import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
-import { dropPinnedThreadOnWorkstream } from "../jones/workstreams/sidebarThreadDrop";
+import {
+  dropPinnedThreadOnWorkstream,
+  isWorkstreamDropLane,
+} from "../jones/workstreams/sidebarThreadDrop";
 import {
   useHiddenPersonalSidebarNeighbor,
   usePersonalSidebarActiveThreads,
@@ -59,6 +63,7 @@ import {
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import {
   showPersonalFailure,
+  showPersonalPositionRejected,
   showPinnedUnpinFailure,
 } from "../jones/workstreams/personalNotifications";
 import {
@@ -79,6 +84,7 @@ import {
   type DragOverEvent,
   type DragStartEvent,
   type Modifier,
+  type UniqueIdentifier,
 } from "@dnd-kit/core";
 import { SortableContext } from "@dnd-kit/sortable";
 import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
@@ -530,10 +536,11 @@ function useSidebarThreads(input: {
     utcMinute: nowMinute,
     wakeClockMs: snoozeWakeClock,
   });
-  const sidebarThreads =
+  const applyWorkstreamSnoozes = (roster: readonly EnvironmentThreadShell[]) =>
     !input.workstreamsEnabled || workstreamSnooze.snoozed.length === 0
-      ? scopedThreads
-      : scopedThreads.filter((thread) => !workstreamSnooze.hidesThread(thread));
+      ? roster
+      : roster.filter((thread) => !workstreamSnooze.hidesThread(thread));
+  const sidebarThreads = applyWorkstreamSnoozes(scopedThreads);
   const [statusWakeAt, setStatusWakeAt] = useState(() => new Date().toISOString());
   const {
     statusFilter,
@@ -552,10 +559,9 @@ function useSidebarThreads(input: {
   const visibleThreads = input.workstreamsEnabled ? personalVisibleThreads : globallyVisibleThreads;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- schedules the status roster's precise snooze wake, including filtered rows
   useEffect(() => {
-    const next = nextThreadStatusWakeAt(
-      scopedThreads,
-      Math.max(Date.now(), Date.parse(statusWakeAt)),
-    );
+    // oxlint-disable-next-line react/purity -- the effect samples the clock to schedule the next snooze wake
+    const now = Math.max(Date.now(), Date.parse(statusWakeAt));
+    const next = nextThreadStatusWakeAt(scopedThreads, now);
     if (next === null) return;
     return scheduleSnoozeWake(new Date(next).toISOString(), () =>
       setStatusWakeAt(new Date().toISOString()),
@@ -685,6 +691,14 @@ function useSidebarThreads(input: {
   ] as const) {
     for (const thread of list) sectionByThreadKey.set(threadShellKey(thread), section);
   }
+  const workstreamSummaryThreads = personalSidebarSummaryThreads(
+    sidebarThreads,
+    partition.snoozeNow,
+  );
+  const readWorkstreamReferenceThreads = () =>
+    scopedProjectKeys === null
+      ? scopedThreads
+      : filterSidebarV2VisibleThreads(environmentThreads, null, delegatedUnderParent);
   return {
     ...partition,
     pinnedThreads,
@@ -693,12 +707,16 @@ function useSidebarThreads(input: {
     delegatedUnderParent,
     threads,
     environmentThreads,
-    workstreamSummaryThreads: personalSidebarSummaryThreads(sidebarThreads, partition.snoozeNow),
+    workstreamSummaryThreads,
     workstreamRosterThreads: sidebarThreads,
-    readWorkstreamReferenceThreads: () =>
+    readWorkstreamReferenceThreads,
+    readWorkstreamOrderRoster: () =>
       scopedProjectKeys === null
-        ? scopedThreads
-        : filterSidebarV2VisibleThreads(environmentThreads, null, delegatedUnderParent),
+        ? workstreamSummaryThreads
+        : personalSidebarSummaryThreads(
+            applyWorkstreamSnoozes(readWorkstreamReferenceThreads()),
+            partition.snoozeNow,
+          ),
     snoozedWorkstreams: workstreamSnooze.snoozed,
     visibleWorkstreamState: workstreamSnooze.visibleState,
     statusFilter,
@@ -1464,6 +1482,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     workstreamSummaryThreads,
     workstreamRosterThreads,
     readWorkstreamReferenceThreads,
+    readWorkstreamOrderRoster,
     snoozedWorkstreams,
     visibleWorkstreamState,
     settledVisibleCount,
@@ -2022,6 +2041,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       const key = contextDragKeyRef.current;
       const thread = key === null ? undefined : threadByKeyRef.current.get(key);
       if (
+        dragSensorRef.current?.cancelOnViewportExit &&
         thread?.pinnedAt != null &&
         key !== null &&
         sectionByThreadKeyRef.current.get(key) === "pinned"
@@ -2070,7 +2090,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   const dropThreadContextDrag = (point: { x: number; y: number }) => {
     if (!pointerOutsideThreadList(point)) {
-      return dropPinnedWorkstreamThread(point, contextDragKeyRef.current);
+      const key = contextDragKeyRef.current;
+      if (dragSensorRef.current?.cancelOnViewportExit)
+        return dropPinnedWorkstreamThread(point, key);
+      const list = threadListRef.current;
+      // A bridge that appeared after the shelf press must not hand its lane off to sorting.
+      return (
+        key !== null &&
+        sectionByThreadKeyRef.current.get(key) === "pinned" &&
+        workstreamExternalDropRef.current !== null &&
+        list !== null &&
+        isWorkstreamDropLane(list, point, key)
+      );
     }
     restoreDragScroll();
     dropThreadContext(point, contextDragThreads());
@@ -2079,6 +2110,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // useSensor memoizes options identity; fresh options rebuild DndContext and every sortable row.
   const pointerSensorOptions = {
     distance: SIDEBAR_DRAG_DISTANCE,
+    cancelOnViewportExit: (id: UniqueIdentifier) =>
+      workstreamExternalDropRef.current !== null &&
+      sectionByThreadKeyRef.current.get(String(id)) === "pinned",
     onAttach: attachDragSensor,
     onFinish: finishThreadDrag,
     onMove: moveThreadContextDrag,
@@ -2365,10 +2399,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         destinationId,
         neighbor: liveNeighbor,
         after,
-        state: workstreamController.state,
+        state: visibleWorkstreamState,
+        savedOrder: {
+          state: workstreamController.state,
+          readRoster: () => personalSidebarUnsettledThreads(readWorkstreamReferenceThreads()),
+        },
         activeThreads,
-        orderRoster: workstreamSummaryThreads,
+        orderRoster: neighbor === null ? workstreamSummaryThreads : readWorkstreamOrderRoster(),
         activeKeysById,
+        // Project scope limits writes. The order roster also includes fixed out-of-scope siblings.
         reorderableKeys:
           neighbor === null || workingShelfEnabled
             ? activeReorderableThreadKeys
@@ -2389,6 +2428,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           return result._tag === "Success";
         },
         onAssignmentFailure: showPersonalFailure,
+        onPositionRejected: showPersonalPositionRejected,
         onPositionFailure: (assignmentSaved) => {
           toastManager.add({
             type: "error",
@@ -2605,10 +2645,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         clearTitleDrop();
         return;
       }
-      const workstream = list.ownerDocument
-        .elementFromPoint(point.x, point.y)
-        ?.closest("[data-native-workstream]");
-      if (workstream && list.contains(workstream)) {
+      if (isWorkstreamDropLane(list, point)) {
         titleInsertionRow.current = showSidebarTitlePlacement(titleInsertionRow.current, null);
         const bridge = workstreamExternalDropRef.current;
         if (section === "active" || section === "pinned") {

@@ -35,15 +35,16 @@ export function summarizePersonalThreads(
 
 export type PersonalThreadSummary = ReturnType<typeof summarizePersonalThreads>;
 
+export function personalSidebarUnsettledThreads(threads: readonly EnvironmentThreadShell[]) {
+  return threads.filter((thread) => thread.settledOverride !== "settled");
+}
+
 /** Roster totals include snoozed members and are independent of attention filters and row windows. */
 export function personalSidebarRosterTotals(
   state: PersonalWorkstreamsState,
   threads: readonly EnvironmentThreadShell[],
 ): ReadonlyMap<string, number> {
-  const roster = groupPersonalThreads(
-    state,
-    threads.filter((thread) => thread.settledOverride !== "settled"),
-  );
+  const roster = groupPersonalThreads(state, personalSidebarUnsettledThreads(threads));
   return new Map(
     roster.groups.map((group) => [
       group.workstream.id,
