@@ -515,6 +515,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     turn: ProviderAdapter.ProviderAdapterV2SteerInput,
   ) => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error> = () => Effect.void,
   extraAdapters: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]> = [],
+  nextTurnOnlySelection = false,
 ) {
   const driver = ProviderDriverKind.make(nativeGoals === undefined ? "codex" : "opencode");
   const cwd = yield* checkpointWorkspace(name);
@@ -537,7 +538,11 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     instanceId,
     driver,
     getCapabilities: () => Effect.succeed(capabilities),
-    planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+    planSelectionTransition: () =>
+      Effect.succeed({
+        type: "apply_on_next_turn",
+        ...(nextTurnOnlySelection ? { keepActiveSteeringSelection: true } : {}),
+      }),
     openSession: (input) =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
@@ -1334,6 +1339,94 @@ it.effect(
         assert.deepEqual(steeredSelections, [composerSelection, runSelection, runSelection]);
         assert.equal(back.thread.providerInstanceId, instanceId);
         assert.deepEqual(back.thread.modelSelection, runSelection);
+      }).pipe(Effect.provide(layer));
+    }),
+);
+
+it.effect.each(["composer", "queue"] as const)(
+  "steers from the %s when a Codex selection can only apply to the next turn",
+  (entry) =>
+    Effect.gen(function* () {
+      const { started, steered, steeredSelections, interrupted, layer, startFirstTurn } =
+        yield* nextTurnSelectionHarness(
+          `codex-next-turn-only-selection-${entry}`,
+          true,
+          true,
+          Effect.void,
+          true,
+          undefined,
+          (turn) =>
+            turn.modelSelection === undefined
+              ? Effect.void
+              : Effect.fail(
+                  new ProviderAdapter.ProviderAdapterSteerDeclinedError({
+                    driver,
+                    providerThreadId: turn.providerThread.id,
+                    providerTurnId: turn.providerTurnId,
+                  }),
+                ),
+          [],
+          true,
+        );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = yield* startFirstTurn;
+        const activeRunId = started[0]!.runId;
+        const modelSelection = {
+          ...runSelection,
+          options: [{ id: "reasoningEffort", value: "max" }],
+        };
+        const messageId = MessageId.make("message:steer-with-saved-options");
+        yield* orchestrator
+          .dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("send-with-new-options"),
+            threadId,
+            messageId,
+            text: "keep working with this correction",
+            attachments: [],
+            modelSelection,
+            modelSelectionExplicit: true,
+            dispatchMode:
+              entry === "composer"
+                ? { type: "steer_active", targetRunId: activeRunId }
+                : { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "web",
+          })
+          .pipe(withOwnerSelectionIngress);
+        if (entry === "queue") {
+          const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (run) => run.userMessageId === messageId,
+          )!;
+          yield* orchestrator
+            .dispatch({
+              type: "queued-message.promote-to-steer",
+              commandId: CommandId.make("promote-with-saved-options"),
+              threadId,
+              queuedRunId: queued.id,
+              targetRunId: activeRunId,
+            })
+            .pipe(withOwnerSelectionIngress);
+        }
+        yield* worker.drain();
+
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(steered, ["keep working with this correction"]);
+        assert.deepEqual(steeredSelections, [undefined]);
+        assert.lengthOf(started, 1);
+        assert.isEmpty(interrupted);
+        assert.deepEqual(
+          projection.runs.find((run) => run.id === activeRunId)?.modelSelection,
+          runSelection,
+        );
+        assert.deepEqual(projection.thread.modelSelection, modelSelection);
+        assert.isFalse(projection.runs.some((run) => run.status === "queued"));
+        assert.equal(
+          projection.messages.find((message) => message.id === messageId)?.runId,
+          activeRunId,
+        );
       }).pipe(Effect.provide(layer));
     }),
 );

@@ -3,7 +3,10 @@
   "feature": "composer-quick-controls",
   "jonesOwnedPaths": [
     "apps/web/src/jones/composer/ComposerQuickControls.tsx",
-    "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx"
+    "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx",
+    "apps/web/src/jones/composer/QuickEffortLabelSlot.tsx",
+    "apps/web/src/jones/composer/composerQuickControlOptions.ts",
+    "apps/web/src/jones/useTimedClick.ts"
   ],
   "hookPaths": [
     "apps/web/src/components/chat/ComposerControlsBar.tsx",
@@ -14,6 +17,14 @@
     {
       "from": "apps/web/src/components/chat/ComposerControlsBar.tsx",
       "to": "apps/web/src/jones/composer/ComposerQuickControls.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerModelEffort.tsx",
+      "to": "apps/web/src/jones/composer/composerQuickControlOptions.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerModelEffort.tsx",
+      "to": "apps/web/src/jones/composer/QuickEffortLabelSlot.tsx"
     }
   ]
 }

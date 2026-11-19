@@ -126,9 +126,12 @@ distinguishes accounts that offer the same model.
 Account, model, and reasoning shortcuts remain available below the composer,
 including in narrow windows. Choices that cannot be used are disabled. For
 supported models, **M**, **H**, and **E** beside the model control select reasoning
-effort; the lightning control changes Fast mode. Permissions are always available
-at the bottom of the model menu. A nondefault permission selection also appears
-beside the composer controls.
+effort, and the lightning control toggles Fast mode. Double-click the lightning
+control within 250 ms to select Ultrafast, then click once to return to Standard.
+Double-click **M** for Low or **E** for Max. These gestures are available when the
+model offers the corresponding option. Permissions are always available at the
+bottom of the model menu. A nondefault permission selection also appears beside
+the composer controls.
 
 T3 Code remembers your provider, model, and model options for new threads. A
 project's configured model takes precedence; resetting that project setting
@@ -307,6 +310,9 @@ queued before you changed accounts or models. The separate timeline cards preser
 messages; they do not mean each message started a separate turn. If the active turn finishes before
 delivery, the messages are preserved for follow-up delivery. Automatic delivery at a tool boundary
 still requires the queued messages to match the active provider and model.
+
+If you change the model or effort within the same Codex account, **Steer** sends the message to the
+active turn with its current settings. The new settings apply to a subsequent turn.
 
 If you stop the agent or the server restarts, queued messages keep their order and are held.
 Press **Resume** in an empty composer on web and desktop, or **Resume queue** on mobile, to

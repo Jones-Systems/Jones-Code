@@ -7091,16 +7091,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (steeringPolicy === "active_steering") {
       const instanceChanged =
         input.projection.thread.providerInstanceId !== input.modelSelection.instanceId;
-      // Only a user's steer carries the picker's selection; the adapter applies it to the live turn.
-      const steerCarriesSelection =
+      const steerUpdatesSelection =
         input.delegatedCompletion === undefined &&
         input.notification === undefined &&
         (input.ownerTransition === true ||
           (input.command.type === "message.dispatch" &&
             input.command.modelSelection !== undefined &&
             input.command.modelSelectionExplicit !== false));
+      // A provider may accept the input now and apply the saved selection on its next turn.
+      const steerCarriesSelection =
+        steerUpdatesSelection &&
+        !(
+          selectionTransition?.type === "apply_on_next_turn" &&
+          selectionTransition.keepActiveSteeringSelection === true
+        );
       if (
-        steerCarriesSelection &&
+        steerUpdatesSelection &&
         (instanceChanged ||
           !modelSelectionsEqual(input.projection.thread.modelSelection, input.modelSelection))
       ) {
