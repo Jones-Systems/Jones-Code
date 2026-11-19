@@ -478,6 +478,11 @@
       ]
     },
     {
+      "id": "jones-pr-cache-capacity",
+      "tests": ["scripts/jones/ci/pr-cache-capacity.node-test.mjs"],
+      "commands": ["node --test scripts/jones/ci/pr-cache-capacity.node-test.mjs"]
+    },
+    {
       "id": "native-stack-projection-order",
       "tests": [
         "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",

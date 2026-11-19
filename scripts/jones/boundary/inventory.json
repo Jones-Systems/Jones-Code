@@ -92,6 +92,7 @@
     ".github/workflows/issue-labels.yml": "upstream-deleted",
     ".github/workflows/jones-desktop-signing.yml": "jones-owned",
     ".github/workflows/jones-native-workflows.yml": "policy",
+    ".github/workflows/jones-pr-cache-capacity.yml": "jones-owned",
     ".github/workflows/jones-update-qualification.yml": "policy",
     ".github/workflows/mobile-android-apk.yml": "upstream-deleted",
     ".github/workflows/mobile-eas-preview-fork.yml": "upstream-deleted",
