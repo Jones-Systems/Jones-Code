@@ -497,7 +497,6 @@ const SUPERSEDABLE_BY_RUNNING_TARGET: ReadonlySet<InstallPlanDeviceState> = new 
   "ended",
   "staged",
   "blocked",
-  "fenced",
   "rolled-back",
 ]);
 
@@ -571,6 +570,7 @@ export function planCompletion(
         ? canRecordRunningTarget(device) &&
           device.verifiedElsewhere === undefined &&
           (deviceStateWithRunningTarget(plan, device, true) === "updated-elsewhere" ||
+            deviceState(plan, device) === "fenced" ||
             device.operations.some(outstanding))
         : deviceState(plan, device) === "staged" && !device.operations.some(outstanding)) &&
       observation?.freshness === "fresh" &&

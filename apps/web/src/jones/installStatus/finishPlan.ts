@@ -31,15 +31,27 @@ export async function finishPlan(planId: string) {
       throw new Error("The update plan changed. Read status before continuing.");
   };
   if (supportsDeviceRecovery || !isPlanComplete(plan)) {
+    const readStatus = supportsDeviceRecovery ? binding.services.readStatus : undefined;
     const observations = () =>
       new Map(
-        binding.store.get().devices.map((device) => [device.environmentId, device.observation]),
+        (readStatus === undefined ? binding.services.devices() : binding.store.get().devices).map(
+          (device) => [device.environmentId, device.observation],
+        ),
       );
     const completion = planCompletion(plan, observations(), supportsDeviceRecovery);
     if (!completion.completable) throw new Error("Fresh proof is required to finish this plan.");
     for (const candidate of completion.candidates) {
       unchanged();
       const observed = observations();
+      if (readStatus !== undefined) {
+        const state = await readStatus(candidate.environmentId);
+        unchanged();
+        observed.set(candidate.environmentId, {
+          state,
+          freshness: "fresh",
+          heardAt: binding.services.now(),
+        });
+      }
       if (
         !planCompletion(plan, observed, supportsDeviceRecovery).candidates.some(
           (d) => d.environmentId === candidate.environmentId,
