@@ -1,5 +1,14 @@
+import { ImageIcon } from "lucide-react";
 import { useId } from "react";
 import { ProjectFavicon, type ProjectFaviconProject } from "../../components/ProjectFavicon";
+import {
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuRadioItemIndicator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
+} from "../../components/ui/menu";
 import {
   Select,
   SelectItem,
@@ -19,6 +28,62 @@ function ProjectLabel({ project }: { project: WorkstreamNameIconProject }) {
       <ProjectFavicon project={project} className="size-3.5 shrink-0" />
       <span className="min-w-0 wrap-anywhere">{project.displayName}</span>
     </span>
+  );
+}
+
+export function WorkstreamNameIconMenu({
+  projects,
+  value,
+  onChange,
+  unavailableReason,
+}: {
+  projects: readonly WorkstreamNameIconProject[];
+  value: string | null;
+  onChange: (value: string | null) => void;
+  unavailableReason?: string | undefined;
+}) {
+  return (
+    <MenuSub>
+      <MenuSubTrigger
+        disabled={unavailableReason !== undefined}
+        aria-label="Change icon"
+        aria-description={unavailableReason}
+      >
+        <ImageIcon aria-hidden />
+        <span>
+          Change icon
+          {unavailableReason ? (
+            <span className="block max-w-48 text-xs text-muted-foreground">
+              {unavailableReason}
+            </span>
+          ) : null}
+        </span>
+      </MenuSubTrigger>
+      <MenuSubPopup className="max-w-[min(20rem,var(--available-width))]">
+        <MenuRadioGroup
+          aria-label="Workstream icon"
+          value={value ?? ""}
+          onValueChange={(key: string) => {
+            const next = key || null;
+            if (!unavailableReason && next !== value) onChange(next);
+          }}
+        >
+          <MenuRadioItem value="" closeOnClick>
+            <span className="flex items-center justify-between gap-3">
+              None <MenuRadioItemIndicator />
+            </span>
+          </MenuRadioItem>
+          {projects.map((project) => (
+            <MenuRadioItem key={project.projectKey} value={project.projectKey} closeOnClick>
+              <span className="flex items-center justify-between gap-3">
+                <ProjectLabel project={project} />
+                <MenuRadioItemIndicator />
+              </span>
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+      </MenuSubPopup>
+    </MenuSub>
   );
 }
 
