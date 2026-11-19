@@ -1,7 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic qualification reads only task-captured workers.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
-import { sampleNativePools, type NativePoolObservation } from "./resourceSamples.ts";
+import {
+  sampleNativePools,
+  type MacNativePoolCensusFailure,
+  type MacNativePoolCensusRejection,
+  type NativePoolObservation,
+} from "./resourceSamples.ts";
 
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -24,31 +29,56 @@ function unavailable(pid: number, raw = ""): NativePoolObservation {
   };
 }
 
-export function parseMacNativePoolCensus(pid: number, raw: string) {
-  const invalid = () => ({ identity: null, observation: unavailable(pid, raw) });
-  if (raw.length > 128 * 1024 || !raw.endsWith("\n")) return invalid();
+function classifyReadFailure(cause: unknown): MacNativePoolCensusFailure {
+  const error = cause as NodeChildProcess.ExecFileException | null | undefined;
+  const code = error?.code;
+  if (typeof code === "number" && Number.isInteger(code) && code >= 1 && code <= 255) {
+    return { reason: "helper-exit", exitCode: code };
+  }
+  if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return { reason: "helper-output-limit" };
+  // The execFile deadline is the only caller-initiated kill once maxBuffer is ruled out.
+  if (error?.killed && error.signal === "SIGTERM") return { reason: "helper-timeout" };
+  if (error?.signal) return { reason: "helper-signal" };
+  return { reason: "helper-error" };
+}
+
+interface CensusRead {
+  readonly identity: string | null;
+  readonly observation: NativePoolObservation;
+  readonly failure?: MacNativePoolCensusFailure;
+}
+
+export function parseMacNativePoolCensus(pid: number, raw: string): CensusRead {
+  const invalid = (detail: MacNativePoolCensusRejection): CensusRead => ({
+    identity: null,
+    observation: unavailable(pid, raw),
+    failure: { reason: "invalid-output", detail },
+  });
+  if (raw.length > 128 * 1024 || !raw.endsWith("\n")) return invalid("output-boundary");
   const [header, ...rows] = raw.slice(0, -1).split("\n");
   const start = /^([1-9][0-9]*)\t([1-9][0-9]*)\t([0-9]{1,6})$/.exec(header!);
-  if (start?.[1] !== String(pid) || rows.length === 0 || rows.length >= 512) return invalid();
+  if (start?.[1] !== String(pid)) return invalid("process-identity");
+  if (rows.length === 0 || rows.length >= 512) return invalid("thread-count");
   const threads = [];
   const identifiers = new Set<string>();
   for (const row of rows) {
     const match = /^([1-9a-f][0-9a-f]{0,15})\t((?:[0-9a-f]{2}){0,63})$/.exec(row);
-    if (!match || identifiers.has(match[1]!)) return invalid();
-    const [, tid, bytes] = match;
-    identifiers.add(tid!);
+    if (!match) return invalid("thread-row");
+    const tid = match[1]!;
+    if (identifiers.has(tid)) return invalid("duplicate-thread");
+    identifiers.add(tid);
     let name: string;
     try {
-      name = decoder.decode(Buffer.from(bytes!, "hex")) || "<unnamed>";
+      name = decoder.decode(Buffer.from(match[2]!, "hex")) || "<unnamed>";
     } catch {
-      return invalid();
+      return invalid("name-encoding");
     }
-    if (/[\u0000-\u001f\u007f]/.test(name)) return invalid();
-    threads.push({ tid: tid!, name });
+    if (/[\u0000-\u001f\u007f]/.test(name)) return invalid("name-control");
+    threads.push({ tid, name });
   }
   return {
     identity: header!,
-    observation: { pid, method, status: "complete", threads, raw } satisfies NativePoolObservation,
+    observation: { pid, method, status: "complete", threads, raw },
   };
 }
 
@@ -76,24 +106,27 @@ export function makeMacNativePoolCensus(
   read = async (pid: number) =>
     (await execute(executable, [String(pid)], { timeout: 2_000, maxBuffer: 128 * 1024 })).stdout,
 ) {
-  const observe = async (pid: number) => {
+  const observe = async (pid: number): Promise<CensusRead> => {
     try {
       return parseMacNativePoolCensus(pid, await read(pid));
-    } catch {
-      return { identity: null, observation: unavailable(pid) };
+    } catch (cause) {
+      return { identity: null, observation: unavailable(pid), failure: classifyReadFailure(cause) };
     }
   };
-  const compare = async (pid: number, preceding?: Awaited<ReturnType<typeof observe>>) => {
+  const compare = async (pid: number, preceding?: CensusRead) => {
     const before = preceding ?? (await observe(pid));
     const referenceObservation = await reference(pid);
     const after = await observe(pid);
     const namedPools = nativeNames(referenceObservation);
     const censusPools = nativeNames(before.observation);
+    const sameProcess = before.identity !== null && before.identity === after.identity;
+    const unchanged = before.observation.raw === after.observation.raw;
+    const watchersStarted = onlyWatchersStarted(before.observation, after.observation);
+    const referenceBound =
+      referenceObservation.pid === pid && referenceObservation.method === "macos-sample";
     const matchesReference =
-      before.identity !== null &&
-      before.identity === after.identity &&
-      referenceObservation.pid === pid &&
-      referenceObservation.method === "macos-sample" &&
+      sameProcess &&
+      referenceBound &&
       referenceObservation.status === "complete" &&
       namedPools.filter((name) => /^fff-bg-[0-9]+$/.test(name)).length >= 2 &&
       namedPools.some((name) => /^fff-search-[0-9]+$/.test(name)) &&
@@ -103,41 +136,51 @@ export function makeMacNativePoolCensus(
     // Compare all native names and population sizes across the reference window.
     const verified =
       matchesReference &&
-      before.observation.raw === after.observation.raw &&
+      unchanged &&
       before.observation.threads.length === referenceObservation.threads.length;
-    const watchersStarted =
+    const retryWatcherGrowth =
       matchesReference &&
       after.observation.threads.length === referenceObservation.threads.length &&
-      onlyWatchersStarted(before.observation, after.observation);
+      watchersStarted;
+    const retryUnavailableReference =
+      sameProcess &&
+      (unchanged || watchersStarted) &&
+      referenceBound &&
+      referenceObservation.status === "unavailable";
     return {
       after,
       referenceObservation,
-      watchersStarted,
+      canRetry: retryWatcherGrowth || retryUnavailableReference,
       receipt: {
         pid,
         verified,
         nativeNames: namedPools,
         threads: referenceObservation.threads.length,
+        referenceStatus: referenceObservation.status,
+        ...(referenceObservation.error ? { referenceError: referenceObservation.error } : {}),
         before: before.observation.raw,
         after: after.observation.raw,
+        ...(before.failure ? { beforeFailure: before.failure } : {}),
+        ...(after.failure ? { afterFailure: after.failure } : {}),
       },
     };
   };
   const verify = async (pid: number) => {
     const initial = await compare(pid);
-    // Finder watches can start during the first reference read. Start a fresh
-    // bracket at the preceding census to keep the same process identity.
-    if (!initial.watchersStarted) return initial;
+    if (!initial.canRetry) return initial;
     const final = await compare(pid, initial.after);
+    // A failed read remains in generation evidence even if the retry admits later fast reads.
+    const retainInitial =
+      !final.receipt.verified || initial.referenceObservation.status === "unavailable";
     return {
       ...final,
-      referenceObservation: final.receipt.verified
-        ? final.referenceObservation
-        : initial.referenceObservation,
+      referenceObservation: retainInitial
+        ? initial.referenceObservation
+        : final.referenceObservation,
       receipt: {
         ...final.receipt,
         initial: { ...initial.receipt, reference: initial.referenceObservation.raw },
-        ...(!final.receipt.verified ? { reference: final.referenceObservation.raw } : {}),
+        ...(retainInitial ? { reference: final.referenceObservation.raw } : {}),
       },
     };
   };
@@ -152,8 +195,8 @@ export function makeMacNativePoolCensus(
         return result.referenceObservation;
       }
       if (!(await comparison).receipt.verified) return reference(pid);
-      const { observation } = await observe(pid);
-      return observation.status === "complete" ? observation : reference(pid);
+      const { observation, failure } = await observe(pid);
+      return failure ? { ...(await reference(pid)), fastCensusFailure: failure } : observation;
     },
     comparison: () => receipt ?? null,
   };

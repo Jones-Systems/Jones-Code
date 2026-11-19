@@ -127,6 +127,22 @@ export function parseLinuxThreadScheduling(
     throw new Error("Captured thread identity/scheduling changed");
   return { ...first, cpusAllowed };
 }
+export type MacNativePoolCensusRejection =
+  | "output-boundary"
+  | "process-identity"
+  | "thread-count"
+  | "thread-row"
+  | "duplicate-thread"
+  | "name-encoding"
+  | "name-control";
+
+export type MacNativePoolCensusFailure =
+  | { readonly reason: "helper-exit"; readonly exitCode: number }
+  | { readonly reason: "invalid-output"; readonly detail: MacNativePoolCensusRejection }
+  | {
+      readonly reason: "helper-timeout" | "helper-signal" | "helper-output-limit" | "helper-error";
+    };
+
 export interface NativePoolObservation {
   readonly pid: number;
   readonly method: "linux-proc-task-comm" | "macos-sample" | "macos-proc-info";
@@ -138,6 +154,7 @@ export interface NativePoolObservation {
   }[];
   readonly raw: string;
   readonly error?: string;
+  readonly fastCensusFailure?: MacNativePoolCensusFailure;
 }
 export interface MacPerformanceCores {
   readonly source: "sysctl:hw.perflevel0.physicalcpu";
