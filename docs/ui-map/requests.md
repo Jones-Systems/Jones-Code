@@ -11,15 +11,19 @@ runtime and switches reactively when its adapter is registered. Unsupported rece
 V1 review with its explicit 200-record cap, without access or creation features.
 Owner authorization and API support are separate.
 
-Current and Blocked tab counts mean held admissions, not cards or diagnostic events.
-Done has no tab count; its body reports retained records. Unresolved, in-flight and
-access lists have separate cursors. Load older records traverses the server keyset;
-a changed snapshot revision requires refresh. Unknown outcomes stay outside Done.
+Each receiver has one navigation row for Current, Blocked, In flight, Unresolved,
+Access, and Done. Current and Blocked count held admissions. Access shows the active
+scope count and also lists pending and revoked grants. Done reports the number of
+retained completed requests. Load older records extends the selected view's server
+page. A changed snapshot revision requires refresh. Unknown outcomes stay outside Done.
+The receiving server excludes peer protocol bookkeeping from queues and counts.
+An exact link can still open the retained record.
 
-Select a compact card to show its message in the right pane. The arrow immediately
-after its operation tag opens the exact receiver/request/digest binding. Access
-arrows open the exact destination thread. Off-page request selection performs an
-exact lookup; missing evidence is unavailable. Live thread status and elapsed time
+Select a card to show its details alongside the list when space permits. On narrower
+layouts, Back to requests returns from the detail view. The row arrow opens the exact
+receiver, request and digest. Access arrows open the exact destination thread. An
+exact request link must resolve before the page displays decision controls.
+Live thread status and elapsed time
 use the existing shell helpers, with no fabricated status when the shell is absent.
 Reported source-thread context appears in expanded details only.
 

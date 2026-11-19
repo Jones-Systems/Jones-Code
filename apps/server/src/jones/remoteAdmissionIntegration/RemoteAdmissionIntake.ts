@@ -30,6 +30,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as RemoteAdmission from "../remoteAdmission/RemoteAdmission.ts";
+import { ownerRequestPredicate } from "../remoteAdmission/peerBookkeeping.ts";
 import { makeRecoveryStore, ReceiverRecoveryEvidence } from "./RecoveryStore.ts";
 import { ReceiverClaimTracker } from "./ClaimTracker.ts";
 import { classifyLaunchEvidence } from "./LaunchRecovery.ts";
@@ -757,7 +758,8 @@ const make = Effect.gen(function* () {
     attention: Effect.fn("RemoteAdmissionIntake.attention")(() =>
       sql<{
         count: number;
-      }>`SELECT COUNT(*) AS count FROM jones_remote_admissions WHERE status = 'held'`.pipe(
+      }>`SELECT COUNT(*) AS count FROM jones_remote_admissions a
+        WHERE status = 'held' AND ${ownerRequestPredicate(sql)}`.pipe(
         Effect.map((rows) => ({ count: rows[0]?.count ?? 0 })),
         Effect.mapError(intakeError),
       ),

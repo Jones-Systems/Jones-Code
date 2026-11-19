@@ -34,6 +34,11 @@ const operationLabels = new Map([
   ["update_scheduled_task", "Update a scheduled task"],
   ["run_scheduled_task_now", "Run a scheduled task now"],
   ["t3_thread_link", "Link threads"],
+  ["t3_remote_admission_capabilities_register", "Connection handshake"],
+  ["t3_remote_admission_attempt_register", "Register retry observation"],
+  ["t3_remote_admission_notice_register", "Register recovery notice"],
+  ["t3_remote_admission_ack", "Acknowledge request receipt"],
+  ["t3_remote_admission_notice_ack", "Acknowledge recovery notice"],
 ]);
 
 export function admissionTarget(request: RemoteAdmissionRecord) {

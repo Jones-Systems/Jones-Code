@@ -15,6 +15,7 @@ import type {
 import type { Grant } from "./ReceiverAccess.ts";
 import type { SqlError } from "effect/sql/SqlError";
 import type * as SqlClient from "effect/sql/SqlClient";
+import { ownerRequestPredicate } from "./peerBookkeeping.ts";
 
 export class ReviewHistoryUnavailable extends Schema.TaggedError<
   ReviewHistoryUnavailable,
@@ -102,10 +103,12 @@ export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
     );
     if (!Number.isFinite(limit)) return yield* new ReviewHistoryUnavailable({});
     const view = input.view;
+    const ownerRequest = ownerRequestPredicate(sql);
     const rows = yield* sql<ProjectionRow>`SELECT a.id,a.created_at FROM jones_remote_admissions a
       LEFT JOIN jones_remote_admission_blocked_marks b ON b.admission_id=a.id
       LEFT JOIN jones_remote_admission_extensions e ON e.admission_id=a.id
-      WHERE ((${view}='current' AND ((a.status='held' AND b.admission_id IS NULL) OR e.outcome='failure'))
+      WHERE ${ownerRequest}
+      AND ((${view}='current' AND ((a.status='held' AND b.admission_id IS NULL) OR e.outcome='failure'))
       OR (${view}='blocked' AND a.status='held' AND b.admission_id IS NOT NULL)
       OR (${view}='inflight' AND a.status IN ('passed','approved','dispatching'))
       OR (${view}='unresolved' AND e.outcome='unknown' AND NOT EXISTS
@@ -128,7 +131,8 @@ export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
       COALESCE(SUM(e.outcome='failure'),0) AS failedAdmissions,
       COALESCE(SUM(e.outcome='unknown' AND NOT EXISTS (SELECT 1 FROM jones_remote_admission_recovered_results r WHERE r.admission_id=a.id AND json_extract(r.result_json,'$.outcome') IN ('created','refused','not_created'))),0) AS unresolvedAdmissions
       FROM jones_remote_admissions a LEFT JOIN jones_remote_admission_blocked_marks b ON b.admission_id=a.id
-      LEFT JOIN jones_remote_admission_extensions e ON e.admission_id=a.id`)[0]!;
+      LEFT JOIN jones_remote_admission_extensions e ON e.admission_id=a.id
+      WHERE ${ownerRequest}`)[0]!;
     const candidates = yield* sql<Grant>`SELECT * FROM jones_remote_admission_grants
       WHERE state='active' AND expires_at>${input.now} AND managed_scope_id IS NOT NULL`;
     const valid = new Set(yield* input.validLeaseIds(candidates));
@@ -162,9 +166,9 @@ export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
         : null;
     const doneCount = (yield* sql<{ n: number }>`SELECT COUNT(*) n FROM jones_remote_admissions a
       LEFT JOIN jones_remote_admission_extensions e ON e.admission_id=a.id
-      WHERE a.status IN ('denied','cancelled') OR (a.status='dispatched' AND (e.outcome IN ('success','failure')
+      WHERE ${ownerRequest} AND (a.status IN ('denied','cancelled') OR (a.status='dispatched' AND (e.outcome IN ('success','failure')
       OR EXISTS (SELECT 1 FROM jones_remote_admission_recovered_results r WHERE r.admission_id=a.id
-        AND json_extract(r.result_json,'$.outcome') IN ('created','refused','not_created'))))`)[0]!
+        AND json_extract(r.result_json,'$.outcome') IN ('created','refused','not_created')))))`)[0]!
       .n;
     const retainedRecordCount =
       view === "done"

@@ -165,6 +165,8 @@ it("starts result subscription at current head, without replaying retained histo
 });
 it("rejects mixed-revision older pages without dropping the existing backlog", async () => {
   const f = fixture();
+  const firstPage = await f.client.page("current");
+  f.client.page = vi.fn(async () => ({ ...firstPage, nextCursor: "page-two" }));
   await f.controller.load();
   const existing = f.controller.getSnapshot().page!;
   f.client.page = vi.fn(async () => ({
@@ -193,6 +195,7 @@ it("prevents a page started before a decision from reviving the held control", a
       : Promise.resolve({ ...old, records: [], access: [] }),
   );
   const reading = f.controller.load();
+  await vi.waitFor(() => expect(finish).toHaveLength(1));
   f.client.mutate = vi.fn<ReviewClient["mutate"]>(async () => ({
     item: { ...a, record: { ...a.record, status: "approved" } },
   }));
@@ -495,7 +498,7 @@ it("retains a lost Restore fence when a new controller mounts", async () => {
   expect(remounted.getSnapshot().uncertain.has(`access:${grant.id}`)).toBe(true);
 });
 
-it("loads only one page of each Current auxiliary group and pages a group independently", async () => {
+it("loads views on demand and keeps both access pages", async () => {
   const f = fixture();
   const base = await f.client.page("current");
   f.client.page = vi.fn(async (view, cursor) =>
@@ -506,51 +509,49 @@ it("loads only one page of each Current auxiliary group and pages a group indepe
           access: [{ ...grant, id: cursor ? "second-grant" : "first-grant" }],
           nextCursor: cursor ? null : "access-next",
         }
-      : {
-          ...base,
-          records:
-            view === "unresolved"
-              ? [{ ...a, outcome: "unknown" as const }]
-              : view === "inflight"
-                ? [{ ...b, outcome: "awaiting" as const }]
-                : base.records,
-        },
+      : base,
   );
   await f.controller.load();
-  expect(f.client.page).toHaveBeenCalledTimes(4);
-  expect(f.controller.getSnapshot().view).toBe("current");
-  expect(f.controller.getSnapshot().page?.counts.currentHeldAdmissions).toBe(2);
-  expect(f.controller.getSnapshot().groups.unresolved.page?.records[0]?.outcome).toBe("unknown");
-  await f.controller.loadGroup("access", true);
+  expect(f.client.page).toHaveBeenCalledExactlyOnceWith("current", undefined);
+  await f.controller.load("access");
+  await f.controller.load("access", true);
   expect(f.client.page).toHaveBeenLastCalledWith("access", "access-next");
-  expect(f.controller.getSnapshot().groups.access.page?.access.map((entry) => entry.id)).toEqual([
+  expect(f.controller.getSnapshot().page?.access.map((entry) => entry.id)).toEqual([
     "first-grant",
     "second-grant",
   ]);
-  expect(f.controller.getSnapshot().groups.inflight.page?.records[0]?.record.id).toBe(b.record.id);
-  expect(f.controller.getSnapshot().page?.records).toEqual(base.records);
+  expect(f.controller.getSnapshot().incoming).toEqual(base.records);
 });
-it("preserves auxiliary membership when older pages have a different snapshot revision", async () => {
+it("preserves view membership when older pages have a different snapshot revision", async () => {
   const f = fixture();
   await f.controller.load();
   const base = f.controller.getSnapshot().page!;
-  f.client.page = vi.fn(async () => ({
+  f.client.page = vi.fn(async (_view, cursor) => ({
     ...base,
-    records: [a],
-    nextCursor: "next",
-    revision: "group-1",
+    records: cursor ? [b] : [a],
+    nextCursor: cursor ? null : "next",
+    revision: cursor ? "page-2" : "page-1",
   }));
-  await f.controller.loadGroup("unresolved");
-  f.client.page = vi.fn(async () => ({
+  await f.controller.load("unresolved");
+  await f.controller.load("unresolved", true);
+  expect(f.controller.getSnapshot().page?.records).toEqual([a]);
+  expect(f.controller.getSnapshot().error).toContain("history changed");
+  expect(f.controller.getSnapshot().view).toBe("unresolved");
+});
+it("keeps the newest attention items when paging older Current requests", async () => {
+  const f = fixture();
+  const base = await f.client.page("current");
+  f.client.page = vi.fn(async (_view, cursor) => ({
     ...base,
-    records: [b],
-    nextCursor: null,
-    revision: "group-2",
+    records: cursor ? [b] : [a],
+    nextCursor: cursor ? null : "next",
   }));
-  await f.controller.loadGroup("unresolved", true);
-  expect(f.controller.getSnapshot().groups.unresolved.page?.records).toEqual([a]);
-  expect(f.controller.getSnapshot().groups.unresolved.error).toContain("group changed");
-  expect(f.controller.getSnapshot().view).toBe("current");
+  await f.controller.load();
+  await f.controller.load("current", true);
+  expect(f.controller.getSnapshot().page?.records).toEqual([a, b]);
+  expect(f.controller.getSnapshot().incoming).toEqual([a]);
+  await f.controller.load("done");
+  expect(f.controller.getSnapshot().incoming).toEqual([a]);
 });
 it("reads the original lost Restore command, selects its currently revoked successor, and never mutates again", async () => {
   const f = fixture();

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { randomUUID } from "../../lib/utils";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
@@ -7,8 +7,7 @@ import {
   type Duration,
   type Item,
   type Mutation,
-  type GroupView,
-  type ReviewGroup,
+  type View,
 } from "@t3tools/client-runtime/jones/remoteAdmission/controller";
 import { Button } from "../../components/ui/button";
 import { admissionPresentation } from "./presentation";
@@ -29,6 +28,31 @@ import {
   RequestThreadStatus,
 } from "./RequestThreadStatus";
 
+const requestViews = [
+  ["current", "Current", "currentHeldAdmissions"],
+  ["blocked", "Blocked", "blockedHeldAdmissions"],
+  ["inflight", "In flight", "inFlightAdmissions"],
+  ["unresolved", "Unresolved", "unresolvedAdmissions"],
+  ["access", "Access", "activeAccessScopes"],
+  ["done", "Done", null],
+] as const;
+
+interface RequestSelection {
+  id: string;
+  digest?: string;
+  fromLink?: true;
+}
+type ExactLookup = "loading" | "unavailable" | { digest: string };
+
+const lookupExactRequest = (
+  controller: ReturnType<typeof useReview>["controller"],
+  selection: RequestSelection,
+): Promise<ExactLookup> =>
+  controller.lookup(selection.id, selection.digest).then(
+    (item) => (item ? { digest: item.record.bindingDigest } : "unavailable"),
+    () => "unavailable",
+  );
+
 export function ReviewPage({
   environmentId,
   label,
@@ -40,9 +64,13 @@ export function ReviewPage({
   const { page, capabilities, controller } = state;
   const initial = new URLSearchParams(window.location.search);
   const matchesReceiver = initial.get("receiver") === environmentId;
-  const [selected, setSelected] = useState<string | null>(
-    matchesReceiver ? initial.get("request") : null,
-  );
+  const requested = matchesReceiver ? initial.get("request") : null;
+  const [selection, setSelection] = useState<RequestSelection | null>(() => {
+    if (!requested) return null;
+    const digest = initial.get("binding");
+    return { id: requested, ...(digest ? { digest } : {}), fromLink: true };
+  });
+  const [exactLookup, setExactLookup] = useState<ExactLookup>("loading");
   const [accessSelection, setAccessSelection] = useState({
     id: matchesReceiver ? initial.get("access") : null,
     revision: state.accessSelectionRevision,
@@ -62,13 +90,18 @@ export function ReviewPage({
     setAccessSelection({ id, revision: state.accessSelectionRevision });
   };
   const [reviewBlocked, setReviewBlocked] = useState(false);
-  const requested = matchesReceiver ? initial.get("request") : null;
-  const digest = initial.get("binding");
   const requestedAccess = matchesReceiver ? initial.get("access") : null;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile the mounted exact request route with the subscribed owner controller; lookup preserves off-page binding and uncertainty checks.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- An exact route must finish its own lookup before it can show a cached request or expose decisions.
   useEffect(() => {
-    if (requested) void controller.lookup(requested, digest ?? undefined).catch(() => undefined);
-  }, [controller, requested, digest]);
+    if (!selection?.fromLink) return;
+    let current = true;
+    void lookupExactRequest(controller, selection).then((readback) => {
+      if (current) setExactLookup(readback);
+    });
+    return () => {
+      current = false;
+    };
+  }, [controller, selection]);
   const openAccess = (id: string) => {
     setAccessId(id);
     void controller.lookupAccess(id).catch(() => undefined);
@@ -77,15 +110,19 @@ export function ReviewPage({
   useEffect(() => {
     if (requestedAccess) void controller.lookupAccess(requestedAccess).catch(() => undefined);
   }, [controller, requestedAccess]);
-  const frozen = useFrozenRows(page?.records ?? [], (item) => bindingKey(item.record));
-  const frozenAccess = useFrozenRows(page?.access ?? [], (entry) => entry.id);
-  const frozenDiagnostics = useFrozenRows(page?.diagnostics ?? [], (entry) => entry.id);
-  const item =
-    [
-      ...(page?.records ?? []),
-      ...Object.values(state.groups).flatMap((group) => group.page?.records ?? []),
-    ].find((entry) => entry.record.id === selected) ??
-    (state.selectedItem?.record.id === selected ? state.selectedItem : null);
+  const selectedDigest = selection?.fromLink
+    ? typeof exactLookup === "object"
+      ? exactLookup.digest
+      : undefined
+    : selection?.digest;
+  const matchesSelection = (entry: Item) =>
+    entry.record.id === selection?.id && entry.record.bindingDigest === selectedDigest;
+  const lookedUpItem =
+    state.selectedItem && matchesSelection(state.selectedItem) ? state.selectedItem : null;
+  const item = capabilities?.canDecide
+    ? (page?.records.find(matchesSelection) ?? lookedUpItem)
+    : null;
+  const itemView = item ? admissionPresentation(item.record) : null;
   const access =
     state.selectedAccess?.id === accessId
       ? state.selectedAccess
@@ -107,18 +144,39 @@ export function ReviewPage({
     void controller.mutate(input);
   };
   const choose = (entry: Item) => {
-    setSelected(entry.record.id);
+    const { id, bindingDigest } = entry.record;
+    setSelection({ id, digest: bindingDigest });
     setAccessId(null);
     setReviewBlocked(false);
-    void controller.lookup(entry.record.id, entry.record.bindingDigest).catch(() => undefined);
+    void controller.lookup(id, bindingDigest).catch(() => undefined);
   };
+  const clearSelection = () => {
+    setSelection(null);
+    setAccessId(null);
+    setReviewBlocked(false);
+  };
+  const changeView = (view: View) => {
+    if (view === state.view) return;
+    clearSelection();
+    void controller.load(view);
+  };
+  const busy = state.policyBarrier || state.pending.size > 0;
+  const hasSelection = accessId !== null || selection !== null;
+  const viewsRef = useRef<HTMLElement>(null);
+  const detailRef = useRef<HTMLElement>(null);
+  const backRef = useRef<HTMLDivElement>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- When the narrow list is hidden, move DOM focus into its replacement panel.
+  useEffect(() => {
+    if (hasSelection && backRef.current?.getClientRects().length) detailRef.current?.focus();
+  }, [hasSelection]);
   return (
-    <section className="min-w-0 space-y-3" aria-label={`Requests on ${label}`}>
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-medium">{label}</h2>
+    <section className="@container min-w-0 space-y-4" aria-label={`Requests on ${label}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-3">
+        <h2 className="min-w-0 text-base font-semibold wrap-anywhere">{label}</h2>
         <Button
           size="sm"
           variant="outline"
+          disabled={busy || state.loading}
           onClick={() => {
             void controller.load();
           }}
@@ -126,53 +184,28 @@ export function ReviewPage({
           Refresh
         </Button>
       </div>
-      <div role="tablist" aria-label="Request views" className="flex gap-2">
-        {(["current", "blocked", "done"] as const).map((view) => (
+      <nav ref={viewsRef} aria-label="Request views" className="flex flex-wrap items-center gap-1">
+        {requestViews.map(([view, title, count]) => (
           <Button
             key={view}
-            role="tab"
-            aria-selected={state.view === view}
+            aria-pressed={state.view === view}
             variant={state.view === view ? "secondary" : "ghost"}
             size="sm"
-            onClick={() => {
-              setSelected(null);
-              setAccessId(null);
-              void controller.load(view);
-            }}
+            disabled={busy}
+            onClick={() => changeView(view)}
           >
-            {view === "current" ? "Current" : view === "blocked" ? "Blocked" : "Done"}
-            {page && view !== "done"
-              ? ` · ${view === "current" ? page.counts.currentHeldAdmissions : page.counts.blockedHeldAdmissions}`
-              : ""}
+            {title}
+            {page && count && (
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {page.counts[count]}
+                {view === "access" ? " active" : ""}
+              </span>
+            )}
           </Button>
         ))}
-      </div>
-      {page ? (
-        <div className="flex flex-wrap gap-2">
-          {(
-            [
-              ["unresolved", `Unresolved · ${page.counts.unresolvedAdmissions}`],
-              ["inflight", `In flight · ${page.counts.inFlightAdmissions}`],
-              ["access", `Access · ${page.counts.activeAccessScopes}`],
-            ] as const
-          ).map(([view, title]) => (
-            <Button
-              key={view}
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setSelected(null);
-                setAccessId(null);
-                void controller.load(view);
-              }}
-            >
-              {title}
-            </Button>
-          ))}
-        </div>
-      ) : null}
+      </nav>
       {state.error ? (
-        <p role="alert" className="text-sm text-muted-foreground">
+        <p role="alert" className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
           {state.error}
         </p>
       ) : null}
@@ -182,160 +215,47 @@ export function ReviewPage({
         </p>
       ) : null}
       {state.view === "done" && page ? (
-        <p className="text-xs text-muted-foreground">{page.recordCount} retained records</p>
+        <p className="text-xs text-muted-foreground">
+          {page.recordCount} completed {page.recordCount === 1 ? "request" : "requests"}
+        </p>
       ) : null}
-      <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(14rem,2fr)_minmax(0,3fr)]">
-        <div
-          className="min-w-0 space-y-2"
-          onPointerEnter={() => {
-            frozen.handlers.onPointerEnter();
-            frozenAccess.handlers.onPointerEnter();
-            frozenDiagnostics.handlers.onPointerEnter();
-          }}
-          onPointerLeave={() => {
-            frozen.handlers.onPointerLeave();
-            frozenAccess.handlers.onPointerLeave();
-            frozenDiagnostics.handlers.onPointerLeave();
-          }}
-          onFocusCapture={() => {
-            frozen.handlers.onFocusCapture();
-            frozenAccess.handlers.onFocusCapture();
-            frozenDiagnostics.handlers.onFocusCapture();
-          }}
-          onBlurCapture={(event) => {
-            frozen.handlers.onBlurCapture(event);
-            frozenAccess.handlers.onBlurCapture(event);
-            frozenDiagnostics.handlers.onBlurCapture(event);
-          }}
-        >
-          {frozen.rows.map((entry) => (
-            <CompactRequest
-              key={bindingKey(entry.record)}
-              environmentId={environmentId}
-              item={entry}
-              selected={selected === entry.record.id}
-              disabled={frozen.isGone(entry)}
-              onSelect={() => choose(entry)}
-            />
-          ))}
-          {frozenAccess.rows.map((entry) => (
-            <CompactAccess
-              key={entry.id}
-              environmentId={environmentId}
-              access={entry}
-              disabled={frozenAccess.isGone(entry)}
-              onSelect={() => {
-                openAccess(entry.id);
-                setSelected(null);
-              }}
-            />
-          ))}
-          {page && page.records.length === 0 && page.access.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No records in this view.</p>
-          ) : null}
-          {state.view === "blocked" && page?.diagnosticCounts ? (
-            <p className="text-xs text-muted-foreground">
-              {page.diagnosticCounts.logicalEvents} logical events ·{" "}
-              {page.diagnosticCounts.repeatArrivals} repeat arrivals ·{" "}
-              {page.diagnosticCounts.summaryRows} summary rows
-            </p>
-          ) : null}
-          {state.view === "blocked"
-            ? frozenDiagnostics.rows.map((event) => (
-                <div key={event.id} className="rounded-md border p-3 text-xs">
-                  <p>
-                    {event.reason} · {event.repeats} repeats
-                  </p>
-                  {event.requestId ? (
-                    <a
-                      className="underline"
-                      aria-disabled={frozenDiagnostics.isGone(event)}
-                      onClick={(action) => {
-                        if (frozenDiagnostics.isGone(event)) action.preventDefault();
-                      }}
-                      href={requestHref(environmentId, event.requestId)}
-                    >
-                      Review exact held message ↗
-                    </a>
-                  ) : (
-                    <p className="text-muted-foreground">
-                      Diagnostic only · retained message unavailable
-                    </p>
-                  )}
-                </div>
-              ))
-            : null}
-          {page?.nextCursor ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={state.loading}
-              onClick={() => {
-                void controller.load(state.view, true);
-              }}
-            >
-              Load older records
-            </Button>
-          ) : null}
-          {state.view === "current" ? (
-            <>
-              <details open className="mt-4 border-t pt-3">
-                <summary className="cursor-pointer text-sm font-medium">In progress</summary>
-                <CurrentGroup
-                  mode="active"
-                  environmentId={environmentId}
-                  group={state.groups.access}
-                  selected={selected}
-                  choose={choose}
-                  chooseAccess={(id) => {
-                    openAccess(id);
-                    setSelected(null);
-                  }}
-                  load={(older) => {
-                    void controller.loadGroup("access", older);
-                  }}
-                />
-              </details>
-              <details open className="mt-4 border-t pt-3">
-                <summary className="cursor-pointer text-sm font-medium">
-                  Awaiting confirmation
-                </summary>
-                <CurrentGroup
-                  mode="pending"
-                  environmentId={environmentId}
-                  group={state.groups.access}
-                  selected={selected}
-                  choose={choose}
-                  chooseAccess={(id) => {
-                    openAccess(id);
-                    setSelected(null);
-                  }}
-                  load={(older) => {
-                    void controller.loadGroup("access", older);
-                  }}
-                />
-                {(["inflight", "unresolved"] as const).map((view) => (
-                  <CurrentGroup
-                    key={view}
-                    mode={view}
-                    environmentId={environmentId}
-                    group={state.groups[view]}
-                    selected={selected}
-                    choose={choose}
-                    chooseAccess={(id) => {
-                      openAccess(id);
-                      setSelected(null);
-                    }}
-                    load={(older) => {
-                      void controller.loadGroup(view, older);
-                    }}
-                  />
-                ))}
-              </details>
-            </>
-          ) : null}
+      <div className="grid min-w-0 items-start gap-4 @min-[46rem]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+        <div className={hasSelection ? "hidden min-w-0 @min-[46rem]:block" : "min-w-0"}>
+          <ReviewRows
+            key={state.view}
+            environmentId={environmentId}
+            state={state}
+            selectedItem={item}
+            accessId={accessId}
+            choose={choose}
+            chooseAccess={(id) => {
+              openAccess(id);
+              setSelection(null);
+            }}
+          />
         </div>
-        <div className="flex min-h-72 min-w-0 flex-col rounded-md border p-4">
+        <section
+          ref={detailRef}
+          tabIndex={-1}
+          aria-label="Request details"
+          className={`min-w-0 flex-col rounded-lg border p-4 @min-[46rem]:sticky @min-[46rem]:top-4 @min-[46rem]:max-h-[calc(100dvh-5rem)] @min-[46rem]:overflow-y-auto ${hasSelection ? "flex" : "hidden @min-[46rem]:flex"}`}
+        >
+          {hasSelection ? (
+            <div ref={backRef} className="mb-4 @min-[46rem]:hidden">
+              <Button
+                size="compact"
+                variant="outline"
+                onClick={() => {
+                  clearSelection();
+                  viewsRef.current
+                    ?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')
+                    ?.focus();
+                }}
+              >
+                Back to requests
+              </Button>
+            </div>
+          ) : null}
           {access ? (
             <AccessDetail
               key={`${access.id}:${access.generation}:${access.state}:${state.accessSelectionRevision}`}
@@ -363,26 +283,27 @@ export function ReviewPage({
                 Refresh access
               </Button>
             </div>
-          ) : item ? (
+          ) : item && itemView ? (
             <>
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="min-w-0 flex-1 text-sm font-medium wrap-anywhere">
                   <RequestThreadTitle
                     environmentId={environmentId}
                     threadId={item.threadId}
-                    fallback={admissionPresentation(item.record).title ?? "Incoming request"}
+                    fallback={itemView.title ?? "Incoming request"}
                   />
                 </h3>
                 <RequestThreadStatus environmentId={environmentId} threadId={item.threadId} />
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {admissionPresentation(item.record).source}
-                {admissionPresentation(item.record).project
-                  ? ` · ${admissionPresentation(item.record).project!.label}`
-                  : ""}
+              <p className="mt-1 text-xs text-muted-foreground wrap-anywhere">
+                {itemView.source}
+                {itemView.project ? ` · ${itemView.project.label}` : ""}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground wrap-anywhere">
+                {itemView.operation}
               </p>
               <div className="my-4">
-                <RequestMarkdown>{admissionPresentation(item.record).message}</RequestMarkdown>
+                <RequestMarkdown>{itemView.message}</RequestMarkdown>
               </div>
               {requestOutcomeReason(item) ? (
                 <p className="mb-4 text-xs text-muted-foreground">
@@ -465,10 +386,9 @@ export function ReviewPage({
               <details className="mt-4 text-xs">
                 <summary>Bound request details</summary>
                 <p className="my-2">
-                  Source thread (reported):{" "}
-                  {admissionPresentation(item.record).thread?.label ?? "Not reported"}
+                  Source thread (reported): {itemView.thread?.label ?? "Not reported"}
                 </p>
-                <pre className="overflow-auto whitespace-pre-wrap wrap-anywhere">
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap wrap-anywhere">
                   {JSON.stringify(
                     {
                       record: item.record,
@@ -481,12 +401,146 @@ export function ReviewPage({
                 </pre>
               </details>
             </>
+          ) : selection ? (
+            <div className="space-y-2">
+              {selection.fromLink && exactLookup === "loading" ? (
+                <p role="status" className="text-sm text-muted-foreground">
+                  Loading exact request…
+                </p>
+              ) : (
+                <>
+                  <p role="status" className="text-sm text-muted-foreground">
+                    Exact request unavailable.
+                  </p>
+                  {selection.fromLink ? (
+                    <Button
+                      size="compact"
+                      variant="outline"
+                      onClick={() => {
+                        setExactLookup("loading");
+                        void lookupExactRequest(controller, selection).then(setExactLookup);
+                      }}
+                    >
+                      Refresh request
+                    </Button>
+                  ) : null}
+                </>
+              )}
+            </div>
           ) : (
-            <p className="text-sm text-muted-foreground">Select a request or access record.</p>
+            <>
+              <h3 className="text-sm font-medium">Request details</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Select a request or access record.
+              </p>
+            </>
           )}
-        </div>
+        </section>
       </div>
     </section>
+  );
+}
+function ReviewRows({
+  environmentId,
+  state,
+  selectedItem,
+  accessId,
+  choose,
+  chooseAccess,
+}: {
+  environmentId: EnvironmentId;
+  state: ReturnType<typeof useReview>;
+  selectedItem: Item | null;
+  accessId: string | null;
+  choose: (item: Item) => void;
+  chooseAccess: (id: string) => void;
+}) {
+  const { page, view, controller } = state;
+  const records = useFrozenRows(page?.records ?? [], (item) => bindingKey(item.record));
+  const access = useFrozenRows(page?.access ?? [], (entry) => entry.id);
+  const diagnostics = useFrozenRows(page?.diagnostics ?? [], (entry) => entry.id);
+  const frozen = view === "access" ? access : records;
+  const showDiagnostics = view === "blocked" && diagnostics.rows.length > 0;
+  return (
+    <div className="min-w-0 space-y-2">
+      <div className="space-y-2" {...frozen.handlers}>
+        {records.rows.map((entry) => (
+          <CompactRequest
+            key={bindingKey(entry.record)}
+            environmentId={environmentId}
+            item={entry}
+            selected={
+              selectedItem !== null && bindingKey(selectedItem.record) === bindingKey(entry.record)
+            }
+            disabled={records.isGone(entry)}
+            onSelect={() => choose(entry)}
+          />
+        ))}
+        {access.rows.map((entry) => (
+          <CompactAccess
+            key={entry.id}
+            environmentId={environmentId}
+            access={entry}
+            selected={entry.id === accessId}
+            disabled={access.isGone(entry)}
+            onSelect={() => chooseAccess(entry.id)}
+          />
+        ))}
+      </div>
+      {page && records.rows.length === 0 && access.rows.length === 0 && !showDiagnostics ? (
+        <p className="rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">
+          {view === "current"
+            ? "No requests need review."
+            : view === "access"
+              ? "No access records."
+              : "No requests in this view."}
+        </p>
+      ) : null}
+      {showDiagnostics ? (
+        <div className="space-y-2" {...diagnostics.handlers}>
+          {page?.diagnosticCounts ? (
+            <p className="text-xs text-muted-foreground">
+              {page.diagnosticCounts.logicalEvents} blocked events ·{" "}
+              {page.diagnosticCounts.repeatArrivals} repeat arrivals ·{" "}
+              {page.diagnosticCounts.summaryRows} summaries
+            </p>
+          ) : null}
+          {diagnostics.rows.map((event) => (
+            <div key={event.id} className="rounded-lg border p-3 text-xs wrap-anywhere">
+              <p>
+                {event.reason} · {event.repeats} repeats
+              </p>
+              {event.requestId ? (
+                <a
+                  className="underline"
+                  aria-disabled={diagnostics.isGone(event)}
+                  onClick={(action) => {
+                    if (diagnostics.isGone(event)) action.preventDefault();
+                  }}
+                  href={requestHref(environmentId, event.requestId)}
+                >
+                  Review exact held message ↗
+                </a>
+              ) : (
+                <p className="text-muted-foreground">Retained message unavailable</p>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {page?.nextCursor ? (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={state.loading || state.policyBarrier || state.pending.size > 0}
+          onClick={() => {
+            void controller.load(view, true);
+          }}
+        >
+          Load older records
+        </Button>
+      ) : null}
+    </div>
   );
 }
 function CompactRequest({
@@ -503,189 +557,110 @@ function CompactRequest({
   onSelect: () => void;
 }) {
   const view = admissionPresentation(item.record);
+  const outcome = disabled ? "Resolved · refresh for current state" : requestOutcomeLabel(item);
   return (
     <article
-      className={`flex min-w-0 items-start gap-2 rounded-md border p-3 ${selected ? "border-ring bg-accent" : ""}`}
+      className={`flex min-w-0 items-start rounded-lg border ${selected ? "border-ring bg-accent" : "hover:bg-muted/40"}`}
     >
       <button
         type="button"
-        className="min-w-0 flex-1 text-left"
+        className="min-w-0 flex-1 rounded-lg px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+        aria-current={selected || undefined}
         aria-disabled={disabled}
         onClick={() => {
           if (!disabled) onSelect();
         }}
       >
-        <span className="block text-sm font-medium wrap-anywhere">
+        <span className="line-clamp-2 text-sm/5 font-medium wrap-anywhere">
           <RequestThreadTitle
             environmentId={environmentId}
             threadId={item.threadId}
             fallback={view.title ?? "Incoming request"}
           />
         </span>
-        <span className="text-xs text-muted-foreground">
+        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
           {view.source}
           {view.project ? ` · ${view.project.label}` : ""}
         </span>
-        <span className="block text-xs text-muted-foreground">
-          {disabled ? "Resolved · refresh for current state" : requestOutcomeLabel(item)}
+        <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          <span className="text-muted-foreground">{outcome}</span>
+          <RequestThreadStatus environmentId={environmentId} threadId={item.threadId} />
         </span>
+        <span className="mt-1 block truncate text-xs text-muted-foreground">{view.operation}</span>
       </button>
-      <div className="flex flex-wrap items-center justify-end gap-1">
-        <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-          {view.operation}
-        </span>
-        <a
-          href={requestHref(environmentId, item.record.id, item.record.bindingDigest)}
-          aria-label="Open exact request"
-          className="p-2 text-3xs"
-        >
-          ↗
-        </a>
-        <RequestThreadStatus environmentId={environmentId} threadId={item.threadId} />
-      </div>
+      <a
+        href={requestHref(environmentId, item.record.id, item.record.bindingDigest)}
+        aria-label="Open exact request"
+        className="m-1 grid size-8 shrink-0 place-items-center rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+      >
+        ↗
+      </a>
     </article>
   );
 }
 function CompactAccess({
   environmentId,
   access,
+  selected,
   disabled,
   onSelect,
 }: {
   environmentId: EnvironmentId;
   access: Access;
+  selected: boolean;
   disabled: boolean;
   onSelect: () => void;
 }) {
   return (
-    <article className="flex min-w-0 items-center gap-2 rounded-md border p-3">
+    <article
+      className={`flex min-w-0 items-start rounded-lg border ${selected ? "border-ring bg-accent" : "hover:bg-muted/40"}`}
+    >
       <button
         type="button"
-        className="min-w-0 flex-1 text-left text-sm wrap-anywhere"
+        className="min-w-0 flex-1 rounded-lg px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+        aria-current={selected || undefined}
         aria-disabled={disabled}
         onClick={() => {
           if (!disabled) onSelect();
         }}
       >
-        <RequestThreadTitle
-          environmentId={environmentId}
-          threadId={access.destinationThreadId}
-          fallback={access.title}
-        />
-        <span className="block text-xs text-muted-foreground">
-          {disabled
-            ? "Changed · refresh for current state"
-            : access.state === "pending"
-              ? "Awaiting confirmation"
-              : access.state === "revoked"
-                ? "Access revoked"
-                : "Active access"}
+        <span className="line-clamp-2 text-sm/5 font-medium wrap-anywhere">
+          <RequestThreadTitle
+            environmentId={environmentId}
+            threadId={access.destinationThreadId}
+            fallback={access.title}
+          />
         </span>
-        <span className="block text-xs text-muted-foreground">
+        <span className="mt-0.5 block text-xs text-muted-foreground wrap-anywhere">
           <RequestEnvironmentLabel environmentId={access.origin} /> ·{" "}
           <AccessExpiry expiresAt={access.expiresAt} />
         </span>
+        <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          <span className="text-muted-foreground">
+            {disabled
+              ? "Changed · refresh for current state"
+              : access.state === "pending"
+                ? "Awaiting confirmation"
+                : access.state === "revoked"
+                  ? "Access revoked"
+                  : "Active access"}
+          </span>
+          <RequestThreadStatus
+            environmentId={environmentId}
+            threadId={access.destinationThreadId}
+          />
+        </span>
       </button>
-      <RequestThreadStatus environmentId={environmentId} threadId={access.destinationThreadId} />
       {access.destinationThreadId ? (
         <a
           aria-label="Open exact thread"
-          className="p-2 text-xs"
+          className="m-1 grid size-8 shrink-0 place-items-center rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
           href={threadHref(environmentId, access.destinationThreadId)}
         >
           ↗
         </a>
       ) : null}
     </article>
-  );
-}
-function CurrentGroup({
-  mode,
-  environmentId,
-  group,
-  selected,
-  choose,
-  chooseAccess,
-  load,
-}: {
-  mode: "active" | "pending" | Exclude<GroupView, "access">;
-  environmentId: EnvironmentId;
-  group: ReviewGroup;
-  selected: string | null;
-  choose: (item: Item) => void;
-  chooseAccess: (id: string) => void;
-  load: (older: boolean) => void;
-}) {
-  const title =
-    mode === "active"
-      ? "Active access"
-      : mode === "pending"
-        ? "Pending access"
-        : mode === "inflight"
-          ? "In-flight requests"
-          : "Unresolved requests";
-  const frozen = useFrozenRows(group.page?.records ?? [], (item) => bindingKey(item.record));
-  const frozenAccess = useFrozenRows(
-    (group.page?.access ?? []).filter((entry) => entry.state === mode),
-    (entry) => entry.id,
-  );
-  const accessGroup = mode === "active" || mode === "pending";
-  return (
-    <section aria-label={title} className="mt-3 space-y-2">
-      <h4 className="text-xs text-muted-foreground">{title}</h4>
-      {group.loading ? (
-        <p role="status" className="text-xs text-muted-foreground">
-          Loading {title.toLowerCase()}…
-        </p>
-      ) : null}
-      {group.error ? (
-        <p role="alert" className="text-xs text-muted-foreground">
-          {group.error}
-        </p>
-      ) : null}
-      <div {...(accessGroup ? frozenAccess.handlers : frozen.handlers)} className="space-y-2">
-        {accessGroup
-          ? frozenAccess.rows.map((entry) => (
-              <CompactAccess
-                key={entry.id}
-                environmentId={environmentId}
-                access={entry}
-                disabled={Boolean(group.error) || frozenAccess.isGone(entry)}
-                onSelect={() => chooseAccess(entry.id)}
-              />
-            ))
-          : frozen.rows.map((entry) => (
-              <CompactRequest
-                key={bindingKey(entry.record)}
-                environmentId={environmentId}
-                item={entry}
-                selected={selected === entry.record.id}
-                disabled={Boolean(group.error) || frozen.isGone(entry)}
-                onSelect={() => choose(entry)}
-              />
-            ))}
-      </div>
-      {!group.loading &&
-      group.page &&
-      (accessGroup ? frozenAccess.rows.length === 0 : frozen.rows.length === 0) ? (
-        <p className="text-xs text-muted-foreground">No {title.toLowerCase()} on this page.</p>
-      ) : null}
-      <div className="flex flex-wrap gap-2">
-        <Button size="compact" variant="ghost" disabled={group.loading} onClick={() => load(false)}>
-          Refresh {title.toLowerCase()}
-        </Button>
-        {group.page?.nextCursor ? (
-          <Button
-            size="compact"
-            variant="outline"
-            disabled={group.loading}
-            onClick={() => load(true)}
-          >
-            Load more {title.toLowerCase()}
-          </Button>
-        ) : null}
-      </div>
-    </section>
   );
 }
 function AccessDetail({
