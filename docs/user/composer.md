@@ -308,6 +308,9 @@ messages; they do not mean each message started a separate turn. If the active t
 delivery, the messages are preserved for follow-up delivery. Automatic delivery at a tool boundary
 still requires the queued messages to match the active provider and model.
 
+If you change the model or effort within the same Codex account, **Steer** sends the message to the
+active turn with its current settings. The new settings apply to a subsequent turn.
+
 If you stop the agent or the server restarts, queued messages keep their order and are held.
 Press **Resume** in an empty composer on web and desktop, or **Resume queue** on mobile, to
 continue. Sending a new message does not release messages held by Stop. A new
