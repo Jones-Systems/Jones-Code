@@ -260,6 +260,46 @@ describe("planWorkstreamThreadReorder", () => {
     expect(groupOrder(rows, input.groupIdByKey, null)).toEqual(["a2", "a3", "a1"]);
   });
 
+  it("preserves fixed members when a tied-key fallback moves siblings in both directions", () => {
+    const stationary = ["first", "a1", "a2", "b1", "b2", "b3", "b4", "last"];
+    const input = fixture(
+      [...stationary, "moved"],
+      [],
+      [
+        ...["b1", "b2", "b3", "b4"].map((id) => [id, "r"] as const),
+        ["last", generateSpreadPinOrderKeys(8).at(-1)],
+        ["moved", "t"],
+      ],
+    );
+    input.writableKeys.delete("first");
+    input.writableKeys.delete("last");
+    const assignments = planWorkstreamThreadReorder({
+      ...input,
+      movedId: "moved",
+      neighborId: "b2",
+      after: true,
+    });
+    expect(assignments?.map(({ id }) => id)).toEqual(["b1", "b2", "b4", "b3", "a2", "a1", "moved"]);
+    let rows = input.rows;
+    for (const { id, orderKey } of assignments!) {
+      rows = rows.map((row) => (row.id === id ? { ...row, activeOrderKey: orderKey } : row));
+      expect(groupOrder(rows, input.groupIdByKey, null).filter((id) => id !== "moved")).toEqual(
+        stationary,
+      );
+    }
+    expect(groupOrder(rows, input.groupIdByKey, null)).toEqual([
+      "first",
+      "a1",
+      "a2",
+      "b1",
+      "b2",
+      "moved",
+      "b3",
+      "b4",
+      "last",
+    ]);
+  });
+
   it("refuses materialization ahead of a frozen keyless row in the same group", () => {
     const input = fixture(["frozen", "a1", "a2"], []);
     expect(

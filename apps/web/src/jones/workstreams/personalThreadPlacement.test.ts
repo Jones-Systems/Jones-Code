@@ -236,6 +236,67 @@ describe("placePersonalThread", () => {
     expect(f.assignmentWrites).toEqual(["a"]);
   });
 
+  it.each([
+    { destinationId: "a", rejectSecond: false },
+    { destinationId: "a", rejectSecond: true },
+    { destinationId: null, rejectSecond: false },
+    { destinationId: null, rejectSecond: true },
+  ])(
+    "preserves destination siblings when arriving between equal keys (lane=$destinationId, rejectSecond=$rejectSecond)",
+    async ({ destinationId, rejectSecond }) => {
+      const siblings = ["a1", "a2", "b1", "b2"];
+      const ids = [...siblings, "moved", "control"];
+      const f = fixture(ids, [
+        ...(destinationId === null
+          ? [["moved", "a"] as const]
+          : siblings.map((id) => [id, destinationId] as const)),
+        ["control", "b"],
+      ]);
+      f.setOrderKey("b1", "m");
+      f.setOrderKey("b2", "m");
+      f.setOrderKey("moved", "t");
+      if (rejectSecond) f.failOrderAt(2);
+
+      const input = f.input(destinationId, "b1", true);
+      const siblingOrderAfterWrites: string[][] = [];
+      expect(
+        await placePersonalThread({
+          ...input,
+          reorder: async (thread, key) => {
+            const saved = await input.reorder(thread, key);
+            if (saved) {
+              siblingOrderAfterWrites.push(
+                f.groupOrder(destinationId).filter((id) => id !== "moved"),
+              );
+            }
+            return saved;
+          },
+        }),
+      ).toBe(!rejectSecond);
+
+      expect(f.assignmentWrites).toEqual([destinationId]);
+      expect(f.positionFailures.map(({ assignmentSaved }) => assignmentSaved)).toEqual(
+        rejectSecond ? [true] : [],
+      );
+      expect(siblingOrderAfterWrites).toHaveLength(rejectSecond ? 1 : 5);
+      for (const order of siblingOrderAfterWrites) expect(order).toEqual(siblings);
+      expect(f.row("control").activeOrderKey).toBeNull();
+
+      const reloadedRows = JSON.parse(
+        JSON.stringify(ids.map(f.row).reverse()),
+      ) as EnvironmentThreadShell[];
+      const reloaded = groupPersonalThreads(input.state, sortActiveThreadsByOrderKey(reloadedRows));
+      const lane =
+        destinationId === null
+          ? reloaded.ungrouped
+          : reloaded.groups.find(({ workstream }) => workstream.id === destinationId)!.threads;
+      expect(lane.map(({ id }) => id).filter((id) => id !== "moved")).toEqual(siblings);
+      if (!rejectSecond) {
+        expect(lane.map(({ id }) => id)).toEqual(["a1", "a2", "b1", "moved", "b2"]);
+      }
+    },
+  );
+
   it("places a grouped thread into a mixed Unassigned prefix and keeps the other keys", async () => {
     const f = fixture(
       ["u1", "a1", "b1", "moved", "a2", "u2", "u3"],

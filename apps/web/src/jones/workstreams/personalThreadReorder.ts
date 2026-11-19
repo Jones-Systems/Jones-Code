@@ -80,5 +80,25 @@ export function planWorkstreamThreadReorder(input: {
     if (hasAssignedBefore && !writableKeys.has(id) && keysById.get(id) == null) return null;
     hasAssignedBefore ||= assignedIds.has(id);
   }
-  return assignments;
+  if (assignments.length < 2) return assignments;
+
+  const leftward: Array<(typeof assignments)[number]> = [];
+  const rightward: typeof leftward = [];
+  let moved: (typeof assignments)[number] | undefined;
+  for (const assignment of assignments) {
+    if (assignment.id === movedId) {
+      moved = assignment;
+      continue;
+    }
+    const previousKey = keysById.get(assignment.id);
+    (previousKey != null && assignment.orderKey < previousKey ? leftward : rightward).push(
+      assignment,
+    );
+  }
+
+  // The fallback emits keys in final lane order. Move earlier siblings left first,
+  // then later siblings right first (including keyless rows), so partial saves keep their order.
+  const ordered = leftward.concat(rightward.reverse());
+  if (moved) ordered.push(moved);
+  return ordered;
 }
