@@ -52,6 +52,12 @@ export interface LaptopNativeOutcome {
   readonly activeSource: string;
   readonly activeTree: string;
 }
+export type LaptopStartupPreimage = NonNullable<JonesInstallPlanLaptopOperation["prebinding"]> & {
+  readonly environmentId: EnvironmentId;
+  readonly currentVersion: string;
+  readonly targetSource: string;
+  readonly targetTree: string;
+};
 const terminal = new Set([
   "completed",
   "rolled-back",
@@ -89,6 +95,8 @@ const sameKeys = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && a.every((v, i) => v === b[i]);
 const MAX_OPERATIONS = 16;
 const LEASE_MS = 120_000;
+const PAUSED_GATE_MESSAGE =
+  "Laptop verification is temporarily unavailable. Check the Laptop before continuing.";
 
 const ordinaryProof = (evidence: JonesInstallPlanLaptopEvidence) => {
   const proof = evidence.ordinaryRecovery;
@@ -99,6 +107,44 @@ const ordinaryProof = (evidence: JonesInstallPlanLaptopEvidence) => {
     ? proof
     : undefined;
 };
+
+const verificationBlocked = (evidence: JonesInstallPlanLaptopEvidence) =>
+  evidence.activationBlocked || evidence.reopenToCheckInstall === true;
+
+type RolloutGate = NonNullable<JonesInstallPlan["laptop"]["gate"]>;
+function rolloutGateStatus(
+  environmentId: EnvironmentId,
+  gate: RolloutGate,
+  evidence: JonesInstallPlanLaptopEvidence,
+): "verified" | "paused" | "changed" {
+  const identityKeys = ["activeGeneration", "activeSource", "activeTree"] as const;
+  const ordinary = gate.verificationKind === "ordinary-recovery";
+  const recorded = gate.ordinaryRecovery;
+  if (
+    (ordinary
+      ? recorded === undefined ||
+        recorded.transactionId !== gate.transactionId ||
+        recorded.activeGeneration !== gate.activeGeneration
+      : recorded !== undefined) ||
+    (evidence.environmentId !== undefined && evidence.environmentId !== environmentId) ||
+    identityKeys.some((key) => evidence[key] !== undefined && evidence[key] !== gate[key]) ||
+    (evidence.committedTransactionId !== undefined &&
+      (ordinary || evidence.committedTransactionId !== gate.transactionId)) ||
+    (evidence.ordinaryRecovery !== undefined &&
+      (!ordinary || !same(recorded, evidence.ordinaryRecovery)))
+  )
+    return "changed";
+
+  const proofAvailable = ordinary
+    ? ordinaryProof(evidence) !== undefined
+    : evidence.committedTransactionId !== undefined;
+  return !verificationBlocked(evidence) &&
+    proofAvailable &&
+    evidence.environmentId === environmentId &&
+    identityKeys.every((key) => evidence[key] === gate[key])
+    ? "verified"
+    : "paused";
+}
 
 function manualCloseReview(
   plan: JonesInstallPlan,
@@ -226,6 +272,7 @@ export function createInstallPlanCoordinator(options: {
   readonly workerAbsent?: typeof workerAbsent;
 }) {
   const active = new Set<string>();
+  let disposed = false;
   let lastState: JonesInstallPlanState | undefined;
   const now = () => new Date(options.now()).toISOString();
   const stateOf = (
@@ -254,36 +301,33 @@ export function createInstallPlanCoordinator(options: {
     plan: JonesInstallPlan,
     evidence: JonesInstallPlanLaptopEvidence,
   ): JonesInstallPlan => {
-    if (plan.laptop.gateClosed !== undefined) return plan;
-    const old = plan.laptop.gate;
+    const { gate: old, gateClosed, gatePause, ...laptop } = plan.laptop;
+    const paused = gatePause === true && gateClosed?.reason === "blocked";
+    if (gateClosed !== undefined && (!paused || old === undefined)) return plan;
+    if (old !== undefined) {
+      const status = rolloutGateStatus(plan.laptop.environmentId, old, evidence);
+      if ((status === "verified" && !paused) || (status === "paused" && paused)) return plan;
+      return {
+        ...plan,
+        revision: plan.revision + 1,
+        laptop: {
+          ...laptop,
+          gate: old,
+          ...(status === "changed"
+            ? { gateClosed: { at: now(), reason: "changed" as const } }
+            : status === "paused"
+              ? { gatePause: true as const, gateClosed: { at: now(), reason: "blocked" as const } }
+              : {}),
+        },
+      };
+    }
+
     const identity = evidence.environmentId === plan.laptop.environmentId;
     const ordinary = ordinaryProof(evidence);
     const transactionId = evidence.committedTransactionId ?? ordinary?.transactionId;
-    if (old !== undefined) {
-      if (
-        !identity ||
-        evidence.activationBlocked ||
-        (old.verificationKind === "ordinary-recovery"
-          ? ordinary === undefined || !same(old.ordinaryRecovery, ordinary)
-          : old.ordinaryRecovery !== undefined || evidence.ordinaryRecovery !== undefined) ||
-        old.transactionId !== transactionId ||
-        old.activeGeneration !== evidence.activeGeneration ||
-        old.activeSource !== evidence.activeSource ||
-        old.activeTree !== evidence.activeTree
-      )
-        return {
-          ...plan,
-          revision: plan.revision + 1,
-          laptop: {
-            ...plan.laptop,
-            gateClosed: { at: now(), reason: evidence.activationBlocked ? "blocked" : "changed" },
-          },
-        };
-      return plan;
-    }
     if (
       !identity ||
-      evidence.activationBlocked ||
+      verificationBlocked(evidence) ||
       (evidence.ordinaryRecovery !== undefined && ordinary === undefined) ||
       transactionId === undefined ||
       evidence.activeGeneration === undefined ||
@@ -316,9 +360,147 @@ export function createInstallPlanCoordinator(options: {
       },
     };
   };
+  const prebindingPreimage = (
+    plan: JonesInstallPlan,
+    operation: JonesInstallPlanLaptopOperation,
+  ): LaptopStartupPreimage | undefined => {
+    const { prebinding, review } = operation;
+    if (
+      prebinding === undefined ||
+      review === undefined ||
+      prebinding.stagedHandle !== review.stagedHandle ||
+      prebinding.fromSource !== review.expectedInstalledSource ||
+      review.targetSource !== plan.target.sourceSha
+    )
+      return undefined;
+    return {
+      ...prebinding,
+      environmentId: plan.laptop.environmentId,
+      currentVersion: review.currentVersion,
+      targetSource: plan.target.sourceSha,
+      targetTree: plan.target.sourceTree,
+    };
+  };
+  const matchesPrebinding = (
+    plan: JonesInstallPlan,
+    operation: JonesInstallPlanLaptopOperation,
+    evidence: JonesInstallPlanLaptopEvidence,
+  ): boolean => {
+    const preimage = prebindingPreimage(plan, operation);
+    return (
+      preimage !== undefined &&
+      evidence.environmentId === preimage.environmentId &&
+      evidence.activeGeneration === preimage.fromGeneration &&
+      evidence.activeSource === preimage.fromSource &&
+      evidence.activeTree === preimage.fromTree &&
+      !verificationBlocked(evidence) &&
+      options.controller.isStaged({
+        targetSource: preimage.targetSource,
+        targetTree: preimage.targetTree,
+        stagedHandle: preimage.stagedHandle,
+        currentVersion: preimage.currentVersion,
+        expectedInstalledSource: preimage.fromSource,
+      })
+    );
+  };
+  const startupRecoveryFor = (snapshot: PlanSnapshot) => {
+    if (
+      disposed ||
+      snapshot.readOnly !== undefined ||
+      active.size > 0 ||
+      options.controller.busy !== null
+    )
+      return undefined;
+    const { current, last } = snapshot.document;
+    const [candidate, other] = [current, last?.cancelled === true ? last : null].flatMap((plan) =>
+      plan === null
+        ? []
+        : plan.laptop.operations.filter(localPending).map((operation) => ({ plan, operation })),
+    );
+    if (candidate === undefined || other !== undefined) return undefined;
+    const { plan, operation } = candidate;
+    const { binding, stageAbandonment } = plan.laptop;
+    if (
+      operation.step !== "install" ||
+      operation.worker !== undefined ||
+      (stageAbandonment !== undefined && stageAbandonment.status !== "retired")
+    )
+      return undefined;
+    if (binding !== undefined) {
+      const previous = plan.laptop.operations.find(
+        (entry) => entry.operationId === binding.operationId,
+      );
+      if (previous?.step !== "install" || previous === operation || localPending(previous))
+        return undefined;
+    }
+    const preimage = prebindingPreimage(plan, operation);
+    return preimage === undefined ? undefined : { operation, preimage };
+  };
+  const reconcileLaptopInstall = async (
+    plan: JonesInstallPlan,
+    operation: JonesInstallPlanLaptopOperation,
+    evidence: JonesInstallPlanLaptopEvidence,
+    inspected: JonesInstallPlanLaptopOperation | undefined,
+  ): Promise<NonNullable<JonesInstallPlanLaptopOperation["result"]>> => {
+    const { binding } = plan.laptop;
+    if (operation.prebinding !== undefined) {
+      // An unconsumed reservation proves only that the plan fence was never crossed.
+      // Native startup must also rule out preparation and confirm the original stage and preimage.
+      const interrupted =
+        inspected === operation &&
+        active.size === 0 &&
+        options.controller.busy === null &&
+        evidence.startupInspectionComplete === true &&
+        matchesPrebinding(plan, operation, evidence);
+      return interrupted
+        ? { status: "interrupted", code: "install-not-dispatched", at: now() }
+        : { status: "held", code: "native-unconfirmed", at: now() };
+    }
+
+    const nativeReady =
+      options.controller.busy === null &&
+      !verificationBlocked(evidence) &&
+      evidence.environmentId === plan.laptop.environmentId &&
+      evidence.activeGeneration !== undefined;
+    const committedGeneration =
+      nativeReady && evidence.committedTransactionId === evidence.activeGeneration;
+    const manualGeneration = nativeReady && ordinaryProof(evidence) !== undefined;
+    const targetVerified =
+      (committedGeneration || manualGeneration) &&
+      evidence.activeSource === plan.target.sourceSha &&
+      evidence.activeTree === plan.target.sourceTree;
+    const bound = binding?.operationId === operation.operationId;
+    const committed =
+      targetVerified &&
+      committedGeneration &&
+      bound &&
+      evidence.activeGeneration === binding.transactionId &&
+      evidence.activeGeneration !== binding.fromGeneration;
+    if (committed) return { status: "committed", at: now() };
+    if (operation.result?.code === "native-binding-changed") return operation.result;
+
+    // A separately verified build settles the active target without crediting this attempt.
+    const external =
+      (targetVerified &&
+        (manualGeneration || !bound || evidence.activeGeneration !== binding.transactionId)) ||
+      (manualGeneration &&
+        bound &&
+        evidence.activeGeneration !== binding.fromGeneration &&
+        evidence.activeGeneration !== binding.transactionId);
+    const retired =
+      !external && nativeReady && bound && (await options.controller.retiredLaptopInstall(binding));
+    return external || retired
+      ? {
+          status: "interrupted",
+          code: external && targetVerified ? "target-verified-elsewhere" : "install-not-active",
+          at: now(),
+        }
+      : { status: "held", code: "native-unconfirmed", at: now() };
+  };
   const reconcile = async (
     plan: JonesInstallPlan,
     evidence: JonesInstallPlanLaptopEvidence,
+    inspected: JonesInstallPlanLaptopOperation | undefined,
   ): Promise<JonesInstallPlan> => {
     const abandonment = plan.laptop.stageAbandonment;
     const retired =
@@ -341,53 +523,7 @@ export function createInstallPlanCoordinator(options: {
         )
           return operation;
         if (operation.step === "install") {
-          const binding = plan.laptop.binding;
-          const nativeReady =
-            options.controller.busy === null &&
-            !evidence.activationBlocked &&
-            evidence.environmentId === plan.laptop.environmentId &&
-            evidence.activeGeneration !== undefined;
-          const committedGeneration =
-            nativeReady && evidence.committedTransactionId === evidence.activeGeneration;
-          const manualGeneration = nativeReady && ordinaryProof(evidence) !== undefined;
-          const targetVerified =
-            (committedGeneration || manualGeneration) &&
-            evidence.activeSource === plan.target.sourceSha &&
-            evidence.activeTree === plan.target.sourceTree;
-          const bound = binding?.operationId === operation.operationId;
-          const committed =
-            targetVerified &&
-            committedGeneration &&
-            bound &&
-            evidence.activeGeneration === binding.transactionId &&
-            evidence.activeGeneration !== binding.fromGeneration;
-          if (operation.result?.code === "native-binding-changed" && !committed) return operation;
-          // A separately verified build settles the active target without crediting this attempt.
-          const external =
-            (targetVerified &&
-              (manualGeneration ||
-                !bound ||
-                evidence.activeGeneration !== binding.transactionId)) ||
-            (manualGeneration &&
-              bound &&
-              evidence.activeGeneration !== binding.fromGeneration &&
-              evidence.activeGeneration !== binding.transactionId);
-          const retired =
-            !committed &&
-            !external &&
-            nativeReady &&
-            bound &&
-            (await options.controller.retiredLaptopInstall(binding));
-          const result: NonNullable<JonesInstallPlanLaptopOperation["result"]> = committed
-            ? { status: "committed", at: now() }
-            : external || retired
-              ? {
-                  status: "interrupted",
-                  code:
-                    external && targetVerified ? "target-verified-elsewhere" : "install-not-active",
-                  at: now(),
-                }
-              : { status: "held", code: "native-unconfirmed", at: now() };
+          const result = await reconcileLaptopInstall(plan, operation, evidence, inspected);
           if (operation.result?.status === result.status && operation.result.code === result.code)
             return operation;
           changed = true;
@@ -440,6 +576,7 @@ export function createInstallPlanCoordinator(options: {
       : plan;
   };
   const announce = (state: JonesInstallPlanState) => {
+    if (disposed) return;
     lastState = state;
     options.broadcast(state);
   };
@@ -489,15 +626,21 @@ export function createInstallPlanCoordinator(options: {
     createdStagedHandle?: string,
   ) => {
     await nativeChange((plan) => {
-      if (plan.planId !== planId) return plan;
+      const operation = plan.laptop.operations.find((entry) => entry.operationId === operationId);
+      if (
+        plan.planId !== planId ||
+        operation === undefined ||
+        (operation.step === "install" && (disposed || !localPending(operation)))
+      )
+        return plan;
       return {
         ...plan,
         revision: plan.revision + 1,
         laptop: {
           ...plan.laptop,
-          operations: plan.laptop.operations.map((operation) =>
-            operation.operationId !== operationId
-              ? operation
+          operations: plan.laptop.operations.map((entry) =>
+            entry !== operation
+              ? entry
               : {
                   ...operation,
                   ...(worker === undefined ? {} : { worker }),
@@ -552,18 +695,23 @@ export function createInstallPlanCoordinator(options: {
         : plan,
     );
   };
+  const trackLaptop = <A>(work: () => Promise<A>) =>
+    options.track(() => (disposed ? Promise.resolve(undefined) : work()));
   const runLaptop = async (effect: LaptopEffect) => {
     try {
+      if (disposed) return;
       if (effect.action === "abandon-stage") {
-        const result = await options.track(() => options.controller.discard(effect.stagedHandle!));
+        const result = await trackLaptop(() => options.controller.discard(effect.stagedHandle!));
+        if (result === undefined) return;
         await recordStageAbandonment(effect, result.completed);
       } else if (effect.action === "download") {
-        const result = await options.track(() =>
+        const result = await trackLaptop(() =>
           options.controller.download(
             { artifactId: effect.artifactId!, sourceSha: effect.target.sourceSha },
             { operationId: effect.operationId },
           ),
         );
+        if (result === undefined) return;
         await finishLaptop(
           effect.planId,
           effect.operationId,
@@ -606,14 +754,15 @@ export function createInstallPlanCoordinator(options: {
             at: now(),
           });
       } else {
-        const result = await options.track(() =>
+        const result = await trackLaptop(() =>
           options.controller.install(effect.review!.stagedHandle, undefined, {
             operationId: effect.operationId,
             ...(effect.review!.recovery === undefined ? {} : { recovery: effect.review!.recovery }),
           }),
         );
+        if (result === undefined || disposed) return;
         await nativeChange((plan, evidence) => {
-          if (plan.planId !== effect.planId || result.accepted) return plan;
+          if (disposed || plan.planId !== effect.planId || result.accepted) return plan;
           const operation = plan.laptop.operations.find(
             (entry) => entry.operationId === effect.operationId,
           );
@@ -624,7 +773,7 @@ export function createInstallPlanCoordinator(options: {
           const failedBeforeActivation =
             result.failed &&
             options.controller.busy === null &&
-            !evidence.activationBlocked &&
+            !verificationBlocked(evidence) &&
             evidence.environmentId === plan.laptop.environmentId &&
             (!bound || evidence.activeGeneration === binding.fromGeneration);
           const status = failedBeforeActivation ? "failed" : bound ? "held" : "refused";
@@ -658,6 +807,7 @@ export function createInstallPlanCoordinator(options: {
         await recordStageAbandonment(effect, false).catch(() => undefined);
         return;
       }
+      if (effect.action === "install" && disposed) return;
       // A lost native handoff is not proof of a refused effect.
       await finishLaptop(effect.planId, effect.operationId, {
         status: "held",
@@ -669,6 +819,10 @@ export function createInstallPlanCoordinator(options: {
     }
   };
 
+  const disposedRefusal = {
+    code: "unsupported",
+    message: "The native install plan coordinator is closing.",
+  } as const;
   const request = async (req: JonesInstallPlanRequest): Promise<JonesInstallPlanResult> => {
     let effect: LaptopEffect | undefined;
     try {
@@ -676,7 +830,8 @@ export function createInstallPlanCoordinator(options: {
         // Cold staged review has no plan ID, reservation, disposition or install authority.
         return await transact(async (snapshot, evidence) => {
           let extras: Omit<JonesInstallPlanResult, "state">;
-          if (!compiledIs1(req))
+          if (disposed) extras = { refused: disposedRefusal };
+          else if (!compiledIs1(req))
             extras = {
               refused: { code: "invalid-evidence", message: "Invalid recovery preflight binding." },
             };
@@ -723,7 +878,18 @@ export function createInstallPlanCoordinator(options: {
           };
         });
       }
-      const result = await transact(async (snapshot, evidence) => {
+      const result = await options.store.transact<JonesInstallPlanResult>(async (snapshot) => {
+        const startup = startupRecoveryFor(snapshot);
+        const evidence = await options.controller.laptopEvidence(startup?.preimage);
+        const inspected = startup?.operation;
+        if (disposed)
+          return {
+            ...snapshot,
+            result: {
+              state: stateOf(snapshot, evidence),
+              ...(req.type === "read" ? {} : { refused: disposedRefusal }),
+            },
+          };
         let document = snapshot.document;
         let dispositions = snapshot.dispositions;
         let plan = document.current;
@@ -732,11 +898,11 @@ export function createInstallPlanCoordinator(options: {
           document.last !== null &&
           cancelledLaptopPending(document.last)
         ) {
-          const last = await reconcile(document.last, evidence);
+          const last = await reconcile(document.last, evidence, inspected);
           if (last !== document.last) document = { ...document, last };
         }
         if (plan !== null && snapshot.readOnly === undefined) {
-          const next = gate(await reconcile(plan, evidence), evidence);
+          const next = gate(await reconcile(plan, evidence, inspected), evidence);
           if (next !== plan) {
             plan = next;
             document = { ...document, current: plan };
@@ -867,8 +1033,11 @@ export function createInstallPlanCoordinator(options: {
         const recordLaptop = async (
           action: "download" | "stop" | "install",
           review?: JonesInstallPlanReview,
+          stopOperationId?: string,
         ) => {
           const current = plan!;
+          if (action !== "stop" && current.laptop.gatePause === true)
+            return refuse("gate-closed", PAUSED_GATE_MESSAGE);
           if (current.laptop.operations.length >= MAX_OPERATIONS)
             return refuse("bounds", "The Laptop operation history is full.");
           if (
@@ -880,6 +1049,7 @@ export function createInstallPlanCoordinator(options: {
             return refuse("outstanding-operation", "Laptop work still requires settlement.");
           const native = options.controller.state.jones;
           let of: string | undefined;
+          let prebinding: JonesInstallPlanLaptopOperation["prebinding"];
           if (action === "download") {
             if (
               native?.provenance?.sourceSha !== current.target.sourceSha ||
@@ -901,6 +1071,11 @@ export function createInstallPlanCoordinator(options: {
               options.now() - Date.parse(review.reviewedAt) > LEASE_MS ||
               Date.parse(review.reviewedAt) > options.now() ||
               review.targetSource !== current.target.sourceSha ||
+              evidence.environmentId !== current.laptop.environmentId ||
+              evidence.activeGeneration === undefined ||
+              evidence.activeSource !== review.expectedInstalledSource ||
+              evidence.activeTree === undefined ||
+              verificationBlocked(evidence) ||
               !options.controller.isStaged({ ...review, targetTree: current.target.sourceTree })
             )
               return refuse(
@@ -930,11 +1105,24 @@ export function createInstallPlanCoordinator(options: {
                 );
               }
             }
+            prebinding = {
+              fromGeneration: evidence.activeGeneration,
+              fromSource: evidence.activeSource,
+              fromTree: evidence.activeTree,
+              stagedHandle: review.stagedHandle,
+            };
           } else {
+            if (stopOperationId === undefined)
+              return refuse(
+                "invalid-evidence",
+                "Stop needs the current Laptop download ID. Refresh Update Status and try again.",
+              );
             const latest = current.laptop.operations.findLast(
               (operation) => operation.step === "download",
             );
-            if (latest === undefined || !localPending(latest) || latest.result?.status === "held")
+            if (latest?.operationId !== stopOperationId)
+              return refuse("invalid-evidence", "The Laptop download changed. Check it again.");
+            if (!localPending(latest) || latest.result?.status === "held")
               return refuse("outstanding-operation", "No running Laptop transfer can be stopped.");
             if (current.laptop.operations.some((operation) => operation.of === latest.operationId))
               return refuse("claimed", "Stop was already requested for this download.");
@@ -947,6 +1135,7 @@ export function createInstallPlanCoordinator(options: {
             requestedAt: now(),
             ...(of === undefined ? {} : { of }),
             ...(review === undefined ? {} : { review }),
+            ...(prebinding === undefined ? {} : { prebinding }),
             result: { status: action === "stop" ? "stop-requested" : "running", at: now() },
           };
           save({
@@ -1071,10 +1260,11 @@ export function createInstallPlanCoordinator(options: {
             evidence.environmentId === environmentId &&
             (evidence.committedTransactionId !== undefined ||
               ordinaryProof(evidence) !== undefined) &&
-            !evidence.activationBlocked &&
+            !verificationBlocked(evidence) &&
             evidence.activeSource === req.target.sourceSha &&
             evidence.activeTree === req.target.sourceTree;
-          if (
+          if (plan?.laptop.gatePause === true) refuse("gate-closed", PAUSED_GATE_MESSAGE);
+          else if (
             plan !== null &&
             (req.target.laptopArtifactId !== undefined || !canSupersede(plan) || pendingLaptop())
           )
@@ -1144,6 +1334,8 @@ export function createInstallPlanCoordinator(options: {
               });
             }
             if (extras.refused === undefined) {
+              const beforeStart = document;
+              const beforeDispositions = dispositions;
               dispositions = { ...dispositions, targets };
               document = {
                 ...document,
@@ -1155,8 +1347,8 @@ export function createInstallPlanCoordinator(options: {
                 await recordLaptop(req.laptop.action, req.laptop.review);
               // A refused first action must not leave a newly created plan or disposition behind.
               if (extras.refused !== undefined) {
-                document = snapshot.document;
-                dispositions = snapshot.dispositions;
+                document = beforeStart;
+                dispositions = beforeDispositions;
                 plan = document.current;
               }
             }
@@ -1287,7 +1479,7 @@ export function createInstallPlanCoordinator(options: {
                 };
               }
             }
-          } else await recordLaptop(req.action, req.review);
+          } else await recordLaptop(req.action, req.review, req.operationId);
         } else if (req.type === "close-after-manual-install") {
           const review = manualCloseReview(plan, evidence);
           const selected = plan.devices.filter((device) => device.membership === "selected");
@@ -1550,11 +1742,10 @@ export function createInstallPlanCoordinator(options: {
                 (operation.receipt !== undefined &&
                   !validateReceipt(operation.receipt, proof.receipt)) ||
                 (proof.receipt.staged !== undefined &&
-                  proof.receipt.staged.sourceTree !== plan!.target.sourceTree) ||
-                (proof.receipt.stop !== undefined &&
-                  proof.receipt.stop.stopId !== operation.stop?.stopId)
+                  proof.receipt.staged.sourceTree !== plan!.target.sourceTree)
               )
                 refuse("invalid-evidence", "The target receipt does not match this operation.");
+              // The target owns its Stop receipt. The local Stop lease remains separate.
               else if (!same(operation.receipt, proof.receipt))
                 replaceOperation(deviceIndex, index, { ...operation, receipt: proof.receipt });
             } else if (operation.request.kind !== "plan-directive")
@@ -1614,8 +1805,12 @@ export function createInstallPlanCoordinator(options: {
             const previous = pending ?? device.operations.at(-1);
             if (["directive", "download", "install"].includes(req.step) && !gateOpen)
               refuse(
-                plan.laptop.gateClosed === undefined ? "gate-closed" : "laptop-changed",
-                "Laptop verification no longer grants this action.",
+                plan.laptop.gateClosed === undefined || plan.laptop.gatePause === true
+                  ? "gate-closed"
+                  : "laptop-changed",
+                plan.laptop.gatePause === true
+                  ? PAUSED_GATE_MESSAGE
+                  : "Laptop verification no longer grants this action.",
               );
             else if (req.step === "stop" || req.step === "fence") {
               if (targeted === undefined || targeted.request.kind !== "operation-start")
@@ -1947,6 +2142,9 @@ export function createInstallPlanCoordinator(options: {
   };
   return {
     request,
+    dispose: () => {
+      disposed = true;
+    },
     recordLaptopAdmission: async (operationId: string): Promise<void> => {
       await nativeChange((plan) => {
         const operation = plan.laptop.operations.find(
@@ -2004,37 +2202,58 @@ export function createInstallPlanCoordinator(options: {
       }, true);
     },
     bindLaptopInstall: async (binding: LaptopInstallBinding): Promise<void> => {
-      await nativeChange((plan) => {
+      await nativeChange((plan, evidence) => {
         const operation = plan.laptop.operations.find(
           (entry) => entry.operationId === binding.operationId && entry.step === "install",
         );
+        const previous = plan.laptop.binding;
         if (
+          disposed ||
+          !active.has(binding.operationId) ||
           operation === undefined ||
           !localPending(operation) ||
           operation.review?.stagedHandle !== binding.stagedHandle ||
           binding.targetSource !== plan.target.sourceSha ||
           binding.targetTree !== plan.target.sourceTree ||
           !/^[a-f0-9]{64}$/.test(binding.transactionId) ||
-          !binding.fromGeneration ||
-          (plan.laptop.binding !== undefined &&
-            plan.laptop.binding.operationId === binding.operationId &&
-            !same({ ...binding, boundAt: plan.laptop.binding.boundAt }, plan.laptop.binding)) ||
-          (plan.laptop.binding !== undefined &&
-            plan.laptop.binding.operationId !== binding.operationId &&
-            plan.laptop.operations.some(
-              (entry) =>
-                entry.operationId === plan.laptop.binding!.operationId && localPending(entry),
-            ))
+          !binding.fromGeneration
         )
           throw new Error("The native install does not match its plan review.");
-        return plan.laptop.binding?.operationId === binding.operationId
-          ? plan
-          : {
-              ...plan,
-              revision: plan.revision + 1,
-              laptop: { ...plan.laptop, binding: { ...binding, boundAt: now() } },
-            };
+        if (previous?.operationId === binding.operationId) {
+          if (
+            operation.prebinding !== undefined ||
+            !same({ ...binding, boundAt: previous.boundAt }, previous)
+          )
+            throw new Error("The native install binding changed.");
+          return plan;
+        }
+        const priorOperation = plan.laptop.operations.find(
+          (entry) => entry.operationId === previous?.operationId,
+        );
+        if (
+          operation.prebinding?.fromGeneration !== binding.fromGeneration ||
+          operation.worker !== undefined ||
+          (previous !== undefined &&
+            (priorOperation === undefined || localPending(priorOperation))) ||
+          !matchesPrebinding(plan, operation, evidence)
+        )
+          throw new Error("The native install no longer matches its reserved Laptop preimage.");
+
+        const { prebinding: _reservation, ...bound } = operation;
+        return {
+          ...plan,
+          revision: plan.revision + 1,
+          laptop: {
+            ...plan.laptop,
+            operations: plan.laptop.operations.map((entry) =>
+              entry === operation ? bound : entry,
+            ),
+            binding: { ...binding, boundAt: now() },
+          },
+        };
       }, true);
+      // Shutdown can race the journal write. A durable binding still needs native readback.
+      if (disposed) throw new Error("The native install plan coordinator is closing.");
     },
     recordLaptopOutcome: async (outcome: LaptopNativeOutcome): Promise<void> => {
       await nativeChange(
@@ -2050,10 +2269,14 @@ export function createInstallPlanCoordinator(options: {
           const rolledBack =
             outcome.status === "rolled-back" && outcome.activeGeneration === binding.fromGeneration;
           const status = committed ? "committed" : rolledBack ? "rolled-back" : "held";
+          const closeGate =
+            outcome.status === "rolled-back" &&
+            plan.laptop.gate !== undefined &&
+            (plan.laptop.gateClosed === undefined || plan.laptop.gatePause === true);
           const operation = plan.laptop.operations.find(
             (entry) => entry.operationId === binding.operationId,
           );
-          if (operation?.result?.status === status) return plan;
+          if (operation?.result?.status === status && !closeGate) return plan;
           const next = {
             ...plan,
             revision: plan.revision + 1,
@@ -2073,14 +2296,12 @@ export function createInstallPlanCoordinator(options: {
               ),
             },
           } satisfies JonesInstallPlan;
-          return outcome.status === "rolled-back" &&
-            next.laptop.gate !== undefined &&
-            next.laptop.gateClosed === undefined
-            ? {
-                ...next,
-                laptop: { ...next.laptop, gateClosed: { at: now(), reason: "rolled-back" } },
-              }
-            : next;
+          if (!closeGate) return next;
+          const { gatePause: _pause, ...laptop } = next.laptop;
+          return {
+            ...next,
+            laptop: { ...laptop, gateClosed: { at: now(), reason: "rolled-back" } },
+          };
         },
         false,
         true,
@@ -2089,6 +2310,7 @@ export function createInstallPlanCoordinator(options: {
     withUnmanagedTarget: async <A>(sourceSha: string, work: () => Promise<A>): Promise<A> =>
       transact(async (snapshot) => {
         if (
+          disposed ||
           snapshot.readOnly !== undefined ||
           snapshot.dispositions.targets.some((target) => target.targetSource === sourceSha)
         )
@@ -2099,6 +2321,7 @@ export function createInstallPlanCoordinator(options: {
       transact(async (snapshot) => ({
         ...snapshot,
         result:
+          disposed ||
           snapshot.readOnly !== undefined ||
           cancelledLaptopPending(snapshot.document.last) ||
           snapshot.document.current?.laptop.operations.some(
@@ -2109,6 +2332,7 @@ export function createInstallPlanCoordinator(options: {
       transact(async (snapshot) => ({
         ...snapshot,
         result:
+          disposed ||
           snapshot.readOnly !== undefined ||
           snapshot.dispositions.targets.some((target) => target.targetSource === sourceSha),
       })),
@@ -2116,6 +2340,7 @@ export function createInstallPlanCoordinator(options: {
       transact(async (snapshot) => ({
         ...snapshot,
         result:
+          disposed ||
           snapshot.readOnly !== undefined ||
           cancelledLaptopPending(snapshot.document.last) ||
           snapshot.dispositions.targets.some(

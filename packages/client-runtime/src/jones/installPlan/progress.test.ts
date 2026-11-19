@@ -4,7 +4,7 @@ import { EnvironmentId } from "@t3tools/contracts";
 import type { JonesInstallPlanState } from "@t3tools/contracts/jones/installPlan";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateProgress, JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
-import { startPlan } from "./model.ts";
+import { startPlan, validateReceipt } from "./model.ts";
 import { installPlanPresentation, planSummary } from "./presentation.ts";
 import {
   hostElapsedMs,
@@ -280,6 +280,86 @@ describe("plan rows with progress", () => {
     const old = row(live());
     expect(old.rows[0]!.progress).toBeUndefined();
     expect(old.rows[0]!.text).toBe("Installing · restarting");
+  });
+
+  it("shows the exact target running during an unconfirmed step 5 and prefers the late receipt", () => {
+    const warning = progress({
+      phase: "failed",
+      stepIndex: 5,
+      error: { code: "outcome-unavailable", message: "The launcher reported no outcome." },
+    });
+    const runningSource = { repository: base.target.repository, sha: source, tree };
+    const liveTarget = { ...live(warning), installedSource: runningSource, currentVersion: "new" };
+    const unresolved = { ...receipt, code: "launcher-unconfirmed" };
+    for (const pending of [receipt, unresolved, { ...unresolved, code: "launcher-unreadable" }]) {
+      const view = row(liveTarget, state(pending));
+      expect(view.rows[0]).toMatchObject({
+        text: "Install outcome unconfirmed · step 5 of 7",
+        sourceText: "Running the selected source",
+        targetBuildRunning: true,
+        launcherOutcomeUnconfirmed: true,
+        settled: false,
+        progress: { active: false, outcomeUnconfirmed: true, error: warning.error },
+        actions: { install: false, end: false, abandon: false, checkAgain: true },
+      });
+      expect(view.rows[0]?.progress?.steps[4]?.status).toBe("unconfirmed");
+      expect(view.rows[0]?.activeWork).toBeUndefined();
+      expect(view.headerDoneVisible).toBe(false);
+    }
+    const wrongTree = { ...liveTarget, installedSource: { ...runningSource, tree: source } };
+    expect(row(wrongTree, state(unresolved)).rows[0]?.sourceText).toBeUndefined();
+    expect(row(live(warning), state(unresolved)).rows[0]?.sourceText).toBeUndefined();
+    const restarted = live(progress({ phase: "install", stepIndex: 6 }));
+    expect(row(restarted, state(unresolved)).rows[0]).toMatchObject({
+      text: "Install outcome unconfirmed",
+      activeWork: undefined,
+    });
+
+    const committed: JonesOperationReceipt = {
+      ...receipt,
+      phase: "completed",
+      updateId: operationId,
+      updatedAt: iso(110),
+      outcome: { status: "committed", fromVersion: "old", targetVersion: "new" },
+    };
+    expect(validateReceipt(unresolved, committed)).toBe(true);
+    const finished = row(liveTarget, state(committed));
+    expect(finished.rows[0]).toMatchObject({
+      text: "Updated · verified",
+      settled: true,
+      launcherOutcomeUnconfirmed: false,
+    });
+    expect(finished.rows[0]?.progress).toBeUndefined();
+    const rolledBack: JonesOperationReceipt = {
+      ...committed,
+      phase: "rolled-back",
+      outcome: { ...committed.outcome!, status: "rolled-back" },
+    };
+    expect(validateReceipt(unresolved, rolledBack)).toBe(true);
+    expect(row(live(warning), state(rolledBack)).rows[0]).toMatchObject({
+      text: "Rolled back",
+      settled: true,
+      launcherOutcomeUnconfirmed: false,
+    });
+  });
+
+  it("offers Stop only when the live transfer belongs to the displayed operation", () => {
+    const transfer: JonesOperationReceipt = {
+      ...receipt,
+      action: { kind: "download-exact", targetSource: source },
+    };
+    const native = state(transfer, "download");
+    expect(row({ ...live(), operation: transfer }, native).rows[0]?.actions.stop).toBe(true);
+    expect(row(live(), native).rows[0]?.actions.stop).toBe(false);
+    expect(
+      row(
+        {
+          ...live(),
+          operation: { ...transfer, operationId: "44444444-4444-4444-8444-444444444444" },
+        },
+        native,
+      ).rows[0]?.actions.stop,
+    ).toBe(false);
   });
 
   it("never offers install for a staged build that is already running", () => {

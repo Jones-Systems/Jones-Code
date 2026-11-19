@@ -1,5 +1,8 @@
 import type { JonesUpdateState } from "@t3tools/contracts";
 
+/** Receipt read support is independent of the advertised operation admission capability. */
+export const JONES_OPERATION_RECEIPTS_HEADER = "x-jones-operation-receipts";
+
 /** Advertise only operations accepted by the qualified native staging/install guards. */
 export function qualifiedServerCapability(input: {
   readonly supported: boolean;
@@ -12,18 +15,12 @@ export function qualifiedServerCapability(input: {
   readonly hasStage: boolean;
   readonly hasInstall: boolean;
   readonly hasEnvironment: boolean;
-  readonly restoreFailed: boolean;
 }): JonesUpdateState["capability"] {
   const check = input.supported && input.qualifiedRuntime;
   const launcherReady = input.launcherManaged && input.hasCurrentVersion;
   const download = check && launcherReady && input.qualifiedStaging && input.hasStage;
   const install =
-    check &&
-    launcherReady &&
-    input.qualifiedUpdates &&
-    input.hasInstall &&
-    input.hasEnvironment &&
-    !input.restoreFailed;
+    check && launcherReady && input.qualifiedUpdates && input.hasInstall && input.hasEnvironment;
   return {
     check,
     download,

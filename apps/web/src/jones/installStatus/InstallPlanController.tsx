@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import {
   advanceInstallPlan,
+  supportsInstallPlanMutations,
   type InstallPlanDriver,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { useEnvironments } from "../../state/environments";
@@ -8,7 +9,12 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentSession } from "../../state/session";
 import { jonesUpdates } from "../updates/jonesUpdates";
 import { installStatusStore, type InstallStatusStore, type InstallStatusDevice } from "./panelUi";
-import { bindInstallPlanServices, requestInstallPlan, type InstallPlanServices } from "./services";
+import {
+  bindInstallPlanServices,
+  currentAuthorizedUpdateStatus,
+  requestInstallPlan,
+  type InstallPlanServices,
+} from "./services";
 import { claimantId, openInstallStatus } from "./entrypoints";
 import { productionInstallPlanServices } from "./production";
 import { startInstallStatusPoller } from "./InstallStatusPoller";
@@ -46,6 +52,10 @@ export function startInstallPlanController(
           devices: store.get().devices.map((d) => (d.environmentId === id ? observed : d)),
         });
       return observed;
+    },
+    canDispatch: (id) => {
+      const status = currentAuthorizedUpdateStatus(services, id);
+      return status !== undefined && supportsInstallPlanMutations(status.capability);
     },
     operation: async (id, request) => {
       const result = await services.operation(id, request);

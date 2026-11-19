@@ -29,6 +29,7 @@ import { ChatHeader } from "../../components/chat/ChatHeader";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
 
 const showHeader = vi.hoisted(() => ({ value: false }));
+const initialActiveOrderKeys = new Map<string, string>();
 vi.mock("~/components/ChatView", () => ({
   default: function TestChatView() {
     const target = useThreadRouteTarget();
@@ -109,6 +110,7 @@ async function withSidebar(
   ];
   const threads = threadIds.map((id) => ({
     ...threadWithHistory(id, 1),
+    activeOrderKey: initialActiveOrderKeys.get(id) ?? null,
     ...(pinnedFixture && !id.startsWith("u")
       ? { pinnedAt: DateTime.makeUnsafe("2026-11-17T12:00:00Z") }
       : {}),
@@ -213,6 +215,7 @@ async function withSidebar(
   };
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
+    boringSidebarEnabled: initialActiveOrderKeys.size > 0,
     sidebarWorkingShelfEnabled: false,
     onboardingCompletedAt: at,
   });
@@ -338,6 +341,23 @@ it("indents real Workstream thread rows by 8 px and leaves Unassigned rows flush
     }
     expect(getComputedStyle(list("Unassigned threads")).paddingLeft).toBe("0px");
     expect(offset("Unassigned threads")).toBeCloseTo(0, 1);
+  });
+});
+
+it("honors saved active order in Workstreams and Unassigned with project folders enabled", async () => {
+  initialActiveOrderKeys.set("a1", "z");
+  initialActiveOrderKeys.set("u1", "z");
+  using _clearOrder = { [Symbol.dispose]: () => initialActiveOrderKeys.clear() };
+  await withSidebar(async ({ rows }) => {
+    await userEvent.click(
+      page.getByRole("button", { name: "Show 2 more threads in alpha", exact: true }),
+    );
+    expect(rows().slice(0, 2)).toEqual(["u2", "u1"]);
+    expect(
+      rows()
+        .filter((id) => id.startsWith("a"))
+        .at(-1),
+    ).toBe("a1");
   });
 });
 

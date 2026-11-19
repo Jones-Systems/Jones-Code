@@ -227,6 +227,7 @@ function run(
 
 export interface FakeThread {
   readonly pinnedAt?: OrchestrationV2ThreadShell["pinnedAt"];
+  readonly activeOrderKey?: OrchestrationV2ThreadShell["activeOrderKey"];
   /** Makes this a side chat of that thread. */
   readonly sideChatOf?: ThreadId;
   /** Makes this an older settled thread the shell leaves out; only its family read returns it. */
@@ -315,6 +316,7 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
   const modelSelection = thread.modelSelection ?? MODEL;
   return {
     ...(thread.pinnedAt === undefined ? {} : { pinnedAt: thread.pinnedAt }),
+    ...(thread.activeOrderKey === undefined ? {} : { activeOrderKey: thread.activeOrderKey }),
     id: thread.id,
     projectId: PROJECT_ID,
     title: thread.title,

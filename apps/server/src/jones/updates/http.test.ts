@@ -38,7 +38,9 @@ import * as JonesUpdates from "./service.ts";
 import { unsupportedTargetOperations } from "./operations/operations.ts";
 import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import * as SourceRelation from "./sourceRelation.ts";
-import { retainStagedSelection } from "./stagedSelection.ts";
+import { retainStagedSelection, selectionPath } from "./stagedSelection.ts";
+import { createOperationLedger } from "./operations/ledger.ts";
+import { JONES_OPERATION_RECEIPTS_HEADER } from "./serverCapability.ts";
 import {
   QUALIFIED_RUNTIME_RECEIPT,
   decodeQualifiedRuntimeReceipt,
@@ -64,9 +66,10 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
     { supported: true, restoreStage: false },
     { supported: false, restoreStage: true },
     { supported: true, restoreStage: true },
+    { supported: true, restoreStage: true, failRestore: true },
   ])(
-    "preserves settlement and plan ownership (capability $supported, restored $restoreStage)",
-    ({ supported, restoreStage }) =>
+    "preserves settlement and plan ownership ($supported, $restoreStage, failed restore $failRestore)",
+    ({ supported, restoreStage, failRestore }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const temporary = yield* fs.makeTempDirectoryScoped({ prefix: "jones-settlement-http-" });
@@ -129,7 +132,7 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
           yield* fs.makeDirectory(payloadDirectory);
           yield* fs.writeFileString(`${payloadDirectory}/t3`, "#!/bin/sh\nexit 0\n");
           yield* fs.chmod(`${payloadDirectory}/t3`, 0o700);
-          yield* Effect.promise(async () => {
+          const selection = yield* Effect.promise(async () => {
             const { protocol: _protocol, payloadSha256: _digest, ...metadata } = installedReceipt;
             const staged = await stageQualifiedRuntime({
               artifact: {
@@ -147,7 +150,9 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
               validate: async () => {},
             });
             await retainStagedSelection(staged);
+            return staged;
           });
+          if (failRestore) yield* fs.writeFileString(selectionPath(selection.binding), "{}");
         }
         const operationId = "11111111-1111-4111-8111-111111111111";
         const input = { operationId, requestId: "22222222-2222-4222-8222-222222222222" };
@@ -164,7 +169,7 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
         yield* Effect.promise(() => reserveUpdateOperation(baseDir, operationId, binding));
         const ledger = `${baseDir}/runtime/jones-update-operations/${operationId}`;
         const failedBytes = JSON.stringify({ schema: 1, operationId, binding, status: "failed" });
-        yield* fs.writeFileString(`${ledger}.outcome.json`, failedBytes);
+        if (!failRestore) yield* fs.writeFileString(`${ledger}.outcome.json`, failedBytes);
         yield* fs.writeFileString(
           `${baseDir}/runtime/service-state.json`,
           JSON.stringify({ protocol: 4, activeVersion: version }),
@@ -198,9 +203,12 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
           Layer.succeed(HostProcess.Platform, "linux"),
           Layer.succeed(HostProcess.Architecture, "x64"),
           Layer.succeed(HostProcess.Arguments, ["synthetic", "unbundled-test.ts"]),
-          Layer.succeed(HostProcess.IsExecutable, false),
+          Layer.succeed(HostProcess.IsExecutable, failRestore === true),
           Layer.mock(SelfUpdate.ServerSelfUpdate)({
             update: () => Effect.die("No install in settlement test"),
+            ...(failRestore
+              ? { installQualified: () => Effect.die("A failed restore must never install") }
+              : {}),
           }),
           Layer.mock(Startup.ServerRuntimeStartup)({}),
           Layer.mock(DesktopReceiver.DesktopTelemetryReceiver)({}),
@@ -213,6 +221,17 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             prepareTrial: () => Effect.undefined,
             prepareQualifiedTrial: () => Effect.die("No trial in settlement test"),
             requestUpdate: () => Effect.die("No install in settlement test"),
+            ...(failRestore
+              ? {
+                  qualifiedOperations: true,
+                  qualifiedRetirement: true,
+                  qualifiedStaging: true,
+                  qualifiedUpdates: true,
+                  qualifiedOutcomes: true,
+                  reconcileUpdate: () => Effect.die("Readback must respect recorded acceptance"),
+                  retireUpdate: () => Effect.die("A failed restore must never retire a stage"),
+                }
+              : {}),
             ...(supported ? { launcherVersion: "0.1.0", qualifiedSettlement: true } : {}),
             get qualifiedStartupOutcome() {
               return latestOutcome;
@@ -255,6 +274,98 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
               }),
           }),
         );
+        if (failRestore) {
+          const targetLedger = createOperationLedger(baseDir);
+          const intent = {
+            operationId,
+            environmentId: EnvironmentId.make(binding.environmentId),
+            expectedInstalledSource: binding.expectedInstalledSource,
+            action: {
+              kind: "install" as const,
+              targetSource: binding.targetSource,
+              stagedHandle: binding.stagedHandle,
+              currentVersion: version,
+            },
+          };
+          yield* Effect.promise(async () => {
+            await targetLedger.accept(intent);
+            await targetLedger.transition(operationId, (r) => ({ ...r, phase: "running" }));
+            await targetLedger.transition(operationId, (r) => ({
+              ...r,
+              phase: "handed-off",
+              updateId: operationId,
+            }));
+          });
+          const provided = JonesUpdates.layer.pipe(Layer.provide(dependencies));
+          const read = { environmentId: intent.environmentId, operationIds: [operationId] };
+          const newInstall = { ...intent, operationId: NodeCrypto.randomUUID() };
+          const outcome = yield* Effect.gen(function* () {
+            const updates = yield* JonesUpdates.JonesUpdates;
+            expect(updates.operationReceiptReadsSupported).toBe(true);
+            expect(updates.fleetOperationsSupported).toBe(false);
+            const state = yield* updates.state();
+            expect(state?.phase).toBe("blocked");
+            expect(state?.message).toContain("staged selection is invalid");
+            expect(state?.capability).toEqual({
+              check: false,
+              download: false,
+              install: false,
+              reason: "blocked",
+              operationReceipts: 1,
+            });
+            const retained = (yield* updates.operationRead(read)).receipts[0]?.receipt;
+            expect(retained).toMatchObject({
+              operationId,
+              updateId: operationId,
+              phase: "handed-off",
+            });
+            expect(yield* updates.operationStart(intent)).toEqual(retained);
+            expect(
+              yield* updates.operationRead({ ...read, operationIds: [newInstall.operationId] }),
+            ).toEqual({ receipts: [{ operationId: newInstall.operationId, receipt: null }] });
+            expect(yield* updates.operationStart(newInstall)).toMatchObject({
+              phase: "refused",
+              code: "unsupported",
+            });
+            const download = yield* updates.operationStart({
+              ...newInstall,
+              operationId: NodeCrypto.randomUUID(),
+              action: { kind: "download-exact", targetSource: binding.targetSource },
+            });
+            expect(download).toMatchObject({ phase: "refused", code: "unsupported" });
+            expect(download.acceptedAt).toBeUndefined();
+            yield* fs.writeFileString(`${ledger}.outcome.json`, failedBytes);
+            const refreshed = yield* updates.operationRead({
+              ...read,
+              refreshInstallOutcome: operationId,
+            });
+            expect(refreshed.receipts[0]?.receipt).toMatchObject({
+              operationId,
+              updateId: operationId,
+              phase: "blocked",
+              outcome: { status: "blocked", fromVersion: version, targetVersion },
+            });
+            return refreshed;
+          }).pipe(Effect.provide(provided));
+          yield* Effect.gen(function* () {
+            const updates = yield* JonesUpdates.JonesUpdates;
+            expect(updates.fleetOperationsSupported).toBe(false);
+            expect((yield* updates.state())?.capability.operationReceipts).toBe(1);
+            expect(yield* updates.operationRead(read)).toEqual(outcome);
+            expect(yield* updates.operationStart(newInstall)).toMatchObject({
+              phase: "refused",
+              code: "unsupported",
+            });
+            yield* fs.writeFileString(
+              `${baseDir}/runtime/jones-operations/${operationId}.json`,
+              "{",
+            );
+            expect(yield* Effect.flip(updates.operationRead(read))).toBeInstanceOf(
+              EnvironmentInternalError,
+            );
+          }).pipe(Effect.provide(provided));
+          return;
+        }
         yield* Effect.gen(function* () {
           const updates = yield* JonesUpdates.JonesUpdates;
           expect((yield* updates.state())?.migrationPlan).toEqual(
@@ -451,6 +562,22 @@ it.layer(NodeServices.layer)("Jones update Release compatibility", (it) => {
               expect(response.status).toBe(200);
               expect(await response.json()).toBeNull();
               expect(response.headers.get("cache-control")).toBe("no-store");
+              const receipt = await app.handler(
+                new Request("http://fixture/api/jones-updates/operations/read", {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    cookie: "synthetic-release-session=fixture",
+                  },
+                  body: JSON.stringify({
+                    environmentId: "synthetic-release-host",
+                    operationIds: ["11111111-1111-4111-8111-111111111111"],
+                  }),
+                }),
+              );
+              expect(receipt.status).toBe(500);
+              expect(receipt.headers.get(JONES_OPERATION_RECEIPTS_HEADER)).toBe("unsupported");
+              expect(await receipt.json()).toMatchObject({ code: "internal_error" });
             }),
           (app) => Effect.promise(() => app.dispose()),
         );
@@ -468,7 +595,12 @@ function fixture(
     source: "jones-actions",
     channel: "jones-main",
     phase: "staged",
-    capability: { check: true, download: true, install: false, reason: "bootstrap-required" },
+    capability: extra.capability ?? {
+      check: true,
+      download: true,
+      install: false,
+      reason: "bootstrap-required",
+    },
     stagedHandle: "11111111-1111-4111-8111-111111111111",
     currentVersion: "0.0.0-preview.20261002.100",
     environmentId: EnvironmentId.make("synthetic-environment"),
@@ -495,9 +627,11 @@ function fixture(
         return unsupportedTargetOperations.fence(input);
       }),
     operationRead: (input) =>
-      Effect.promise(() => {
+      Effect.sync(() => {
         calls.push({ action: "operationRead", input });
-        return unsupportedTargetOperations.read(input);
+        return {
+          receipts: input.operationIds.map((operationId) => ({ operationId, receipt: null })),
+        };
       }),
     abandonStage: (input) =>
       Effect.promise(() => {
@@ -521,6 +655,7 @@ function fixture(
         );
       }),
     fleetOperationsSupported: false,
+    operationReceiptReadsSupported: true,
     refreshPolicy: Effect.undefined,
     retireStagedOperation: () => Effect.succeed({ retired: false }),
     state: (after) => record("state", after),
@@ -967,7 +1102,13 @@ describe("durable operation HTTP scopes", () => {
       ["orchestration:operate"],
       ["orchestration:read", "orchestration:operate"],
     ] as const) {
-      const app = fixture(scopes);
+      const capability = {
+        check: false,
+        download: false,
+        install: false,
+        operationReceipts: 1,
+      } as const;
+      const app = fixture(scopes, { capability });
       try {
         const response = await app.handler(
           new Request("http://fixture/api/jones-updates/operations/read", {
@@ -977,7 +1118,15 @@ describe("durable operation HTTP scopes", () => {
           }),
         );
         expect(response.status).toBe(scopes.length === 2 ? 200 : 403);
+        expect(response.headers.get(JONES_OPERATION_RECEIPTS_HEADER)).toBe(
+          scopes.length === 2 ? "supported" : null,
+        );
         expect(app.calls).toEqual(scopes.length === 2 ? [{ action: "operationRead", input }] : []);
+        if (scopes.some((scope) => scope === "orchestration:read")) {
+          const status = await app.handler(new Request("http://fixture/api/jones-updates"));
+          expect(status.status).toBe(200);
+          expect(await status.json()).toMatchObject({ capability });
+        }
       } finally {
         await app.dispose();
       }

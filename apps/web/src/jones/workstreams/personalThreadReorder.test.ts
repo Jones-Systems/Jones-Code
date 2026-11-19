@@ -140,11 +140,15 @@ describe("planWorkstreamThreadReorder", () => {
       after: false,
     });
     expect(assignments).not.toBeNull();
-    expect(assignments!.map(({ id }) => id)).toEqual(["u3", "u1", "u2"]);
+    expect(assignments!.map(({ id }) => id)).toEqual(["u2", "u1", "u3"]);
     let rows = input.rows;
     for (const { id, orderKey } of assignments!) {
       rows = rows.map((row) => (row.id === id ? { ...row, activeOrderKey: orderKey } : row));
       expect(groupOrder(rows, input.groupIdByKey, "a")).toEqual(["a1", "a2"]);
+      expect(groupOrder(rows, input.groupIdByKey, null).filter((id) => id !== "u3")).toEqual([
+        "u1",
+        "u2",
+      ]);
     }
     expect(groupOrder(rows, input.groupIdByKey, null)).toEqual(["u3", "u1", "u2"]);
   });

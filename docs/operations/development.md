@@ -508,7 +508,8 @@ substitute for Electron/SEA/macOS packaging evidence.
 
 `snapshot.mjs <absolute report> [thread-count]` measures shell capture through the
 file-backed SQLite reader, deferred decode, schema projection, synchronous JSON
-encoding and compression separately. The synthetic database lives in scoped scratch.
+encoding and asynchronous WebSocket deflate separately. Each window measures
+compression with a fresh context. The synthetic database lives in scoped scratch.
 Only measured contiguous encoding or qualified decode/projection/loop attribution
 activates a snapshot-offload follow-up. A payload-size guess does not activate it.
 

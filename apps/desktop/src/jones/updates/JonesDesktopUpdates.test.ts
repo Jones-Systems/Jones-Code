@@ -337,6 +337,7 @@ function planControllerFixture(
     readonly persisted?: PlanSnapshot;
     readonly workerAbsent?: () => boolean;
     readonly beforeWorkerRecord?: (snapshot: PlanSnapshot) => Promise<void>;
+    readonly track?: Parameters<typeof createInstallPlanCoordinator>[0]["track"];
   } = {},
 ) {
   let snapshot: PlanSnapshot = structuredClone(
@@ -383,7 +384,7 @@ function planControllerFixture(
     store,
     controller,
     localEnvironmentId: () => EnvironmentId.make(f.active.environmentId),
-    track: (work) => work(),
+    track: options.track ?? ((work) => work()),
     broadcast: () => {},
     now: () => Date.parse("2026-10-02T00:00:00Z"),
     uuid: () => NodeCrypto.randomUUID(),
@@ -2500,6 +2501,300 @@ it("exposes Laptop proof only for the validated resumed journal and exact active
   }
 });
 
+it("reads ordinary Laptop evidence with a restored stage without launching startup inspection", async () => {
+  const f = await fixture();
+  try {
+    await f.controller.configure();
+    await f.controller.check();
+    await f.controller.download();
+    const manifestRaw = await NodeFSP.readFile(f.controller.manifestPath, "utf8");
+    const manifest = compiledIncomingSchema13(JSON.parse(manifestRaw));
+    const h = planControllerFixture(f, {
+      ordinaryRecoveryReadiness: async () => ({
+        owner: {
+          assertCurrent: () => {},
+          binding: {
+            ...manifest,
+            manifestSha256: NodeCrypto.createHash("sha256")
+              .update(JSON.stringify(JSON.parse(manifestRaw)))
+              .digest("hex"),
+          },
+        },
+        backendPid: 4242,
+        run: {},
+      }),
+    });
+    await h.controller.configure();
+    expect(h.controller.stagedBuild?.handle).toBe(handle);
+    const native = vi.mocked(NodeChildProcess.execFile);
+    const commandCount = native.mock.calls.length;
+    const read = await h.coordinator.request({ type: "read" });
+    expect(read.state.current).toBeNull();
+    expect(read.state.laptop.startupInspectionComplete).toBeUndefined();
+    expect(native).toHaveBeenCalledTimes(commandCount);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("proves Laptop startup only after stage hydration and a fresh native inspection of the same owner", async () => {
+  const f = await fixture();
+  const native = vi.mocked(NodeChildProcess.execFile);
+  const hydrating = Promise.withResolvers<void>();
+  const hydrated = Promise.withResolvers<void>();
+  try {
+    await f.controller.configure();
+    await f.controller.check();
+    await f.controller.download();
+    const manifestRaw = await NodeFSP.readFile(f.controller.manifestPath, "utf8");
+    const sha256 = (raw: string) => NodeCrypto.createHash("sha256").update(raw).digest("hex");
+    const { home, databasePath, profile, environmentId, version, sourceSha, sourceTree } = f.active;
+    const owner = {
+      assertCurrent: vi.fn(),
+      binding: {
+        home,
+        databasePath,
+        profile,
+        environmentId,
+        version,
+        sourceSha,
+        sourceTree,
+        manifestSha256: sha256(JSON.stringify(JSON.parse(manifestRaw))),
+      },
+    };
+    const ready = { owner, backendPid: 4242, run: {} };
+    const readiness = vi.fn(async () => ready);
+    const controller = new JonesDesktopUpdateController({
+      ...f.options,
+      ordinaryRecoveryReadiness: readiness,
+      validateArtifact: async (path) => {
+        hydrating.resolve();
+        await hydrated.promise;
+        return f.options.validateArtifact!(path);
+      },
+    });
+    const preimage = {
+      environmentId: EnvironmentId.make(environmentId),
+      fromGeneration: f.active.generation,
+      fromSource: sourceSha,
+      fromTree: sourceTree,
+      currentVersion: version,
+      stagedHandle: handle,
+      targetSource: candidate.source,
+      targetTree: candidate.tree,
+    };
+    const inspect = () => controller.laptopEvidence(preimage);
+    let selection: string | undefined;
+    let status = "settled";
+    native.mockClear();
+    native.mockImplementation((_command, args, _options, callback) => {
+      if (typeof callback !== "function") throw new Error("Missing callback.");
+      expect(args?.slice(1, 7)).toEqual([
+        "--manifest",
+        controller.manifestPath,
+        "--inspect-laptop-startup",
+        handle,
+        "--manifest-sha256",
+        sha256(manifestRaw),
+      ]);
+      selection = args?.[8];
+      const selectionMatches = args?.[10] === sha256(NodeFS.readFileSync(selection!, "utf8"));
+      callback(
+        null,
+        JSON.stringify({
+          protocol: 1,
+          operation: "inspect-laptop-startup",
+          status: selectionMatches ? status : "refused",
+          manifestSha256: args?.[6],
+          selectionSha256: args?.[10],
+        }),
+        "",
+      );
+      return new NodeChildProcess.ChildProcess();
+    });
+    const configuring = controller.configure();
+    await hydrating.promise;
+    try {
+      expect((await inspect()).startupInspectionComplete).toBeUndefined();
+      expect(native).not.toHaveBeenCalled();
+    } finally {
+      hydrated.resolve();
+      await configuring;
+    }
+    expect(controller.stagedBuild?.handle).toBe(handle);
+    for (const changed of [
+      { stagedHandle: "different-stage" },
+      { fromGeneration: "different-generation" },
+    ]) {
+      const evidence = await controller.laptopEvidence({ ...preimage, ...changed });
+      expect(evidence.startupInspectionComplete).toBeUndefined();
+    }
+    expect(native).not.toHaveBeenCalled();
+    expect(await inspect()).toMatchObject({
+      activationBlocked: false,
+      startupInspectionComplete: true,
+      activeGeneration: f.active.generation,
+      activeSource: f.active.sourceSha,
+      activeTree: f.active.sourceTree,
+    });
+    status = "refused";
+    expect((await inspect()).startupInspectionComplete).toBeUndefined();
+    status = "settled";
+    readiness.mockResolvedValueOnce(ready).mockResolvedValueOnce({ ...ready, run: {} });
+    expect((await inspect()).startupInspectionComplete).toBeUndefined();
+    if (selection === undefined) throw new Error("Missing inspected stage selection.");
+    const previousSelection = await NodeFSP.readFile(selection, "utf8");
+    await NodeFSP.writeFile(
+      selection,
+      JSON.stringify({ ...JSON.parse(previousSelection), artifactDirectory: "another-artifact" }),
+    );
+    expect((await inspect()).startupInspectionComplete).toBeUndefined();
+    await NodeFSP.writeFile(selection, previousSelection);
+    await NodeFSP.writeFile(
+      controller.manifestPath,
+      JSON.stringify({ ...f.active, generation: "another-generation" }),
+    );
+    expect((await inspect()).startupInspectionComplete).toBeUndefined();
+  } finally {
+    native.mockReset();
+    await f.cleanup();
+  }
+});
+
+it.each([
+  "pre-effect",
+  "running",
+  "blocked",
+  "different-intent",
+  "different-manifest",
+  "signal",
+] as const)(
+  "only suggests reopening after the current helper exits with exact pre-effect evidence (%s)",
+  async (outcome) => {
+    const f = await fixture();
+    const native = vi.mocked(NodeChildProcess.execFile);
+    const spawn = vi.mocked(NodeChildProcess.spawn);
+    const preflight = vi.mocked(preflightJonesCandidateStartupGate);
+    const plan = { bindLaptopInstall: vi.fn(async () => {}), recordLaptopOutcome: vi.fn() };
+    try {
+      const controller = new JonesDesktopUpdateController({
+        ...f.options,
+        plan,
+        prepareNative: async (stagedHandle, transactionId) => {
+          await NodeFSP.writeFile(
+            NodePath.join(
+              controller.updaterRoot,
+              "transactions",
+              transactionId,
+              "continuation.json",
+            ),
+            JSON.stringify({
+              prepared: true,
+              preparationClaimProtocol: 3,
+              stagedHandle,
+              transactionId,
+            }),
+          );
+        },
+      });
+      await controller.configure();
+      await controller.check();
+      await controller.download();
+      preflight.mockResolvedValueOnce(undefined);
+      let intentPath = "";
+      native.mockImplementation((_command, args, _options, callback) => {
+        if (typeof callback !== "function") throw new Error("Missing callback.");
+        if (args?.[0] === "--version") callback(null, "Python 3", "");
+        else if (args?.[3] === "--claim-preparation") {
+          expect(plan.bindLaptopInstall).toHaveBeenCalledOnce();
+          callback(null, claimedPreparation(f.home, args[6]), "");
+        } else {
+          expect(args?.[3]).toBe("--claim-activation");
+          const requestPath = String(args?.[4]);
+          const tx = NodePath.dirname(requestPath);
+          intentPath = NodePath.join(tx, "intent.json");
+          NodeFS.copyFileSync(requestPath, intentPath);
+          callback(
+            null,
+            JSON.stringify({
+              protocol: 1,
+              operation: "claim-activation",
+              handle,
+              transactionId: NodePath.basename(tx),
+              status: "claimed",
+              intentPath,
+            }),
+            "",
+          );
+        }
+        return new NodeChildProcess.ChildProcess();
+      });
+      const child = new NodeChildProcess.ChildProcess();
+      spawn.mockImplementation(() => {
+        queueMicrotask(() => child.emit("spawn"));
+        return child;
+      });
+      const operationId = "11111111-1111-4111-8111-111111111111";
+      expect(await controller.install(handle, undefined, { operationId })).toMatchObject({
+        accepted: true,
+        completed: false,
+      });
+      expect((await controller.laptopEvidence()).reopenToCheckInstall).toBeUndefined();
+      const intent = JSON.parse(await NodeFSP.readFile(intentPath, "utf8"));
+      const journal = {
+        intent: outcome === "different-intent" ? { ...intent, listener: "other-listener" } : intent,
+        phase: outcome === "blocked" ? "blocked" : "rolled-back",
+        preEffect: {
+          phase: "intent",
+          step: "storage",
+          reason: "preparation-failed",
+          relaunch: "skipped",
+        },
+      };
+      const journalPath = NodePath.join(NodePath.dirname(intentPath), "journal.json");
+      const journalRaw = JSON.stringify(journal);
+      await NodeFSP.writeFile(journalPath, journalRaw, { mode: 0o600 });
+      if (outcome === "different-manifest")
+        await NodeFSP.writeFile(
+          controller.manifestPath,
+          JSON.stringify({ ...f.active, generation: "changed" }),
+        );
+      if (outcome === "signal") child.emit("exit", null, "SIGKILL");
+      else if (outcome !== "running") child.emit("exit", 0, null);
+      const evidence = await controller.laptopEvidence();
+      expect(evidence.activationBlocked).toBe(true);
+      expect(evidence.startupInspectionComplete).toBeUndefined();
+      expect(evidence.reopenToCheckInstall).toBe(outcome === "pre-effect" ? true : undefined);
+      expect(controller.state.jones?.outcome).toBeUndefined();
+      expect(plan.recordLaptopOutcome).not.toHaveBeenCalled();
+      if (outcome !== "pre-effect") return;
+
+      const commandCount = native.mock.calls.length;
+      await controller.check();
+      expect(native).toHaveBeenCalledTimes(commandCount);
+      expect((await controller.laptopEvidence()).reopenToCheckInstall).toBe(true);
+      expect(plan.recordLaptopOutcome).not.toHaveBeenCalled();
+      expect(await NodeFSP.readFile(journalPath, "utf8")).toBe(journalRaw);
+      const reopened = new JonesDesktopUpdateController({ ...f.options, plan });
+      await reopened.configure();
+      expect((await reopened.laptopEvidence()).reopenToCheckInstall).toBeUndefined();
+      expect(reopened.state.jones?.outcome?.status).toBe("rolled-back");
+      expect(plan.recordLaptopOutcome).toHaveBeenCalledExactlyOnceWith({
+        transactionId: intent.transactionId,
+        status: "rolled-back",
+        activeGeneration: f.active.generation,
+        activeSource: f.active.sourceSha,
+        activeTree: f.active.sourceTree,
+      });
+    } finally {
+      preflight.mockReset();
+      native.mockReset();
+      spawn.mockReset();
+      await f.cleanup();
+    }
+  },
+);
+
 it("defers trial startup until the same generation has a resumed receipt and active manifest", async () => {
   const f = await fixture(true, "committed");
   try {
@@ -2731,60 +3026,66 @@ it("proves an exact retired A-to-B preparation on receiving C and refuses change
 
 const compiledIncomingSchema13 = Schema.decodeUnknownSync(JonesActiveInstall);
 
+async function manualLaptopFixture(f: Awaited<ReturnType<typeof fixture>>) {
+  await f.controller.configure();
+  const installed = compiledIncomingSchema13(
+    JSON.parse(await NodeFSP.readFile(f.controller.manifestPath, "utf8")),
+  );
+  const active = { ...installed, generation: handle, transactionId: `manual-${handle}` };
+  const manifestRaw = JSON.stringify(active);
+  await NodeFSP.writeFile(f.controller.manifestPath, manifestRaw);
+  await NodeFSP.chmod(f.controller.manifestPath, 0o600);
+  const receiptPath = NodePath.join(
+    f.home,
+    "runtime",
+    "jones-manual-installs",
+    handle,
+    "receipt.json",
+  );
+  await NodeFSP.mkdir(NodePath.dirname(receiptPath), { recursive: true, mode: 0o700 });
+  const candidate = {
+    appPath: "/retained-stage.app",
+    executablePath: "/retained-stage.app/Jones",
+    sourceSha: active.sourceSha,
+    sourceTree: active.sourceTree,
+    version: active.version,
+    appDigest: active.appDigest,
+    bundleIdentifier: active.bundleIdentifier,
+  };
+  const receipt = {
+    protocol: 1,
+    operation: "manual-install",
+    phase: "launched",
+    automaticContinuationRequested: false,
+    transactionId: handle,
+    nextActive: active,
+    candidate,
+    process: { pid: 999999 },
+  };
+  const receiptRaw = JSON.stringify(receipt);
+  await NodeFSP.writeFile(receiptPath, receiptRaw, { mode: 0o600 });
+  const hash = (raw: string) => NodeCrypto.createHash("sha256").update(raw).digest("hex");
+  const owner = {
+    assertCurrent: vi.fn(),
+    binding: {
+      home: active.home,
+      databasePath: active.databasePath,
+      profile: active.profile,
+      environmentId: active.environmentId,
+      version: active.version,
+      sourceSha: active.sourceSha,
+      sourceTree: active.sourceTree,
+      manifestSha256: hash(manifestRaw),
+    },
+  };
+  return { active, manifestRaw, receiptPath, receipt, receiptRaw, candidate, hash, owner };
+}
+
 it("proves ordinary recovery only with the exact manual receipt, current owner and same ready run", async () => {
   const f = await fixture();
   try {
-    await f.controller.configure();
-    const installed = compiledIncomingSchema13(
-      JSON.parse(await NodeFSP.readFile(f.controller.manifestPath, "utf8")),
-    );
-    const active = { ...installed, generation: handle, transactionId: `manual-${handle}` };
-    const manifestRaw = JSON.stringify(active);
-    await NodeFSP.writeFile(f.controller.manifestPath, manifestRaw);
-    await NodeFSP.chmod(f.controller.manifestPath, 0o600);
-    const receiptPath = NodePath.join(
-      f.home,
-      "runtime",
-      "jones-manual-installs",
-      handle,
-      "receipt.json",
-    );
-    await NodeFSP.mkdir(NodePath.dirname(receiptPath), { recursive: true, mode: 0o700 });
-    const candidate = {
-      appPath: "/retained-stage.app",
-      executablePath: "/retained-stage.app/Jones",
-      sourceSha: active.sourceSha,
-      sourceTree: active.sourceTree,
-      version: active.version,
-      appDigest: active.appDigest,
-      bundleIdentifier: active.bundleIdentifier,
-    };
-    const receipt = {
-      protocol: 1,
-      operation: "manual-install",
-      phase: "launched",
-      automaticContinuationRequested: false,
-      transactionId: handle,
-      nextActive: active,
-      candidate,
-      process: { pid: 999999 },
-    };
-    const receiptRaw = JSON.stringify(receipt);
-    await NodeFSP.writeFile(receiptPath, receiptRaw, { mode: 0o600 });
-    const hash = (raw: string) => NodeCrypto.createHash("sha256").update(raw).digest("hex");
-    const owner = {
-      assertCurrent: vi.fn(),
-      binding: {
-        home: active.home,
-        databasePath: active.databasePath,
-        profile: active.profile,
-        environmentId: active.environmentId,
-        version: active.version,
-        sourceSha: active.sourceSha,
-        sourceTree: active.sourceTree,
-        manifestSha256: hash(manifestRaw),
-      },
-    };
+    const { active, manifestRaw, receiptPath, receipt, receiptRaw, candidate, hash, owner } =
+      await manualLaptopFixture(f);
     type Ready = Awaited<
       ReturnType<NonNullable<JonesDesktopUpdateOptions["ordinaryRecoveryReadiness"]>>
     >;
@@ -2847,6 +3148,143 @@ it("proves ordinary recovery only with the exact manual receipt, current owner a
     expect((await controller.laptopEvidence()).ordinaryRecovery).toBeUndefined();
     expect((await controller.laptopEvidence()).ordinaryRecovery).toBeDefined();
   } finally {
+    await f.cleanup();
+  }
+});
+
+it("keeps a paused rollout fenced when the ready owner and backend change during startup inspection", async () => {
+  const f = await fixture();
+  const native = vi.mocked(NodeChildProcess.execFile);
+  const dispatch = Promise.withResolvers<void>();
+  const dispatched = Promise.withResolvers<void>();
+  try {
+    const { active, owner } = await manualLaptopFixture(f);
+    const ready = { owner, backendPid: 4242, run: {} };
+    let readiness: typeof ready | undefined = ready;
+    const stagedCandidate = { ...candidate, source: active.sourceSha, tree: active.sourceTree };
+    const options: Partial<JonesDesktopUpdateOptions> = {
+      activeGeneration: active.generation,
+      client: {
+        ...f.options.client!,
+        check: async () => ({ state: "available", candidate: stagedCandidate }),
+      },
+      ordinaryRecoveryReadiness: async () => readiness,
+    };
+    const original = planControllerFixture(f, options, {
+      track: async (work) => {
+        try {
+          await dispatch.promise;
+          return await work();
+        } finally {
+          dispatched.resolve();
+        }
+      },
+    });
+    await original.controller.configure();
+    await original.controller.check();
+    expect(await original.controller.download()).toMatchObject({ completed: true });
+    const device = EnvironmentId.make("remote-device");
+    const started = await original.coordinator.request({
+      type: "start",
+      origin: "update-button",
+      target: {
+        repository: stagedCandidate.repository,
+        sourceSha: stagedCandidate.source,
+        sourceTree: stagedCandidate.tree,
+        version: stagedCandidate.version,
+      },
+      select: [{ environmentId: device, label: "Device", route: "operations" }],
+      laptop: {
+        action: "install",
+        review: {
+          stagedHandle: handle,
+          targetSource: stagedCandidate.source,
+          currentVersion: active.version,
+          expectedInstalledSource: active.sourceSha,
+          reviewedAt: "2026-10-02T00:00:00Z",
+        },
+      },
+    });
+    expect(started.refused).toBeUndefined();
+    const plan = started.state.current!;
+    expect(plan.laptop.gate?.verificationKind).toBe("ordinary-recovery");
+    expect(plan.laptop.operations[0]?.prebinding?.stagedHandle).toBe(handle);
+    original.coordinator.dispose();
+    dispatch.resolve();
+    await dispatched.promise;
+
+    readiness = undefined;
+    const restarted = planControllerFixture(f, options, { persisted: original.persisted() });
+    await restarted.controller.configure();
+    const paused = await restarted.coordinator.request({ type: "read" });
+    expect(paused.state.current?.laptop.gatePause).toBe(true);
+    expect(paused.state.current?.laptop.operations[0]?.result?.status).toBe("held");
+
+    const inspecting = Promise.withResolvers<() => void>();
+    let delayInspection = true;
+    native.mockImplementation((_command, args, _options, callback) => {
+      if (typeof callback !== "function" || !args?.includes("--inspect-laptop-startup"))
+        throw new Error("Expected only the scoped startup inspection.");
+      const reply = () =>
+        callback(
+          null,
+          JSON.stringify({
+            protocol: 1,
+            operation: "inspect-laptop-startup",
+            status: "settled",
+            manifestSha256: args[6],
+            selectionSha256: args[10],
+          }),
+          "",
+        );
+      if (delayInspection) inspecting.resolve(reply);
+      else reply();
+      return new NodeChildProcess.ChildProcess();
+    });
+    const claim = () =>
+      restarted.coordinator.request({
+        type: "claim",
+        planId: plan.planId,
+        environmentId: device,
+        claimant: "window-a",
+        step: "download",
+        explicit: false,
+        action: { kind: "download-exact", targetSource: stagedCandidate.source },
+        expectedInstalledSource: "9".repeat(40),
+      });
+    readiness = ready;
+    const claiming = claim();
+    const reply = await Promise.race([
+      inspecting.promise,
+      claiming.then(() => {
+        throw new Error("Claim finished before startup inspection began.");
+      }),
+    ]);
+    readiness = { owner: { ...owner }, backendPid: 4243, run: {} };
+    reply();
+    const refused = await claiming;
+    expect(refused.grant).toBeUndefined();
+    expect(refused.refused?.code).toBe("gate-closed");
+    expect(refused.state.laptop.ordinaryRecovery).toBeUndefined();
+    expect(refused.state.laptop.startupInspectionComplete).toBeUndefined();
+    expect(refused.state.current?.laptop.gatePause).toBe(true);
+    expect(refused.state.current?.laptop.operations[0]?.result?.status).toBe("held");
+    expect(refused.state.current?.devices[0]?.operations).toEqual([]);
+
+    readiness = ready;
+    delayInspection = false;
+    const resumed = await claim();
+    expect(resumed.grant?.step).toBe("download");
+    expect(resumed.state.laptop.ordinaryRecovery).toEqual(plan.laptop.gate?.ordinaryRecovery);
+    expect(resumed.state.laptop.startupInspectionComplete).toBe(true);
+    expect(resumed.state.current?.laptop.gatePause).toBeUndefined();
+    expect(resumed.state.current?.laptop.operations[0]?.result).toMatchObject({
+      status: "interrupted",
+      code: "install-not-dispatched",
+    });
+  } finally {
+    dispatch.resolve();
+    native.mockReset();
     await f.cleanup();
   }
 });
@@ -2953,7 +3391,12 @@ it("keeps the controller and plan held when a stopped leader exits but its prepa
     await ready.promise;
     const planId = started.state.current!.planId;
     const downloadId = started.state.current!.laptop.operations[0]!.operationId;
-    await h.coordinator.request({ type: "laptop", planId, action: "stop" });
+    await h.coordinator.request({
+      type: "laptop",
+      planId,
+      action: "stop",
+      operationId: downloadId,
+    });
     await vi.advanceTimersByTimeAsync(10);
     leaderExited = true;
     exit?.(null, "SIGTERM");

@@ -46,6 +46,11 @@ const compiledIs1 = Schema.is(Document);
 
 const validDocument = (value: unknown): value is PlanDocument =>
   compiledIs1(value) &&
+  [value.current, value.last].every(
+    (plan) =>
+      plan?.laptop.gatePause !== true ||
+      (plan.laptop.gate !== undefined && plan.laptop.gateClosed?.reason === "blocked"),
+  ) &&
   new Set(value.commands?.map((entry) => entry.receipt.command.commandId)).size ===
     (value.commands?.length ?? 0) &&
   (value.commands ?? []).every(

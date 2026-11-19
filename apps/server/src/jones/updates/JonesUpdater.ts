@@ -68,7 +68,7 @@ export interface JonesUpdaterHost {
     options: {
       readonly signal: AbortSignal;
       readonly onVerifying: () => void;
-      readonly jobId?: string;
+      readonly onReserved?: (jobId: string) => Promise<void>;
       readonly onStarted?: (settled: Promise<PreparationJoin>) => void;
       readonly onAdopting?: () => Promise<void>;
     },
@@ -167,9 +167,8 @@ export type JonesUpdaterInstallInput = JonesUpdateInstallInput & {
 
 export interface JonesPreparationOperation {
   readonly operationId: string;
-  readonly jobId: string;
   readonly signal: AbortSignal;
-  readonly onStarting?: () => void;
+  readonly onReserved: (jobId: string) => Promise<void>;
   readonly onAdopting: () => Promise<void>;
 }
 export class PreparationStopRequested extends Error {
@@ -210,7 +209,6 @@ export class JonesUpdater {
         readonly controller: AbortController;
         readonly done: Promise<JonesUpdateState>;
         readonly operationId?: string;
-        readonly jobId?: string;
         adopting: boolean;
         join?: Promise<PreparationJoin>;
       }
@@ -520,6 +518,7 @@ export class JonesUpdater {
   ): Promise<JonesCheckRun> {
     const key = targetSource ?? "latest";
     for (;;) {
+      if (operation?.signal.aborted) return { state: this.snapshot(), candidate: undefined };
       const running = this.inflight;
       if (running === undefined) break;
       if (running.key === key) return running.promise;
@@ -771,6 +770,7 @@ export class JonesUpdater {
     }
     // Another request may have claimed the host while this one waited for its turn.
     while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
+    if (operation?.signal.aborted) return this.snapshot();
     const latestRefusal = followerTargetRefusal(
       this.state.policy,
       candidate.source,
@@ -974,9 +974,7 @@ export class JonesUpdater {
       controller,
       done,
       adopting: false,
-      ...(operation === undefined
-        ? {}
-        : { operationId: operation.operationId, jobId: operation.jobId }),
+      ...(operation === undefined ? {} : { operationId: operation.operationId }),
     };
     this.setProgress((_previous, now) =>
       startProgress(
@@ -1023,10 +1021,9 @@ export class JonesUpdater {
       const refusal = followerTargetRefusal(this.state.policy, candidate.source, candidate.tree);
       if (refusal !== undefined) throw new Error(refusal);
       signal.throwIfAborted();
-      operation?.onStarting?.();
       const staged = await this.host.prepare(candidate, {
         signal,
-        ...(operation === undefined ? {} : { jobId: operation.jobId }),
+        ...(operation === undefined ? {} : { onReserved: operation.onReserved }),
         onStarted: (join) => {
           if (this.preparation !== undefined) this.preparation.join = join;
         },

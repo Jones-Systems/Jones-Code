@@ -172,6 +172,8 @@ export interface PreparationSupervisor {
     options: {
       readonly jobId: string;
       readonly signal?: AbortSignal;
+      /** Await the caller's durable job binding before the worker can launch. */
+      readonly onReserved?: (jobId: string) => Promise<void>;
       readonly onPhase?: (phase: PreparationPhase) => void;
     },
   ) => {
@@ -417,10 +419,8 @@ export function makePreparationSupervisor(options: {
   const joins = new Map<string, PreparationJoin | "running">();
   const runOnce = async <J extends PreparationJob>(
     job: J,
-    jobId: string,
+    { jobId, signal, onReserved, onPhase }: Parameters<PreparationSupervisor["start"]>[1],
     observed: { exit?: PreparationWorkerExit; spawning?: boolean; release?: string },
-    signal: AbortSignal | undefined,
-    onPhase: ((phase: PreparationPhase) => void) | undefined,
   ): Promise<PreparationOutcomeFor<J["kind"]>> => {
     const baseDir = await NodeFSP.realpath(options.baseDir);
     if (job.kind === "stage" && (await unreleasedJobs()).length > 0)
@@ -429,13 +429,18 @@ export function makePreparationSupervisor(options: {
     await NodeFSP.mkdir(jobs, { recursive: true, mode: 0o700 });
     const jobDir = NodePath.join(jobs, jobId);
     const lifecycle = preparationLifecycle(baseDir, jobId);
-    // Reserve scratch and never-started evidence together under the lock. An orphaned sweep
-    // must not remove a new job between reservation and launch.
+    // The owner lock covers the reservation, the caller's durable binding and the worker join.
     return withQualifiedRuntimeLock(baseDir, preparationJobLock(jobId), async () => {
+      signal?.throwIfAborted();
+      const existing = await NodeFSP.lstat(jobDir).catch((cause: NodeJS.ErrnoException) => {
+        if (cause.code !== "ENOENT") throw cause;
+      });
+      if (existing !== undefined) throw new PreparationWorkerError("unreaped");
+      const launch = await lifecycle.reserve(job.kind);
+      await onReserved?.(jobId);
+      signal?.throwIfAborted();
       await NodeFSP.mkdir(jobDir, { mode: 0o700 });
-      let retainJob = false;
       try {
-        const launch = await lifecycle.reserve(job.kind);
         await NodeFSP.mkdir(NodePath.join(jobDir, "tmp"), { mode: 0o700 });
         const request: PreparationRequest = {
           protocol: PREPARATION_PROTOCOL,
@@ -456,8 +461,15 @@ export function makePreparationSupervisor(options: {
           PREPARATION_LIMITS.requestBytes,
         );
         signal?.throwIfAborted();
-        await launch.spawning();
         observed.spawning = true;
+        await launch.spawning();
+        if (signal?.aborted) {
+          // Stop may arrive while the spawning marker is being synced. This supervisor
+          // still has positive proof that it never invoked the worker.
+          await launch.notStarted();
+          observed.release = "not-started";
+          signal.throwIfAborted();
+        }
         let identitySaved: Promise<void> | undefined;
         const exit = await superviseWorker({
           command: options.command,
@@ -478,7 +490,6 @@ export function makePreparationSupervisor(options: {
         try {
           await identitySaved;
         } catch {
-          retainJob = true;
           throw new PreparationWorkerError("unreaped");
         }
         try {
@@ -487,7 +498,6 @@ export function makePreparationSupervisor(options: {
           // Observation is diagnostic only.
         }
         if (!exit.reaped) {
-          retainJob = true;
           throw new PreparationWorkerError("unreaped");
         }
         if (exit.stopped === "spawn-failed") {
@@ -498,7 +508,6 @@ export function makePreparationSupervisor(options: {
             (worker) => exit.reaped && worker.pid === exit.pid && worker.processGroup === exit.pid,
           );
           if (observed.release !== "released") {
-            retainJob = true;
             throw new PreparationWorkerError(
               observed.release === "cleanup-unconfirmed" ? "cleanup-unconfirmed" : "unreaped",
             );
@@ -519,7 +528,12 @@ export function makePreparationSupervisor(options: {
         return result.outcome as PreparationOutcomeFor<J["kind"]>;
       } finally {
         // Still under the job lock; keep scratch when process/native release is unresolved.
-        if (!retainJob) await remove(jobDir).catch(() => undefined);
+        if (
+          !observed.spawning ||
+          observed.release === "not-started" ||
+          observed.release === "released"
+        )
+          await remove(jobDir).catch(() => undefined);
       }
     });
   };
@@ -536,7 +550,7 @@ export function makePreparationSupervisor(options: {
       throw new Error("Preparation job ID is invalid or already used.");
     const observed: { exit?: PreparationWorkerExit; spawning?: boolean; release?: string } = {};
     joins.set(jobId, "running");
-    const queued = enqueue(() => runOnce(job, jobId, observed, signal, runOptions.onPhase));
+    const queued = enqueue(() => runOnce(job, runOptions, observed));
     // Observe the underlying worker, not the caller's abortable outcome. A sweep never
     // schedules itself, and successful stage settlement can also leave cache scratch.
     if (job.kind !== "sweep")

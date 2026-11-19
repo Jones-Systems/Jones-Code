@@ -133,3 +133,20 @@ it("distinguishes never spawned from a missing identity or missing native phase"
     await lifecycle.effects(worker.pid + 1, "clean");
     expect(await lifecycle.release(() => true)).toBe("unknown");
   }));
+
+it("holds a never-started record contradicted by worker effect evidence", async () =>
+  fixture(async (base) => {
+    const lifecycle = preparationLifecycle(base, jobId);
+    await lifecycle.reserve("stage");
+    const effects = NodePath.join(
+      base,
+      "runtime",
+      "jones-preparation",
+      "lifecycle",
+      `${jobId}.effects.json`,
+    );
+    await NodeFSP.writeFile(`${effects}.partial`, "{", { mode: 0o600 });
+    expect(await lifecycle.release(() => true)).toBe("unknown");
+    await NodeFSP.rename(`${effects}.partial`, effects);
+    expect(await lifecycle.release(() => true)).toBe("unknown");
+  }));

@@ -37,13 +37,19 @@ import {
   inspectPanelCleanup,
   performPanelAction,
   recoverPanelCleanup,
+  stopPanelDownload,
   type CleanupInspection,
   type PanelAction,
 } from "./actions";
 import { finishPlan } from "./finishPlan";
 import { abandonDevice } from "./abandonDevice";
 import { ManualInstallClosure } from "./ManualInstallClosure";
-import { INSTALL_PLAN_GO, INSTALL_PLAN_WAIT, lastUpdateLabel } from "./copy";
+import {
+  INSTALL_PLAN_GO,
+  INSTALL_PLAN_WAIT,
+  LAPTOP_REOPEN_TO_CHECK_INSTALL,
+  lastUpdateLabel,
+} from "./copy";
 
 interface EditDraft {
   readonly planId: string;
@@ -148,6 +154,10 @@ export function InstallStatusPanel({
         !view.preview && value === "check" ? plan.planId : undefined,
       ),
     );
+  const stop = (kind: "laptop" | "device", environmentId: EnvironmentId, operationId: string) =>
+    void perform(`${kind === "laptop" ? "laptop" : environmentId}:stop`, () =>
+      stopPanelDownload({ kind, planId: plan.planId, environmentId, operationId }),
+    );
   const editDone = () =>
     void perform("edit", async () => {
       if (!editing) return;
@@ -191,12 +201,15 @@ export function InstallStatusPanel({
   const rowClass =
     "flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-sidebar-row-hover focus-visible:outline-2 focus-visible:outline-ring";
   const availableLaptop = view.laptop?.actions;
+  const laptopOperationId = view.laptop?.operationId;
+  const gateIssue = view.laptop?.gateIssue;
+  const gatePaused = gateIssue?.phase === "gatePaused";
+  const reopenToCheckInstall = view.laptop?.reopenToCheckInstall === true;
   const focusedDevice =
     detail === "laptop" || choices.some((choice) => choice.environmentId === detail)
       ? detail
       : null;
   const overview = focusedDevice === null;
-  const gateClosed = plan.laptop.gateClosed !== undefined;
   const canCheckLaptop =
     !view.readOnly ||
     (plan.cancelled === true &&
@@ -217,9 +230,7 @@ export function InstallStatusPanel({
       : lastUpdateLabel(plan.dismissedAt ?? plan.createdAt)
     : view.preview
       ? "Laptop first"
-      : gateClosed
-        ? "Laptop changed"
-        : view.summary;
+      : (gateIssue?.title ?? view.summary);
   const returnToOverview = () => {
     setDetail(null);
     allDevicesButton.current?.focus();
@@ -396,12 +407,12 @@ export function InstallStatusPanel({
                       Install on Laptop
                     </Button>
                   ) : null}
-                  {availableLaptop?.stop ? (
+                  {availableLaptop?.stop && laptopOperationId !== undefined ? (
                     <Button
                       size="micro"
                       variant="outline"
                       disabled={pending.has("laptop:stop")}
-                      onClick={() => action("laptop", "stop")}
+                      onClick={() => stop("laptop", laptopId, laptopOperationId)}
                     >
                       {pending.has("laptop:stop") ? "Requesting stop…" : "Stop download"}
                     </Button>
@@ -423,7 +434,10 @@ export function InstallStatusPanel({
                   {plan.laptop.operations.at(-1)?.result?.message ? (
                     <p>{plan.laptop.operations.at(-1)!.result!.message}</p>
                   ) : null}
-                  {view.laptop?.phase === "held" ? (
+                  {gateIssue !== undefined ? <p>{gateIssue.reason}</p> : null}
+                  {reopenToCheckInstall ? (
+                    <p>{LAPTOP_REOPEN_TO_CHECK_INSTALL}</p>
+                  ) : view.laptop?.phase === "held" ? (
                     <p>
                       {plan.cancelled === true
                         ? "Check the Laptop outcome to update this history entry."
@@ -468,7 +482,7 @@ export function InstallStatusPanel({
                     >
                       {pending.has("laptop:check")
                         ? "Checking outcome…"
-                        : view.laptop?.phase === "held"
+                        : view.laptop?.phase === "held" || reopenToCheckInstall
                           ? "Check update outcome"
                           : "Refresh now"}
                     </Button>
@@ -486,11 +500,13 @@ export function InstallStatusPanel({
               <span className="min-w-0 flex-1 truncate">
                 {plan.cancelled === true
                   ? "Queued updates cancelled"
-                  : gateClosed
-                    ? "Other devices won’t start"
-                    : plan.laptop.gate !== undefined
-                      ? INSTALL_PLAN_GO
-                      : INSTALL_PLAN_WAIT}
+                  : gatePaused
+                    ? "Other devices paused · waiting for Laptop verification"
+                    : gateIssue !== undefined
+                      ? "Other devices won’t start"
+                      : plan.laptop.gate !== undefined
+                        ? INSTALL_PLAN_GO
+                        : INSTALL_PLAN_WAIT}
               </span>
               {!view.readOnly ? (
                 <span className="flex shrink-0 items-center">
@@ -583,7 +599,7 @@ export function InstallStatusPanel({
                     plan.cancelled === true &&
                     ["queued", "not-started", "staged", "fenced"].includes(row.phase)
                   ? "Skipped for this plan"
-                  : row?.phase === "not-started" && gateClosed
+                  : row?.phase === "not-started" && gateIssue?.phase === "gateClosed"
                     ? "Not started · queue closed"
                     : (row?.text ??
                       (choice.reason === undefined
@@ -592,6 +608,7 @@ export function InstallStatusPanel({
               const lineText =
                 !editing &&
                 silent &&
+                !row?.launcherOutcomeUnconfirmed &&
                 row?.attemptText === undefined &&
                 row?.sourceText === undefined
                   ? attention.text
@@ -602,12 +619,16 @@ export function InstallStatusPanel({
                   : undefined;
               const open = focusedDevice === environmentId;
               const updated = row?.phase === "done" || row?.phase === "updated-elsewhere";
-              const held = row?.phase === "held" || row?.phase === "unknown";
+              const held =
+                row?.phase === "held" ||
+                row?.phase === "unknown" ||
+                (row?.launcherOutcomeUnconfirmed === true && !row.settled);
               const operations = plan.devices.find(
                 (d) => d.environmentId === environmentId,
               )?.operations;
               const operation = operations?.find(operationOutstanding) ?? operations?.at(-1);
               const receipt = operation?.receipt;
+              const operationId = row?.operationId;
               const setupUnconfirmed =
                 operation?.step === "directive" && operation.directive === undefined;
               const launcherUnconfirmed =
@@ -884,12 +905,12 @@ export function InstallStatusPanel({
                               {row.installLabel}
                             </Button>
                           ) : null}
-                          {row?.actions.stop ? (
+                          {row?.actions.stop && operationId !== undefined ? (
                             <Button
                               variant="outline"
                               size="micro"
                               disabled={pending.has(`${environmentId}:stop`)}
-                              onClick={() => action(environmentId, "stop")}
+                              onClick={() => stop("device", environmentId, operationId)}
                             >
                               {pending.has(`${environmentId}:stop`)
                                 ? "Requesting stop…"
