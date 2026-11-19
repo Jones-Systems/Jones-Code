@@ -69,6 +69,7 @@ async function setup(
     refuseCleanupReport?: boolean;
     declineManualClosure?: boolean;
     loseManualClosureReply?: boolean;
+    recoveryHistory?: boolean;
   } = {},
 ) {
   let desktop = initialDesktop();
@@ -82,6 +83,7 @@ async function setup(
       for (const listener of updates) listener(state);
     },
     record: (action, input) => calls.push({ action, input }),
+    ...(options.recoveryHistory ? { recoveryHistory: true } : {}),
   });
   const bridge = {
     installPlan: async (request: Parameters<typeof fixture.request>[0]) => {
@@ -174,7 +176,7 @@ async function setup(
             ...(command.input.inspectCleanup === undefined
               ? {}
               : {
-                  cleanupInspection: {
+                  cleanupInspection: result.cleanupInspection ?? {
                     operationId: command.input.inspectCleanup,
                     status: "eligible" as const,
                     ...(options.loseCleanupReply ? { recoveryToken: fixtureRecoveryToken } : {}),
@@ -275,6 +277,145 @@ const click = async (screen: Screen, name: string) => {
 // These use real browser interactions and the real pure model/runner against scripted receipts.
 // They cannot qualify native installs, host worker exit, Electron IPC or publication.
 describe("Install status receipt fixture", () => {
+  it("stops local scheduling and reconciles exact earlier recovery with a newer plan open", async () => {
+    await using world = await setup({ recoveryHistory: true });
+    const { screen, fixture, calls } = world;
+    await click(screen, "Download on Laptop");
+    await expect
+      .poll(() => fixture.snapshot().current?.laptop.operations.at(-1)?.result?.status)
+      .toBe("running");
+    const first = fixture.snapshot().current!;
+    expect(first.laptop.gate).toBeUndefined();
+    await act(() => {
+      fixture.showcaseRecoveryHistory();
+    });
+    const hostEffects = () =>
+      calls.filter(({ action }) =>
+        /^fixture-host-operation(Start|Stop|Fence)$|^fixture-host-recoverCleanup$/.test(action),
+      );
+    const before = hostEffects().length;
+    await click(screen, "Stop scheduling this plan");
+    await expect.poll(() => fixture.store.get().historyPlanId).toBe(first.planId);
+    expect(fixture.snapshot().current).toBeNull();
+    expect(hostEffects()).toHaveLength(before);
+    expect(calls.filter(({ action }) => action === "fixture-review").at(-1)?.input).toMatchObject({
+      message: expect.stringContaining("Already-issued work may finish"),
+    });
+    expect(fixture.snapshot().recoveryHistory?.[0]).toMatchObject({
+      planId: first.planId,
+      pendingLaptop: true,
+      pendingDevices: [{ label: "VPS" }, { label: "Mini" }, { label: "Test" }],
+    });
+    await click(screen, "Laptop update details");
+    expect(screen.container.textContent).toContain("Recovery pending");
+    await act(() => fixture.confirmRetainedLaptop(first.planId));
+    await click(screen, "Refresh now");
+    expect(screen.container.textContent).toContain("Running build");
+    await click(screen, "Back to all devices");
+    const previous = world.desktop();
+    await world.publish({
+      ...previous,
+      status: "available",
+      availableVersion: "0.1.0-fixture.3",
+      jones: {
+        ...previous.jones!,
+        phase: "available",
+        provenance: {
+          ...previous.jones!.provenance!,
+          sourceSha: "f".repeat(40),
+          version: "0.1.0-fixture.3",
+        },
+      },
+    });
+    await click(screen, "Back to available update");
+    await click(screen, "Download on Laptop");
+    await expect.poll(() => fixture.snapshot().current?.target.sourceSha).toBe("f".repeat(40));
+    const newer = fixture.snapshot().current!;
+    expect(newer.planId).not.toBe(first.planId);
+    expect(newer.devices).toHaveLength(0);
+    await screen.getByText("Recovery history", { exact: true }).click();
+    await click(screen, `Recovery for ${first.target.version}`);
+    await expect.poll(() => fixture.store.get().historyPlan?.planId).toBe(first.planId);
+    expect(screen.container.textContent).toContain("Setup unconfirmed");
+    const old = (await fixture.request({ type: "read-history", planId: first.planId }))
+      .historyPlan!;
+    const test = old.devices.find((device) => device.label === "Test")!.operations[0]!.receipt!;
+    const mini = old.devices.find((device) => device.label === "Mini")!.operations[0]!.receipt!;
+
+    await click(screen, "Test update details");
+    await act(() => fixture.setHostReachability("Test", false));
+    await click(screen, "Check update outcome");
+    await expect.poll(() => screen.container.textContent).toContain("Could not refresh Test");
+    expect(
+      fixture.store.get().historyPlan?.devices.find((d) => d.label === "Test")?.operations[0]
+        ?.receipt?.phase,
+    ).toBe("accepted");
+    await act(() => {
+      fixture.setHostReachability("Test", true);
+      fixture.publishHostReceipt({
+        ...test,
+        phase: "completed",
+        updateId: test.operationId,
+        updatedAt: new Date(world.services.now()).toISOString(),
+        outcome: {
+          status: "committed",
+          fromVersion: previous.currentVersion,
+          targetVersion: first.target.version,
+        },
+      });
+    });
+    await click(screen, "Check update outcome");
+    await expect
+      .poll(() => screen.container.textContent)
+      .toContain("Checked the launcher on Test and saved the exact receipt.");
+    expect(screen.container.textContent).toContain(`Running build: ${first.target.version}`);
+    expect(
+      fixture.store.get().historyPlan?.devices.find((d) => d.label === "Test")?.operations[0]
+        ?.receipt?.phase,
+    ).toBe("completed");
+
+    await click(screen, "Back to all devices");
+    await click(screen, "VPS update details");
+    await act(() => fixture.confirmRetainedSetup(first.planId));
+    await click(screen, "Check setup status");
+    await expect
+      .poll(() => screen.container.textContent)
+      .toContain("Saved the exact setup confirmation for VPS.");
+    expect(calls.some(({ action }) => action === "fixture-host-planDirective")).toBe(false);
+
+    await click(screen, "Back to all devices");
+    await click(screen, "Mini update details");
+    await act(() => fixture.setHostPermission("Mini", false));
+    await expect.element(button(screen, "Inspect cleanup")).toBeDisabled();
+    expect(screen.container.textContent).toContain("This session cannot change updates.");
+    await act(() => fixture.setHostPermission("Mini", true));
+    await click(screen, "Inspect cleanup");
+    await click(screen, "Recover cleanup");
+    await expect
+      .poll(() => screen.container.textContent)
+      .toContain("The exact receipt is saved in this plan.");
+    expect(hostEffects()).toHaveLength(before + 1);
+    expect(hostEffects().at(-1)?.input).toMatchObject({
+      environmentId: mini.environmentId,
+      input: { operationId: mini.operationId, jobId: mini.jobId },
+    });
+    expect(fixture.snapshot().current?.planId).toBe(newer.planId);
+    expect(fixture.snapshot().current?.devices).toEqual([]);
+    expect(
+      calls
+        .filter(
+          ({ action, input }) =>
+            action === "fixture-installPlan" && (input as { type?: string }).type === "report",
+        )
+        .every(({ input }) => (input as { planId: string }).planId === first.planId),
+    ).toBe(true);
+    await click(screen, "Back to all devices");
+    await click(screen, "Back to current update");
+    expect(
+      screen.container.querySelector("[data-install-status]")?.getAttribute("data-plan-id"),
+    ).toBe(newer.planId);
+  });
+
   it("sends Laptop Stop for the displayed plan and download", async () => {
     await using world = await setup();
     const { screen, fixture, calls } = world;
@@ -355,10 +496,10 @@ describe("Install status receipt fixture", () => {
     expect(screen.container.textContent).toContain(
       "Checked Laptop. Reopen Jones Code to check the Laptop install outcome.",
     );
-    await click(screen, "Cancel update plan");
+    await click(screen, "Stop scheduling this plan");
     await expect.poll(() => fixture.snapshot().current).toBeNull();
-    expect(screen.container.textContent).toContain("Update plan cancelled");
-    expect(screen.container.textContent).toContain("Queued updates cancelled");
+    expect(screen.container.textContent).toContain("Scheduling stopped");
+    expect(screen.container.textContent).toContain("Scheduling for this plan is closed");
     expect(fixture.snapshot().last?.laptop.operations.at(-1)?.result?.status).toBe("held");
     await click(screen, "Laptop update details");
     await click(screen, "Check update outcome");
@@ -1310,7 +1451,7 @@ describe("Install status step progress", () => {
     await using world = await setup();
     const { screen, fixture, calls } = world;
     await act(() => fixture.showcaseSourceProof());
-    await click(screen, "Cancel update plan");
+    await click(screen, "Stop scheduling this plan");
     expect(fixture.snapshot().current).toBeNull();
     expect(fixture.snapshot().last?.cancelled).toBe(true);
     await click(screen, "Studio update details");
@@ -1328,7 +1469,11 @@ describe("Install status step progress", () => {
     await act(() => fixture.showcaseSourceProof());
     expect(rowText(screen, "VPS")).toBe("Updated · running the selected source");
     expect(rowText(screen, "Mini")).toBe("Updated · running the selected source");
-    expect(rowText(screen, "Test")).toBe("Last confirmed running the selected source · 5m ago");
+    expect(rowText(screen, "Test")).toBe("Not updated · cleanup-recovered");
+    const test = screen.container
+      .querySelector('[aria-label="Test update details"]')!
+      .closest("li");
+    expect(test?.textContent).toContain("Last confirmed running the selected source · 5m ago");
     expect(rowText(screen, "Studio")).toBe("Cleanup unconfirmed");
     expect(visibleDone(screen)).toHaveLength(0);
     await click(screen, "VPS update details");

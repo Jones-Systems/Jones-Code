@@ -1,7 +1,9 @@
 import { randomUUID } from "../../../lib/utils";
 import { EnvironmentId, type DesktopUpdateState } from "@t3tools/contracts";
 import type {
+  JonesInstallPlan,
   JonesInstallPlanGrant,
+  JonesInstallPlanHostOperation,
   JonesInstallPlanRequest,
   JonesInstallPlanResult,
   JonesInstallPlanState,
@@ -14,12 +16,18 @@ import type { JonesUpdateProgress, JonesUpdateState } from "@t3tools/contracts/j
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import {
   applyEdit,
+  deviceHasRecoveryDuty,
   isPlanComplete,
+  planHasLaptopRecoveryDuty,
   startPlan,
+  validateDirectiveEvidence,
   validateReceipt,
   deviceState,
 } from "@t3tools/client-runtime/jones/install-plan";
-import { JonesInstallPlanState as PlanStateSchema } from "@t3tools/contracts/jones/installPlan";
+import {
+  JonesInstallPlan as PlanSchema,
+  JonesInstallPlanState as PlanStateSchema,
+} from "@t3tools/contracts/jones/installPlan";
 import * as Schema from "effect/Schema";
 import { createInstallStatusStore, type InstallStatusStore } from "../../installStatus/panelUi";
 import type { InstallPlanServices } from "../../installStatus/services";
@@ -110,6 +118,7 @@ export function createScriptedInstallPlan(input: {
   readonly store?: InstallStatusStore;
   readonly nextLaptopOutcome?: (action: "download" | "install") => "accept" | "reject" | "refuse";
   readonly confirmManualClosure?: (message: string) => Promise<boolean>;
+  readonly recoveryHistory?: boolean;
 }) {
   const now = input.now ?? Date.now;
   const iso = () => new Date(now()).toISOString();
@@ -117,6 +126,9 @@ export function createScriptedInstallPlan(input: {
   const store = input.store ?? createInstallStatusStore();
   const listeners = new Set<(state: JonesInstallPlanState) => void>();
   const receipts = new Map<string, JonesOperationReceipt>();
+  const archived = new Map<string, JonesInstallPlan>();
+  const cleanupTokens = new Map<string, string>();
+  const permissions = new Map<EnvironmentId, boolean>();
   const hosts = new Map<EnvironmentId, JonesUpdateState>(
     FIXTURE_HOSTS.map((host) => [
       host.environmentId,
@@ -162,8 +174,17 @@ export function createScriptedInstallPlan(input: {
   };
   if (input.storageKey !== undefined) {
     const saved = sessionStorage.getItem(input.storageKey);
-    if (saved !== null) native = decodePlanState(JSON.parse(saved));
-    for (const device of native.current?.devices ?? []) {
+    if (saved !== null) {
+      const data = JSON.parse(saved);
+      native = decodePlanState(data);
+      if (input.recoveryHistory && Array.isArray(data.archived))
+        for (const plan of Schema.decodeUnknownSync(Schema.Array(PlanSchema))(data.archived))
+          archived.set(plan.planId, plan);
+    }
+    for (const device of [
+      ...[...archived.values()].flatMap((plan) => plan.devices),
+      ...(native.current?.devices ?? []),
+    ]) {
       for (const operation of device.operations)
         if (operation.receipt !== undefined) receipts.set(operation.operationId, operation.receipt);
       const latest = device.operations.at(-1)?.receipt;
@@ -183,17 +204,50 @@ export function createScriptedInstallPlan(input: {
         });
     }
   }
+  let durableState = "";
   const notify = () => {
+    const history = [...archived.values()].reverse().flatMap((plan) => {
+      const pendingLaptop = planHasLaptopRecoveryDuty(plan);
+      const pendingDevices = plan.devices
+        .filter(deviceHasRecoveryDuty)
+        .map(({ environmentId, label }) => ({ environmentId, label }));
+      return !pendingLaptop && pendingDevices.length === 0
+        ? []
+        : [
+            {
+              planId: plan.planId,
+              revision: plan.revision,
+              targetVersion: plan.target.version,
+              closedAt: plan.dismissedAt ?? plan.supersededAt ?? plan.createdAt,
+              pendingLaptop,
+              pendingDevices,
+            },
+          ];
+    });
+    const nextState = JSON.stringify([native.current, native.last, [...archived.values()]]);
     native = {
       ...native,
+      ...(input.recoveryHistory
+        ? {
+            documentRevision: (native.documentRevision ?? 0) + (nextState === durableState ? 0 : 1),
+            recoveryHistory: history,
+          }
+        : {}),
       view: {
         ...native.view,
         complete: native.current !== null && isPlanComplete(native.current),
         ...(native.current === null ? {} : { cancelPlan: 1 }),
+        ...(input.recoveryHistory ? { recoveryHistory: 1 } : {}),
       },
     };
+    durableState = nextState;
     if (input.storageKey !== undefined)
-      sessionStorage.setItem(input.storageKey, JSON.stringify(native));
+      sessionStorage.setItem(
+        input.storageKey,
+        JSON.stringify(
+          input.recoveryHistory ? { ...native, archived: [...archived.values()] } : native,
+        ),
+      );
     store.update({ native, desktop: input.readDesktop(), devices: devices() });
     for (const listener of listeners) listener(native);
   };
@@ -204,7 +258,7 @@ export function createScriptedInstallPlan(input: {
         return {
           ...host,
           observation: { state: hosts.get(host.environmentId)!, freshness: "fresh" as const },
-          canOperate: true,
+          canOperate: permissions.get(host.environmentId) ?? true,
           fleetStatus: fleets.get(host.environmentId)!,
           lastObservedAt: iso(),
         };
@@ -219,7 +273,7 @@ export function createScriptedInstallPlan(input: {
             ? { message: "Update status is temporarily unavailable; retrying." }
             : {}),
         },
-        canOperate: true,
+        canOperate: permissions.get(host.environmentId) ?? true,
         fleetStatus: fleets.get(host.environmentId)!,
         lastObservedAt: new Date(heardAt).toISOString(),
       };
@@ -230,7 +284,17 @@ export function createScriptedInstallPlan(input: {
   const refuse = (code: NonNullable<JonesInstallPlanResult["refused"]>["code"], message: string) =>
     result({ refused: { code, message } });
   const revise = (plan: NonNullable<JonesInstallPlanState["current"]>) => {
-    native = { ...native, current: { ...plan, revision: plan.revision + 1 } };
+    const revised = { ...plan, revision: plan.revision + 1 };
+    if (archived.has(plan.planId)) {
+      archived.set(plan.planId, revised);
+      if (native.last?.planId === plan.planId) native = { ...native, last: revised };
+    } else native = { ...native, current: revised };
+    notify();
+  };
+  const close = (plan: JonesInstallPlan) => {
+    const last = { ...plan, revision: plan.revision + 1, dismissedAt: iso() };
+    if (input.recoveryHistory) archived.set(plan.planId, last);
+    native = { ...native, current: null, last, view: { complete: false } };
     notify();
   };
   function laptopChanged() {
@@ -383,6 +447,14 @@ export function createScriptedInstallPlan(input: {
   async function request(request: JonesInstallPlanRequest): Promise<JonesInstallPlanResult> {
     input.record("fixture-installPlan", request);
     if (request.type === "read") return result();
+    if (request.type === "read-history") {
+      const historyPlan =
+        archived.get(request.planId) ??
+        (native.last?.planId === request.planId ? native.last : undefined);
+      return input.recoveryHistory && historyPlan !== undefined
+        ? result({ historyPlan })
+        : refuse("plan-mismatch", "This closed fixture plan is unavailable.");
+    }
     if (request.type === "recovery-preflight")
       return refuse("unsupported", "Fixture recovery capability is not advertised.");
     if (request.type === "publication")
@@ -394,6 +466,26 @@ export function createScriptedInstallPlan(input: {
         },
       });
     if (request.type === "start") {
+      if (input.recoveryHistory && [...archived.values()].some(planHasLaptopRecoveryDuty))
+        return refuse(
+          "outstanding-operation",
+          "An earlier Laptop operation still needs verification.",
+        );
+      if (
+        input.recoveryHistory &&
+        request.select.some((selection) =>
+          [...archived.values()].some((plan) =>
+            plan.devices.some(
+              (d) => d.environmentId === selection.environmentId && deviceHasRecoveryDuty(d),
+            ),
+          ),
+        )
+      ) {
+        return refuse(
+          "outstanding-operation",
+          "An earlier operation on this fixture device needs recovery.",
+        );
+      }
       if (native.current !== null && native.current.laptop.operations.length > 0)
         return refuse("plan-active", "Finish the current plan first.");
       if (request.laptop === undefined && native.laptop.activeSource !== request.target.sourceSha)
@@ -419,9 +511,19 @@ export function createScriptedInstallPlan(input: {
         ? result()
         : laptop(request.laptop.action, request.laptop.review);
     }
-    const plan = native.current;
+    const historical =
+      request.type === "report" || request.type === "claim"
+        ? archived.get(request.planId)
+        : undefined;
+    const plan = historical ?? native.current;
     if (plan === null || plan.planId !== request.planId)
       return refuse("plan-mismatch", "The fixture plan changed.");
+    if (
+      (request.type === "claim" || request.type === "laptop") &&
+      (historical !== undefined || request.expectedRevision !== undefined) &&
+      request.expectedRevision !== plan.revision
+    )
+      return refuse("stale-revision", "The exact fixture attempt changed.");
     if (request.type === "edit") {
       const edit = applyEdit(plan, request, iso());
       if (edit.refused !== undefined)
@@ -433,13 +535,11 @@ export function createScriptedInstallPlan(input: {
     if (request.type === "cancel-plan") {
       if (request.expectedRevision !== plan.revision)
         return refuse("stale-revision", "The plan changed before cancelling.");
-      native = {
-        ...native,
-        current: null,
-        last: { ...plan, revision: plan.revision + 1, dismissedAt: iso(), cancelled: true },
-        view: { complete: false },
-      };
-      notify();
+      close({
+        ...plan,
+        cancelled: true,
+        ...(input.recoveryHistory ? { cancelledFromRevision: request.expectedRevision } : {}),
+      });
       return result();
     }
     if (request.type === "dismiss") {
@@ -447,8 +547,7 @@ export function createScriptedInstallPlan(input: {
         return refuse("stale-revision", "The plan changed before Done.");
       if (!isPlanComplete(plan))
         return refuse("not-complete", "The whole chosen plan has not finished.");
-      native = { ...native, current: null, last: { ...plan, dismissedAt: iso() } };
-      notify();
+      close(plan);
       return result();
     }
     if (request.type === "close-after-manual-install") {
@@ -456,18 +555,7 @@ export function createScriptedInstallPlan(input: {
         return refuse("stale-revision", "The plan changed before closing.");
       if (!native.view.manualClose)
         return refuse("invalid-evidence", "The fixture has no proof of manual installation.");
-      native = {
-        ...native,
-        current: null,
-        last: {
-          ...plan,
-          revision: plan.revision + 1,
-          dismissedAt: iso(),
-          manualClosure: { ...native.view.manualClose, devices: request.devices },
-        },
-        view: { complete: false },
-      };
-      notify();
+      close({ ...plan, manualClosure: { ...native.view.manualClose, devices: request.devices } });
       return result();
     }
     if (request.type === "laptop")
@@ -489,10 +577,35 @@ export function createScriptedInstallPlan(input: {
       return result();
     }
     if (request.type === "report") {
-      if (request.evidence.kind !== "receipt")
-        return refuse("invalid-evidence", "This fixture scripts manual hosts only.");
-      const receipt = request.evidence.receipt;
       const op = device.operations.find((o) => o.operationId === request.operationId);
+      const evidence = request.evidence;
+      const replace = (next: JonesInstallPlanHostOperation) =>
+        revise({
+          ...plan,
+          devices: plan.devices.map((d) =>
+            d === device ? { ...d, operations: d.operations.map((o) => (o === op ? next : o)) } : d,
+          ),
+        });
+      if (
+        op?.request.kind === "plan-directive" &&
+        evidence.kind === "directive" &&
+        validateDirectiveEvidence(op.request.input, evidence.status) &&
+        evidence.status.follower?.planDirective !== undefined
+      ) {
+        if (op.directive === undefined)
+          replace({
+            ...op,
+            directive: {
+              kind: "applied",
+              observedAt: iso(),
+              directive: evidence.status.follower.planDirective,
+            },
+          });
+        return result();
+      }
+      if (evidence.kind !== "receipt")
+        return refuse("invalid-evidence", "Fixture setup evidence did not match.");
+      const receipt = evidence.receipt;
       if (
         op?.request.kind !== "operation-start" ||
         !validateReceipt(op.request.input, receipt) ||
@@ -501,20 +614,11 @@ export function createScriptedInstallPlan(input: {
         return refuse("invalid-evidence", "Receipt binding failed.");
       if (op.receipt !== undefined && JSON.stringify(op.receipt) === JSON.stringify(receipt))
         return result();
-      revise({
-        ...plan,
-        devices: plan.devices.map((d) =>
-          d === device
-            ? { ...d, operations: d.operations.map((o) => (o === op ? { ...o, receipt } : o)) }
-            : d,
-        ),
-      });
+      replace({ ...op, receipt });
       return result();
     }
     if (request.type !== "claim")
       return refuse("unsupported", "The fixture has no recovery script for this operation.");
-    if (plan.laptop.gate === undefined || plan.laptop.gateClosed !== undefined)
-      return refuse("gate-closed", "Laptop is not verified.");
     const lease = {
       claimant: request.claimant,
       reservedAt: iso(),
@@ -526,9 +630,19 @@ export function createScriptedInstallPlan(input: {
         return refuse("outstanding-operation", "No bound operation.");
       if (
         request.step === "stop" &&
-        (op.receipt === undefined || !["accepted", "running"].includes(op.receipt.phase))
+        (!request.explicit ||
+          op.step !== "download" ||
+          op.receipt === undefined ||
+          !["accepted", "running", "stop-requested"].includes(op.receipt.phase))
       )
         return refuse("outstanding-operation", "Download cannot be stopped in this phase.");
+      if (
+        request.step === "fence" &&
+        (op.receipt !== undefined ||
+          Date.parse(op.lease.leaseUntil) > now() ||
+          (historical !== undefined && !request.explicit))
+      )
+        return refuse("outstanding-operation", "Only the exact expired reservation can be fenced.");
       const grant: JonesInstallPlanGrant = {
         planId: plan.planId,
         environmentId: device.environmentId,
@@ -549,6 +663,10 @@ export function createScriptedInstallPlan(input: {
       };
       return result({ grant });
     }
+    if (historical !== undefined)
+      return refuse("plan-mismatch", "This closed fixture plan cannot issue new work.");
+    if (plan.laptop.gate === undefined || plan.laptop.gateClosed !== undefined)
+      return refuse("gate-closed", "Laptop is not verified.");
     if (request.step !== "download" && request.step !== "install")
       return refuse("unsupported", "Fixture directive is not advertised.");
     const latest = device.operations.at(-1);
@@ -614,6 +732,13 @@ export function createScriptedInstallPlan(input: {
   const publishReceipt = (receipt: JonesOperationReceipt) => {
     receipts.set(receipt.operationId, receipt);
     const old = hosts.get(receipt.environmentId)!;
+    const planId = receipt.correlation?.planId;
+    const plan =
+      native.current?.planId === planId
+        ? native.current
+        : planId === undefined
+          ? undefined
+          : archived.get(planId);
     const committed = receipt.phase === "completed" && receipt.action.kind === "install";
     hosts.set(receipt.environmentId, {
       ...old,
@@ -629,23 +754,23 @@ export function createScriptedInstallPlan(input: {
                 ? "committed"
                 : "available",
       ...(receipt.staged === undefined ? {} : { stagedHandle: receipt.staged.stagedHandle }),
-      ...(native.current === null || old.provenance === undefined
+      ...(plan?.target === undefined || old.provenance === undefined
         ? {}
         : {
             provenance: {
               ...old.provenance,
-              sourceSha: native.current.target.sourceSha,
-              sourceTree: native.current.target.sourceTree,
-              version: native.current.target.version,
+              sourceSha: plan.target.sourceSha,
+              sourceTree: plan.target.sourceTree,
+              version: plan.target.version,
             },
           }),
-      ...(committed
+      ...(committed && plan?.target !== undefined
         ? {
-            currentVersion: native.current!.target.version,
+            currentVersion: plan.target.version,
             installedSource: {
               repository: "Jones-Systems/Jones-Code",
-              sha: native.current!.target.sourceSha,
-              tree: native.current!.target.sourceTree,
+              sha: plan.target.sourceSha,
+              tree: plan.target.sourceTree,
             },
           }
         : {}),
@@ -672,14 +797,60 @@ export function createScriptedInstallPlan(input: {
     },
     operation: async (id, command) => {
       input.record(`fixture-host-${command.action}`, { environmentId: id, input: command.input });
-      if (command.action === "operationRead")
+      if (command.action === "operationRead") {
+        if (reachability.get(id)?.freshness === "stale")
+          throw new Error("Synthetic host is offline.");
+        const inspected = command.input.inspectCleanup;
+        const held = inspected === undefined ? undefined : receipts.get(inspected);
+        const recoveryToken =
+          input.recoveryHistory &&
+          held?.environmentId === id &&
+          held.phase === "held" &&
+          held.code === "cleanup-unconfirmed" &&
+          held.jobId !== undefined
+            ? (cleanupTokens.get(held.operationId) ?? uuid())
+            : undefined;
+        if (recoveryToken !== undefined && inspected !== undefined)
+          cleanupTokens.set(inspected, recoveryToken);
         return {
+          ...(recoveryToken === undefined || inspected === undefined
+            ? {}
+            : {
+                cleanupInspection: {
+                  operationId: inspected,
+                  status: "eligible" as const,
+                  recoveryToken,
+                },
+              }),
           receipts: command.input.operationIds.map((operationId) => ({
             operationId,
             receipt: receipts.get(operationId) ?? null,
           })),
         };
-      if (command.action === "recoverCleanup") return { recoveredCleanup: null };
+      }
+      if (command.action === "recoverCleanup") {
+        const { operationId, jobId, recoveryToken } = command.input;
+        const held = receipts.get(operationId);
+        if (
+          !input.recoveryHistory ||
+          held?.environmentId !== id ||
+          held.jobId !== jobId ||
+          held.phase !== "held" ||
+          held.code !== "cleanup-unconfirmed" ||
+          cleanupTokens.get(operationId) !== recoveryToken
+        )
+          return { recoveredCleanup: null };
+        cleanupTokens.delete(operationId);
+        const released = {
+          ...held,
+          phase: "interrupted" as const,
+          code: "cleanup-recovered" as const,
+          updatedAt: iso(),
+          message: "Synthetic cleanup hold released.",
+        };
+        publishReceipt(released);
+        return { recoveredCleanup: released };
+      }
       if (command.action === "abandonStage")
         return { receipt: null, reason: "Fixture has no owned stage." };
       if (command.action === "recoveryPreflight")
@@ -1135,12 +1306,177 @@ export function createScriptedInstallPlan(input: {
     };
     notify();
   };
+  const showcaseRecoveryHistory = () => {
+    const desktop = input.readDesktop();
+    const provenance = desktop.jones!.provenance!;
+    const [vps, mini, test] = FIXTURE_HOSTS;
+    const enrollmentId = uuid();
+    const select = [
+      { ...vps!, route: "follower-operations" as const, enrollmentId },
+      { ...mini!, route: "operations" as const },
+      { ...test!, route: "operations" as const },
+    ];
+    const base =
+      native.current ??
+      startPlan({
+        planId: uuid(),
+        origin: "update-button",
+        target: {
+          repository: provenance.repository,
+          sourceSha: provenance.sourceSha,
+          sourceTree: provenance.sourceTree,
+          version: provenance.version ?? desktop.availableVersion!,
+        },
+        from: { version: desktop.currentVersion },
+        laptopEnvironmentId: FIXTURE_LAPTOP,
+        select,
+        now: iso(),
+      });
+    const laptop = base.laptop.operations.at(-1) ?? {
+      operationId: uuid(),
+      step: "download" as const,
+      requestedAt: iso(),
+      result: { status: "running" as const, at: iso() },
+    };
+    const lease = {
+      claimant: "fixture-recovery",
+      reservedAt: new Date(now() - 180_000).toISOString(),
+      leaseUntil: new Date(now() - 60_000).toISOString(),
+    };
+    const seeded = select.map((selection) => {
+      const { label, environmentId } = selection;
+      const operationId = uuid();
+      let operation: JonesInstallPlanHostOperation;
+      if (label === "VPS") {
+        const fleet = fleets.get(environmentId)!;
+        fleets.set(environmentId, {
+          ...fleet,
+          enrollment: { environmentId, enrollmentId, enabled: true, continueRunningThreads: false },
+          follower: {
+            protocol: 1,
+            state: "waiting-for-leader",
+            leaderSource: base.target.sourceSha,
+          },
+        });
+        operation = {
+          operationId,
+          lease,
+          step: "directive",
+          request: {
+            kind: "plan-directive",
+            input: {
+              environmentId,
+              enrollmentId,
+              directiveId: operationId,
+              expectedDirectiveId: uuid(),
+              repository: base.target.repository,
+              targetSource: base.target.sourceSha,
+              targetTree: base.target.sourceTree,
+            },
+          },
+        };
+      } else {
+        const currentVersion = desktop.currentVersion;
+        const start: JonesOperationStartInput = {
+          operationId,
+          environmentId,
+          expectedInstalledSource: hosts.get(environmentId)!.installedSource!.sha,
+          correlation: { planId: base.planId, deviceKey: environmentId },
+          action:
+            label === "Test"
+              ? {
+                  kind: "install",
+                  stagedHandle: "fixture-recovery-test-stage",
+                  targetSource: base.target.sourceSha,
+                  currentVersion,
+                }
+              : { kind: "download-exact", targetSource: base.target.sourceSha },
+        };
+        const receipt: JonesOperationReceipt = {
+          ...start,
+          protocol: 1,
+          phase: label === "Test" ? "accepted" : "held",
+          acceptedAt: lease.reservedAt,
+          jobId: uuid(),
+          updatedAt: iso(),
+          ...(label === "Mini" ? { code: "cleanup-unconfirmed" as const } : {}),
+        };
+        operation = {
+          operationId,
+          lease,
+          step: label === "Test" ? "install" : "download",
+          request: { kind: "operation-start", input: start },
+          receipt,
+        };
+        publishReceipt(receipt);
+      }
+      return {
+        ...selection,
+        membership: "selected" as const,
+        addedAt: base.createdAt,
+        operations: [operation],
+      };
+    });
+    revise({ ...base, laptop: { ...base.laptop, operations: [laptop] }, devices: seeded });
+    return native.current!;
+  };
+  const setHostReachability = (label: string, fresh: boolean) => {
+    const id = FIXTURE_HOSTS.find((host) => host.label === label)!.environmentId;
+    reachability.set(id, {
+      freshness: fresh ? "fresh" : "stale",
+      heardAt: fresh ? now() : now() - 16 * 60_000,
+    });
+    notify();
+  };
   notify();
   return {
     request,
     showcaseStepProgress,
     showcaseSourceProof,
     showcaseManualInstall,
+    showcaseRecoveryHistory,
+    setHostReachability,
+    setHostPermission(label: string, allowed: boolean) {
+      permissions.set(FIXTURE_HOSTS.find((host) => host.label === label)!.environmentId, allowed);
+      notify();
+    },
+    confirmRetainedLaptop(planId: string) {
+      const plan = archived.get(planId);
+      if (plan === undefined) throw new Error("The exact closed fixture plan is unavailable.");
+      revise({
+        ...plan,
+        laptop: {
+          ...plan.laptop,
+          operations: plan.laptop.operations.map((op) =>
+            op.result?.status === "running"
+              ? { ...op, result: { status: "completed", at: iso() } }
+              : op,
+          ),
+        },
+      });
+    },
+    confirmRetainedSetup(planId: string) {
+      const device = archived.get(planId)?.devices.find((d) => d.label === "VPS");
+      const request = device?.operations.at(-1)?.request;
+      if (device === undefined || request?.kind !== "plan-directive")
+        throw new Error("The exact fixture setup is unavailable.");
+      const host = fleets.get(device.environmentId)!;
+      const { directiveId, targetSource, targetTree } = request.input;
+      fleets.set(device.environmentId, {
+        ...host,
+        follower: {
+          ...host.follower!,
+          planDirective: {
+            directiveId,
+            targetSource,
+            targetTree,
+            mode: "manual-review",
+            issuedAt: iso(),
+          },
+        },
+      });
+      setHostReachability(device.label, true);
+    },
     onInstallPlan: (listener: (state: JonesInstallPlanState) => void) => {
       listeners.add(listener);
       return () => {

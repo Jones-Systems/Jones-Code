@@ -67,4 +67,47 @@ describe("renderer read ordering", () => {
     store.open();
     expect(store.get().collapsed).toBe(false);
   });
+
+  it("orders empty, current, and archive-only updates by the desk document revision", () => {
+    const store = createInstallStatusStore();
+    const closed = { ...plan, dismissedAt: "2026-10-27T04:05:00Z", revision: 4 };
+    const history = {
+      planId: plan.planId,
+      revision: closed.revision,
+      targetVersion: plan.target.version,
+      closedAt: closed.dismissedAt,
+      pendingLaptop: true,
+      pendingDevices: [],
+    };
+    store.update({ native: { ...state(plan), documentRevision: 4 } });
+    store.update({ native: { ...state(null), documentRevision: 3 } });
+    expect(store.get().native?.current?.planId).toBe(plan.planId);
+    store.update({
+      native: { ...state(null, closed), documentRevision: 5, recoveryHistory: [history] },
+    });
+    store.open(true, plan.planId);
+    store.update({ native: { ...state(null, closed), documentRevision: 5 }, historyPlan: closed });
+    const later = { ...closed, revision: 5 };
+    store.update({
+      native: {
+        ...state(null, closed),
+        documentRevision: 6,
+        recoveryHistory: [{ ...history, revision: 5 }],
+      },
+      historyPlan: later,
+    });
+    store.update({
+      native: { ...state(null, closed), documentRevision: 5, recoveryHistory: [history] },
+      historyPlan: closed,
+    });
+    expect(store.get().native?.documentRevision).toBe(6);
+    expect(store.get().historyPlan?.revision).toBe(5);
+    store.open(true, "different-plan");
+    expect(store.get().historyPlan).toBeNull();
+    store.bindDesk("previous-desk");
+    store.bindDesk("replacement-desk");
+    store.update({ native: { ...state(null), documentRevision: 1 } });
+    expect(store.get().native?.documentRevision).toBe(1);
+    expect(store.get().historyPlanId).toBeNull();
+  });
 });

@@ -86,8 +86,10 @@ export const makeJonesDesktopUpdates = Effect.fn("DesktopUpdates.jones")(functio
       },
       recordLaptopOutcome: (outcome) =>
         coordinator?.recordLaptopOutcome(outcome) ?? Promise.resolve(),
-      preparationHeld: () =>
-        coordinator === undefined ? Promise.resolve(true) : coordinator.preparationHeld(),
+      preparationHeld: (operationId) =>
+        coordinator === undefined
+          ? Promise.resolve(true)
+          : coordinator.preparationHeld(operationId),
       recordLaptopAdmission: (operationId) => {
         if (coordinator === undefined)
           return Promise.reject(new Error("Native plan persistence is unavailable."));
@@ -203,9 +205,11 @@ export const makeJonesDesktopUpdates = Effect.fn("DesktopUpdates.jones")(functio
       Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
     ),
     discardStaged: Effect.fn("DesktopUpdates.discardStaged")(function (handle) {
-      return Effect.promise(() => background.discard(handle)).pipe(
-        Effect.map((result) => ({ ...result, state: controller.state })),
-      );
+      return Effect.promise(async () => {
+        const held = await coordinator?.preparationHeld().catch(() => true);
+        if (held !== false) return { accepted: false, completed: false };
+        return background.discard(handle);
+      }).pipe(Effect.map((result) => ({ ...result, state: controller.state })));
     }),
     setBackgroundPreparation: Effect.fn("DesktopUpdates.setBackgroundPreparation")(
       function (enabled) {

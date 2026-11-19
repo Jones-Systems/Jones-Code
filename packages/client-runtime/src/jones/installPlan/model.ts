@@ -401,17 +401,29 @@ function outstanding(operation: JonesInstallPlanHostOperation): boolean {
     : operation.receipt === undefined || !terminal.has(operation.receipt.phase);
 }
 
-export function laptopSettled(plan: JonesInstallPlan): boolean {
-  if (
-    plan.laptop.gatePause === true ||
+/** Recovery follows all retained work, even after visual completion or a membership change. */
+export function deviceHasRecoveryDuty(device: JonesInstallPlanDevice): boolean {
+  // Stop and fence can affect only their original operation. Its exact terminal receipt
+  // releases that hold once there is no unconfirmed launcher outcome.
+  return device.abandoning === true || device.operations.some(outstanding);
+}
+
+/** A paused rollout gate alone does not indicate outstanding native work. */
+export function planHasLaptopRecoveryDuty(plan: JonesInstallPlan): boolean {
+  return (
     (plan.laptop.stageAbandonment !== undefined &&
       plan.laptop.stageAbandonment.status !== "retired") ||
     plan.laptop.operations.some(
       (o) =>
-        o.result === undefined || ["running", "stop-requested", "held"].includes(o.result.status),
+        o.result === undefined ||
+        o.result.code === "native-unconfirmed" ||
+        ["running", "stop-requested", "held"].includes(o.result.status),
     )
-  )
-    return false;
+  );
+}
+
+export function laptopSettled(plan: JonesInstallPlan): boolean {
+  if (plan.laptop.gatePause === true || planHasLaptopRecoveryDuty(plan)) return false;
   if (plan.laptop.gate !== undefined && plan.laptop.gateClosed === undefined) return true;
   const latest = plan.laptop.operations.at(-1);
   return (
@@ -444,7 +456,8 @@ export type InstallPlanDeviceState =
   | "unknown"
   | "fenced";
 
-export function deviceState(
+/** The attempt's ledger state, independently of recorded proof of a running build. */
+export function deviceLedgerState(
   plan: JonesInstallPlan,
   device: JonesInstallPlanDevice,
   now: number = Number.POSITIVE_INFINITY,
@@ -452,8 +465,6 @@ export function deviceState(
   if (device.membership === "removed") return "removed";
   const operations = deviceActiveOperations(device);
   const pending = operations.find(outstanding);
-  if (device.verifiedElsewhere !== undefined && canRecordRunningTarget(device))
-    return "updated-elsewhere";
   const latest = pending ?? operations.at(-1);
   if (latest !== undefined) {
     if (latest.step === "directive") {
@@ -490,6 +501,20 @@ export function deviceState(
     (plan.laptop.gate === undefined || plan.laptop.gateClosed !== undefined)
     ? "not-started"
     : "queued";
+}
+
+export function deviceState(
+  plan: JonesInstallPlan,
+  device: JonesInstallPlanDevice,
+  now: number = Number.POSITIVE_INFINITY,
+): InstallPlanDeviceState {
+  const ledger = deviceLedgerState(plan, device, now);
+  return ledger !== "rolled-back" &&
+    device.membership === "selected" &&
+    device.verifiedElsewhere !== undefined &&
+    canRecordRunningTarget(device)
+    ? "updated-elsewhere"
+    : ledger;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { type Ref, useId, useRef, useState } from "react";
+import { type Ref, useEffect, useId, useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesInstallPlanSelection } from "@t3tools/contracts/jones/installPlan";
 import {
@@ -21,7 +21,7 @@ import {
 } from "@t3tools/client-runtime/jones/install-plan";
 import { cn } from "../../lib/utils";
 import { useInstallPlan } from "./useInstallPlan";
-import { installStatusStore, type InstallStatusStore } from "./panelUi";
+import { installStatusStore, type InstallStatusSnapshot, type InstallStatusStore } from "./panelUi";
 import {
   deviceAttention,
   deviceHeardAt,
@@ -31,18 +31,31 @@ import {
 } from "./presentation";
 import { Elapsed, HeardAgo } from "./Elapsed";
 import { ProgressSteps } from "./ProgressSteps";
-import { desktopCanPreviewInstallPlan, selectionFor } from "./entrypoints";
-import { installPlanServices, requestInstallPlan } from "./services";
+import { desktopCanPreviewInstallPlan, selectionFor, targetForDesktop } from "./entrypoints";
 import {
+  confirmClosedPlan,
+  installPlanServices,
+  nativePlanIssue,
+  readTargetPlan,
+  readWritableTarget,
+  requestInstallPlan,
+  requireWritablePlan,
+  type InstallPlanBinding,
+} from "./services";
+import {
+  canFenceArchivedOperation,
+  canStopOperation,
+  fencePanelOperation,
   inspectPanelCleanup,
   performPanelAction,
   recoverPanelCleanup,
   stopPanelDownload,
   type CleanupInspection,
   type PanelAction,
+  type PanelActionTarget,
 } from "./actions";
 import { finishPlan } from "./finishPlan";
-import { abandonDevice } from "./abandonDevice";
+import { abandonDevice, deviceAbandonTarget } from "./abandonDevice";
 import { ManualInstallClosure } from "./ManualInstallClosure";
 import {
   INSTALL_PLAN_GO,
@@ -63,6 +76,87 @@ export function InstallStatusPanel({
   readonly store?: InstallStatusStore;
 }) {
   const snapshot = useInstallPlan(store);
+  const view = panelPresentation(snapshot, snapshot.updatedAt);
+  const active = installPlanServices();
+  const binding = active?.store === store ? active : undefined;
+  const selection = store.historySelection();
+  const historyId = snapshot.showLast ? snapshot.historyPlanId : null;
+  const documentRevision = snapshot.native?.documentRevision;
+  const historyRevision =
+    snapshot.native?.recoveryHistory?.find((entry) => entry.planId === historyId)?.revision ??
+    (snapshot.native?.last?.planId === historyId ? snapshot.native.last.revision : undefined);
+  const needsHistory =
+    snapshot.open &&
+    historyId !== null &&
+    snapshot.native?.view.recoveryHistory === 1 &&
+    snapshot.native.readOnly === undefined &&
+    (snapshot.historyPlan === null ||
+      (historyRevision === undefined
+        ? snapshot.historyDocumentRevision !== documentRevision
+        : historyRevision !== snapshot.historyPlan.revision));
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Archive detail is fetched for this exact desk, selection and durable revision.
+  useEffect(() => {
+    if (!needsHistory || binding === undefined || historyId === null) return;
+    let cancelled = false;
+    const showError = (error: string) => {
+      if (!cancelled && installPlanServices() === binding && store.historySelection() === selection)
+        store.update({ error });
+    };
+    void readTargetPlan(binding, { planId: historyId, archived: true })
+      .then(({ result, plan }) => {
+        const issue = nativePlanIssue(result);
+        if (issue !== undefined || plan === null)
+          showError(issue ?? "This saved update is unavailable.");
+      })
+      .catch(() => showError("Install recovery history could not be read from Laptop."));
+    return () => {
+      cancelled = true;
+    };
+  }, [binding, store, historyId, needsHistory, documentRevision, selection]);
+
+  if (!snapshot.open || snapshot.native === null) return null;
+  if (view?.plan == null) {
+    const message = snapshot.native.readOnly?.message ?? snapshot.nativeRefusal ?? snapshot.error;
+    if (message === null && historyId === null && !snapshot.native.recoveryHistory?.length)
+      return null;
+    return (
+      <section
+        aria-label="Install status"
+        className="shrink-0 rounded-lg border border-sidebar-border p-2 text-xs text-muted-foreground"
+      >
+        <h2>Install status</h2>
+        <HistoryNavigation store={store} snapshot={snapshot} preview={false} />
+        {message !== null || needsHistory ? (
+          <p role="status">{message ?? "Reading recovery history…"}</p>
+        ) : null}
+      </section>
+    );
+  }
+  return (
+    <InstallStatusPlan
+      key={`${selection}:${view.plan.planId}`}
+      store={store}
+      snapshot={snapshot}
+      binding={binding}
+      view={view}
+      historyRefreshing={needsHistory && historyRevision !== view.plan.revision}
+    />
+  );
+}
+
+function InstallStatusPlan({
+  store,
+  snapshot,
+  binding,
+  view,
+  historyRefreshing,
+}: {
+  readonly store: InstallStatusStore;
+  readonly snapshot: InstallStatusSnapshot;
+  readonly binding: InstallPlanBinding | undefined;
+  readonly view: NonNullable<ReturnType<typeof panelPresentation>>;
+  readonly historyRefreshing: boolean;
+}) {
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [detail, setDetail] = useState<EnvironmentId | "laptop" | null>(null);
   const allDevicesButton = useRef<HTMLButtonElement>(null);
@@ -73,18 +167,7 @@ export function InstallStatusPanel({
     readonly recovery?: "released" | "released-plan-unconfirmed" | "unproved";
   } | null>(null);
   const descriptionId = useId();
-  const view = panelPresentation(snapshot, snapshot.updatedAt);
-  if (!snapshot.open || snapshot.native === null) return null;
-  if (view?.plan == null)
-    return snapshot.native.readOnly === undefined && snapshot.error === null ? null : (
-      <section
-        aria-label="Install status"
-        className="shrink-0 rounded-lg border border-sidebar-border p-2 text-xs text-muted-foreground"
-      >
-        <h2>Install status</h2>
-        <p role="status">{snapshot.native.readOnly?.message ?? snapshot.error}</p>
-      </section>
-    );
+  if (view.plan === null || snapshot.native === null) return null;
   const plan = view.plan;
   const editing = draft !== null && draft.planId === plan.planId && !view.readOnly;
   const selected = editing
@@ -95,7 +178,8 @@ export function InstallStatusPanel({
   const devices = new Map(
     snapshot.devices.filter((d) => d.environmentId !== laptopId).map((d) => [d.environmentId, d]),
   );
-  const ids = [...new Set([...plan.devices.map((d) => d.environmentId), ...devices.keys()])];
+  const memberIds = plan.devices.map((d) => d.environmentId);
+  const ids = view.archived ? memberIds : [...new Set([...memberIds, ...devices.keys()])];
   const choices = ids.map((environmentId) => {
     const device = devices.get(environmentId);
     const member = plan.devices.find((d) => d.environmentId === environmentId);
@@ -130,11 +214,17 @@ export function InstallStatusPanel({
   });
   const perform = async (key: string, work: () => Promise<void>) => {
     if (pending.has(key)) return;
+    if (binding === undefined || installPlanServices() !== binding) {
+      store.update({ error: "Install status connection changed. Refresh Install status." });
+      return;
+    }
+    const selection = store.historySelection();
     setPending((old) => new Set([...old, key]));
     store.update({ error: null });
     await Promise.resolve()
       .then(work)
       .catch((error: unknown) => {
+        if (store.historySelection() !== selection || installPlanServices() !== binding) return;
         store.update({
           error:
             error instanceof Error
@@ -146,17 +236,34 @@ export function InstallStatusPanel({
         setPending((old) => new Set([...old].filter((item) => item !== key)));
       });
   };
+  const planTarget = {
+    planId: plan.planId,
+    archived: view.archived,
+    expectedRevision: plan.revision,
+  };
+  const targetFor = (environmentId: EnvironmentId | "laptop"): PanelActionTarget => {
+    const laptop = environmentId === "laptop";
+    const operationId = laptop
+      ? view.laptop?.operationId
+      : view.rows.find((r) => r.environmentId === environmentId)?.operationId;
+    const stagedHandle = laptop
+      ? snapshot.desktop?.jones?.stagedHandle
+      : devices.get(environmentId)?.observation.state?.stagedHandle;
+    return {
+      ...planTarget,
+      operationId: operationId ?? null,
+      ...(laptop ? { laptopEnvironmentId: laptopId } : {}),
+      ...(stagedHandle === undefined ? {} : { stagedHandle }),
+      ...(view.preview ? { preview: plan.target } : {}),
+    };
+  };
   const action = (environmentId: EnvironmentId | "laptop", value: PanelAction) =>
     void perform(`${environmentId}:${value}`, () =>
-      performPanelAction(
-        environmentId,
-        value,
-        !view.preview && value === "check" ? plan.planId : undefined,
-      ),
+      performPanelAction(environmentId, value, targetFor(environmentId), binding),
     );
   const stop = (kind: "laptop" | "device", environmentId: EnvironmentId, operationId: string) =>
     void perform(`${kind === "laptop" ? "laptop" : environmentId}:stop`, () =>
-      stopPanelDownload({ kind, planId: plan.planId, environmentId, operationId }),
+      stopPanelDownload({ ...planTarget, kind, environmentId, operationId }, binding),
     );
   const editDone = () =>
     void perform("edit", async () => {
@@ -164,9 +271,23 @@ export function InstallStatusPanel({
       const select: JonesInstallPlanSelection[] = choices.flatMap((c) =>
         selected.has(c.environmentId) && c.selection !== undefined ? [c.selection] : [],
       );
-      if (view.preview) store.update({ previewSelection: select });
-      else {
-        const binding = installPlanServices();
+      if (view.preview) {
+        if (binding === undefined) throw new Error("Install status is not connected.");
+        const read = await requestInstallPlan({ type: "read" }, binding);
+        requireWritablePlan(binding, read);
+        const desktopTarget = targetForDesktop(store.get().desktop);
+        if (
+          read.state.current !== null ||
+          desktopTarget === undefined ||
+          desktopTarget.sourceSha !== plan.target.sourceSha ||
+          desktopTarget.sourceTree !== plan.target.sourceTree ||
+          read.state.laptop.environmentId !== laptopId
+        )
+          throw new Error("The available update changed. Review the devices again.");
+        store.update({ previewSelection: select });
+      } else {
+        if (binding === undefined) throw new Error("Install status is not connected.");
+        await readWritableTarget(binding, { ...planTarget, expectedRevision: draft!.revision });
         const result = await requestInstallPlan(
           {
             type: "edit",
@@ -179,7 +300,8 @@ export function InstallStatusPanel({
           },
           binding,
         );
-        if (result.refused !== undefined) throw new Error(result.refused.message);
+        const issue = nativePlanIssue(result);
+        if (issue !== undefined) throw new Error(issue);
         const locked = result.applied?.filter((d) => d.result === "locked-started") ?? [];
         if (locked.length > 0)
           store.update({
@@ -210,24 +332,22 @@ export function InstallStatusPanel({
       ? detail
       : null;
   const overview = focusedDevice === null;
-  const canCheckLaptop =
-    !view.readOnly ||
-    (plan.cancelled === true &&
-      view.laptop?.phase === "held" &&
-      snapshot.native.current === null &&
-      snapshot.native.readOnly === undefined);
-  const hasClosureHistory =
-    snapshot.native.last?.manualClosure !== undefined || snapshot.native.last?.cancelled === true;
-  const updatePreview =
-    view.readOnly &&
-    hasClosureHistory &&
-    snapshot.native.current === null &&
-    snapshot.native.laptop.environmentId !== undefined &&
-    desktopCanPreviewInstallPlan(snapshot.desktop);
-  const summary = view.readOnly
+  const canCheckLaptop = !view.readOnly || view.archived || view.deskReadOnly;
+  const archivedRecovery = view.archived && snapshot.native.view.recoveryHistory === 1;
+  const canRecoverHistory = archivedRecovery && !view.deskReadOnly && !historyRefreshing;
+  const archivedLaptopStop =
+    archivedRecovery &&
+    plan.laptop.operations.at(-1)?.step === "download" &&
+    [undefined, "running"].includes(plan.laptop.operations.at(-1)?.result?.status);
+  const pendingLaptopAbandonment = plan.laptop.stageAbandonment;
+  const archivedLaptopAbandon =
+    archivedRecovery &&
+    pendingLaptopAbandonment !== undefined &&
+    pendingLaptopAbandonment.status !== "retired";
+  const summary = view.archived
     ? plan.cancelled === true
-      ? "Update plan cancelled"
-      : lastUpdateLabel(plan.dismissedAt ?? plan.createdAt)
+      ? "Scheduling stopped"
+      : lastUpdateLabel(plan.dismissedAt ?? plan.supersededAt ?? plan.createdAt)
     : view.preview
       ? "Laptop first"
       : (gateIssue?.title ?? view.summary);
@@ -276,7 +396,9 @@ export function InstallStatusPanel({
             size="micro"
             aria-label="Done with update plan"
             disabled={pending.has("dismiss")}
-            onClick={() => void perform("dismiss", () => finishPlan(plan.planId))}
+            onClick={() =>
+              void perform("dismiss", () => finishPlan(plan.planId, plan.revision, binding))
+            }
           >
             Done
           </Button>
@@ -340,12 +462,13 @@ export function InstallStatusPanel({
               </Button>
             </div>
           ) : null}
-          {overview && !editing && hasClosureHistory && (view.preview || updatePreview) ? (
-            <div className="flex min-h-7 items-center px-2 pb-1">
-              <Button variant="ghost-muted" size="micro" onClick={() => store.open(view.preview)}>
-                {view.preview ? "Last update" : "Back to available update"}
-              </Button>
-            </div>
+          {overview && !editing ? (
+            <HistoryNavigation
+              store={store}
+              snapshot={snapshot}
+              preview={view.preview}
+              displayedPlan={plan.planId}
+            />
           ) : null}
           {!editing && !view.preview ? (
             <ManualInstallClosure store={store} plan={plan} readOnly={view.readOnly} />
@@ -368,7 +491,10 @@ export function InstallStatusPanel({
                     overview && "truncate",
                   )}
                 >
-                  {view.laptop?.text}
+                  {view.archived && view.laptop?.phase === "preview"
+                    ? "No update recorded"
+                    : view.laptop?.text}
+                  {view.archived && view.laptop?.hasRecoveryDuty ? " · Recovery pending" : null}
                   {view.laptop?.progress?.active ? (
                     <>
                       {" · "}
@@ -434,30 +560,81 @@ export function InstallStatusPanel({
                   {plan.laptop.operations.at(-1)?.result?.message ? (
                     <p>{plan.laptop.operations.at(-1)!.result!.message}</p>
                   ) : null}
-                  {gateIssue !== undefined ? <p>{gateIssue.reason}</p> : null}
+                  {view.archived ? (
+                    <RunningBuild
+                      version={
+                        snapshot.native.laptop.activeVersion ?? snapshot.desktop?.currentVersion
+                      }
+                      source={
+                        snapshot.native.laptop.activeSource ??
+                        snapshot.desktop?.jones?.installedSource?.sha
+                      }
+                      fresh={snapshot.native.readOnly === undefined}
+                    />
+                  ) : gateIssue !== undefined ? (
+                    <p>{gateIssue.reason}</p>
+                  ) : null}
                   {reopenToCheckInstall ? (
                     <p>{LAPTOP_REOPEN_TO_CHECK_INSTALL}</p>
                   ) : view.laptop?.phase === "held" ? (
                     <p>
-                      {plan.cancelled === true
+                      {view.archived
                         ? "Check the Laptop outcome to update this history entry."
                         : plan.laptop.operations.at(-1)?.step === "install"
                           ? "Check the running Laptop build. If it matches the plan and passes verification, the other devices can continue."
                           : "Check whether the previous download has finished or stopped."}
                     </p>
                   ) : null}
-                  {availableLaptop?.abandon ? (
+                  {archivedLaptopStop && laptopOperationId !== undefined ? (
                     <Button
                       variant="outline"
                       size="micro"
-                      disabled={pending.has("laptop:abandon-stage")}
-                      onClick={() => action("laptop", "abandon-stage")}
+                      disabled={!canRecoverHistory || pending.has("laptop:stop")}
+                      onClick={() => stop("laptop", laptopId, laptopOperationId)}
                     >
-                      {plan.laptop.stageAbandonment?.status === "pending"
-                        ? "Abandoning staged update…"
-                        : plan.laptop.stageAbandonment?.status === "unconfirmed"
-                          ? "Retry abandoning staged update"
-                          : "Abandon staged update"}
+                      Stop this download
+                    </Button>
+                  ) : null}
+                  {availableLaptop?.abandon || archivedLaptopAbandon ? (
+                    <Button
+                      variant="outline"
+                      size="micro"
+                      disabled={
+                        pending.has("laptop:abandon-stage") || (view.archived && !canRecoverHistory)
+                      }
+                      onClick={() => {
+                        const creator = plan.laptop.operations.findLast(
+                          (op) => op.step === "download",
+                        );
+                        const operationId = archivedLaptopAbandon
+                          ? pendingLaptopAbandonment?.operationId
+                          : creator?.operationId;
+                        const stagedHandle = archivedLaptopAbandon
+                          ? pendingLaptopAbandonment?.handle
+                          : creator?.createdStagedHandle;
+                        if (operationId === undefined || stagedHandle === undefined) return;
+                        void perform("laptop:abandon-stage", () =>
+                          performPanelAction(
+                            "laptop",
+                            "abandon-stage",
+                            {
+                              ...planTarget,
+                              operationId,
+                              stagedHandle,
+                              laptopEnvironmentId: laptopId,
+                            },
+                            binding,
+                          ),
+                        );
+                      }}
+                    >
+                      {archivedLaptopAbandon
+                        ? "Resume staged update retirement"
+                        : plan.laptop.stageAbandonment?.status === "pending"
+                          ? "Abandoning staged update…"
+                          : plan.laptop.stageAbandonment?.status === "unconfirmed"
+                            ? "Retry abandoning staged update"
+                            : "Abandon staged update"}
                     </Button>
                   ) : null}
                   {!view.readOnly &&
@@ -482,7 +659,9 @@ export function InstallStatusPanel({
                     >
                       {pending.has("laptop:check")
                         ? "Checking outcome…"
-                        : view.laptop?.phase === "held" || reopenToCheckInstall
+                        : view.laptop?.phase === "held" ||
+                            reopenToCheckInstall ||
+                            (view.archived && view.laptop?.hasRecoveryDuty)
                           ? "Check update outcome"
                           : "Refresh now"}
                     </Button>
@@ -498,8 +677,8 @@ export function InstallStatusPanel({
             >
               <Clock3Icon className="size-3 shrink-0" />
               <span className="min-w-0 flex-1 truncate">
-                {plan.cancelled === true
-                  ? "Queued updates cancelled"
+                {view.archived
+                  ? "Scheduling for this plan is closed"
                   : gatePaused
                     ? "Other devices paused · waiting for Laptop verification"
                     : gateIssue !== undefined
@@ -595,10 +774,8 @@ export function InstallStatusPanel({
                 ? included
                   ? "Included"
                   : "Not in plan"
-                : row &&
-                    plan.cancelled === true &&
-                    ["queued", "not-started", "staged", "fenced"].includes(row.phase)
-                  ? "Skipped for this plan"
+                : view.archived && row?.setupUnconfirmed
+                  ? "Setup unconfirmed"
                   : row?.phase === "not-started" && gateIssue?.phase === "gateClosed"
                     ? "Not started · queue closed"
                     : (row?.text ??
@@ -609,6 +786,7 @@ export function InstallStatusPanel({
                 !editing &&
                 silent &&
                 !row?.launcherOutcomeUnconfirmed &&
+                !row?.hasRecoveryDuty &&
                 row?.attemptText === undefined &&
                 row?.sourceText === undefined
                   ? attention.text
@@ -623,12 +801,13 @@ export function InstallStatusPanel({
                 row?.phase === "held" ||
                 row?.phase === "unknown" ||
                 (row?.launcherOutcomeUnconfirmed === true && !row.settled);
-              const operations = plan.devices.find(
-                (d) => d.environmentId === environmentId,
-              )?.operations;
-              const operation = operations?.find(operationOutstanding) ?? operations?.at(-1);
+              const member = plan.devices.find((d) => d.environmentId === environmentId);
+              const operations = member?.operations;
+              const operation = view.archived
+                ? (operations?.find(operationOutstanding) ?? operations?.at(-1))
+                : operations?.find((op) => op.operationId === row?.operationId);
               const receipt = operation?.receipt;
-              const operationId = row?.operationId;
+              const operationId = operation?.operationId;
               const setupUnconfirmed =
                 operation?.step === "directive" && operation.directive === undefined;
               const launcherUnconfirmed =
@@ -641,10 +820,39 @@ export function InstallStatusPanel({
                   ? `${plan.planId}:${environmentId}:${receipt.operationId}:${receipt.updatedAt}:cleanup`
                   : null;
               const cleanup = cleanupInspection?.key === inspectKey ? cleanupInspection : null;
-              const canCheckArchived =
-                snapshot.native?.readOnly === undefined &&
-                ((plan.cancelled === true && (inspectKey !== null || setupUnconfirmed)) ||
-                  launcherUnconfirmed);
+              const cleanupTarget =
+                inspectKey !== null && receipt?.jobId !== undefined
+                  ? {
+                      ...planTarget,
+                      environmentId,
+                      operationId: receipt.operationId,
+                      jobId: receipt.jobId,
+                    }
+                  : undefined;
+              const stopArchived =
+                archivedRecovery && operation !== undefined && canStopOperation(operation);
+              const fenceArchived =
+                archivedRecovery &&
+                operation !== undefined &&
+                canFenceArchivedOperation(operation, snapshot.updatedAt);
+              const abandonTarget = deviceAbandonTarget(plan, environmentId, view.archived);
+              const resumeArchived = archivedRecovery && abandonTarget?.resume === true;
+              const canInspect = !view.archived || archivedRecovery || plan.cancelled === true;
+              const recoveryReason = view.deskReadOnly
+                ? (snapshot.native?.readOnly?.message ??
+                  snapshot.nativeRefusal ??
+                  "Install status is read-only.")
+                : historyRefreshing
+                  ? "Reading updated recovery history."
+                  : device?.canOperate === false
+                    ? "This session cannot change updates."
+                    : device?.observation.freshness !== "fresh" ||
+                        device.observation.state?.environmentId !== environmentId
+                      ? "Fresh status for this device is required."
+                      : device.observation.state.capability.operations !== 1
+                        ? "This device does not currently support update operations."
+                        : undefined;
+              const recoveryDescription = `${descriptionId}-recovery-${environmentId}`;
               return (
                 <li key={environmentId}>
                   <div className="flex min-w-0 items-center gap-1">
@@ -718,6 +926,7 @@ export function InstallStatusPanel({
                           data-row-text
                         >
                           {lineText}
+                          {view.archived && row?.hasRecoveryDuty ? " · Recovery pending" : null}
                           {timer !== undefined ? (
                             <>
                               {" · "}
@@ -786,6 +995,16 @@ export function InstallStatusPanel({
                     >
                       {row?.progress ? <ProgressSteps progress={row.progress} /> : null}
                       {row?.attemptText ? <p>{row.attemptText}</p> : null}
+                      {view.archived ? (
+                        <RunningBuild
+                          version={device?.observation.state?.currentVersion}
+                          source={device?.observation.state?.installedSource?.sha}
+                          fresh={device?.observation.freshness === "fresh"}
+                        />
+                      ) : null}
+                      {row?.queueReason !== undefined && row.queueReason !== lineText ? (
+                        <p>{row.queueReason}</p>
+                      ) : null}
                       {device?.observation.freshness !== "fresh" ? (
                         <p>{device?.observation.message ?? "Fresh status unavailable."}</p>
                       ) : null}
@@ -799,11 +1018,11 @@ export function InstallStatusPanel({
                       ) : receipt?.stop?.result === "not-stoppable-phase" ? (
                         <p>This phase cannot be stopped. Read the operation outcome.</p>
                       ) : null}
-                      {held ? (
+                      {held || (view.archived && setupUnconfirmed) ? (
                         <p>
                           {setupUnconfirmed
-                            ? plan.cancelled === true
-                              ? "The host had yet to confirm setup when this plan was cancelled."
+                            ? view.archived
+                              ? "Setup for the original request is unconfirmed. Check this device for its exact setup status."
                               : "The host has yet to confirm its update setup. The plan is still at setup for this device."
                             : receipt?.code === "cleanup-unconfirmed"
                               ? "Inspect cleanup to check whether the disk image from this attempt is still attached."
@@ -815,7 +1034,7 @@ export function InstallStatusPanel({
                           {cleanup.recovery === "unproved"
                             ? "Cleanup release is unconfirmed. Check the update outcome before trying again."
                             : cleanup.recovery === "released"
-                              ? "The cleanup hold was released."
+                              ? "The host released the cleanup hold. The exact receipt is saved in this plan."
                               : cleanup.recovery === "released-plan-unconfirmed"
                                 ? "The host released the cleanup hold. Check the update outcome to refresh this plan."
                                 : cleanup.inspection.status === "eligible"
@@ -823,19 +1042,29 @@ export function InstallStatusPanel({
                                   : "Inspection could not confirm cleanup. The update remains on hold."}
                         </p>
                       ) : null}
-                      {!view.readOnly || canCheckArchived ? (
+                      {recoveryReason !== undefined &&
+                      (stopArchived ||
+                        fenceArchived ||
+                        resumeArchived ||
+                        (cleanupTarget !== undefined && canInspect)) ? (
+                        <p id={recoveryDescription}>{recoveryReason}</p>
+                      ) : null}
+                      {!view.readOnly || view.archived || view.deskReadOnly ? (
                         <div className="flex flex-wrap gap-1">
-                          {inspectKey !== null && receipt !== undefined && device?.canOperate ? (
+                          {inspectKey !== null && cleanupTarget !== undefined && canInspect ? (
                             <Button
                               variant="outline"
                               size="micro"
-                              disabled={pending.has(inspectKey)}
+                              disabled={pending.has(inspectKey) || recoveryReason !== undefined}
+                              aria-describedby={
+                                recoveryReason === undefined ? undefined : recoveryDescription
+                              }
                               onClick={() =>
                                 void perform(inspectKey, async () => {
                                   setCleanupInspection(null);
                                   const inspection = await inspectPanelCleanup(
-                                    environmentId,
-                                    receipt.operationId,
+                                    cleanupTarget,
+                                    binding,
                                   );
                                   setCleanupInspection({ key: inspectKey, inspection });
                                 })
@@ -846,27 +1075,43 @@ export function InstallStatusPanel({
                           ) : null}
                           {inspectKey !== null &&
                           receipt !== undefined &&
-                          device?.canOperate &&
+                          cleanupTarget !== undefined &&
+                          canInspect &&
                           cleanup?.inspection.recoveryToken !== undefined ? (
                             <Button
                               variant="outline"
                               size="micro"
-                              disabled={pending.has(inspectKey)}
+                              disabled={pending.has(inspectKey) || recoveryReason !== undefined}
+                              aria-describedby={
+                                recoveryReason === undefined ? undefined : recoveryDescription
+                              }
                               onClick={() => {
                                 const token = cleanup.inspection.recoveryToken;
                                 if (token === undefined) return;
                                 void perform(inspectKey, async () => {
                                   const recovery = await recoverPanelCleanup(
-                                    environmentId,
+                                    cleanupTarget,
                                     receipt,
                                     token,
+                                    binding,
                                   );
-                                  if (recovery !== "cancelled")
+                                  if (recovery !== "cancelled") {
                                     setCleanupInspection({
                                       key: inspectKey,
                                       inspection: { status: "eligible" },
                                       recovery,
                                     });
+                                    if (
+                                      recovery !== "unproved" &&
+                                      installPlanServices() === binding
+                                    )
+                                      store.update({
+                                        error:
+                                          recovery === "released"
+                                            ? "The host released the cleanup hold. The exact receipt is saved in this plan."
+                                            : "The host released the cleanup hold. Saving the exact receipt in this plan is unconfirmed.",
+                                      });
+                                  }
                                 });
                               }}
                             >
@@ -905,11 +1150,19 @@ export function InstallStatusPanel({
                               {row.installLabel}
                             </Button>
                           ) : null}
-                          {row?.actions.stop && operationId !== undefined ? (
+                          {(row?.actions.stop || stopArchived) && operationId !== undefined ? (
                             <Button
                               variant="outline"
                               size="micro"
-                              disabled={pending.has(`${environmentId}:stop`)}
+                              disabled={
+                                pending.has(`${environmentId}:stop`) ||
+                                (view.archived && recoveryReason !== undefined)
+                              }
+                              aria-describedby={
+                                view.archived && recoveryReason !== undefined
+                                  ? recoveryDescription
+                                  : undefined
+                              }
                               onClick={() => stop("device", environmentId, operationId)}
                             >
                               {pending.has(`${environmentId}:stop`)
@@ -917,22 +1170,52 @@ export function InstallStatusPanel({
                                 : `Stop download on ${label}`}
                             </Button>
                           ) : null}
-                          {row?.actions.abandon ? (
+                          {fenceArchived && operationId !== undefined ? (
                             <Button
                               variant="outline"
                               size="micro"
-                              disabled={pending.has(`${environmentId}:abandon`)}
+                              disabled={
+                                recoveryReason !== undefined ||
+                                pending.has(`${environmentId}:fence`)
+                              }
+                              aria-describedby={
+                                recoveryReason === undefined ? undefined : recoveryDescription
+                              }
+                              onClick={() =>
+                                void perform(`${environmentId}:fence`, () =>
+                                  fencePanelOperation(
+                                    { ...planTarget, archived: true, environmentId, operationId },
+                                    binding,
+                                  ),
+                                )
+                              }
+                            >
+                              Fence original request
+                            </Button>
+                          ) : null}
+                          {(row?.actions.abandon || resumeArchived) &&
+                          abandonTarget !== undefined ? (
+                            <Button
+                              variant="outline"
+                              size="micro"
+                              disabled={
+                                pending.has(`${environmentId}:abandon`) ||
+                                (view.archived && recoveryReason !== undefined)
+                              }
+                              aria-describedby={
+                                view.archived && recoveryReason !== undefined
+                                  ? recoveryDescription
+                                  : undefined
+                              }
                               onClick={() =>
                                 void perform(`${environmentId}:abandon`, () =>
-                                  abandonDevice(environmentId, plan.planId),
+                                  abandonDevice(abandonTarget, binding),
                                 )
                               }
                             >
                               {pending.has(`${environmentId}:abandon`)
                                 ? "Abandoning update…"
-                                : plan.devices.find(
-                                      (device) => device.environmentId === environmentId,
-                                    )?.abandoning
+                                : abandonTarget.resume
                                   ? "Resume abandonment"
                                   : "Abandon update"}
                             </Button>
@@ -953,13 +1236,27 @@ export function InstallStatusPanel({
                             variant="ghost-muted"
                             size="micro"
                             disabled={pending.has(`${environmentId}:check`)}
-                            onClick={() => action(environmentId, "check")}
+                            onClick={() =>
+                              void perform(`${environmentId}:check`, () =>
+                                performPanelAction(
+                                  environmentId,
+                                  "check",
+                                  {
+                                    ...targetFor(environmentId),
+                                    operationId: operationId ?? null,
+                                  },
+                                  binding,
+                                ),
+                              )
+                            }
                           >
                             {pending.has(`${environmentId}:check`)
                               ? "Checking…"
                               : setupUnconfirmed
                                 ? "Check setup status"
-                                : held || launcherUnconfirmed
+                                : held ||
+                                    launcherUnconfirmed ||
+                                    (view.archived && operationId !== undefined)
                                   ? "Check update outcome"
                                   : "Refresh now"}
                           </Button>
@@ -972,7 +1269,7 @@ export function InstallStatusPanel({
             })}
           </ul>
           {!editing &&
-          !view.readOnly &&
+          !view.archived &&
           !view.preview &&
           snapshot.native.view.cancelPlan === 1 &&
           (overview || focusedDevice === "laptop") ? (
@@ -980,17 +1277,19 @@ export function InstallStatusPanel({
               <Button
                 size="micro"
                 variant="ghost-muted"
-                disabled={pending.has("cancel-plan")}
+                disabled={pending.has("cancel-plan") || view.deskReadOnly}
                 onClick={() =>
                   void perform("cancel-plan", async () => {
-                    const binding = installPlanServices();
                     if (binding === undefined) throw new Error("Install status is not connected.");
+                    const selection = store.historySelection();
+                    await readWritableTarget(binding, planTarget);
                     if (
                       !(await binding.services.confirm(
-                        "Cancel this update plan? Queued updates will be dropped. Any setup already sent can still reach the host. Install history and cleanup holds will be kept.",
+                        "Stop scheduling this plan? Already-issued work may finish. You can check its outcomes and recovery in Install status.",
                       ))
                     )
                       return;
+                    await readWritableTarget(binding, planTarget);
                     const result = await requestInstallPlan(
                       {
                         type: "cancel-plan",
@@ -998,33 +1297,124 @@ export function InstallStatusPanel({
                         expectedRevision: plan.revision,
                       },
                       binding,
+                    ).catch(() => undefined);
+                    await confirmClosedPlan(
+                      binding,
+                      plan.planId,
+                      (closed) =>
+                        closed.cancelled === true &&
+                        (closed.cancelledFromRevision === undefined ||
+                          closed.cancelledFromRevision === plan.revision),
+                      result,
                     );
-                    if (result.refused !== undefined) throw new Error(result.refused.message);
-                    if (
-                      result.state.current !== null ||
-                      result.state.last?.planId !== plan.planId ||
-                      result.state.last.cancelled !== true
-                    )
-                      throw new Error(
-                        "Cancellation could not be confirmed. Refresh Install status.",
-                      );
-                    setDetail(null);
-                    store.open(true);
+                    if (store.historySelection() === selection) {
+                      store.update({ previewSelection: [], error: null });
+                      store.open(true, plan.planId);
+                    }
                   })
                 }
               >
-                Cancel update plan
+                Stop scheduling this plan
               </Button>
             </div>
           ) : null}
-          {snapshot.error ? (
+          {snapshot.error || snapshot.native.readOnly || snapshot.nativeRefusal ? (
             <p role="status" className="px-2 py-1 text-2xs text-muted-foreground">
-              {snapshot.error}
+              {snapshot.native.readOnly?.message ?? snapshot.nativeRefusal ?? snapshot.error}
             </p>
           ) : null}
         </div>
       ) : null}
     </section>
+  );
+}
+
+function HistoryNavigation({
+  store,
+  snapshot,
+  displayedPlan,
+  preview,
+}: {
+  readonly store: InstallStatusStore;
+  readonly snapshot: InstallStatusSnapshot;
+  readonly displayedPlan?: string;
+  readonly preview: boolean;
+}) {
+  const { native, desktop, showLast } = snapshot;
+  if (native === null) return null;
+  const last = native.last;
+  const history = native.recoveryHistory ?? [];
+  const canPreview = native.current === null && desktopCanPreviewInstallPlan(desktop);
+  const otherPlan =
+    native.current !== null ? native.current.planId !== displayedPlan : canPreview && !preview;
+  if (!otherPlan && (last === null || last.planId === displayedPlan) && history.length === 0)
+    return null;
+  const select = (planId?: string) => {
+    store.update({ error: null });
+    store.open(planId !== undefined, planId);
+  };
+  return (
+    <div
+      className="space-y-1 px-2 pb-1 text-2xs text-muted-foreground"
+      aria-label="Update plan history"
+    >
+      {showLast && otherPlan ? (
+        <Button variant="ghost-muted" size="micro" onClick={() => select()}>
+          {native.current !== null ? "Back to current update" : "Back to available update"}
+        </Button>
+      ) : null}
+      {last !== null && last.planId !== displayedPlan ? (
+        <Button variant="ghost-muted" size="micro" onClick={() => select(last.planId)}>
+          Last update
+        </Button>
+      ) : null}
+      {history.length > 0 ? (
+        <details className="space-y-1">
+          <summary className="cursor-pointer rounded-sm px-1 focus-visible:outline-2 focus-visible:outline-ring">
+            Recovery history
+          </summary>
+          {history.map((entry) => {
+            const pending = [
+              ...(entry.pendingLaptop ? ["Laptop"] : []),
+              ...entry.pendingDevices.map((device) => device.label),
+            ];
+            return (
+              <Button
+                key={entry.planId}
+                variant={displayedPlan === entry.planId ? "secondary" : "ghost-muted"}
+                size="micro"
+                className="h-auto w-full justify-start whitespace-normal text-left"
+                aria-label={`Recovery for ${entry.targetVersion}`}
+                aria-pressed={displayedPlan === entry.planId}
+                onClick={() => select(entry.planId)}
+              >
+                <span>
+                  {entry.targetVersion} · {pending.join(", ")}
+                </span>
+              </Button>
+            );
+          })}
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function RunningBuild({
+  version,
+  source,
+  fresh,
+}: {
+  readonly version: string | undefined;
+  readonly source: string | undefined;
+  readonly fresh: boolean;
+}) {
+  if (version === undefined) return <p>Running build unverified</p>;
+  return (
+    <p>
+      {fresh ? "Running build" : "Last reported running build"}: {version}
+      {source === undefined ? "" : ` (${source.slice(0, 7)})`}
+    </p>
   );
 }
 

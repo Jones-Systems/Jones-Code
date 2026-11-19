@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { DesktopBridge } from "../ipc.ts";
 import {
   JonesInstallPlan,
+  JonesInstallPlanCliRequest,
   JonesInstallPlanDevice,
   JonesInstallPlanGrant,
   JonesInstallPlanHostOperation,
@@ -616,4 +617,50 @@ it("decodes an independent exact-bound native preflight without granting any pla
       activeGeneration: "fabricated",
     }),
   ).toEqual({ type: "recovery-preflight", input });
+});
+
+it("negotiates recovery history and exact displayed revisions on wire version one", () => {
+  const decodeRequest = Schema.decodeUnknownSync(JonesInstallPlanRequest);
+  const decodeResult = Schema.decodeUnknownSync(JonesInstallPlanResult);
+  const decodeCli = Schema.decodeUnknownSync(JonesInstallPlanCliRequest);
+  expect(decodeRequest({ type: "read-history", planId })).toEqual({ type: "read-history", planId });
+  const stop = { type: "laptop", action: "stop", planId, operationId } as const;
+  expect(decodeRequest(stop)).toEqual(stop);
+  expect(decodeRequest({ ...stop, expectedRevision: 2 })).toEqual({ ...stop, expectedRevision: 2 });
+  expect(() => decodeRequest({ ...stop, expectedRevision: 2.5 })).toThrow();
+  const closed = {
+    ...plan,
+    dismissedAt: at,
+    cancelled: true,
+    cancelledFromRevision: 1,
+    revision: 2,
+  } as const;
+  const result = {
+    state: {
+      ...state,
+      current: null,
+      last: closed,
+      documentRevision: 3,
+      view: { complete: false, recoveryHistory: 1 },
+      recoveryHistory: [
+        {
+          planId,
+          revision: 2,
+          targetVersion: target.version,
+          closedAt: at,
+          pendingLaptop: false,
+          pendingDevices: [{ environmentId, label: "Synthetic remote" }],
+        },
+      ],
+    },
+    historyPlan: closed,
+  };
+  expect(decodeResult(result)).toEqual(result);
+  const request = {
+    version: 1,
+    requestId: stopId,
+    type: "jones-install-plan",
+    action: { type: "read", planId },
+  } as const;
+  expect(decodeCli(request)).toEqual(request);
 });

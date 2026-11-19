@@ -503,7 +503,7 @@ export interface JonesDesktopUpdateOptions {
   readonly plan?: {
     readonly bindLaptopInstall: (binding: LaptopInstallBinding) => Promise<void>;
     readonly recordLaptopOutcome: (outcome: LaptopNativeOutcome) => Promise<void>;
-    readonly preparationHeld?: () => Promise<boolean>;
+    readonly preparationHeld?: (operationId?: string) => Promise<boolean>;
     readonly recordLaptopAdmission?: (operationId: string) => Promise<void>;
     readonly recordLaptopWorker?: (input: {
       readonly operationId: string;
@@ -2409,7 +2409,7 @@ export class JonesDesktopUpdateController {
     this.#busy = "download";
     this.#selectedAttempt = undefined;
     try {
-      if (await this.#options.plan?.preparationHeld?.())
+      if (await this.#options.plan?.preparationHeld?.(this.#download?.operationId))
         return { accepted: false, completed: false };
       await NodeFSP.mkdir(NodePath.join(this.updaterRoot, "apps"), {
         recursive: true,
@@ -3172,7 +3172,7 @@ export class JonesDesktopUpdateController {
     this.#selectedAttempt = undefined;
     this.#exitedActivation = undefined;
     try {
-      if (await this.#options.plan?.preparationHeld?.())
+      if (await this.#options.plan?.preparationHeld?.(plan?.operationId))
         throw new Error("A retained plan preparation still requires native recovery proof.");
       // The helper checks the fixed candidate digest before stopping writers; preparation binds this active manifest.
       const manifestRaw = await NodeFSP.readFile(this.manifestPath, "utf8");

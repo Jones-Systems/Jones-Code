@@ -368,7 +368,7 @@ function planControllerFixture(
     plan: {
       bindLaptopInstall: (binding) => coordinator.bindLaptopInstall(binding),
       recordLaptopOutcome: (outcome) => coordinator.recordLaptopOutcome(outcome),
-      preparationHeld: () => coordinator.preparationHeld(),
+      preparationHeld: (operationId) => coordinator.preparationHeld(operationId),
       recordLaptopAdmission: async (operationId) => {
         await coordinator.recordLaptopAdmission(operationId);
         admissionRecorded.resolve();

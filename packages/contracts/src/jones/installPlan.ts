@@ -22,6 +22,10 @@ import {
 } from "./jonesOperations.ts";
 
 const Bounded = (max: number) => Schema.String.check(Schema.isMaxLength(max));
+const Revision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
+export const JONES_INSTALL_PLAN_HISTORY_LIMIT = 8; // Total retained plans, counting current when present.
+export const JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export const JonesInstallPlanOrigin = Schema.Literals([
   "update-button",
@@ -296,6 +300,7 @@ export const JonesInstallPlan = Schema.Struct({
   devices: Schema.Array(JonesInstallPlanDevice).check(Schema.isMaxLength(16)),
   dismissedAt: Schema.optionalKey(Schema.String),
   cancelled: Schema.optionalKey(Schema.Literal(true)),
+  cancelledFromRevision: Schema.optionalKey(Revision),
   supersededAt: Schema.optionalKey(Schema.String),
   manualClosure: Schema.optionalKey(
     Schema.Struct({
@@ -323,15 +328,33 @@ export const JonesInstallPlanLaptopEvidence = Schema.Struct({
 });
 export type JonesInstallPlanLaptopEvidence = typeof JonesInstallPlanLaptopEvidence.Type;
 
+const JonesInstallPlanRecoverySummary = Schema.Struct({
+  planId: JonesOperationId,
+  revision: Schema.Number,
+  targetVersion: Bounded(128),
+  closedAt: Schema.String,
+  pendingLaptop: Schema.Boolean,
+  pendingDevices: Schema.Array(
+    Schema.Struct({ environmentId: EnvironmentId, label: Bounded(64) }),
+  ).check(Schema.isMaxLength(16)),
+});
+
 export const JonesInstallPlanState = Schema.Struct({
   schema: Schema.Literal(1),
   current: Schema.NullOr(JonesInstallPlan),
   last: Schema.NullOr(JonesInstallPlan),
+  documentRevision: Schema.optionalKey(Revision),
+  recoveryHistory: Schema.optionalKey(
+    Schema.Array(JonesInstallPlanRecoverySummary).check(
+      Schema.isMaxLength(JONES_INSTALL_PLAN_HISTORY_LIMIT),
+    ),
+  ),
   laptop: JonesInstallPlanLaptopEvidence,
   view: Schema.Struct({
     complete: Schema.Boolean,
     cancelPlan: Schema.optionalKey(Schema.Literal(1)),
     deviceRecovery: Schema.optionalKey(Schema.Literal(1)),
+    recoveryHistory: Schema.optionalKey(Schema.Literal(1)),
     manualClose: Schema.optionalKey(
       Schema.Struct({
         laptop: RunningBuild,
@@ -357,6 +380,7 @@ const Evidence = Schema.Union([
 ]);
 export const JonesInstallPlanRequest = Schema.Union([
   Schema.Struct({ type: Schema.Literal("read"), commandId: Schema.optionalKey(JonesOperationId) }),
+  Schema.Struct({ type: Schema.Literal("read-history"), planId: JonesOperationId }),
   Schema.Struct({
     type: Schema.Literal("publication"),
     acceptOrdinaryRecovery: Schema.optionalKey(Schema.Literal(1)),
@@ -388,18 +412,20 @@ export const JonesInstallPlanRequest = Schema.Union([
     command: Schema.optionalKey(JonesInstallPlanClientCommand),
     planId: JonesOperationId,
     action: Schema.Literals(["download", "stop", "install", "preflight", "abandon-stage"]),
-    operationId: Schema.optionalKey(JonesOperationId), // stop: the displayed download
+    expectedRevision: Schema.optionalKey(Revision),
+    operationId: Schema.optionalKey(JonesOperationId), // Stop or retained stage retirement: exact download.
     review: Schema.optionalKey(JonesInstallPlanReview),
   }),
   Schema.Struct({
     type: Schema.Literal("claim"),
     command: Schema.optionalKey(JonesInstallPlanClientCommand),
     planId: JonesOperationId,
+    expectedRevision: Schema.optionalKey(Revision),
     environmentId: EnvironmentId,
     claimant: Bounded(64),
     step: Schema.Literals(["directive", "download", "install", "stop", "fence"]),
     explicit: Schema.Boolean, // true only for owner clicks
-    operationId: Schema.optionalKey(JonesOperationId), // stop, fence or directive replay target
+    operationId: Schema.optionalKey(JonesOperationId), // Stop, fence or exact forward reservation replay.
     action: Schema.optionalKey(JonesOperationAction),
     expectedInstalledSource: Schema.optionalKey(JonesSourceSha), // download/install: plan-target action and fresh installed source
     enrollmentId: Schema.optionalKey(FleetOperationId), // directive: fresh fleet status
@@ -438,7 +464,8 @@ export const JonesInstallPlanRequest = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("cancel-plan"),
     planId: JonesOperationId,
-    expectedRevision: Schema.Number,
+    expectedRevision: Revision,
+    environmentId: Schema.optionalKey(EnvironmentId), // Native CLI binds the reviewed Laptop.
   }),
   Schema.Struct({
     type: Schema.Literal("close-after-manual-install"),
@@ -488,6 +515,7 @@ export type JonesInstallPlanRefusal = typeof JonesInstallPlanRefusal.Type;
 
 export const JonesInstallPlanResult = Schema.Struct({
   state: JonesInstallPlanState,
+  historyPlan: Schema.optionalKey(JonesInstallPlan),
   command: Schema.optionalKey(JonesInstallPlanCommandReceipt),
   grant: Schema.optionalKey(JonesInstallPlanGrant),
   applied: Schema.optionalKey(
@@ -537,6 +565,12 @@ export const JonesInstallPlanResult = Schema.Struct({
 });
 export type JonesInstallPlanResult = typeof JonesInstallPlanResult.Type;
 
+export function findInstallPlanResultPlan(result: JonesInstallPlanResult, planId: string) {
+  return [result.state.current, result.state.last, result.historyPlan].find(
+    (plan): plan is JonesInstallPlan => plan?.planId === planId,
+  );
+}
+
 // Local desktop control accepts intent only. Native proof and remote reports are
 // produced by the existing coordinator and runner.
 export const JonesInstallPlanCliRequest = Schema.Struct({
@@ -544,17 +578,33 @@ export const JonesInstallPlanCliRequest = Schema.Struct({
   requestId: JonesOperationId,
   type: Schema.Literal("jones-install-plan"),
   action: Schema.Union([
-    Schema.Struct({ type: Schema.Literal("read") }),
+    Schema.Struct({ type: Schema.Literal("read"), planId: Schema.optionalKey(JonesOperationId) }),
     Schema.Struct({
       type: Schema.Literal("cancel-plan"),
       confirmed: Schema.Literal(true),
       environmentId: EnvironmentId,
       planId: JonesOperationId,
-      expectedRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      expectedRevision: Revision,
     }),
   ]),
 });
 export type JonesInstallPlanCliRequest = typeof JonesInstallPlanCliRequest.Type;
+
+export function confirmsInstallPlanCancellation(
+  result: JonesInstallPlanResult,
+  action: Extract<JonesInstallPlanCliRequest["action"], { type: "cancel-plan" }>,
+): boolean {
+  const plan = findInstallPlanResultPlan(result, action.planId);
+  return (
+    result.state.readOnly === undefined &&
+    result.state.laptop.environmentId === action.environmentId &&
+    plan?.laptop.environmentId === action.environmentId &&
+    plan.cancelled === true &&
+    (plan.cancelledFromRevision === undefined
+      ? action.expectedRevision < plan.revision
+      : action.expectedRevision === plan.cancelledFromRevision)
+  );
+}
 
 export const JonesInstallPlanCliResponse = Schema.Union([
   Schema.Struct({
@@ -562,6 +612,7 @@ export const JonesInstallPlanCliResponse = Schema.Union([
     requestId: JonesOperationId,
     ok: Schema.Literal(true),
     result: JonesInstallPlanResult,
+    projection: Schema.optionalKey(Schema.Literal("plan-detail")),
   }),
   Schema.Struct({
     version: Schema.Literal(1),

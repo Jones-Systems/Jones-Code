@@ -86,6 +86,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
     if (!input.host.readLatest().canOperate)
       return { kind: "refused", message: "This control no longer authorizes the action." };
     let host: JonesExecutorHost = input.host;
+    let nativeLegacy = false;
     const binding = installPlanServices();
     const canHandOff = () =>
       sameAuthority(input.host, { observation, canOperate: true }, input.environmentId);
@@ -117,8 +118,9 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
         if (observation.state?.capability.operations === 1)
           host = { ...host, planGate: planGateFor(input.action, input.review, native, canHandOff) };
         else {
-          const refusal = await legacyConnectionsGate(input.targetSource);
+          const refusal = await legacyConnectionsGate(input.targetSource, input.environmentId);
           if (refusal !== null) return { kind: "refused", message: refusal };
+          nativeLegacy = true;
         }
       }
     } catch (cause) {
@@ -134,6 +136,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
     }
     let dispatched = false;
     let localReservation = false;
+    let refusedBeforeDispatch: string | undefined;
     const reserve = async (duty: JonesActionDuty) => {
       const before = host.readLatest();
       if (!before.canOperate) throw new Error("This control no longer authorizes the action.");
@@ -151,6 +154,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
       host: {
         ...host,
         legacy: async (request) => {
+          const before = host.readLatest();
           await reserve({
             id: input.operationId,
             environmentId: input.environmentId,
@@ -164,6 +168,19 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
                 }
               : {}),
           });
+          if (nativeLegacy) {
+            refusedBeforeDispatch =
+              (await legacyConnectionsGate(input.targetSource, input.environmentId).catch(
+                () => "Native plan status is unavailable.",
+              )) ?? undefined;
+            if (!sameAuthority(host, before, input.environmentId))
+              refusedBeforeDispatch ??= "This host changed before dispatch.";
+            if (refusedBeforeDispatch !== undefined) {
+              await journal.notSent(input.operationId);
+              localReservation = false;
+              throw new Error(refusedBeforeDispatch);
+            }
+          }
           dispatched = true;
           const reply = await host.legacy(request);
           if (reply !== null) await journal.acknowledge(input.operationId);
@@ -217,7 +234,8 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
     )
       return {
         kind: "refused",
-        message: "The action was refused before dispatch. Nothing was sent.",
+        message:
+          refusedBeforeDispatch ?? "The action was refused before dispatch. Nothing was sent.",
       };
     return result;
   };
@@ -318,13 +336,21 @@ export async function executeWebJonesReplacement(
     readonly targetSource: string;
     readonly stagedHandle: string;
     readonly host: Pick<JonesExecutorHost, "readLatest">;
+    readonly canDispatch: () => boolean;
     readonly send: () => Promise<boolean>;
   },
   journal = webJonesJournal,
 ) {
   await journal.load();
   const before = input.host.readLatest();
-  if (!before.canOperate) throw new Error("This control no longer authorizes the action.");
+  const gate = await legacyConnectionsGate(input.targetSource, input.environmentId);
+  if (gate !== null) throw new Error(gate);
+  if (
+    !before.canOperate ||
+    !input.canDispatch() ||
+    !sameAuthority(input.host, before, input.environmentId)
+  )
+    throw new Error("The displayed replacement changed before dispatch.");
   await journal.reserve({
     id: input.operationId,
     environmentId: input.environmentId,
@@ -333,9 +359,16 @@ export async function executeWebJonesReplacement(
     targetSource: input.targetSource,
     stagedHandle: input.stagedHandle,
   });
-  if (!sameAuthority(input.host, before, input.environmentId)) {
+  const stillAllowed = await legacyConnectionsGate(input.targetSource, input.environmentId).catch(
+    () => "Native plan status is unavailable.",
+  );
+  if (
+    stillAllowed !== null ||
+    !input.canDispatch() ||
+    !sameAuthority(input.host, before, input.environmentId)
+  ) {
     await journal.notSent(input.operationId);
-    throw new Error("This control changed before dispatch. Nothing was sent.");
+    throw new Error(stillAllowed ?? "This control changed before dispatch. Nothing was sent.");
   }
   try {
     if (!(await input.send())) return false;

@@ -12,6 +12,7 @@ import { installStatusStore, type InstallStatusStore, type InstallStatusDevice }
 import {
   bindInstallPlanServices,
   currentAuthorizedUpdateStatus,
+  installPlanServices,
   requestInstallPlan,
   type InstallPlanServices,
 } from "./services";
@@ -27,8 +28,8 @@ export function startInstallPlanController(
   store: InstallStatusStore = installStatusStore,
 ) {
   if (services.bridge.installPlan === undefined) return { wake: () => {}, close: () => {} };
-  const binding = { services, store };
   const unbind = bindInstallPlanServices(services, store);
+  const binding = installPlanServices()!;
   let cancelled = false;
   let running = false;
   let dirty = false;
@@ -42,7 +43,7 @@ export function startInstallPlanController(
     desktop: async (request) => {
       const firstRead = store.get().native === null;
       const result = await requestInstallPlan(request, binding);
-      if (!cancelled && firstRead && result.state.current !== null) openInstallStatus();
+      if (!cancelled && firstRead && store.get().native?.current != null) openInstallStatus();
       return result;
     },
     observe: async (id) => {
@@ -54,6 +55,8 @@ export function startInstallPlanController(
       return observed;
     },
     canDispatch: (id) => {
+      const { native, nativeRefusal } = store.get();
+      if (native?.readOnly !== undefined || nativeRefusal !== null) return false;
       const status = currentAuthorizedUpdateStatus(services, id);
       return status !== undefined && supportsInstallPlanMutations(status.capability);
     },
@@ -126,10 +129,11 @@ export function startInstallPlanController(
   const stopPlan = services.bridge.onInstallPlan?.((native) => {
     if (!cancelled) {
       const previous = store.get().native;
+      if (!store.update({ native })) return;
+      const accepted = store.get().native;
       const changed =
-        previous?.current?.planId !== native.current?.planId ||
-        previous?.current?.revision !== native.current?.revision;
-      store.update({ native });
+        previous?.current?.planId !== accepted?.current?.planId ||
+        previous?.current?.revision !== accepted?.current?.revision;
       if (running && changed) dirty = true;
       // A repeated read broadcast must not turn the bounded runner into a spin loop.
       if (!running && changed) wake();

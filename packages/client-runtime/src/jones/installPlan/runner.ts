@@ -46,7 +46,13 @@ export interface InstallPlanDriver {
 export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<void> {
   const initial = await driver.desktop({ type: "read" });
   const plan = initial.state.current;
-  if (driver.cancelled() || initial.state.readOnly !== undefined || plan === null) return;
+  if (
+    driver.cancelled() ||
+    initial.refused !== undefined ||
+    initial.state.readOnly !== undefined ||
+    plan === null
+  )
+    return;
   for (const device of plan.devices.slice(0, 16)) {
     if (driver.cancelled()) return;
     try {
@@ -56,17 +62,25 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         !driver.cancelled() && canOperate && driver.canDispatch(device.environmentId);
       const step = nextRunnerStep(plan, device, observation, fleetStatus, driver.now());
       const report = async (operationId: string, receipt: JonesOperationReceipt) => {
-        if (!driver.cancelled())
-          await driver.desktop({
-            type: "report",
-            planId: plan.planId,
-            environmentId: device.environmentId,
-            operationId,
-            evidence: { kind: "receipt", receipt },
-          });
+        // Work already sent can settle after this window stops scheduling.
+        await driver.desktop({
+          type: "report",
+          planId: plan.planId,
+          environmentId: device.environmentId,
+          operationId,
+          evidence: { kind: "receipt", receipt },
+        });
       };
       if (step.kind === "wait") continue;
-      if (step.kind === "read") {
+      if (
+        step.kind === "read" ||
+        (step.kind === "reservation" &&
+          step.operation.step === "download" &&
+          step.operation.lease.claimant === driver.claimant &&
+          initial.state.view.recoveryHistory !== 1)
+      ) {
+        // Older native coordinators can turn a lost download reclaim into a new lease.
+        // Read the original receipt until it is observed or the reservation can be fenced.
         const { operationId, request, receipt: prior } = step.operation;
         if (
           request.kind !== "operation-start" ||
@@ -146,6 +160,7 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
                   }
                 : {
                     step: "download",
+                    operationId: step.operation.operationId,
                     action: step.operation.request.input.action,
                     expectedInstalledSource: step.operation.request.input.expectedInstalledSource,
                   }),
@@ -156,10 +171,14 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
       if (
         !canMutate() ||
         claimed.refused !== undefined ||
+        claimed.state.readOnly !== undefined ||
+        (claim.step === "download" &&
+          claim.operationId !== undefined &&
+          claimed.state.view.recoveryHistory !== 1) ||
         grant === undefined ||
         grant.planId !== plan.planId ||
         grant.environmentId !== device.environmentId ||
-        (reservation !== undefined && grant.operationId !== reservation.operationId) ||
+        (claim.operationId !== undefined && grant.operationId !== claim.operationId) ||
         grant.step !== claim.step ||
         !Number.isFinite(Date.parse(grant.leaseUntil)) ||
         Date.parse(grant.leaseUntil) <= driver.now()
@@ -187,12 +206,13 @@ async function dispatchGrant(
   )
     return;
   if (request.kind === "plan-directive") {
+    if (grant.step !== "directive") return;
     try {
       const status = await driver.host(grant.environmentId, {
         action: "planDirective",
         input: request.input,
       });
-      if (!driver.cancelled() && validateDirectiveEvidence(request.input, status))
+      if (validateDirectiveEvidence(request.input, status))
         await driver.desktop({
           type: "report",
           planId: grant.planId,
@@ -232,7 +252,9 @@ async function dispatchGrant(
   }
   if (
     request.kind === "operation-stop" ||
-    (request.kind === "operation-start" && request.input.action.kind === "install")
+    (request.kind === "operation-start" &&
+      (grant.step !== "download" || request.input.action.kind === "install")) ||
+    (request.kind === "operation-fence" && grant.step !== "fence")
   )
     return;
   const receipt = await driver.operation(

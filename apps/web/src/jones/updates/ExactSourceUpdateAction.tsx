@@ -9,7 +9,6 @@ import {
   reconcileJonesExecution,
 } from "../installStatus/execution";
 import { useJonesExecutionJournal, webJonesJournal } from "../installStatus/executionJournal";
-import { legacyConnectionsGate } from "../installStatus/entrypoints";
 import {
   jonesExactSourceResultError,
   jonesInstallRefusal,
@@ -167,7 +166,7 @@ export async function performExactSourceStep({
       ))
     )
       return { kind: "cancelled" };
-    const fresh =
+    const resolve = () =>
       alternative === undefined
         ? resolveJonesExactSourceAction({
             environmentId,
@@ -179,7 +178,10 @@ export async function performExactSourceStep({
             unresolvedInstall,
           })
         : resolveJonesAlternativeAction({ environmentId, ...host.readLatest(), alternative });
-    if (readTargetSource !== undefined && readTargetSource() !== targetSource)
+    const fresh = resolve();
+    const targetStillMatches = () =>
+      readTargetSource === undefined || readTargetSource() === targetSource;
+    if (!targetStillMatches())
       return {
         kind: "refused",
         message:
@@ -190,27 +192,38 @@ export async function performExactSourceStep({
         kind: "refused",
         message: `Nothing was sent: ${label} changed while this was pending.`,
       };
-    const gate = await legacyConnectionsGate(targetSource);
-    if (gate !== null) return { kind: "refused", message: gate };
     const reply: { value: Awaited<ReturnType<ExactSourceHost["run"]>> | null } = { value: null };
-    const acknowledged = await executeWebJonesReplacement({
-      environmentId,
-      operationId,
-      targetSource,
-      stagedHandle: step.replace.stagedHandle,
-      host,
-      send: async () => {
-        reply.value = await host.run(request(fresh.step, operationId));
-        return reply.value._tag === "Success" && reply.value.value !== null;
-      },
-    });
+    let acknowledged;
+    try {
+      acknowledged = await executeWebJonesReplacement({
+        environmentId,
+        operationId,
+        targetSource,
+        stagedHandle: step.replace.stagedHandle,
+        host,
+        canDispatch: () => {
+          const latest = resolve();
+          return targetStillMatches() && latest.status === "ready" && sameStep(step, latest.step);
+        },
+        send: async () => {
+          reply.value = await host.run(request(step, operationId));
+          return reply.value._tag === "Success" && reply.value.value !== null;
+        },
+      });
+    } catch (error) {
+      return {
+        kind: "refused",
+        message:
+          error instanceof Error ? error.message : "The replacement could not be authorized.",
+      };
+    }
     const result = reply.value;
     if (!acknowledged || result === null || result._tag === "Failure") {
       const message =
         "The replacement request may have been accepted. Its effect is unknown. Read the exact outcome; nothing is resent automatically.";
       return { kind: "failed", message };
     }
-    const problem = jonesExactSourceResultError(fresh.step, result, targetSource);
+    const problem = jonesExactSourceResultError(step, result, targetSource);
     return problem === null
       ? {
           kind: "done",
