@@ -872,7 +872,7 @@ it("holds a reaped preparation whose native cleanup is unconfirmed", async () =>
     );
     expect(f.updater.snapshot().phase).toBe("blocked");
     const held = (await f.receipt())!;
-    vi.setSystemTime(new Date(Date.parse(held.updatedAt) + 60_000));
+    vi.setSystemTime(Date.parse(held.updatedAt) + 60_000);
     try {
       await f.operations.reconcile();
       expect(await f.receipt()).toEqual(held);
