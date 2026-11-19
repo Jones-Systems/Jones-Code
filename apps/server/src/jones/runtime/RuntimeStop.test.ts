@@ -5,6 +5,7 @@ import {
   CommandId,
   ThreadId,
   RunId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ProviderDriverKind,
@@ -22,17 +23,29 @@ import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
-import { ProviderAdapterCloseSessionError } from "@t3tools/provider-core/server/ProviderAdapter";
+import {
+  ProviderAdapterCloseSessionError,
+  runtimeBinding,
+  type ProviderAdapterV2Event,
+  type ProviderAdapterV2Shape,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
+import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import * as ProviderAdapters from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager.ts";
+import * as ProviderReplay from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as RuntimeStop from "./RuntimeStop.ts";
 import * as StopStore from "./RuntimeStopSqlite.ts";
 const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, AuthSessions.layer).pipe(
@@ -40,6 +53,38 @@ const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, AuthSessi
 );
 const eventLayer = EventSink.layer.pipe(Layer.provideMerge(stores));
 const testLayer = RestartPreparation.layer.pipe(Layer.provideMerge(eventLayer));
+
+const createStopPrincipal = Effect.fnUntraced(function* () {
+  const sessions = yield* AuthSessions.AuthSessionRepository;
+  const now = yield* DateTime.now;
+  const principal = {
+    sessionId: AuthSessionId.make("actor:stop"),
+    subject: "Synthetic stop actor",
+    method: "browser-session-cookie" as const,
+    scopes: new Set<"orchestration:operate" | "orchestration:read">([
+      "orchestration:operate",
+      "orchestration:read",
+    ]),
+  };
+  yield* sessions.create({
+    sessionId: principal.sessionId,
+    subject: principal.subject,
+    method: principal.method,
+    scopes: ["orchestration:operate", "orchestration:read"],
+    client: {
+      label: null,
+      ipAddress: null,
+      userAgent: null,
+      deviceType: "bot",
+      os: null,
+      browser: null,
+    },
+    issuedAt: now,
+    expiresAt: DateTime.add(now, { hours: 1 }),
+  });
+  return principal;
+});
+
 const fixture = Effect.fnUntraced(function* (retained = false) {
   const sink = yield* EventSink.EventSinkV2;
   const sessions = yield* AuthSessions.AuthSessionRepository;
@@ -151,31 +196,7 @@ const fixture = Effect.fnUntraced(function* (retained = false) {
       },
     ],
   });
-  const principal = {
-    sessionId: AuthSessionId.make("actor:stop"),
-    subject: "Synthetic stop actor",
-    method: "browser-session-cookie" as const,
-    scopes: new Set<"orchestration:operate" | "orchestration:read">([
-      "orchestration:operate",
-      "orchestration:read",
-    ]),
-  };
-  yield* sessions.create({
-    sessionId: principal.sessionId,
-    subject: principal.subject,
-    method: principal.method,
-    scopes: ["orchestration:operate", "orchestration:read"],
-    client: {
-      label: null,
-      ipAddress: null,
-      userAgent: null,
-      deviceType: "bot",
-      os: null,
-      browser: null,
-    },
-    issuedAt: now,
-    expiresAt: DateTime.add(now, { hours: 1 }),
-  });
+  const principal = yield* createStopPrincipal();
   const state = {
     current: true,
     invocations: 0,
@@ -300,6 +321,310 @@ const fixture = Effect.fnUntraced(function* (retained = false) {
   };
   return { sink, sessions, principal, state, input, runId, service, started, completion, provider };
 });
+
+it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
+  "captured Stop settles only its own unclaimed first start (%s)",
+  (start) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:idle-runtime-stop");
+      const instanceId = ProviderInstanceId.make("codex");
+      const driver = ProviderDriverKind.make("codex");
+      const providerSessionId = ProviderSessionId.make("session:idle-runtime-stop");
+      const modelSelection = { instanceId, model: "synthetic" };
+      const runtimePolicy = {
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: null,
+      } as const;
+      const calls = { prompts: [] as string[], stops: 0 };
+      const capabilities = {
+        ...CodexProviderCapabilitiesV2,
+        sessions: {
+          ...CodexProviderCapabilitiesV2.sessions,
+          supportsMultipleProviderThreadsPerSession: false,
+        },
+      };
+      const adapter: ProviderAdapterV2Shape = {
+        instanceId,
+        driver,
+        getCapabilities: () => Effect.succeed(capabilities),
+        planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+        openSession: (input) =>
+          Effect.gen(function* () {
+            const now = yield* DateTime.now;
+            const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
+            const providerSession = {
+              id: input.providerSessionId,
+              driver,
+              providerInstanceId: instanceId,
+              status: "ready" as const,
+              cwd: "/synthetic/runtime-stop",
+              model: modelSelection.model,
+              capabilities,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            };
+            return {
+              instanceId,
+              driver,
+              providerSessionId: input.providerSessionId,
+              providerSession,
+              events: Stream.fromQueue(events).pipe(Stream.take(1)),
+              ensureThread: () => Effect.die("The synthetic idle runtime is already loaded"),
+              resumeThread: () => Effect.die("Unexpected resume of the stopped runtime"),
+              startTurn: (turn) =>
+                Effect.sync(() => {
+                  calls.prompts.push(turn.message.text);
+                }),
+              steerTurn: () => Effect.die("Unexpected steer"),
+              interruptTurn: () => Effect.die("Unexpected interrupt"),
+              respondToRuntimeRequest: () => Effect.die("Unexpected request response"),
+              readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
+              rollbackThread: () => Effect.die("Unexpected rollback"),
+              forkThread: () => Effect.die("Unexpected fork"),
+              captureRuntimeStop: (provider) =>
+                Effect.gen(function* () {
+                  const generation = provider.runtimeIdentity?.runtimeGeneration;
+                  const binding =
+                    generation === undefined ? undefined : runtimeBinding(provider, generation);
+                  if (binding === undefined) return null;
+                  const retired = yield* Deferred.make<void>();
+                  return {
+                    binding,
+                    evidenceRevision: 1,
+                    isCurrent: Deferred.isDone(retired).pipe(Effect.map((done) => !done)),
+                    stop: Effect.gen(function* () {
+                      calls.stops++;
+                      yield* Queue.offer(events, {
+                        type: "provider_session.updated",
+                        driver,
+                        providerSession: {
+                          ...providerSession,
+                          status: "stopped",
+                          updatedAt: yield* DateTime.now,
+                        },
+                      });
+                      yield* Deferred.succeed(retired, undefined);
+                    }),
+                    retirement: {
+                      binding,
+                      started: Deferred.isDone(retired),
+                      awaitRetired: Deferred.await(retired).pipe(
+                        Effect.as({ binding, evidence: "producer_exited" as const }),
+                      ),
+                    },
+                  };
+                }),
+            };
+          }),
+      };
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const manager = yield* ProviderSessions.ProviderSessionManagerV2;
+        const stop = yield* RuntimeStop.CurrentRuntimeStop;
+        const sink = yield* EventSink.EventSinkV2;
+        const outbox = yield* Outbox.EffectOutboxV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const principal = yield* createStopPrincipal();
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("command:idle-runtime-stop:create"),
+          threadId,
+          projectId: ProjectId.make("project:idle-runtime-stop"),
+          title: "Idle runtime Stop",
+          modelSelection,
+          runtimeMode: runtimePolicy.runtimeMode,
+          interactionMode: runtimePolicy.interactionMode,
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+          revalidateStartAdmission: Effect.void,
+        });
+        const now = yield* DateTime.now;
+        const provider = {
+          id: ProviderThreadId.make("provider-thread:idle-runtime-stop"),
+          appThreadId: threadId,
+          providerSessionId,
+          providerInstanceId: instanceId,
+          driver,
+          ownerNodeId: null,
+          nativeThreadRef: { driver, nativeId: "native:idle-runtime-stop", strength: "strong" },
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: null,
+          lastRunOrdinal: null,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          runtimeIdentity: {
+            runtimeGeneration: "initial-generation",
+            evidenceRevision: 1,
+            requested: {
+              providerInstanceId: instanceId,
+              providerDriver: driver,
+              model: modelSelection.model,
+              serviceTier: null,
+            },
+            observed: {
+              backend: { status: "unknown" },
+              account: { status: "unknown" },
+              model: { status: "unknown" },
+              serviceTier: { status: "unknown" },
+            },
+          },
+        } as const satisfies OrchestrationV2ProviderThread;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("event:idle-runtime-stop:loaded"),
+              type: "provider-thread.updated",
+              threadId,
+              occurredAt: now,
+              payload: provider,
+            },
+          ],
+        });
+        const send = (text: string) => {
+          const commandId = CommandId.make(`command:idle-runtime-stop:${text}`);
+          return orchestrator
+            .dispatch({
+              type: "message.dispatch",
+              commandId,
+              threadId,
+              messageId: MessageId.make(`message:idle-runtime-stop:${text}`),
+              text,
+              attachments: [],
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "web",
+            })
+            .pipe(Effect.as(commandId));
+        };
+        const first = yield* send("old-prompt");
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const original = before.runs[0]!;
+        assert.equal(original.status, "starting");
+        const firstStart = (yield* outbox.listByCommandId(first)).find(
+          (effect) => effect.request.type === "provider-turn.start",
+        )!;
+        assert.include(firstStart, { status: "pending", attemptCount: 0, leaseOwner: null });
+        if (start === "claimed") {
+          const claim = yield* outbox.claimNext({ workerId: "synthetic-claimant" });
+          assert.equal(Option.getOrUndefined(claim)?.id, firstStart.id);
+        } else if (start === "other generation") {
+          const current = before.providerThreads.find((row) => row.id === provider.id)!;
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("event:idle-runtime-stop:replacement"),
+                type: "provider-thread.updated",
+                threadId,
+                occurredAt: now,
+                payload: {
+                  ...current,
+                  runtimeIdentity: {
+                    ...provider.runtimeIdentity,
+                    runtimeGeneration: "replacement-generation",
+                  },
+                },
+              },
+            ],
+          });
+        }
+        const target = yield* stop
+          .readTarget(threadId)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        assert.equal(target.status, "available");
+        if (target.status !== "available") return yield* Effect.die("Missing Stop capture");
+        const request = {
+          commandId: CommandId.make("command:idle-runtime-stop:stop"),
+          threadId,
+          target: target.target,
+        };
+        const submitStop = (input: StopCurrentThreadRuntimeInput) =>
+          stop
+            .stop(input)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        const accepted = yield* submitStop(request);
+        assert.deepEqual(accepted.affectedRunIds, [original.id]);
+        yield* worker.drain();
+        yield* outbox.awaitCompletion([`effect:${request.commandId}:captured-runtime-stop`]);
+        assert.equal((yield* submitStop(request)).status, "stopped");
+        assert.isTrue(yield* sink.hasStoppedRuntime!(request.target.binding));
+        assert.deepEqual(calls, { prompts: [], stops: 1 });
+        const cancelled = Option.getOrUndefined(yield* outbox.get(firstStart.id));
+        assert.include(cancelled, {
+          status: "cancelled",
+          attemptCount: start === "claimed" ? 1 : 0,
+        });
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        const oldRun = after.runs.find((run) => run.id === original.id)!;
+        const oldAttempt = after.attempts.find(
+          (attempt) => attempt.id === original.activeAttemptId,
+        )!;
+        const oldRoot = after.nodes.find((node) => node.id === original.rootNodeId)!;
+        if (start !== "unclaimed") {
+          assert.include(oldRun, { status: "starting", completedAt: null });
+          assert.include(oldAttempt, {
+            status: "pending",
+            providerTurnId: null,
+            completedAt: null,
+          });
+          assert.include(oldRoot, { status: "pending", completedAt: null });
+          return;
+        }
+        const next = yield* send("fresh-prompt");
+        const nextRun = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        assert.notEqual(nextRun.id, original.id);
+        assert.equal(nextRun.status, "starting");
+
+        assert.include(oldRun, { status: "cancelled", startedAt: null });
+        assert.include(oldAttempt, { status: "cancelled", startedAt: null, providerTurnId: null });
+        assert.include(oldRoot, { status: "cancelled", startedAt: null });
+        assert.ok(oldRun.completedAt);
+        assert.deepEqual(oldAttempt.completedAt, oldRun.completedAt);
+        assert.deepEqual(oldRoot.completedAt, oldRun.completedAt);
+        assert.deepEqual(after.providerTurns, []);
+
+        const nextStart = (yield* outbox.listByCommandId(next)).find(
+          (effect) =>
+            effect.request.type === "provider-turn.start" && effect.request.runId === nextRun.id,
+        );
+        assert.ok(nextStart);
+        assert.include(nextStart, { status: "pending", attemptCount: 0 });
+        assert.equal((yield* submitStop(request)).status, "stopped");
+        assert.equal(
+          (yield* submitStop({
+            ...request,
+            commandId: CommandId.make("command:idle-runtime-stop:stale"),
+          }).pipe(Effect.result))._tag,
+          "Failure",
+        );
+        assert.deepEqual((yield* orchestrator.getThreadProjection(threadId)).runs.at(-1), nextRun);
+        const nextClaim = yield* outbox.claimNext({ workerId: "synthetic-fresh-start" });
+        assert.equal(Option.getOrUndefined(nextClaim)?.id, nextStart.id);
+        assert.deepEqual(calls, { prompts: [], stops: 1 });
+      }).pipe(
+        Effect.provide(
+          ProviderReplay.layerWithRegistryAndServices(
+            { name: "idle-runtime-stop" },
+            ProviderAdapters.layerFromAdapters([adapter]),
+            { runEffectWorker: false },
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped),
+);
+
 const compiledLatestSchema6 = Schema.encodeEffect(
   Schema.fromJsonString(StopStore.RuntimeStopIdentity),
 );
