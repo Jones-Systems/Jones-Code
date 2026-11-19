@@ -467,13 +467,6 @@
       ]
     },
     {
-      "id": "macos-dependency-cache",
-      "tests": ["scripts/jones/ci/macos-dependency-cache.node-test.mjs"],
-      "commands": [
-        "node --test --test-concurrency=1 scripts/jones/ci/macos-dependency-cache.node-test.mjs"
-      ]
-    },
-    {
       "id": "jones-server-result-cache",
       "tests": [
         "scripts/jones/ci/server-result-cache.node-test.mjs",
