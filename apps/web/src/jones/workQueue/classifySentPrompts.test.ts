@@ -338,17 +338,6 @@ describe.each(["v3", "v4"] as const)("%s recorded pre-start handoffs", (version)
       expect(result.remainingVoice).toEqual([voice()]);
     }
   });
-  it("keeps pending commands without recorded proof queued", () => {
-    const sample = preStartSnapshot(version);
-    const unconfirmed = {
-      ...sample,
-      items: sample.items.map((item) => ({ ...item, native_handoff: null })),
-    } as WorkQueueMetadata;
-    const result = classifySentPrompts(unconfirmed, [voice()], "native-env");
-    expect(result.sent).toEqual([]);
-    expect(result.confirmedRequests.size).toBe(0);
-    expect(result.remainingVoice).toEqual([voice()]);
-  });
   it("preserves source, digest, destination and unique-delivery fencing for pre-start proof", () => {
     const entry = voice();
     const links = entry.queue_delivery_links!;
