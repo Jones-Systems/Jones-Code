@@ -3,9 +3,13 @@ import * as NodeZlib from "node:zlib";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as NodeTimers from "node:timers";
 import * as NodeTimersPromises from "node:timers/promises";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ThreadId, OrchestrationV2ShellSnapshotJson } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Fixture from "../threadResultDependencies/testkit.ts";
 
@@ -18,6 +22,14 @@ const maxPhaseLoopTicks = 4_096;
 const waitForLoopSamples = Effect.promise(() =>
   NodeTimersPromises.setTimeout(3 * loopResolutionMs),
 );
+const snapshotFixture = Layer.unwrap(
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-sp-snapshot-" });
+    return Fixture.layerFromPath(path.join(directory, "state.sqlite"));
+  }),
+).pipe(Layer.provide(NodeServices.layer));
 
 function startPhaseLoopTrace() {
   // Observe Node's timer turns directly, independently of the measured Effect scheduler.
@@ -64,7 +76,9 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           // Resetting the histogram also loses the timer's preceding timestamp on Node.
           const loopWarmupSampleCount = loop.count;
           const capturedAt = performance.now();
-          const decode = yield* fixture.sql.withTransaction(fixture.projection.readShellSnapshot());
+          const decode = yield* fixture.sql
+            .withTransaction(fixture.projection.readShellSnapshot())
+            .pipe(NodeSqliteClient.readOnly);
           const captureFinishedAt = performance.now();
           const decodedAt = performance.now(),
             shell = yield* decode;
@@ -117,6 +131,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
       }
       return {
         samples,
+        captureRoute: "file-backed-sqlite-reader",
         snapshotOffloadActivated: false,
         // JSON.stringify is synchronous, so this is a demonstrated contiguous block.
         contiguousEncodeTrigger: samples.some((sample) => sample.encodeMs >= 50),
@@ -127,6 +142,6 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
         scope:
           "Synthetic shell pipeline; representative host/workload and combined-load attribution remain root qualification",
       };
-    }).pipe(Effect.provide(Layer.fresh(Fixture.layer))),
+    }).pipe(Effect.provide(Layer.fresh(snapshotFixture))),
   );
 }
