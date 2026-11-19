@@ -33,6 +33,7 @@ import {
   persistServerRuntimeState,
 } from "../../serverRuntimeState.ts";
 import { installRecoveryCommand } from "./installRecoveryCli.ts";
+import { JONES_OPERATION_RECEIPTS_HEADER } from "./serverCapability.ts";
 
 const auth = vi.hoisted(() => ({
   scopes: [] as ReadonlyArray<AuthEnvironmentScope>[],
@@ -222,6 +223,134 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer, 
           expect(output).toContain("cleanup-unconfirmed");
           expect(output).not.toContain(recoveryToken);
           expect(output).not.toContain("fixture-bearer");
+        }),
+    );
+
+    it.effect(
+      "reads exact receipts with admission disabled and distinguishes unproved absence",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-recovery-cli-" });
+          const installed: JonesOperationReceipt = {
+            protocol: 1,
+            environmentId,
+            operationId,
+            updatedAt: observedAt,
+            expectedInstalledSource: "a".repeat(40),
+            action: {
+              kind: "install",
+              stagedHandle: "stage",
+              currentVersion: "old",
+              targetSource: "b".repeat(40),
+            },
+            phase: "handed-off",
+            updateId: operationId,
+          };
+          const terminal: JonesOperationReceipt = {
+            ...installed,
+            phase: "blocked",
+            outcome: {
+              status: "blocked",
+              fromVersion: "old",
+              targetVersion: "new",
+            },
+          };
+          let readback:
+            | "retained"
+            | "unsupported"
+            | "unreadable"
+            | "absent"
+            | "header-stripped"
+            | "legacy"
+            | "missing-entry" = "retained";
+          const server = NodeHttp.createServer(async (request, response) => {
+            response.setHeader("content-type", "application/json");
+            if (!request.url?.endsWith("/operations/read")) {
+              response.end(
+                JSON.stringify({
+                  ...state,
+                  operation: undefined,
+                  capability: {
+                    check: false,
+                    download: false,
+                    install: false,
+                    reason: "blocked",
+                    ...(readback === "legacy" || readback === "unsupported"
+                      ? {}
+                      : { operationReceipts: 1 }),
+                  },
+                }),
+              );
+              return;
+            }
+            const chunks: Buffer[] = [];
+            for await (const chunk of request) chunks.push(chunk);
+            const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (readback !== "legacy" && readback !== "header-stripped") {
+              response.setHeader(
+                JONES_OPERATION_RECEIPTS_HEADER,
+                readback === "unsupported" ? "unsupported" : "supported",
+              );
+            }
+            if (readback === "unsupported" || readback === "unreadable") {
+              response.statusCode = 500;
+              response.end(
+                JSON.stringify({
+                  code: "internal_error",
+                  reason: "internal_error",
+                  traceId: "synthetic",
+                }),
+              );
+            } else {
+              const retained = body.refreshInstallOutcome === operationId ? terminal : installed;
+              response.end(
+                JSON.stringify({
+                  receipts:
+                    readback === "missing-entry"
+                      ? []
+                      : [{ operationId, receipt: readback === "retained" ? retained : null }],
+                }),
+              );
+            }
+          });
+          yield* serve(server);
+          const address = server.address();
+          if (address === null || typeof address === "string")
+            throw new Error("Missing fixture port.");
+          yield* persistServerRuntimeState({
+            path: path.join(baseDir, "userdata", "server-runtime.json"),
+            state: yield* makePersistedServerRuntimeState({
+              config: { host: "127.0.0.1", devUrl: undefined },
+              port: address.port,
+            }),
+          });
+          const target = [operationId, "--environment-id", environmentId];
+          const output = TestConsole.logLines.pipe(
+            Effect.map((lines) => JSON.parse(String(lines.at(-1))) as unknown),
+          );
+          yield* run(baseDir, "operation", ...target);
+          expect(yield* output).toEqual({ receipt: installed });
+          yield* run(baseDir, "refresh-outcome", ...target);
+          expect(yield* output).toEqual({ receipt: terminal });
+          readback = "absent";
+          yield* run(baseDir, "operation", ...target);
+          expect(yield* output).toEqual({ receipt: null });
+          readback = "header-stripped";
+          yield* run(baseDir, "operation", ...target);
+          expect(yield* output).toEqual({ receipt: null });
+          for (const [mode, expected] of [
+            ["unsupported", "unsupported"],
+            ["unreadable", "could not be read"],
+            ["legacy", "did not establish"],
+            ["missing-entry", "did not return a result"],
+          ] as const) {
+            readback = mode;
+            expect((yield* Effect.flip(run(baseDir, "operation", ...target))).message).toContain(
+              expected,
+            );
+          }
         }),
     );
 

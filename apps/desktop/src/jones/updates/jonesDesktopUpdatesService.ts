@@ -159,7 +159,12 @@ export const makeJonesDesktopUpdates = Effect.fn("DesktopUpdates.jones")(functio
       ),
     ),
     configure: Effect.gen(function* () {
-      yield* Effect.addFinalizer(() => Effect.promise(() => preparation.close()));
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => {
+          coordinator?.dispose();
+          return preparation.close();
+        }),
+      );
       yield* Effect.promise(() => controller.configure());
       yield* Effect.promise(() => coordinator!.request({ type: "read" }));
       yield* Effect.promise(() => background.start());

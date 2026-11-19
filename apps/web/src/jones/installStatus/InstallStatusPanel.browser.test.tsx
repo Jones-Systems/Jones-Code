@@ -275,6 +275,47 @@ const click = async (screen: Screen, name: string) => {
 // These use real browser interactions and the real pure model/runner against scripted receipts.
 // They cannot qualify native installs, host worker exit, Electron IPC or publication.
 describe("Install status receipt fixture", () => {
+  it("sends Laptop Stop for the displayed plan and download", async () => {
+    await using world = await setup();
+    const { screen, fixture, calls } = world;
+    await click(screen, "Download on Laptop");
+    const displayed = fixture.snapshot().current!;
+    const operationId = displayed.laptop.operations.at(-1)!.operationId;
+    await click(screen, "Stop download");
+    expect(calls.filter(({ action }) => action === "fixture-installPlan")).toContainEqual({
+      action: "fixture-installPlan",
+      input: { type: "laptop", action: "stop", planId: displayed.planId, operationId },
+    });
+    expect(fixture.snapshot().current?.laptop.operations.at(-1)).toMatchObject({
+      step: "stop",
+      of: operationId,
+      result: { status: "stop-requested" },
+    });
+  });
+
+  it("shows unavailable Laptop verification as a pause and explains the check result", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    await act(() => {
+      fixture.showcaseStepProgress();
+      fixture.setLaptopGatePaused(true);
+    });
+    expect(screen.container.textContent).toContain("Laptop verification paused");
+    expect(screen.container.textContent).toContain(
+      "Other devices paused · waiting for Laptop verification",
+    );
+    expect(visibleDone(screen)).toHaveLength(0);
+    await click(screen, "Laptop update details");
+    expect(screen.container.textContent).toContain("Could not recheck the verified Laptop build.");
+    await click(screen, "Refresh now");
+    expect(screen.container.textContent).toContain(
+      "Checked Laptop. Could not recheck the verified Laptop build.",
+    );
+    await act(() => fixture.setLaptopGatePaused(false));
+    await click(screen, "Back to all devices");
+    expect(screen.container.textContent).toContain("Laptop verified · Others go");
+  });
+
   it("leaves editing through device details or Cancel without saving the draft", async () => {
     await using world = await setup();
     const { screen } = world;
@@ -306,6 +347,14 @@ describe("Install status receipt fixture", () => {
     expect(screen.container.textContent).toContain("native-unconfirmed");
     await click(screen, "Check update outcome");
     expect(fixture.snapshot().current?.laptop.operations.at(-1)?.result?.status).toBe("held");
+    await act(() => fixture.requireLaptopReopen());
+    expect(screen.container.textContent).toContain(
+      "Reopen Jones Code to check the Laptop install outcome.",
+    );
+    await click(screen, "Check update outcome");
+    expect(screen.container.textContent).toContain(
+      "Checked Laptop. Reopen Jones Code to check the Laptop install outcome.",
+    );
     await click(screen, "Cancel update plan");
     await expect.poll(() => fixture.snapshot().current).toBeNull();
     expect(screen.container.textContent).toContain("Update plan cancelled");
@@ -625,11 +674,35 @@ describe("Install status receipt fixture", () => {
     await expect
       .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase)
       .toBe("running");
+    const displayed = fixture.snapshot().current!;
+    const device = displayed.devices[0]!;
+    const operationId = device.operations.at(-1)!.operationId;
     await click(screen, "VPS update details");
     await click(screen, "Stop download on VPS");
     expect(screen.container.textContent).toContain("Stop requested");
     expect(visibleDone(screen)).toHaveLength(0);
     expect(calls.filter((c) => c.action === "fixture-host-operationStop")).toHaveLength(1);
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        action: "fixture-installPlan",
+        input: expect.objectContaining({
+          type: "claim",
+          step: "stop",
+          planId: displayed.planId,
+          environmentId: device.environmentId,
+          operationId,
+        }),
+      }),
+    );
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        action: "fixture-host-operationStop",
+        input: {
+          environmentId: device.environmentId,
+          input: expect.objectContaining({ operationId }),
+        },
+      }),
+    );
     await act(() => fixture.settleHost("VPS", "held"));
     expect(screen.container.textContent).toContain("Stop not confirmed");
     expect(screen.container.textContent).toContain("unreaped");
@@ -1160,6 +1233,39 @@ describe("Install status step progress", () => {
     screen.container
       .querySelector(`[aria-label="${label} update details"] [data-row-text]`)
       ?.textContent?.trim();
+
+  it("shows running-source proof alongside an unconfirmed launcher until the exact outcome arrives", async () => {
+    await using world = await setup();
+    const { screen, fixture, calls } = world;
+    await act(() => fixture.showcaseStepProgress(true));
+    const device = fixture.snapshot().current!.devices.find((row) => row.label === "VPS")!;
+    const operationId = device.operations[0]!.operationId;
+    expect(rowText(screen, "VPS")).toBe("Install outcome unconfirmed · step 5 of 7");
+    expect(screen.container.textContent).toContain("Running the selected source");
+    expect(visibleDone(screen)).toHaveLength(0);
+    await click(screen, "VPS update details");
+    expect(
+      screen.container.querySelector('[data-step-status="unconfirmed"]')?.textContent,
+    ).toContain("The launcher reported no outcome for this install.");
+    await click(screen, "Check update outcome");
+    expect(calls).toContainEqual({
+      action: "fixture-host-operationRead",
+      input: {
+        environmentId: device.environmentId,
+        input: {
+          environmentId: device.environmentId,
+          operationIds: [operationId],
+          refreshInstallOutcome: operationId,
+        },
+      },
+    });
+    expect(screen.container.textContent).toContain(
+      "Checked VPS. Its install outcome is still unconfirmed.",
+    );
+    await act(() => fixture.settleHost("VPS", "committed"));
+    expect(rowText(screen, "VPS")).toBe("Updated · verified");
+    expect(screen.container.querySelector('[data-step-status="unconfirmed"]')).toBeNull();
+  });
 
   it("keeps the launcher outcome check available after Done archives the verified build", async () => {
     await using world = await setup();

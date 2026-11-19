@@ -400,7 +400,10 @@ export function preparationFailureError(failure: PreparationFailure): Error {
 
 /** Reads an owner-controlled regular file of at most `limit` bytes without following a link. */
 export async function readBoundedJson(file: string, limit: number): Promise<unknown> {
-  const handle = await NodeFSP.open(file, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+  const handle = await NodeFSP.open(
+    file,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  );
   try {
     const stat = await handle.stat();
     if (
@@ -419,8 +422,13 @@ export async function readBoundedJson(file: string, limit: number): Promise<unkn
   }
 }
 
-/** Publishes `value` as a complete file: partial write, fsync, rename, then directory fsync. */
-export async function writeDurableJson(file: string, value: unknown, limit: number): Promise<void> {
+/** Publishes a complete, synced file, optionally reserving a previously unused destination. */
+export async function writeDurableJson(
+  file: string,
+  value: unknown,
+  limit: number,
+  publication: "replace" | "create" = "replace",
+): Promise<void> {
   const bytes = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
   if (bytes.length > limit) throw new Error("A preparation file exceeds its bound.");
   const partial = `${file}.partial`;
@@ -431,7 +439,13 @@ export async function writeDurableJson(file: string, value: unknown, limit: numb
   } finally {
     await handle.close();
   }
-  await NodeFSP.rename(partial, file);
+  if (publication === "create") {
+    try {
+      await NodeFSP.link(partial, file);
+    } finally {
+      await NodeFSP.unlink(partial);
+    }
+  } else await NodeFSP.rename(partial, file);
   const directory = await NodeFSP.open(NodePath.dirname(file), "r");
   try {
     await directory.sync();

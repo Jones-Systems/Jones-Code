@@ -1,6 +1,6 @@
 import type { JonesUpdateProgress } from "@t3tools/contracts/jones/jonesUpdates";
 
-export type InstallProgressStepStatus = "done" | "current" | "pending" | "failed";
+export type InstallProgressStepStatus = "done" | "current" | "pending" | "failed" | "unconfirmed";
 
 export interface InstallProgressStepView {
   readonly key: string;
@@ -18,6 +18,8 @@ export interface InstallProgressView {
   readonly active: boolean;
   /** The current step restarts the host, so silence is expected for a while. */
   readonly restarting: boolean;
+  /** The restart has no matching launcher outcome yet. */
+  readonly outcomeUnconfirmed: boolean;
   /** One-line row text without the timer; absent when the ledger text says more. */
   readonly text?: string;
   readonly stepIndex: number;
@@ -65,7 +67,10 @@ export function hostElapsedMs(sinceHostMs: number, nowClientMs: number, skewMs: 
 
 const ACTIVE_PHASES = new Set(["prep", "download", "install", "verify"]);
 
-function progressText(progress: JonesUpdateProgress): string | undefined {
+function progressText(
+  progress: JonesUpdateProgress,
+  outcomeUnconfirmed: boolean,
+): string | undefined {
   const of = `${progress.stepIndex} of ${progress.stepCount}`;
   switch (progress.phase) {
     case "prep":
@@ -80,13 +85,20 @@ function progressText(progress: JonesUpdateProgress): string | undefined {
       // A finished download keeps the ledger's staged text, which says what to do next.
       return progress.kind === "install" ? "Updated · verified" : undefined;
     case "failed":
-      return `${progress.kind === "install" ? "Install" : "Download"} failed at step ${of}`;
+      return outcomeUnconfirmed
+        ? `Install outcome unconfirmed · step ${of}`
+        : `${progress.kind === "install" ? "Install" : "Download"} failed at step ${of}`;
   }
 }
 
-function stepStatus(progress: JonesUpdateProgress, index: number): InstallProgressStepStatus {
+function stepStatus(
+  progress: JonesUpdateProgress,
+  index: number,
+  outcomeUnconfirmed: boolean,
+): InstallProgressStepStatus {
   if (progress.phase === "done" || index < progress.stepIndex) return "done";
   if (index > progress.stepIndex) return "pending";
+  if (outcomeUnconfirmed) return "unconfirmed";
   return progress.phase === "failed" ? "failed" : "current";
 }
 
@@ -95,13 +107,18 @@ export function installProgressView(
   receivedAt: number | undefined,
 ): InstallProgressView {
   const active = ACTIVE_PHASES.has(progress.phase);
-  const text = progressText(progress);
+  const outcomeUnconfirmed =
+    progress.kind === "install" &&
+    progress.phase === "failed" &&
+    progress.error?.code === "outcome-unavailable";
+  const text = progressText(progress, outcomeUnconfirmed);
   return {
     kind: progress.kind,
     phase: progress.phase,
     ...(progress.operationId === undefined ? {} : { operationId: progress.operationId }),
     active,
     restarting: active && progress.stepKey === "restart",
+    outcomeUnconfirmed,
     ...(text === undefined ? {} : { text }),
     stepIndex: progress.stepIndex,
     stepCount: progress.stepCount,
@@ -111,7 +128,7 @@ export function installProgressView(
     updatedAt: Date.parse(progress.updatedAt),
     skewMs: progressClockSkewMs(progress, receivedAt),
     steps: (progress.steps ?? []).map((step, offset) => {
-      const status = stepStatus(progress, offset + 1);
+      const status = stepStatus(progress, offset + 1, outcomeUnconfirmed);
       const started = step.startedAt === undefined ? Number.NaN : Date.parse(step.startedAt);
       const ended = step.endedAt === undefined ? Number.NaN : Date.parse(step.endedAt);
       return {

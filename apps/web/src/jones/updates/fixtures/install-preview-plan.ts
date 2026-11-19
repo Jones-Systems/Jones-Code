@@ -301,6 +301,7 @@ export function createScriptedInstallPlan(input: {
   async function laptop(
     action: "download" | "install" | "stop",
     review?: import("@t3tools/contracts/jones/installPlan").JonesInstallPlanReview,
+    expectedOperationId?: string,
   ) {
     const plan = native.current;
     if (plan === null) return refuse("plan-mismatch", "No current fixture plan.");
@@ -313,9 +314,14 @@ export function createScriptedInstallPlan(input: {
     )
       return refuse("invalid-evidence", "Fixture install requires the reviewed stage.");
     const outcome = action === "stop" ? "accept" : (input.nextLaptopOutcome?.(action) ?? "accept");
-    const download = plan.laptop.operations.filter((o) => o.step === "download").at(-1);
-    if (action === "stop" && download === undefined)
-      return refuse("outstanding-operation", "No Laptop download is recorded.");
+    const download = plan.laptop.operations.findLast((o) => o.step === "download");
+    if (
+      action === "stop" &&
+      (download === undefined ||
+        (expectedOperationId !== undefined && expectedOperationId !== download.operationId) ||
+        download.result?.status !== "running")
+    )
+      return refuse("outstanding-operation", "The fixture Laptop download is no longer running.");
     const op = {
       operationId: uuid(),
       step: action,
@@ -467,7 +473,7 @@ export function createScriptedInstallPlan(input: {
     if (request.type === "laptop")
       return request.action === "preflight" || request.action === "abandon-stage"
         ? refuse("unsupported", "Fixture recovery capability is not advertised.")
-        : laptop(request.action, request.review);
+        : laptop(request.action, request.review, request.operationId);
     const device = plan.devices.find((d) => d.environmentId === request.environmentId);
     if (device === undefined || device.membership !== "selected")
       return refuse("not-selectable", "The fixture device is not selected.");
@@ -816,7 +822,7 @@ export function createScriptedInstallPlan(input: {
    * Replace the plan with a verified Laptop and four hosts mid-flight: VPS preparing an install,
    * Mini failed at a step, Test stalled mid-download, and Studio unreachable. Synthetic only.
    */
-  const showcaseStepProgress = () => {
+  const showcaseStepProgress = (showUnconfirmedLauncher = false) => {
     const desktop = input.readDesktop();
     const provenance = desktop.jones?.provenance;
     if (provenance === undefined) throw new Error("The showcase needs a Laptop target build.");
@@ -899,6 +905,13 @@ export function createScriptedInstallPlan(input: {
     ];
     const devicesWithWork = plan.devices.map((device) => {
       const scenario = scenarios.find((s) => s.host.environmentId === device.environmentId)!;
+      const unconfirmed = showUnconfirmedLauncher && device.label === "VPS";
+      const progressError = unconfirmed
+        ? {
+            code: "outcome-unavailable",
+            message: "The launcher reported no outcome for this install.",
+          }
+        : scenario.error;
       const operationId = uuid();
       const start: JonesOperationStartInput = {
         operationId,
@@ -931,19 +944,31 @@ export function createScriptedInstallPlan(input: {
         ...hosts.get(device.environmentId)!,
         operation: receipt,
         phase:
-          scenario.phase === "failed"
+          scenario.phase === "failed" || unconfirmed
             ? "error"
             : scenario.step === "install"
               ? "preparing"
               : "downloading",
+        ...(unconfirmed
+          ? {
+              currentVersion: target.version,
+              installedSource: {
+                repository: target.repository,
+                sha: target.sourceSha,
+                tree: target.sourceTree,
+              },
+              capability: { check: true, download: false, install: false, operationReceipts: 1 },
+            }
+          : {}),
         progress: showcaseProgress({
           ...scenario.progress,
+          ...(unconfirmed ? { phase: "failed", stepIndex: 5 } : {}),
           operationId,
           stepAgoMs: scenario.stepAgoMs,
           updatedAgoMs: scenario.updatedAgoMs,
           reportedAgoMs: scenario.reach.heardAgoMs,
           at,
-          ...(scenario.error === undefined ? {} : { error: scenario.error }),
+          ...(progressError === undefined ? {} : { error: progressError }),
         }),
       });
       reachability.set(device.environmentId, {
@@ -1128,6 +1153,21 @@ export function createScriptedInstallPlan(input: {
     publishHostReceipt: publishReceipt,
     settleHost,
     settleLaptopStop,
+    setLaptopGatePaused(paused: boolean) {
+      const plan = native.current;
+      if (plan?.laptop.gate === undefined) throw new Error("Fixture Laptop was never verified.");
+      const { gatePause: _pause, gateClosed: _closed, ...laptop } = plan.laptop;
+      revise({
+        ...plan,
+        laptop: paused
+          ? { ...laptop, gatePause: true, gateClosed: { at: iso(), reason: "blocked" } }
+          : laptop,
+      });
+    },
+    requireLaptopReopen() {
+      native = { ...native, laptop: { ...native.laptop, reopenToCheckInstall: true } };
+      notify();
+    },
     setSupported,
     snapshot: () => native,
   };

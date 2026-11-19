@@ -45,6 +45,59 @@ async function fixture() {
   return { home, directory, store, read };
 }
 describe("native install plan storage", () => {
+  it("retains the prebinding and a paused gate with its legacy blocked latch", async () => {
+    const f = await fixture();
+    const base = plan();
+    const generation = "d".repeat(64);
+    const current = {
+      ...base,
+      laptop: {
+        ...base.laptop,
+        operations: [
+          {
+            operationId: "33333333-3333-4333-8333-333333333333",
+            step: "install",
+            requestedAt: base.createdAt,
+            prebinding: {
+              fromGeneration: generation,
+              fromSource: target.sourceSha,
+              fromTree: target.sourceTree,
+              stagedHandle: "stage",
+            },
+          },
+        ],
+        gate: {
+          openedAt: base.createdAt,
+          basis: "prior-verified",
+          transactionId: generation,
+          activeGeneration: generation,
+          activeSource: target.sourceSha,
+          activeTree: target.sourceTree,
+        },
+        gatePause: true,
+        gateClosed: { at: base.createdAt, reason: "blocked" },
+      },
+    } satisfies NonNullable<PlanSnapshot["document"]["current"]>;
+    const restarted = createInstallPlanStore({ home: f.home, profile: undefined });
+    await f.store.transact(async (s) => ({
+      ...s,
+      document: { ...s.document, current },
+      result: undefined,
+    }));
+    const saved = await restarted.transact(async (s) => ({ ...s, result: s.document }));
+    expect(saved.current).toEqual(current);
+
+    const { gateClosed: _blocked, ...laptop } = current.laptop;
+    await expect(
+      restarted.transact(async (s) => ({
+        ...s,
+        document: { ...s.document, current: { ...current, laptop } },
+        result: undefined,
+      })),
+    ).rejects.toMatchObject({ code: "bounds" });
+    expect((await f.read()).document.current).toEqual(current);
+  });
+
   it("retains the exact client command binding beside its native reservation across store recreation", async () => {
     const f = await fixture(),
       current = plan();

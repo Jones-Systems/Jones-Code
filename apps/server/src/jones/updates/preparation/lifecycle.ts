@@ -30,6 +30,15 @@ type PreparationRelease =
   | "cleanup-unconfirmed"
   | "unknown";
 const LIMIT = 4096;
+const missing = async (file: string): Promise<boolean> => {
+  try {
+    await NodeFSP.lstat(file);
+    return false;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw cause;
+  }
+};
 const identity = (value: unknown): value is Identity => {
   if (typeof value !== "object" || value === null) return false;
   const r = value as Record<string, unknown>;
@@ -136,16 +145,13 @@ export function preparationLifecycle(baseDir: string, jobId: string) {
   return {
     reserve: async (kind: PreparationJob["kind"]) => {
       await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
-      const handle = await NodeFSP.open(launchFile, "wx", 0o600);
-      try {
-        await handle.writeFile(
-          `${JSON.stringify({ schema: 1, jobId, kind, state: "not-started" })}\n`,
-        );
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      const parent = await NodeFSP.open(directory, "r");
+      await writeDurableJson(
+        launchFile,
+        { schema: 1, jobId, kind, state: "not-started" },
+        LIMIT,
+        "create",
+      );
+      const parent = await NodeFSP.open(NodePath.dirname(directory), "r");
       try {
         await parent.sync();
       } finally {
@@ -192,7 +198,15 @@ export function preparationLifecycle(baseDir: string, jobId: string) {
             !["stage", "verify", "verify-runtime", "sweep"].includes(raw.kind)
           )
             return "unknown";
-          if (raw.state === "not-started") return raw.state;
+          if (raw.state === "not-started") {
+            // Only the job-lock owner can use a reservation as proof. A worker identity
+            // or even an incomplete effect record conflicts with the pre-spawn state.
+            return raw.worker === undefined &&
+              (await missing(effectFile)) &&
+              (await missing(`${effectFile}.partial`))
+              ? "not-started"
+              : "unknown";
+          }
           if (raw.state === "released") return identity(raw.worker) ? "released" : "unknown";
           if (raw.state !== "spawning" && raw.state !== "started") return "unknown";
           const effects = (await readBoundedJson(effectFile, LIMIT).catch(() => undefined)) as

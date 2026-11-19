@@ -30,6 +30,8 @@ export interface InstallPlanDriver {
     readonly canOperate: boolean;
     readonly fleetStatus?: FleetHostStatus | null;
   }>;
+  /** Rechecks fresh host capability and session authority before claims and dispatch. */
+  readonly canDispatch: (environmentId: EnvironmentId) => boolean;
   readonly operation: (
     environmentId: EnvironmentId,
     request: Exclude<JonesOperationCommand, { action: "recoveryPreflight" | "recoverCleanup" }>,
@@ -50,6 +52,8 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
     try {
       const { observation, canOperate, fleetStatus } = await driver.observe(device.environmentId);
       if (driver.cancelled()) return;
+      const canMutate = () =>
+        !driver.cancelled() && canOperate && driver.canDispatch(device.environmentId);
       const step = nextRunnerStep(plan, device, observation, fleetStatus, driver.now());
       const report = async (operationId: string, receipt: JonesOperationReceipt) => {
         if (!driver.cancelled())
@@ -63,26 +67,39 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
       };
       if (step.kind === "wait") continue;
       if (step.kind === "read") {
+        const { operationId, request, receipt: prior } = step.operation;
+        if (
+          request.kind !== "operation-start" ||
+          request.input.environmentId !== device.environmentId ||
+          request.input.operationId !== operationId
+        )
+          continue;
         const result = await driver.operation(device.environmentId, {
           action: "operationRead",
           input: {
             environmentId: device.environmentId,
-            operationIds: [step.operation.operationId],
+            operationIds: [operationId],
           },
         });
         if (!("receipts" in result)) continue;
-        const receipt = result.receipts.find(
-          (r) => r.operationId === step.operation.operationId,
-        )?.receipt;
+        const receipt = result.receipts.find((r) => r.operationId === operationId)?.receipt;
         if (
-          receipt !== undefined &&
-          receipt !== null &&
-          step.operation.request.kind === "operation-start" &&
-          validateReceipt(step.operation.request.input, receipt) &&
-          (step.operation.receipt === undefined || validateReceipt(step.operation.receipt, receipt))
+          receipt != null &&
+          validateReceipt(request.input, receipt) &&
+          (prior === undefined || validateReceipt(prior, receipt))
         )
-          await report(step.operation.operationId, receipt);
+          await report(operationId, receipt);
         // Null is absence, never proof of no effects or permission to send again.
+        continue;
+      }
+      if (step.kind === "report-directive") {
+        await driver.desktop({
+          type: "report",
+          planId: plan.planId,
+          environmentId: device.environmentId,
+          operationId: step.operationId,
+          evidence: { kind: "directive", status: step.status },
+        });
         continue;
       }
       const reservation = step.kind === "reservation" ? step.operation : undefined;
@@ -90,19 +107,7 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         reservation !== undefined && Date.parse(reservation.lease.leaseUntil) <= driver.now();
       const directive =
         reservation?.request.kind === "plan-directive" ? reservation.request.input : undefined;
-      if (directive !== undefined) {
-        if (fleetStatus != null && validateDirectiveEvidence(directive, fleetStatus)) {
-          await driver.desktop({
-            type: "report",
-            planId: plan.planId,
-            environmentId: device.environmentId,
-            operationId: directive.directiveId,
-            evidence: { kind: "directive", status: fleetStatus },
-          });
-          continue;
-        }
-        if (!canOperate || !canReplayDirective(directive, fleetStatus)) continue;
-      }
+      if (directive !== undefined && !canReplayDirective(directive, fleetStatus)) continue;
       // Reclaim through native main even for this window's own reservation: it rechecks the
       // gate and current membership, and returns the exact original request for idempotency.
       if (
@@ -145,17 +150,17 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
                     expectedInstalledSource: step.operation.request.input.expectedInstalledSource,
                   }),
       };
+      if (!canMutate()) continue;
       const claimed = await driver.desktop(claim);
       const grant = claimed.grant;
       if (
-        driver.cancelled() ||
+        !canMutate() ||
         claimed.refused !== undefined ||
         grant === undefined ||
         grant.planId !== plan.planId ||
         grant.environmentId !== device.environmentId ||
         (reservation !== undefined && grant.operationId !== reservation.operationId) ||
-        grant.step === "install" ||
-        grant.step === "stop" ||
+        grant.step !== claim.step ||
         !Number.isFinite(Date.parse(grant.leaseUntil)) ||
         Date.parse(grant.leaseUntil) <= driver.now()
       )
@@ -240,7 +245,7 @@ async function dispatchGrant(
     !("receipts" in receipt) &&
     receipt.operationId === grant.operationId &&
     receipt.environmentId === grant.environmentId &&
-    (request.kind !== "operation-start" || validateReceipt(request.input, receipt))
+    validateReceipt(request.input, receipt)
   )
     await report(grant.operationId, receipt);
 }
