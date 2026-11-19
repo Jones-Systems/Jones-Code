@@ -53,10 +53,11 @@ import { type EnvironmentPresentation, useRelayEnvironmentDiscovery } from "~/st
 import { useAtomCommand } from "../../state/use-atom-command";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import {
+  addNumberedPickerShortcuts,
   resolveShortcutCommand,
   shortcutLabelForCommand,
-  threadJumpCommandForIndex,
-  threadJumpIndexFromCommand,
+  numberedPickerCommandForIndex,
+  numberedPickerIndexFromCommand,
 } from "../../keybindings";
 import {
   parseManualDesktopSshTarget,
@@ -87,7 +88,7 @@ export function AddEnvironmentDialog({
   readonly onErrorChange: (error: string | null) => void;
 }) {
   const desktopBridge = window.desktopBridge;
-  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const keybindings = addNumberedPickerShortcuts(useAtomValue(primaryServerKeybindingsAtom));
   const connectPairing = useAtomCommand(connectPairingAtom, { reportFailure: false });
   const connectSshEnvironment = useAtomCommand(connectSshEnvironmentAtom, {
     reportFailure: false,
@@ -313,7 +314,7 @@ export function AddEnvironmentDialog({
         platform: navigator.platform,
         context: { modelPickerOpen: false },
       });
-      const index = threadJumpIndexFromCommand(command ?? "");
+      const index = numberedPickerIndexFromCommand(command ?? "");
       const target = index === null ? undefined : filteredDiscoveredSshHosts[index];
       if (target) {
         event.preventDefault();
@@ -534,7 +535,8 @@ export function AddEnvironmentDialog({
                   <AutocompleteList className="max-h-72">
                     {filteredDiscoveredSshHosts.map((target, index) => {
                       const address = formatDesktopSshTarget(target);
-                      const shortcutCommand = index < 9 ? threadJumpCommandForIndex(index) : null;
+                      const shortcutCommand =
+                        index < 9 ? numberedPickerCommandForIndex(index) : null;
                       const shortcutLabel = shortcutCommand
                         ? shortcutLabelForCommand(keybindings, shortcutCommand, navigator.platform)
                         : null;

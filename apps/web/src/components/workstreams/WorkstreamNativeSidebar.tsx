@@ -56,6 +56,7 @@ export interface NativeThreadExternalDrop {
 
 export function WorkstreamNativeSidebar({
   controller,
+  beforeUnassigned,
   nameIconProjects,
   newThreadAction,
   threads,
@@ -72,6 +73,7 @@ export function WorkstreamNativeSidebar({
   placeThread,
 }: {
   controller: PersonalWorkstreamsController;
+  beforeUnassigned?: ReactNode;
   nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
   newThreadAction?: ((workstream: PersonalWorkstreamView) => WorkstreamThreadAction) | undefined;
   threads: readonly EnvironmentThreadShell[];
@@ -448,6 +450,7 @@ export function WorkstreamNativeSidebar({
     <div ref={root}>
       <WorkstreamSidebarSection
         controller={controller}
+        beforeUnassigned={beforeUnassigned}
         nameIconProjects={nameIconProjects}
         newThreadAction={newThreadAction}
         snoozedIds={snoozedIds}

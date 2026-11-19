@@ -37,7 +37,7 @@ function bindings(command: KeybindingCommand, when = "!editableFocus") {
 }
 
 describe("editable shortcut conditions", () => {
-  it.each(["commandPalette.toggle", "sidebar.toggle", "thread.next", "thread.jump.1"] as const)(
+  it.each(["commandPalette.toggle", "sidebar.toggle", "thread.next", "thread.previous"] as const)(
     "honors !editableFocus for %s without a caller-provided focus context",
     (command) => {
       using focus = setupFocus();

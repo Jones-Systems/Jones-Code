@@ -259,8 +259,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Thread board appearance"),
     to: "/settings/jones-code/appearance",
     searchTerms: [
-      "sidebar thread card border outline tint opacity brightness background workstream color font size weight density padding spacing counts filters fixed adaptive",
+      "sidebar thread card border outline tint opacity brightness background workstream color font size weight density padding spacing counts filters fixed adaptive position offset left right up down color bar collapse expand",
     ],
+  },
+  {
+    id: "thread-board-environment-badges",
+    title: "Thread environment badges",
+    to: "/settings/jones-code/appearance",
+    searchTerms: ["device machine laptop vps mini icon name label filled outline per environment"],
   },
   {
     id: "sidebar-thread-title-brightness",

@@ -45,7 +45,6 @@ const THREAD_KEYBINDING_COMMANDS = [
   "thread.pin",
   "thread.regenerateTitle",
   "thread.undo",
-  ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ] as const;
 
 const MODEL_PICKER_KEYBINDING_COMMANDS = [
@@ -129,6 +128,8 @@ export const SCRIPT_RUN_COMMAND_PATTERN = Schema.TemplateLiteral([
 
 export const KeybindingCommand = Schema.Union([
   Schema.Literals(STATIC_KEYBINDING_COMMANDS),
+  // Older clients and keybindings files can still send retired commands.
+  Schema.Literals(THREAD_JUMP_KEYBINDING_COMMANDS),
   SCRIPT_RUN_COMMAND_PATTERN,
 ]);
 export type KeybindingCommand = typeof KeybindingCommand.Type;

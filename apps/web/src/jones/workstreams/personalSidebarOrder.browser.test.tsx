@@ -1,3 +1,5 @@
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import "~/index.css";
 import { createMemoryHistory } from "@tanstack/react-router";
@@ -10,6 +12,11 @@ import type { PersonalWorkstreamsState } from "@t3tools/client-runtime/jones/wor
 import { personalThreadKey } from "@t3tools/client-runtime/jones/workstreams/personal";
 import * as Schema from "effect/Schema";
 import { AppRoot } from "~/AppRoot";
+import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
+import {
+  StoredThreadBoardAppearance,
+  THREAD_BOARD_APPEARANCE_KEY,
+} from "../sidebarAppearance/threadBoardAppearance";
 import { useThreadRouteTarget } from "~/hooks/useThreadRouteTarget";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
@@ -19,12 +26,13 @@ import { personalNamedGroupsHiddenKey } from "./personalSidebarOrder";
 import { personalSharedStatusFilterKey, personalStatusFilterKey } from "./personalStatusFilter";
 import {
   ENVIRONMENT_ID,
+  PROJECT_ID,
   installFakeEnvironment,
   refreshFakeShell,
   threadWithHistory,
   type FakeDriver,
 } from "../../../test/fakeEnvironment";
-import { render } from "../../../test/render";
+import { act, render } from "../../../test/render";
 import { ChatHeader } from "../../components/chat/ChatHeader";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
 
@@ -79,9 +87,6 @@ vi.mock(import("~/state/server"), async (original) => {
       compileResolvedKeybindingsConfig([
         { key: "mod+shift+]", command: "thread.next" },
         { key: "mod+shift+[", command: "thread.previous" },
-        { key: "mod+1", command: "thread.jump.1" },
-        { key: "mod+6", command: "thread.jump.6" },
-        { key: "mod+8", command: "thread.jump.8" },
       ]),
     ),
   };
@@ -250,8 +255,60 @@ async function withSidebar(
   await inspect({ router, rows, visit, step, setWorking, threadIds, assign });
 }
 
+it("shows drafts below the Workstreams heading and above Unassigned", async () => {
+  await withSidebar(async () => {
+    const draftId = DraftId.make("board-draft");
+    using _cleanup = {
+      [Symbol.dispose]: () => useComposerDraftStore.getState().clearDraftThread(draftId),
+    };
+    await act(() => {
+      const store = useComposerDraftStore.getState();
+      store.setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
+        threadId: ThreadId.make("board-draft-thread"),
+      });
+      store.setPrompt(draftId, "Draft for the board");
+    });
+    const draft = page.getByTestId("sidebar-draft-row");
+    await expect.element(draft).toBeVisible();
+    const header = page.getByRole("button", { name: "Hide all Workstreams", exact: true });
+    const unassigned = page.getByRole("button", { name: "Collapse Unassigned", exact: true });
+    expect(
+      header.element().compareDocumentPosition(draft.element()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      draft.element().compareDocumentPosition(unassigned.element()) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});
+
+it("uses the enabled color bar to collapse and reopen its Workstream", async () => {
+  await withSidebar(async ({ rows }) => {
+    const previous = localStorage.getItem(THREAD_BOARD_APPEARANCE_KEY);
+    using _cleanup = {
+      [Symbol.dispose]: () => {
+        if (previous === null) localStorage.removeItem(THREAD_BOARD_APPEARANCE_KEY);
+        else localStorage.setItem(THREAD_BOARD_APPEARANCE_KEY, previous);
+      },
+    };
+    await act(() =>
+      writeLocalStorageValue(
+        THREAD_BOARD_APPEARANCE_KEY,
+        { clickRailToCollapse: true },
+        null,
+        StoredThreadBoardAppearance,
+      ),
+    );
+    const initial = rows();
+    await page.getByRole("button", { name: "Collapse alpha from the color bar" }).click();
+    expect(rows()).toEqual(initial.filter((id) => !id.startsWith("a")));
+    await page.getByRole("button", { name: "Expand alpha from the color bar" }).click();
+    expect(rows()).toEqual(initial);
+  });
+});
+
 it("traverses Unassigned before named Workstreams and skips collapsed groups", async () => {
-  await withSidebar(async ({ router, rows, visit, step }) => {
+  await withSidebar(async ({ rows, visit, step }) => {
     const header = page.getByRole("button", { name: "Hide all Workstreams", exact: true });
     const unassigned = page.getByRole("button", { name: "Collapse Unassigned", exact: true });
     const firstNamed = page.getByRole("button", { name: "Collapse alpha", exact: true });
@@ -279,20 +336,12 @@ it("traverses Unassigned before named Workstreams and skips collapsed groups", a
     await step("next", "b1");
     await userEvent.click(page.getByRole("button", { name: "Collapse Unassigned", exact: true }));
     expect(rows()).toEqual(order.slice(2));
-    await userEvent.keyboard("{Meta>}1{/Meta}");
-    await vi.waitFor(() =>
-      expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[2]}`),
-    );
     await userEvent.click(page.getByRole("button", { name: "Expand Unassigned", exact: true }));
     expect(rows()).toEqual(order);
-    await userEvent.keyboard("{Meta>}1{/Meta}");
-    await vi.waitFor(() =>
-      expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[0]}`),
-    );
   });
 });
 
-it("leaves hidden Workstream rows out of traversal and numeric jumps, keeping only the routed row as an anchor", async () => {
+it("leaves hidden Workstream rows out of traversal, keeping only the routed row as an anchor", async () => {
   await withSidebar(async ({ router, rows, visit, step }) => {
     const order = rows();
     const pathname = () => router.history.location.pathname;
@@ -314,14 +363,9 @@ it("leaves hidden Workstream rows out of traversal and numeric jumps, keeping on
     await step("next", unassigned[1]!);
     await visit("b1");
     await step("previous", unassigned[1]!);
-    await userEvent.keyboard("{Meta>}1{/Meta}");
-    await vi.waitFor(() => expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${unassigned[0]}`));
-    await userEvent.keyboard("{Meta>}6{/Meta}");
-    expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${unassigned[0]}`);
     await clickDisclosureArrow("Show all Workstreams");
     await vi.waitFor(() => expect(rows()).toEqual(order));
-    await userEvent.keyboard("{Meta>}1{/Meta}");
-    await vi.waitFor(() => expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${order[0]}`));
+    expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${unassigned[1]}`);
   });
 });
 
@@ -341,8 +385,8 @@ it("indents real Workstream thread rows by 8 px and leaves Unassigned rows flush
   });
 });
 
-it("uses local Workstream status overrides for rendered rows, traversal and numeric jumps", async () => {
-  await withSidebar(async ({ router, rows, visit, step }) => {
+it("uses local Workstream status overrides for rendered rows, traversal", async () => {
+  await withSidebar(async ({ rows, visit, step }) => {
     const setWorking = (id: string) =>
       writeLocalStorageValue(
         personalStatusFilterKey(id),
@@ -366,13 +410,11 @@ it("uses local Workstream status overrides for rendered rows, traversal and nume
     await visit(alphaOrder[4]!);
     await step("next", "b1");
     await step("previous", alphaOrder[4]!);
-    await userEvent.keyboard("{Meta>}6{/Meta}");
-    await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
   });
 });
 
-it("keeps next, previous and numeric jumps aligned with truncated and expanded rows", async () => {
-  await withSidebar(async ({ router, rows, visit, step, threadIds }) => {
+it("keeps next and previous aligned with truncated and expanded rows", async () => {
+  await withSidebar(async ({ rows, visit, step, threadIds }) => {
     const order = rows().slice(2);
     expect(order.slice(0, 5).every((id) => id.startsWith("a"))).toBe(true);
     expect(order[5]).toBe("b1");
@@ -384,8 +426,6 @@ it("keeps next, previous and numeric jumps aligned with truncated and expanded r
     await step("next", "b1");
     await visit(hiddenAlpha);
     await step("previous", order[4]!);
-    await userEvent.keyboard("{Meta>}8{/Meta}");
-    await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
     await userEvent.click(
       page.getByRole("button", { name: "Show 2 more threads in alpha", exact: true }),
     );
@@ -395,15 +435,10 @@ it("keeps next, previous and numeric jumps aligned with truncated and expanded r
     await step("next", expandedOrder[5]!);
     await step("next", expandedOrder[6]!);
     await step("next", "b1");
-    await userEvent.keyboard("{Meta>}8{/Meta}");
-    await vi.waitFor(() =>
-      expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${expandedOrder[5]}`),
-    );
     await userEvent.click(
       page.getByRole("button", { name: "Show only 5 threads in alpha", exact: true }),
     );
-    await userEvent.keyboard("{Meta>}8{/Meta}");
-    await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
+    await vi.waitFor(() => expect(rows().slice(2)).toEqual(order));
   });
 });
 
@@ -443,7 +478,7 @@ it("steps from the open thread's former position when it starts working and its 
 
 it("shows assigned pinned members once inside Workstreams above the remaining pinned shelf", async () => {
   await withSidebar(
-    async ({ rows, visit, step, router }) => {
+    async ({ rows, visit, step }) => {
       expect(rows()).toHaveLength(8);
       const header = document.querySelector("[data-personal-workstreams-header]")!;
       const findPin = () =>
@@ -461,10 +496,6 @@ it("shows assigned pinned members once inside Workstreams above the remaining pi
         .toBeVisible();
       await visit(rows().at(-1)!);
       await step("next", "loose-pin");
-      await userEvent.keyboard("{Meta>}1{/Meta}");
-      await vi.waitFor(() =>
-        expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${rows()[0]}`),
-      );
     },
     { pinnedFixture: true },
   );

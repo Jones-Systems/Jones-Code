@@ -270,7 +270,11 @@ import { openUseInAnotherApp } from "./mcp/UseInAnotherAppDialog";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
 import { primaryServerKeybindingsAtom } from "../state/server";
-import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
+import {
+  addNumberedPickerShortcuts,
+  numberedPickerIndexFromCommand,
+  resolveShortcutCommand,
+} from "../keybindings";
 import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "./ui/command";
 import { Button } from "./ui/button";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -530,7 +534,7 @@ function OpenCommandPaletteDialog(props: {
         delegatedUnderParent,
       ),
   );
-  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const keybindings = addNumberedPickerShortcuts(useAtomValue(primaryServerKeybindingsAtom));
   const providersByEnvironment = useEnvironmentProviders();
   const { changeThemeItem, changeAppearanceItem, themeEditorItem } = useCommandPaletteThemeItems();
   const currentView = viewStack.at(-1)?.view ?? null;
@@ -2585,7 +2589,6 @@ function OpenCommandPaletteDialog(props: {
       }
     }
     // Global new-thread handlers ignore shortcuts while the palette is open.
-    const isJump = threadJumpIndexFromCommand(command ?? "") !== null;
     const isNewThread =
       !event.nativeEvent.isComposing &&
       event.keyCode !== 229 &&
@@ -2593,18 +2596,16 @@ function OpenCommandPaletteDialog(props: {
         command === "chat.newLocal" ||
         command === "chat.newWithoutProject");
     const matchingItem =
-      isJump || isNewThread
+      isNewThread || numberedPickerIndexFromCommand(command ?? "") !== null
         ? displayedGroups
             .flatMap((group) => group.items)
             .find((item) => item.shortcutCommand === command)
         : undefined;
-    if (isJump || matchingItem) {
+    if (matchingItem) {
       (event as typeof event & { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
       event.preventDefault();
       event.stopPropagation();
-      if (matchingItem) {
-        executeItem(matchingItem);
-      }
+      executeItem(matchingItem);
       return;
     }
     if (command === "thread.copyReference") {

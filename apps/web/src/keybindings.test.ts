@@ -19,7 +19,6 @@ import {
   isTerminalSplitShortcut,
   resolveChatShortcutCommand,
   resolveShortcutCommand,
-  shouldShowThreadJumpHintsForModifiers,
   shortcutLabelForCommand,
   terminalNavigationShortcutData,
   type ShortcutEventLike,
@@ -183,9 +182,6 @@ const DEFAULT_BINDINGS = compile([
     command: "thread.settle",
     whenAst: whenNot(whenIdentifier("terminalFocus")),
   },
-  { shortcut: modShortcut("1"), command: "thread.jump.1" },
-  { shortcut: modShortcut("2"), command: "thread.jump.2" },
-  { shortcut: modShortcut("3"), command: "thread.jump.3" },
   {
     shortcut: modShortcut("1"),
     command: "modelPicker.jump.1",
@@ -304,12 +300,12 @@ describe("split/new/close terminal shortcuts", () => {
 describe("shortcutLabelForCommand", () => {
   it("returns null for commands shadowed by a later conflicting shortcut", () => {
     const bindings = compile([
-      { shortcut: modShortcut("1", { shiftKey: true }), command: "thread.jump.1" },
-      { shortcut: modShortcut("1", { shiftKey: true }), command: "thread.jump.7" },
+      { shortcut: modShortcut("1", { shiftKey: true }), command: "thread.previous" },
+      { shortcut: modShortcut("1", { shiftKey: true }), command: "thread.next" },
     ]);
 
-    assert.isNull(shortcutLabelForCommand(bindings, "thread.jump.1", "MacIntel"));
-    assert.strictEqual(shortcutLabelForCommand(bindings, "thread.jump.7", "MacIntel"), "⇧⌘1");
+    assert.isNull(shortcutLabelForCommand(bindings, "thread.previous", "MacIntel"));
+    assert.strictEqual(shortcutLabelForCommand(bindings, "thread.next", "MacIntel"), "⇧⌘1");
   });
 
   it("respects when-context while resolving labels", () => {
@@ -345,57 +341,22 @@ describe("shortcutLabelForCommand", () => {
   });
 });
 
-describe("thread navigation helpers", () => {
-  it("never shows jump hints while the terminal is focused, even with an unrestricted binding", () => {
-    assert.isFalse(
-      shouldShowThreadJumpHintsForModifiers(event({ metaKey: true }), DEFAULT_BINDINGS, {
-        platform: "MacIntel",
-        context: { terminalFocus: true },
-      }),
-    );
-    assert.isTrue(
-      shouldShowThreadJumpHintsForModifiers(event({ metaKey: true }), DEFAULT_BINDINGS, {
-        platform: "MacIntel",
-        context: { terminalFocus: false },
-      }),
-    );
-  });
-
-  it("keeps default thread jumps off the web so the browser can switch tabs", () => {
-    const input = event({ key: "1", metaKey: true });
-    assert.isNull(
-      resolveShortcutCommand(input, DEFAULT_RESOLVED_KEYBINDINGS, {
-        platform: "MacIntel",
-        context: { isDesktop: false },
-      }),
-    );
-    assert.strictEqual(
-      resolveShortcutCommand(input, DEFAULT_RESOLVED_KEYBINDINGS, {
-        platform: "MacIntel",
-        context: { isDesktop: true },
-      }),
-      "thread.jump.1",
-    );
-    assert.isFalse(
-      shouldShowThreadJumpHintsForModifiers(
-        event({ metaKey: true }),
-        DEFAULT_RESOLVED_KEYBINDINGS,
-        {
-          platform: "MacIntel",
-          context: { isDesktop: false },
-        },
-      ),
-    );
-    assert.isTrue(
-      shouldShowThreadJumpHintsForModifiers(
-        event({ metaKey: true }),
-        DEFAULT_RESOLVED_KEYBINDINGS,
-        {
+describe("numbered thread shortcuts", () => {
+  it("ignores retired rules from disk and older servers", () => {
+    const saved = [{ key: "mod+1", command: "thread.jump.1" }] as const;
+    assert.deepEqual(compileResolvedKeybindingsConfig(saved), []);
+    const oldServerBindings = compile([{ shortcut: modShortcut("1"), command: "thread.jump.1" }]);
+    for (const bindings of [
+      DEFAULT_RESOLVED_KEYBINDINGS,
+      mergeWithDefaultKeybindings(oldServerBindings),
+    ]) {
+      assert.isNull(
+        resolveShortcutCommand(event({ key: "1", metaKey: true }), bindings, {
           platform: "MacIntel",
           context: { isDesktop: true },
-        },
-      ),
-    );
+        }),
+      );
+    }
   });
 });
 
@@ -415,12 +376,11 @@ describe("model picker navigation helpers", () => {
       }),
       "modelPicker.jump.3",
     );
-    assert.strictEqual(
+    assert.isNull(
       resolveShortcutCommand(input, DEFAULT_RESOLVED_KEYBINDINGS, {
         platform: "MacIntel",
         context: { isDesktop: true, modelPickerOpen: false },
       }),
-      "thread.jump.3",
     );
   });
 });
@@ -705,9 +665,9 @@ describe("resolveShortcutCommand", () => {
       resolveShortcutCommand(
         event({ key: "+", code: "Digit1", ctrlKey: true }),
         DEFAULT_RESOLVED_KEYBINDINGS,
-        { platform: "Linux", context: { isDesktop: true } },
+        { platform: "Linux", context: { isDesktop: true, modelPickerOpen: true } },
       ),
-      "thread.jump.1",
+      "modelPicker.jump.1",
     );
     assert.strictEqual(
       resolveShortcutCommand(
@@ -944,30 +904,6 @@ describe("composer and pull request shortcuts", () => {
 });
 
 describe("Usage shortcuts", () => {
-  it.each(["Linux", "MacIntel"])(
-    "preserves desktop numbered thread shortcuts on Usage on %s",
-    (platform) => {
-      const shortcut = event({
-        key: "2",
-        ctrlKey: platform === "Linux",
-        metaKey: platform === "MacIntel",
-      });
-      assert.strictEqual(
-        resolveShortcutCommand(shortcut, DEFAULT_RESOLVED_KEYBINDINGS, {
-          platform,
-          context: { usagePageOpen: true, isDesktop: true },
-        }),
-        "thread.jump.2",
-      );
-      assert.isNotNull(
-        shortcutLabelForCommand(DEFAULT_RESOLVED_KEYBINDINGS, "thread.jump.2", {
-          platform,
-          context: { usagePageOpen: true, isDesktop: true },
-        }),
-      );
-    },
-  );
-
   it("matches shifted number keys for periods and only on Usage", () => {
     const shortcut = event({ key: "!", code: "Digit1", ctrlKey: true, shiftKey: true });
     assert.strictEqual(

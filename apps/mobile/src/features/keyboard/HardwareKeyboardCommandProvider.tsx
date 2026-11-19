@@ -108,11 +108,6 @@ export function HardwareKeyboardCommandProvider({
     const commands = new Set<HardwareKeyboardCommand>(getRegisteredHardwareKeyboardCommands());
     commands.add("newTask");
     commands.add("commandPalette");
-    if (pathname !== "/" && !pathname.startsWith("/threads/")) {
-      for (const command of commands) {
-        if (command.startsWith("thread.jump.")) commands.delete(command);
-      }
-    }
     if (pathname !== "/" || navigation.canGoBack()) commands.add("back");
     if (activeThreadRef !== null) {
       commands.add("files");

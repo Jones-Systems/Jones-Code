@@ -17,8 +17,7 @@ import {
   threadWithHistory,
   type FakeDriver,
 } from "../../test/fakeEnvironment";
-import { act, fakeTimers, render } from "../../test/render";
-import { THREAD_JUMP_HINT_SHOW_DELAY_MS } from "./Sidebar.logic";
+import { act, render } from "../../test/render";
 
 // The socket is the only fake layer; see test/appScenarios.renders.tsx.
 vi.mock("../../../../packages/client-runtime/src/connection/driver.ts", async (importOriginal) => {
@@ -38,15 +37,16 @@ vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
 vi.mock(import("~/state/server"), async (original) => {
   const actual = await original();
   const { Atom } = await import("effect/reactivity");
-  const { compileResolvedKeybindingsConfig } = await import("@t3tools/shared/keybindings");
+  const { compileResolvedKeybindingRule, compileResolvedKeybindingsConfig } =
+    await import("@t3tools/shared/keybindings");
   const keybindings = compileResolvedKeybindingsConfig([
     { key: "mod+shift+]", command: "thread.next", when: "!previewFocus && !previewOpen" },
-    { key: "mod+1", command: "thread.jump.1", when: "!previewFocus" },
   ]);
-  return { ...actual, primaryServerKeybindingsAtom: Atom.make(keybindings) };
+  const legacyBinding = compileResolvedKeybindingRule({ key: "mod+1", command: "thread.jump.1" })!;
+  return { ...actual, primaryServerKeybindingsAtom: Atom.make([...keybindings, legacyBinding]) };
 });
 
-it("leaves thread shortcuts and their hints to the preview when their rules exclude it", async () => {
+it("leaves traversal to the preview and ignores retired numbered thread bindings", async () => {
   const [first, second] = [threadWithHistory("thread-a", 1), threadWithHistory("thread-b", 1)];
   using _environment = installFakeEnvironment([first, second]);
   using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("Linux x86_64");
@@ -73,22 +73,12 @@ it("leaves thread shortcuts and their hints to the preview when their rules excl
 
   const press = () => userEvent.keyboard("{Control>}{Shift>}]{/Shift}{/Control}");
   const jumpHint = () => document.querySelector("[data-jump-hint]");
-  const whileHoldingControl = async (assertJumpHints: () => void) => {
-    using _timers = fakeTimers();
-    await userEvent.keyboard("{Control>}");
-    try {
-      await act(() => vi.advanceTimersByTime(THREAD_JUMP_HINT_SHOW_DELAY_MS));
-      await vi.waitFor(assertJumpHints);
-    } finally {
-      await userEvent.keyboard("{/Control}");
-    }
-  };
   const firstPath = `/${ENVIRONMENT_ID}/${first.id}`;
 
   await userEvent.click(page.getByRole("button", { name: "Reload" }));
   await press();
   expect(router.history.location.pathname).toBe(firstPath);
-  await whileHoldingControl(() => expect(jumpHint()).toBeNull());
+  expect(jumpHint()).toBeNull();
 
   const firstRef = scopeThreadRef(ENVIRONMENT_ID, first.id);
   await act(() => useRightPanelStore.getState().openBrowser(firstRef, null));
@@ -101,5 +91,8 @@ it("leaves thread shortcuts and their hints to the preview when their rules excl
   await vi.waitFor(() =>
     expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${second.id}`),
   );
-  await whileHoldingControl(() => expect(jumpHint()).not.toBeNull());
+  await userEvent.keyboard("{Control>}1");
+  expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${second.id}`);
+  expect(jumpHint()).toBeNull();
+  await userEvent.keyboard("{/Control}");
 });

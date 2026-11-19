@@ -2,6 +2,7 @@ import {
   SettingsPageContainer,
   useSettingsSearchTarget,
 } from "../../components/settings/settingsLayout";
+import { EnvironmentBadgeAppearanceSettings } from "../sidebarAppearance/EnvironmentBadgeAppearanceSettings";
 import { ThreadBoardAppearanceSettings } from "../sidebarAppearance/ThreadBoardAppearanceSettings";
 import { ThreadTitleBrightnessSettings } from "../sidebarAppearance/ThreadTitleBrightnessSettings";
 import { WorkButtonSettings } from "../workMode/WorkButtonSettings";
@@ -21,6 +22,7 @@ export function JonesCodeAppearanceSettings() {
   return (
     <SettingsPageContainer>
       <ThreadBoardAppearanceSettings />
+      <EnvironmentBadgeAppearanceSettings />
       <SidebarThreadTitleAppearanceSettings />
       <WorkButtonSettings />
     </SettingsPageContainer>

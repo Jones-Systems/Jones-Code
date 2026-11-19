@@ -27,7 +27,6 @@ import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import type { Project } from "../types";
 import Sidebar from "./Sidebar";
-import { THREAD_JUMP_HINT_SHOW_DELAY_MS } from "./Sidebar.logic";
 import { SortableThreadRow } from "./sidebar/SidebarThreadRow";
 import { SidebarProvider } from "./ui/sidebar";
 
@@ -46,16 +45,6 @@ vi.mock("../hooks/useThreadRouteTarget", { spy: true });
 vi.mock("./sidebar/SidebarThreadRow", { spy: true });
 vi.mock("../state/session", { spy: true });
 vi.mock("../state/use-orchestration-command", { spy: true });
-vi.mock(import("../state/server"), async (original) => {
-  const { Atom } = await import("effect/reactivity");
-  const { compileResolvedKeybindingsConfig } = await import("@t3tools/shared/keybindings");
-  // The desktop defaults: holding Mod alone already matches a thread jump.
-  const keybindings = compileResolvedKeybindingsConfig([
-    { key: "mod+1", command: "thread.jump.1" },
-    { key: "mod+2", command: "thread.jump.2" },
-  ]);
-  return { ...(await original()), primaryServerKeybindingsAtom: Atom.make(keybindings) };
-});
 vi.mock("../commandPaletteBus", () => ({
   openCommandPalette: vi.fn(),
   isCommandPaletteOpen: () => false,
@@ -207,21 +196,6 @@ describe("sidebar render isolation", () => {
       rowRenders() - beforeShortcut,
       "thread rows re-rendered while opening the terminal with a quick Mod shortcut",
     ).toBe(0);
-
-    const jumpLabelsSince = (start: number) =>
-      vi
-        .mocked(SortableThreadRow)
-        .mock.calls.slice(start)
-        .map(([props]) => props.jumpLabel)
-        .filter((label) => label !== null);
-    const beforeHold = rowRenders();
-    await sendModifier("keydown");
-    await act(() => vi.advanceTimersByTime(THREAD_JUMP_HINT_SHOW_DELAY_MS));
-    expect(jumpLabelsSince(beforeHold), "holding Mod showed no jump hints").toHaveLength(2);
-    const beforeRelease = rowRenders();
-    await sendModifier("keyup");
-    expect(rowRenders()).toBeGreaterThan(beforeRelease);
-    expect(jumpLabelsSince(beforeRelease)).toEqual([]);
   });
 });
 

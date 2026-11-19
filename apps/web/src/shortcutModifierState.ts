@@ -44,7 +44,7 @@ function createShortcutModifierStore(ignoreEditable: boolean) {
         : shortcutModifierStateAfterKeyboardEvent(state, event),
     );
   };
-  // Dictation tools can omit Meta keyup after synthetic paste, leaving jump hints stuck.
+  // Dictation tools can omit Meta keyup after synthetic paste, leaving the modifier state stuck.
   const onResetEvent = () => {
     updateState(EMPTY_SHORTCUT_MODIFIER_STATE);
   };
@@ -82,8 +82,7 @@ function createShortcutModifierStore(ignoreEditable: boolean) {
   };
 }
 
-/** Shared by every subscriber; read it from a snapshot to re-render only when a derived value changes. */
-export const shortcutModifierStore = createShortcutModifierStore(false);
+const shortcutModifierStore = createShortcutModifierStore(false);
 const editableIgnoringShortcutModifierStore = createShortcutModifierStore(true);
 
 export function useShortcutModifierState(ignoreEditable = false): ShortcutModifierState {

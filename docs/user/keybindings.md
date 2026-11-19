@@ -71,12 +71,10 @@ find only searches the files loaded so far.
 
 ## iPad
 
-With a hardware keyboard, use `Cmd+1` through `Cmd+9` to open the first nine
-displayed threads. The shortcuts follow the current list filters and order.
-`Cmd+K` opens the command palette to search commands, projects, and threads.
-Use the arrow keys and Return to choose a result, or `Cmd+1` through `Cmd+9` to
-choose directly. Escape or `Cmd+K` closes the palette. Start a search with `>`
-to show only actions.
+With a hardware keyboard, `Cmd+K` opens the command palette to search
+commands, projects, and threads. Use the arrow keys and Return to choose a
+result. Escape or `Cmd+K` closes the palette. Start a search with `>` to show
+only actions.
 
 In a new thread, `Cmd+Shift+H` moves the draft to the next machine.
 
@@ -133,11 +131,8 @@ In a thread, `rightPanelOpen` is true while its right panel is open; the default
 the keyboard. `isWeb` is true in a browser tab. `isDesktop` is true in the
 desktop app. Unknown keys evaluate to `false`.
 
-`mod+1` through `mod+9` jump to the first nine threads, and to models while the
-model picker is open. The thread jumps do not run while the model picker is open.
-Those defaults use `isDesktop` so they do not steal the
-browser's tab-switch shortcuts. Remove that condition in Settings if you want
-the same jumps in a browser.
+`mod+1` through `mod+9` select models while the model picker is open in the
+desktop app. The browser keeps those keys for switching tabs.
 
 Combine keys with `!` for not, `&&` for and, `||` for or, and parentheses:
 

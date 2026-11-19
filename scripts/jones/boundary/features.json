@@ -3635,13 +3635,14 @@
       "id": "sidebar-appearance",
       "tests": [
         "apps/web/src/jones/sidebarAppearance/model.test.ts",
+        "apps/web/src/jones/devicePresentation/SidebarDevice.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/SidebarAppearanceLauncher.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/sidebarAppearanceCards.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/ThreadBoardAppearanceSettings.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/sidebarAppearanceWorkstreams.browser.test.tsx"
       ],
-      "scope": "Device-local sidebar appearance preferences with Selected/Original presets and a Jones Code Appearance settings page. Board-only controls adjust card and section outlines, tint, backgrounds, typography, sizing, and adaptive or fixed filter spacing. Shared sidebar hooks mount the host and launcher and expose semantic card slots. Lifted cards copy allowlisted attributes and variables. The renderer uses existing sidebar context, Workstream color persistence, and theme tokens."
+      "scope": "Device-local sidebar appearance preferences with Selected/Original presets and a Jones Code Appearance settings page. Board-only controls adjust card and section outlines, tint, backgrounds, typography, sizing, adaptive or fixed filter spacing, Workstream control placement, color-bar disclosure, and environment badge presentation by environment ID. Shared sidebar hooks mount the host and launcher and expose semantic card slots. Lifted cards copy allowlisted attributes and variables. The renderer uses existing sidebar context, Workstream color persistence, and theme tokens."
     },
     {
       "id": "workstream-auto-route",

@@ -291,8 +291,9 @@ function fanoutSetup() {
   return { ...routing, selectionsOn, models };
 }
 
-it("keeps the selected models when the draft switches machine by hand", async () => {
+it("keeps the selected models and Workstream when the draft switches machine by hand", async () => {
   const { a, b, draftId, input, store, selectionsOn, models } = fanoutSetup();
+  store.setNewThreadWorkstream(draftId, "workstream-alpha");
   await using screen = await render(
     <Harness
       input={{ ...input, automaticEnvironment: false, draftThread: store.getDraftSession(draftId) }}
@@ -301,6 +302,7 @@ it("keeps the selected models when the draft switches machine by hand", async ()
   await expect.element(screen.getByText("gpt-6.1-sol, gpt-6.1-luna")).toBeInTheDocument();
   await screen.getByRole("button", { name: `Switch to ${b}` }).click();
   await expect.element(screen.getByText(b)).toBeInTheDocument();
+  expect(store.getDraftSession(draftId)?.newThreadWorkstreamId).toBe("workstream-alpha");
   await expect.element(screen.getByText("gpt-6.1-sol, gpt-6.1-luna")).toBeInTheDocument();
   expect(store.getComposerDraft(draftId)?.prompt).toBe("Keep this prompt");
 
@@ -308,17 +310,20 @@ it("keeps the selected models when the draft switches machine by hand", async ()
   await act(async () => appAtomRegistry.set(selectionsOn(b), models("gpt-6.1-sol")));
   await screen.getByRole("button", { name: `Switch to ${a}` }).click();
   await expect.element(screen.getByText(a)).toBeInTheDocument();
+  expect(store.getDraftSession(draftId)?.newThreadWorkstreamId).toBe("workstream-alpha");
   await expect.element(screen.getByText("gpt-6.1-sol", { exact: true })).toBeInTheDocument();
 });
 
-it("keeps the selected models when automatic routing picks another machine", async () => {
+it("keeps the selected models and Workstream when automatic routing picks another machine", async () => {
   const { b, draftId, input, store } = fanoutSetup();
+  store.setNewThreadWorkstream(draftId, "workstream-alpha");
   store.setDraftThreadContext(draftId, { environmentSelection: "auto" });
   resources.pickedEnvironmentId = b;
   await using screen = await render(
     <Harness input={{ ...input, draftThread: store.getDraftSession(draftId) }} />,
   );
   await expect.element(screen.getByText(b)).toBeInTheDocument();
+  expect(store.getDraftSession(draftId)?.newThreadWorkstreamId).toBe("workstream-alpha");
   await expect.element(screen.getByText("gpt-6.1-sol, gpt-6.1-luna")).toBeInTheDocument();
 });
 
