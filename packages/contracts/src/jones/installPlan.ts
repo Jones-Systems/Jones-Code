@@ -260,6 +260,7 @@ export const JonesInstallPlan = Schema.Struct({
   laptop: JonesInstallPlanLaptop,
   devices: Schema.Array(JonesInstallPlanDevice).check(Schema.isMaxLength(16)),
   dismissedAt: Schema.optionalKey(Schema.String),
+  cancelled: Schema.optionalKey(Schema.Literal(true)),
   supersededAt: Schema.optionalKey(Schema.String),
   manualClosure: Schema.optionalKey(
     Schema.Struct({
@@ -291,6 +292,7 @@ export const JonesInstallPlanState = Schema.Struct({
   laptop: JonesInstallPlanLaptopEvidence,
   view: Schema.Struct({
     complete: Schema.Boolean,
+    cancelPlan: Schema.optionalKey(Schema.Literal(1)),
     manualClose: Schema.optionalKey(
       Schema.Struct({
         laptop: RunningBuild,
@@ -379,6 +381,11 @@ export const JonesInstallPlanRequest = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("dismiss"),
+    planId: JonesOperationId,
+    expectedRevision: Schema.Number,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("cancel-plan"),
     planId: JonesOperationId,
     expectedRevision: Schema.Number,
   }),

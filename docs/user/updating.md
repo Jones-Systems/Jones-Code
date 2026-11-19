@@ -32,9 +32,17 @@ On Laptop, **Stop download** is available only during transfer. Once checking
 has entered mount or copy work, or installation has begun, it cannot be stopped
 from the panel. A Stop request on a supported host remains pending until its
 worker and any native cleanup are proved finished; a late Stop can leave a completed download ready to
-install. **Held** or **Not confirmed** means the result is unresolved. Keep the
-operation ID and use **Refresh now** to read fresh evidence; it does not retry
-the operation. Closing the panel or restarting the app does not clear a hold.
+install. If the Laptop install outcome is unconfirmed, open Laptop and choose
+**Check update outcome**. This checks for native proof from the running build.
+If the selected build is verified, the plan can continue on the other devices.
+Use the same check after manually installing the plan's selected build.
+
+To end the rollout, choose **Cancel update plan** in **All** or **Laptop** and
+confirm. This closes the queue and keeps the attempt in **Last update**.
+Check or stop any still-running device work before cancelling. Cancellation
+keeps installed builds in place and retains unresolved native work for later
+verification. Use **Check update outcome** from the Laptop row in **Last
+update** if the outcome is still unconfirmed.
 
 The panel also refreshes each machine's status by itself: about every minute
 while a machine is downloading, installing or restarting, and about every ten

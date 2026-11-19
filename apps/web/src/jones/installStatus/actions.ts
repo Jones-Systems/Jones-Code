@@ -326,6 +326,8 @@ export async function performPanelAction(
   const read = await requestInstallPlan({ type: "read" }, binding);
   const plan = read.state.current;
   if (action === "check") {
+    if (environmentId === "laptop" && read.refused !== undefined)
+      throw new Error(read.refused.message);
     store.update({ desktop: await services.bridge.getUpdateState() });
     if (environmentId !== "laptop" && plan !== null) {
       services.kick?.(environmentId);

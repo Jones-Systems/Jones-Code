@@ -248,7 +248,8 @@ export function installPlanPresentation(
   const laptopPhase =
     plan.laptop.gateClosed !== undefined
       ? "gateClosed"
-      : plan.laptop.gate !== undefined
+      : plan.laptop.gate !== undefined ||
+          (plan.cancelled === true && laptopOperation?.result?.status === "committed")
         ? "verified"
         : laptopOperation?.result?.status === "committed"
           ? "committedGatePending"
@@ -293,11 +294,13 @@ export function installPlanPresentation(
   const laptopText =
     laptopOperation?.step === "download" && laptopPhase === "refused"
       ? "Download request did not start"
-      : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
-        ? "Install didn't finish"
-        : laptopAlreadyRunning
-          ? ALREADY_RUNNING_TEXT
-          : (laptopCopy[laptopPhase] ?? "Not confirmed");
+      : laptopOperation?.step === "install" && laptopPhase === "held"
+        ? "Install outcome unconfirmed"
+        : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
+          ? "Install didn't finish"
+          : laptopAlreadyRunning
+            ? ALREADY_RUNNING_TEXT
+            : (laptopCopy[laptopPhase] ?? "Not confirmed");
   const laptopActions = {
     download:
       !readOnly &&

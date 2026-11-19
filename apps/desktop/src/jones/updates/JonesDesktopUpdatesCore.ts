@@ -428,6 +428,7 @@ export interface JonesDesktopUpdateOptions {
   readonly executablePath: string;
   readonly profile: string | undefined;
   readonly activeGeneration: string | undefined;
+  readonly trialDescriptorPath?: string | undefined;
   readonly architecture: "x64" | "arm64";
   readonly platform: "darwin";
   readonly initialState: DesktopUpdateState;
@@ -563,6 +564,8 @@ export class JonesDesktopUpdateController {
   #activationMessage: string | undefined;
   #lastJournal: typeof ActivationJournal.Type | undefined;
   #activeCommittedTransaction: string | undefined;
+  #pendingTrialGeneration: string | undefined;
+  #trialRefresh: Promise<void> | undefined;
   #checkClassification: JonesUpdateState["checkClassification"];
   #download: DesktopDownloadWork | undefined;
   #heldDownload: { readonly pid: number; readonly processGroup: number } | undefined;
@@ -1533,6 +1536,64 @@ export class JonesDesktopUpdateController {
   }
 
   async configure(): Promise<void> {
+    const { activeGeneration, trialDescriptorPath } = this.#options;
+    if (trialDescriptorPath !== undefined) {
+      this.#activationBlocked = true;
+      if (
+        activeGeneration !== undefined &&
+        /^[a-f0-9]{64}$/.test(activeGeneration) &&
+        trialDescriptorPath ===
+          NodePath.join(this.updaterRoot, "transactions", activeGeneration, "trial-descriptor.json")
+      ) {
+        this.#pendingTrialGeneration = activeGeneration;
+        await this.refreshTrialActivation();
+        if (this.#pendingTrialGeneration === undefined) return;
+      }
+      await this.#publish(
+        "blocked",
+        "error",
+        "Waiting for the native installer to confirm the running Jones Code build.",
+      );
+      return;
+    }
+    await this.#configureActiveInstall();
+  }
+
+  refreshTrialActivation(): Promise<void> {
+    if (this.#trialRefresh !== undefined) return this.#trialRefresh;
+    const generation = this.#pendingTrialGeneration;
+    if (generation === undefined) return Promise.resolve();
+    this.#trialRefresh = this.#finishTrialActivation(generation).finally(() => {
+      this.#trialRefresh = undefined;
+    });
+    return this.#trialRefresh;
+  }
+
+  async #finishTrialActivation(generation: string): Promise<void> {
+    try {
+      const journal = decodeActivationJournal(
+        JSON.parse(
+          await NodeFSP.readFile(
+            NodePath.join(this.updaterRoot, "transactions", generation, "journal.json"),
+            "utf8",
+          ),
+        ),
+      );
+      if (journal.phase !== "resumed" || journal.intent.transactionId !== generation) return;
+      const active = decodeActiveInstall(
+        JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")),
+      );
+      if (active.generation !== generation || active.transactionId !== generation) return;
+    } catch {
+      return;
+    }
+    // The trial starts before its backend can receive the commit grant. Only the
+    // resumed journal and matching active manifest allow normal startup checks.
+    this.#pendingTrialGeneration = undefined;
+    await this.#configureActiveInstall();
+  }
+
+  async #configureActiveInstall(): Promise<void> {
     this.#recoveryInspectorReady = false;
     this.#selectedAttempt = undefined;
     const metadata = decodeBuildMetadata(
@@ -1556,7 +1617,10 @@ export class JonesDesktopUpdateController {
       try {
         active = decodeActiveInstall(JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")));
       } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") {
+        if (
+          (cause as NodeJS.ErrnoException).code !== "ENOENT" ||
+          this.#options.trialDescriptorPath !== undefined
+        ) {
           this.#activationBlocked = true;
           throw cause;
         }
@@ -1587,7 +1651,11 @@ export class JonesDesktopUpdateController {
         (metadata.jonesSource !== undefined && metadata.jonesSource.tree !== active.sourceTree)
       )
         matches = false;
-      if (!matches) active = await this.#adopt(metadata, active);
+      if (!matches) {
+        if (this.#options.trialDescriptorPath !== undefined)
+          throw new Error("The running trial app does not match its committed native manifest.");
+        active = await this.#adopt(metadata, active);
+      }
       this.#bootstrap = active;
       this.#source = active.sourceSha;
       await NodeFSP.mkdir(this.updaterRoot, { recursive: true, mode: 0o700 });

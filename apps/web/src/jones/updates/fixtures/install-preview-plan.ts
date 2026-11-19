@@ -186,7 +186,11 @@ export function createScriptedInstallPlan(input: {
   const notify = () => {
     native = {
       ...native,
-      view: { ...native.view, complete: native.current !== null && isPlanComplete(native.current) },
+      view: {
+        ...native.view,
+        complete: native.current !== null && isPlanComplete(native.current),
+        ...(native.current === null ? {} : { cancelPlan: 1 }),
+      },
     };
     if (input.storageKey !== undefined)
       sessionStorage.setItem(input.storageKey, JSON.stringify(native));
@@ -419,6 +423,18 @@ export function createScriptedInstallPlan(input: {
       native = { ...native, current: edit.plan };
       notify();
       return result({ applied: edit.applied });
+    }
+    if (request.type === "cancel-plan") {
+      if (request.expectedRevision !== plan.revision)
+        return refuse("stale-revision", "The plan changed before cancelling.");
+      native = {
+        ...native,
+        current: null,
+        last: { ...plan, revision: plan.revision + 1, dismissedAt: iso(), cancelled: true },
+        view: { complete: false },
+      };
+      notify();
+      return result();
     }
     if (request.type === "dismiss") {
       if (request.expectedRevision !== plan.revision)
@@ -756,7 +772,14 @@ export function createScriptedInstallPlan(input: {
         ...plan.laptop,
         operations: plan.laptop.operations.map((op) =>
           op.result?.status === "running" || op.result?.status === "stop-requested"
-            ? { ...op, result: { status: held ? "held" : "stopped", at: iso() } }
+            ? {
+                ...op,
+                result: {
+                  status: held ? "held" : "stopped",
+                  at: iso(),
+                  ...(held && op.step === "install" ? { code: "native-unconfirmed" } : {}),
+                },
+              }
             : op,
         ),
       },

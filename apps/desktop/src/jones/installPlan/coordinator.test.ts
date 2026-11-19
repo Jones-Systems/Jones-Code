@@ -415,7 +415,10 @@ describe("Laptop install recovery", () => {
     expectedInstalledSource: old,
     reviewedAt: timestamp,
   };
-  const startInstall = async (f: ReturnType<typeof fixture>) => {
+  const startInstall = async (
+    f: ReturnType<typeof fixture>,
+    select = [] as (typeof selection)[],
+  ) => {
     f.setStaged();
     f.setEvidence({
       activeSource: old,
@@ -426,7 +429,7 @@ describe("Laptop install recovery", () => {
       type: "start",
       origin: "update-button",
       target,
-      select: [],
+      select,
       laptop: { action: "install", review },
     });
   };
@@ -439,6 +442,117 @@ describe("Laptop install recovery", () => {
       transactionId: transaction,
       fromGeneration: "previous",
     });
+
+  it.each([true, false])(
+    "settles a held attempt on verified manual startup (same target: %s)",
+    async (sameTarget) => {
+      const f = fixture();
+      const { state } = await startInstall(f, [selection]);
+      const plan = state.current!;
+      const operationId = plan.laptop.operations[0]!.operationId;
+      await bind(f, operationId);
+      const restored = createInstallPlanCoordinator(f.options);
+      const held = await restored.request({ type: "read" });
+      expect(held.state.current?.laptop.operations[0]?.result?.status).toBe("held");
+      const generation = "8".repeat(64);
+      f.setEvidence({
+        activeSource: sameTarget ? source : "9".repeat(40),
+        activeTree: tree,
+        activeGeneration: generation,
+      });
+      expect((await restored.request({ type: "read" })).state.current?.laptop.gate).toBeUndefined();
+      f.setEvidence({
+        ordinaryRecovery: {
+          transactionId: `manual-${generation}`,
+          activeGeneration: generation,
+          manifestSha256: "e".repeat(64),
+          receiptSha256: "f".repeat(64),
+        },
+      });
+      const checked = await restored.request({ type: "read" });
+      expect(checked.state.current?.laptop.operations[0]?.result).toMatchObject({
+        status: "interrupted",
+        code: sameTarget ? "target-verified-elsewhere" : "install-not-active",
+      });
+      if (sameTarget) {
+        expect(checked.state.current?.laptop.gate).toMatchObject({
+          basis: "prior-verified",
+          verificationKind: "ordinary-recovery",
+        });
+        expect(checked.state.view.manualClose).toBeUndefined();
+      } else {
+        expect(checked.state.current?.laptop.gate).toBeUndefined();
+        const closed = await restored.request({
+          type: "close-after-manual-install",
+          planId: plan.planId,
+          expectedRevision: checked.state.current!.revision,
+          ...checked.state.view.manualClose!,
+          devices: [{ environmentId: remote, kind: "unverified", observedAt: f.options.now() }],
+        });
+        expect(closed.refused).toBeUndefined();
+        expect(closed.state.current).toBeNull();
+      }
+      expect(f.controller.install).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("cancels a held Laptop rollout, retains its native fence and reconciles late proof in history", async () => {
+    const f = fixture();
+    const { state } = await startInstall(f, [selection]);
+    const plan = state.current!;
+    const operationId = plan.laptop.operations[0]!.operationId;
+    await bind(f, operationId);
+    const restored = createInstallPlanCoordinator(f.options);
+    const held = await restored.request({ type: "read" });
+    const cancel = {
+      type: "cancel-plan" as const,
+      planId: plan.planId,
+      expectedRevision: held.state.current!.revision,
+    };
+    expect(
+      (await restored.request({ ...cancel, expectedRevision: plan.revision })).refused?.code,
+    ).toBe("stale-revision");
+    const cancelled = await restored.request(cancel);
+    expect(cancelled.refused).toBeUndefined();
+    expect(cancelled.state.current).toBeNull();
+    expect(cancelled.state.last).toMatchObject({
+      cancelled: true,
+      laptop: { operations: [{ operationId, result: { status: "held" } }] },
+    });
+    const reopened = createInstallPlanCoordinator(f.options);
+    expect(await reopened.preparationHeld()).toBe(true);
+    expect(
+      (await reopened.request({ type: "start", origin: "update-button", target, select: [] }))
+        .refused?.code,
+    ).toBe("outstanding-operation");
+    expect((await f.claim(plan.planId)).refused?.code).toBe("plan-mismatch");
+    f.setEvidence({
+      activeGeneration: transaction,
+      committedTransactionId: transaction,
+      activeSource: source,
+    });
+    const reconciled = await reopened.request({ type: "read" });
+    expect(reconciled.state.current).toBeNull();
+    expect(reconciled.state.last?.laptop.gate).toBeUndefined();
+    expect(reconciled.state.last?.laptop.operations[0]?.result?.status).toBe("committed");
+    expect(await reopened.preparationHeld()).toBe(false);
+    expect(f.controller.install).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a plan with a reserved remote operation when cancellation is requested", async () => {
+    const f = fixture();
+    const plan = await f.start();
+    const claimed = await f.claim(plan.planId);
+    expect(claimed.grant).toBeDefined();
+    const cancelled = await f.coordinator.request({
+      type: "cancel-plan",
+      planId: plan.planId,
+      expectedRevision: claimed.state.current!.revision,
+    });
+    expect(cancelled.refused?.code).toBe("outstanding-operation");
+    expect(cancelled.state.current).toEqual(claimed.state.current);
+    expect(cancelled.state.last).toBeNull();
+  });
 
   it("records a failed result after binding and permits an explicit reviewed retry", async () => {
     const f = fixture();

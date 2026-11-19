@@ -275,6 +275,33 @@ const click = async (screen: Screen, name: string) => {
 // These use real browser interactions and the real pure model/runner against scripted receipts.
 // They cannot qualify native installs, host worker exit, Electron IPC or publication.
 describe("Install status receipt fixture", () => {
+  it("cancels the held Laptop rollout from its detail and keeps an inactive history entry", async () => {
+    await using world = await setup();
+    const { screen, fixture, calls, controller } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include VPS" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await act(() => fixture.settleLaptopStop(true));
+    await click(screen, "Laptop update details");
+    expect(screen.container.textContent).toContain("Install outcome unconfirmed");
+    expect(screen.container.textContent).toContain("native-unconfirmed");
+    await click(screen, "Check update outcome");
+    expect(fixture.snapshot().current?.laptop.operations.at(-1)?.result?.status).toBe("held");
+    await click(screen, "Cancel update plan");
+    await expect.poll(() => fixture.snapshot().current).toBeNull();
+    expect(screen.container.textContent).toContain("Update plan cancelled");
+    expect(screen.container.textContent).toContain("Queued updates cancelled");
+    expect(fixture.snapshot().last?.laptop.operations.at(-1)?.result?.status).toBe("held");
+    await click(screen, "Laptop update details");
+    await click(screen, "Check update outcome");
+    await world.commitLaptop();
+    controller.wake();
+    expect(calls.filter((call) => call.action === "fixture-host-operationStart")).toHaveLength(0);
+  });
+
   it("keeps a busy refusal historical, checks it read-only, and retries only on an explicit new action", async () => {
     await using world = await setup({ refuseFirstDownload: true });
     const { screen, fixture, calls } = world;
