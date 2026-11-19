@@ -119,6 +119,7 @@ const legacyParents: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>>
 
 // Wire presentation only: these native permissions were never implied by legacy grants.
 const legacyNativeDenialScopes: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>> = {
+  [AuthRequestsManageScope]: AuthAccessWriteScope,
   "workstreams:native:context": AuthOrchestrationReadScope,
   "workstreams:native:settlement": AuthOrchestrationOperateScope,
   "workstreams:native:reconciliation": AuthOrchestrationOperateScope,

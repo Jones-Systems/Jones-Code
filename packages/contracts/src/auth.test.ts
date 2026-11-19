@@ -5,6 +5,7 @@ import {
   AuthEnvironmentScopes,
   AuthEnvironmentScope,
   authScopeRequiredResponse,
+  AuthGrantScope,
   AuthGrantScopes,
   AuthStandardClientScopes,
   authScopeResponse,
@@ -49,6 +50,7 @@ describe("authorization grants", () => {
   );
 
   it.each([
+    ["requests:manage", "access:write"],
     ["workstreams:native:context", "orchestration:read"],
     ["workstreams:native:settlement", "orchestration:operate"],
     ["workstreams:native:reconciliation", "orchestration:operate"],
@@ -79,6 +81,14 @@ describe("authorization grants", () => {
     expect(decodeOldScopes(response.scopes)).toEqual(response.scopes);
     expect(response.permissions).toEqual(AuthStandardClientScopes);
     expect(response.scopes).not.toContain("filesystem:read");
+  });
+
+  it("keeps Requests management available only as an exact, non-pairable permission", () => {
+    const response = authScopeResponse(["requests:manage"]);
+    expect(decodeOldScopes(response.scopes)).toEqual([]);
+    expect(response.permissions).toEqual(["requests:manage"]);
+    expect(AuthGrantScope.literals).not.toContain("requests:manage");
+    expect(AuthStandardClientScopes).not.toContain("requests:manage");
   });
 
   it("ignores unknown response permissions without falling back to broader scopes", () => {
