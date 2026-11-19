@@ -154,6 +154,7 @@ export const FleetHostStatus = Schema.Struct({
   operationProtocol: Schema.NullOr(Schema.Literal(1)),
   planDirectiveProtocol: Schema.optionalKey(Schema.Literal(1)),
   releasePlanDirective: Schema.optionalKey(Schema.Literal(1)),
+  releasableDirectiveId: Schema.optionalKey(FleetOperationId),
   releasedDirectiveId: Schema.optionalKey(FleetOperationId),
   environmentId: EnvironmentId,
   enrollment: Schema.NullOr(FleetEnrollment),

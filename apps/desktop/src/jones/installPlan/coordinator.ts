@@ -23,6 +23,8 @@ import {
   validateReceipt,
   validateDirectiveEvidence,
   deviceActiveOperations,
+  deviceStagedReceipt,
+  canRecordRunningTarget,
   operationOutstanding,
 } from "@t3tools/client-runtime/jones/install-plan/model";
 import { RecoveryPreflightRefused } from "../updates/recoveryPreflight.ts";
@@ -208,6 +210,8 @@ export function createInstallPlanCoordinator(options: {
     | "download"
     | "stopDownload"
     | "discard"
+    | "laptopStageSelectionName"
+    | "isLaptopStageAbsent"
     | "install"
     | "isStaged"
     | "stagedBuild"
@@ -316,6 +320,16 @@ export function createInstallPlanCoordinator(options: {
     plan: JonesInstallPlan,
     evidence: JonesInstallPlanLaptopEvidence,
   ): Promise<JonesInstallPlan> => {
+    const abandonment = plan.laptop.stageAbandonment;
+    const retired =
+      abandonment !== undefined &&
+      abandonment.status !== "retired" &&
+      abandonment.selectionName !== undefined &&
+      !active.has(abandonment.operationId) &&
+      !evidence.activationBlocked &&
+      evidence.environmentId === plan.laptop.environmentId &&
+      (await options.controller.isLaptopStageAbsent(abandonment.selectionName).catch(() => false));
+    if (retired) plan = withStageAbandonmentResult(plan, abandonment.operationId, true);
     let changed = false;
     const operations = await Promise.all(
       plan.laptop.operations.map(async (operation): Promise<JonesInstallPlanLaptopOperation> => {
@@ -504,29 +518,38 @@ export function createInstallPlanCoordinator(options: {
     artifactId?: number;
     stagedHandle?: string;
   };
+  const withStageAbandonmentResult = (
+    plan: JonesInstallPlan,
+    operationId: string,
+    retired: boolean,
+  ): JonesInstallPlan => {
+    const stage = plan.laptop.stageAbandonment;
+    if (stage?.operationId !== operationId) return plan;
+    return {
+      ...plan,
+      revision: plan.revision + 1,
+      laptop: {
+        ...plan.laptop,
+        stageAbandonment: { ...stage, status: retired ? "retired" : "unconfirmed" },
+        operations: retired
+          ? plan.laptop.operations.map((operation) =>
+              operation.operationId === stage.operationId
+                ? {
+                    ...operation,
+                    result: { status: "stopped", at: now(), code: "stage-retired" },
+                  }
+                : operation,
+            )
+          : plan.laptop.operations,
+      },
+    };
+  };
   const recordStageAbandonment = async (effect: LaptopEffect, retired: boolean) => {
-    await nativeChange((plan) => {
-      const stage = plan.laptop.stageAbandonment;
-      if (plan.planId !== effect.planId || stage?.operationId !== effect.operationId) return plan;
-      return {
-        ...plan,
-        revision: plan.revision + 1,
-        laptop: {
-          ...plan.laptop,
-          stageAbandonment: { ...stage, status: retired ? "retired" : "unconfirmed" },
-          operations: retired
-            ? plan.laptop.operations.map((operation) =>
-                operation.operationId === stage.operationId
-                  ? {
-                      ...operation,
-                      result: { status: "stopped", at: now(), code: "stage-retired" },
-                    }
-                  : operation,
-              )
-            : plan.laptop.operations,
-        },
-      };
-    });
+    await nativeChange((plan) =>
+      plan.planId === effect.planId
+        ? withStageAbandonmentResult(plan, effect.operationId, retired)
+        : plan,
+    );
   };
   const runLaptop = async (effect: LaptopEffect) => {
     try {
@@ -743,7 +766,7 @@ export function createInstallPlanCoordinator(options: {
         const archived = document.last;
         const reportArchived =
           plan === null &&
-          archived?.cancelled === true &&
+          archived !== null &&
           req.type === "report" &&
           req.planId === archived.planId &&
           archived.devices.some(
@@ -752,12 +775,18 @@ export function createInstallPlanCoordinator(options: {
               device.operations.some(
                 (op) =>
                   op.operationId === req.operationId &&
-                  ((awaitingCleanup(op) &&
-                    req.evidence.kind === "receipt" &&
-                    terminal.has(req.evidence.receipt.phase)) ||
-                    (op.step === "directive" &&
-                      op.directive === undefined &&
-                      req.evidence.kind === "directive")),
+                  ((archived.cancelled === true &&
+                    ((awaitingCleanup(op) &&
+                      req.evidence.kind === "receipt" &&
+                      terminal.has(req.evidence.receipt.phase)) ||
+                      (op.step === "directive" &&
+                        op.directive === undefined &&
+                        req.evidence.kind === "directive"))) ||
+                    (device.verifiedElsewhere !== undefined &&
+                      op.step === "install" &&
+                      op.receipt?.code === "launcher-unconfirmed" &&
+                      req.evidence.kind === "receipt" &&
+                      terminal.has(req.evidence.receipt.phase))),
               ),
           );
         if (reportArchived) plan = archived;
@@ -1218,30 +1247,46 @@ export function createInstallPlanCoordinator(options: {
               );
             else {
               const operationId = download.operationId;
-              save({
-                ...plan,
-                revision: plan.revision + 1,
-                laptop: {
-                  ...plan.laptop,
-                  stageAbandonment: { operationId, handle, status: "pending" },
-                },
-              });
-              dispositions = {
-                ...dispositions,
-                targets: dispositions.targets.map((target) =>
-                  target.targetSource === plan!.target.sourceSha &&
-                  target.targetTree === plan!.target.sourceTree
-                    ? { ...target, laptopStopped: true }
-                    : target,
-                ),
-              };
-              effect = {
-                planId: plan.planId,
-                operationId,
-                action: "abandon-stage",
-                target: plan.target,
-                stagedHandle: handle,
-              };
+              const selectionName = await options.controller
+                .laptopStageSelectionName(handle)
+                .catch(() => undefined);
+              const previousSelection = plan.laptop.stageAbandonment;
+              if (
+                selectionName === undefined ||
+                (previousSelection !== undefined &&
+                  previousSelection.status !== "retired" &&
+                  previousSelection.selectionName !== selectionName)
+              ) {
+                refuse(
+                  "invalid-evidence",
+                  "The native Laptop selection could not be verified. Refresh it and try again.",
+                );
+              } else {
+                save({
+                  ...plan,
+                  revision: plan.revision + 1,
+                  laptop: {
+                    ...plan.laptop,
+                    stageAbandonment: { operationId, handle, selectionName, status: "pending" },
+                  },
+                });
+                dispositions = {
+                  ...dispositions,
+                  targets: dispositions.targets.map((target) =>
+                    target.targetSource === plan!.target.sourceSha &&
+                    target.targetTree === plan!.target.sourceTree
+                      ? { ...target, laptopStopped: true }
+                      : target,
+                  ),
+                };
+                effect = {
+                  planId: plan.planId,
+                  operationId,
+                  action: "abandon-stage",
+                  target: plan.target,
+                  stagedHandle: handle,
+                };
+              }
             }
           } else await recordLaptop(req.action, req.review);
         } else if (req.type === "close-after-manual-install") {
@@ -1261,7 +1306,9 @@ export function createInstallPlanCoordinator(options: {
             active.size > 0 ||
             options.controller.busy !== null ||
             pendingLaptop() ||
-            plan.devices.some((device) => device.operations.some(outstanding))
+            (plan.laptop.stageAbandonment !== undefined &&
+              plan.laptop.stageAbandonment.status !== "retired") ||
+            plan.devices.some((device) => device.abandoning || device.operations.some(outstanding))
           )
             refuse(
               "outstanding-operation",
@@ -1300,15 +1347,19 @@ export function createInstallPlanCoordinator(options: {
           else if (
             active.size > 0 ||
             options.controller.busy !== null ||
-            plan.devices.some((device) =>
-              device.operations.some((operation) => {
-                // An expired setup may still apply a manual-review directive. Archiving
-                // the plan prevents subsequent downloads and installs.
-                const expiredSetup =
-                  operation.step === "directive" &&
-                  Date.parse(operation.lease.leaseUntil) <= options.now();
-                return outstanding(operation) && !awaitingCleanup(operation) && !expiredSetup;
-              }),
+            (plan.laptop.stageAbandonment !== undefined &&
+              plan.laptop.stageAbandonment.status !== "retired") ||
+            plan.devices.some(
+              (device) =>
+                device.abandoning ||
+                device.operations.some((operation) => {
+                  // An expired setup may still apply a manual-review directive. Archiving
+                  // the plan prevents subsequent downloads and installs.
+                  const expiredSetup =
+                    operation.step === "directive" &&
+                    Date.parse(operation.lease.leaseUntil) <= options.now();
+                  return outstanding(operation) && !awaitingCleanup(operation) && !expiredSetup;
+                }),
             )
           )
             refuse(
@@ -1351,15 +1402,17 @@ export function createInstallPlanCoordinator(options: {
           );
           const device = plan.devices[deviceIndex];
           const operations = device === undefined ? [] : deviceActiveOperations(device);
+          const runningTarget = "runningTarget" in req ? req.runningTarget : undefined;
+          const validRunningTarget =
+            runningTarget !== undefined &&
+            runningTarget.observedAt <= options.now() &&
+            options.now() - runningTarget.observedAt <= LEASE_MS &&
+            runningTarget.build.sourceSha === plan.target.sourceSha &&
+            runningTarget.build.sourceTree === plan.target.sourceTree;
           if (device === undefined || device.membership !== "selected")
             refuse("not-selectable", "This device is not selected.");
           else if (req.type === "abandon-device") {
-            const download = operations.findLast(
-              (operation) =>
-                operation.step === "download" &&
-                operation.receipt?.phase === "completed" &&
-                operation.receipt.stageRetiredAt === undefined,
-            )?.receipt;
+            const download = deviceStagedReceipt(operations);
             const directive = operations.findLast(
               (operation) => operation.directive?.kind === "applied",
             );
@@ -1393,7 +1446,8 @@ export function createInstallPlanCoordinator(options: {
                 });
             } else if (
               !device.abandoning ||
-              (download?.phase === "completed" && download.stageRetiredAt === undefined) ||
+              (runningTarget !== undefined && !validRunningTarget) ||
+              (download !== undefined && !validRunningTarget) ||
               (directive !== undefined &&
                 (release?.environmentId !== device.environmentId ||
                   release.enrollment?.enrollmentId !== device.enrollmentId ||
@@ -1417,12 +1471,20 @@ export function createInstallPlanCoordinator(options: {
                 revision: plan.revision + 1,
                 devices: plan.devices.map((d, i) =>
                   i === deviceIndex
-                    ? {
-                        ...record,
-                        membership: "removed",
-                        removedAt: now(),
-                        archivedOperationCount: device.operations.length,
-                      }
+                    ? runningTarget !== undefined
+                      ? {
+                          ...record,
+                          verifiedElsewhere: {
+                            version: runningTarget.build.version,
+                            observedAt: runningTarget.observedAt,
+                          },
+                        }
+                      : {
+                          ...record,
+                          membership: "removed",
+                          removedAt: now(),
+                          archivedOperationCount: device.operations.length,
+                        }
                     : d,
                 ),
               });
@@ -1433,14 +1495,7 @@ export function createInstallPlanCoordinator(options: {
               refuse("stale-revision", "The plan changed.");
             else if (req.runningTarget !== undefined) {
               const { build, observedAt } = req.runningTarget;
-              const age = options.now() - observedAt;
-              if (
-                age < 0 ||
-                age > LEASE_MS ||
-                build.sourceSha !== plan.target.sourceSha ||
-                build.sourceTree !== plan.target.sourceTree ||
-                device.operations.some(outstanding)
-              )
+              if (!validRunningTarget || !canRecordRunningTarget(device))
                 refuse(
                   "invalid-evidence",
                   "Check the exact running build and settle pending work first.",

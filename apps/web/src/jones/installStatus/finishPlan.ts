@@ -33,7 +33,7 @@ export async function finishPlan(planId: string) {
   if (supportsDeviceRecovery || !isPlanComplete(plan)) {
     const observations = () =>
       new Map(
-        binding.services.devices().map((device) => [device.environmentId, device.observation]),
+        binding.store.get().devices.map((device) => [device.environmentId, device.observation]),
       );
     const completion = planCompletion(plan, observations(), supportsDeviceRecovery);
     if (!completion.completable) throw new Error("Fresh proof is required to finish this plan.");

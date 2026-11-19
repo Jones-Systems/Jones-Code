@@ -2437,6 +2437,34 @@ export class JonesDesktopUpdateController {
     }
   }
 
+  async laptopStageSelectionName(handle: string): Promise<string | undefined> {
+    if (this.#staged?.handle !== handle || this.#activationBlocked || this.#bootstrap === undefined)
+      return undefined;
+    const selection = await this.#selectionFile();
+    const raw = await NodeFSP.readFile(selection, "utf8");
+    return decodeStageSelection(JSON.parse(raw)).app.handle === handle
+      ? NodePath.basename(selection)
+      : undefined;
+  }
+
+  async isLaptopStageAbsent(selectionName: string): Promise<boolean> {
+    if (
+      this.#busy !== null ||
+      this.#activationBlocked ||
+      this.#bootstrap === undefined ||
+      this.#staged !== undefined
+    )
+      return false;
+    const selection = await this.#selectionFile();
+    if (NodePath.basename(selection) !== selectionName) return false;
+    try {
+      await NodeFSP.lstat(selection);
+      return false;
+    } catch (cause) {
+      return (cause as NodeJS.ErrnoException).code === "ENOENT";
+    }
+  }
+
   async discard(handle: string): Promise<{ accepted: boolean; completed: boolean }> {
     if (
       this.#busy !== null ||

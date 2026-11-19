@@ -2,6 +2,8 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import {
   deviceActiveOperations,
+  deviceStagedReceipt,
+  matchesPlanTarget,
   operationOutstanding,
   validateReceipt,
 } from "@t3tools/client-runtime/jones/install-plan";
@@ -37,12 +39,7 @@ export async function abandonDevice(environmentId: EnvironmentId, planId: string
   const operations = deviceActiveOperations(device);
   if (operations.some(operationOutstanding))
     throw new Error("Check the outstanding operation before abandoning this device.");
-  const staged = operations.findLast(
-    (operation) =>
-      operation.step === "download" &&
-      operation.receipt?.phase === "completed" &&
-      operation.receipt.stageRetiredAt === undefined,
-  )?.receipt;
+  const staged = deviceStagedReceipt(operations);
   const directive = operations.findLast((operation) => operation.directive?.kind === "applied");
   const host = await services.observe(environmentId);
   const state = host.observation.state;
@@ -53,12 +50,33 @@ export async function abandonDevice(environmentId: EnvironmentId, planId: string
   )
     throw new Error("Refresh the device before abandoning its update.");
   const needsStage = staged !== undefined;
+  const targetRunning = matchesPlanTarget(plan, device, state);
+  if (targetRunning && !device.abandoning)
+    throw new Error(
+      "The selected build is already running on this device. Finish the plan to record it.",
+    );
+  const runningTarget =
+    targetRunning && state.currentVersion !== undefined
+      ? {
+          build: {
+            version: state.currentVersion,
+            sourceSha: plan.target.sourceSha,
+            sourceTree: plan.target.sourceTree,
+          },
+          observedAt: host.observation.heardAt ?? services.now(),
+        }
+      : undefined;
   if (
     needsStage &&
+    runningTarget === undefined &&
     (staged.staged?.createdByOperation !== true || state.capability.abandonStage !== 1)
   )
     throw new Error("This host cannot prove ownership or retire the staged selection.");
-  if (directive !== undefined && host.fleetStatus?.releasePlanDirective !== 1)
+  if (
+    directive !== undefined &&
+    (host.fleetStatus?.releasePlanDirective !== 1 ||
+      (!device.abandoning && host.fleetStatus.releasableDirectiveId !== directive.operationId))
+  )
     throw new Error("This host cannot restore the previous follower directive.");
 
   const begun = await requestInstallPlan(
@@ -79,7 +97,7 @@ export async function abandonDevice(environmentId: EnvironmentId, planId: string
   )
     throw new Error("Abandonment was not recorded. Refresh the device.");
 
-  if (needsStage && staged.staged !== undefined) {
+  if (needsStage && staged.staged !== undefined && runningTarget === undefined) {
     const reply = await services.operation(environmentId, {
       action: "abandonStage",
       input: {
@@ -124,14 +142,18 @@ export async function abandonDevice(environmentId: EnvironmentId, planId: string
       environmentId,
       expectedRevision: latest.plan.revision,
       ...(directiveRelease === undefined ? {} : { directiveRelease }),
+      ...(runningTarget === undefined ? {} : { runningTarget }),
     },
     binding,
   );
   if (finished.refused !== undefined) throw new Error(finished.refused.message);
   if (
     finished.state.current?.planId !== planId ||
-    finished.state.current.devices.find((item) => item.environmentId === environmentId)
-      ?.membership !== "removed"
+    !(runningTarget === undefined
+      ? finished.state.current.devices.find((item) => item.environmentId === environmentId)
+          ?.membership === "removed"
+      : finished.state.current.devices.find((item) => item.environmentId === environmentId)
+          ?.verifiedElsewhere !== undefined)
   )
     throw new Error("Abandonment was not confirmed. Refresh the device.");
   services.kick?.(environmentId);

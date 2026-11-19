@@ -69,7 +69,8 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
     ({ supported, restoreStage }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-settlement-http-" });
+        const temporary = yield* fs.makeTempDirectoryScoped({ prefix: "jones-settlement-http-" });
+        const baseDir = yield* fs.realPath(temporary);
         const config = yield* ServerConfig.ServerConfig.pipe(
           Effect.provide(ServerConfig.layerTest(process.cwd(), baseDir)),
         );
@@ -498,6 +499,11 @@ function fixture(
         calls.push({ action: "operationRead", input });
         return unsupportedTargetOperations.read(input);
       }),
+    abandonStage: (input) =>
+      Effect.promise(() => {
+        calls.push({ action: "abandonStage", input });
+        return unsupportedTargetOperations.abandonStage(input);
+      }),
     recoverCleanup: (input) =>
       Effect.promise(() => {
         calls.push({ action: "recoverCleanup", input });
@@ -885,7 +891,7 @@ describe("durable operation HTTP scopes", () => {
     },
   };
 
-  test("separates read from operate and returns no-store for all five endpoints", async () => {
+  test("separates read from operate and returns no-store for operation endpoints", async () => {
     for (const scopes of [[], ["orchestration:read"], ["orchestration:operate"]] as const) {
       const app = fixture(scopes);
       try {
@@ -898,6 +904,18 @@ describe("durable operation HTTP scopes", () => {
             false,
           ],
           ["operations/fence", "operationFence", original, false],
+          [
+            "operations/abandon-stage",
+            "abandonStage",
+            {
+              operationId,
+              environmentId,
+              planId: original.correlation.planId,
+              stagedHandle: "stage",
+              confirmed: true,
+            },
+            false,
+          ],
           [
             "operations/read",
             "operationRead",

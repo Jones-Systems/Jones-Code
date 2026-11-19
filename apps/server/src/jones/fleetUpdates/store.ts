@@ -51,7 +51,11 @@ export const FleetFollowerRecord = Schema.Struct({
   ),
   lastAutomaticActivationAt: Schema.NullOr(Schema.String),
   directive: Schema.optionalKey(StoredDirective),
-  directivePreimage: Schema.optionalKey(Schema.NullOr(StoredDirective)),
+  directiveHistory: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({ directiveId: FleetOperationId, prior: Schema.NullOr(StoredDirective) }),
+    ).check(Schema.isMaxLength(128)),
+  ),
   releasedDirectives: Schema.optionalKey(
     Schema.Array(FleetOperationId).check(Schema.isMaxLength(128)),
   ),

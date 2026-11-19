@@ -271,6 +271,28 @@ export function deviceActiveOperations(device: JonesInstallPlanDevice) {
   return device.operations.slice(device.archivedOperationCount ?? 0);
 }
 
+export function deviceStagedReceipt(operations: readonly JonesInstallPlanHostOperation[]) {
+  const receipt = operations.findLast(
+    (operation) => operation.step === "download" && operation.receipt?.phase === "completed",
+  )?.receipt;
+  return receipt?.stageRetiredAt === undefined ? receipt : undefined;
+}
+
+/** Verifying a running build never releases host admission or settles its launcher receipt. */
+export function canRecordRunningTarget(device: JonesInstallPlanDevice): boolean {
+  return (
+    !device.abandoning &&
+    device.operations.every(
+      (operation) =>
+        !outstanding(operation) ||
+        (operation.step === "install" &&
+          operation.receipt?.phase === "running" &&
+          operation.receipt.updateId === undefined &&
+          operation.receipt.code === "launcher-unconfirmed"),
+    )
+  );
+}
+
 /** Selection edits never undo host effects or lose operation history. */
 export function deviceSelectionLocked(plan: JonesInstallPlan, device: JonesInstallPlanDevice) {
   if (device.membership === "removed") return false;
@@ -374,6 +396,8 @@ function outstanding(operation: JonesInstallPlanHostOperation): boolean {
 
 export function laptopSettled(plan: JonesInstallPlan): boolean {
   if (
+    (plan.laptop.stageAbandonment !== undefined &&
+      plan.laptop.stageAbandonment.status !== "retired") ||
     plan.laptop.operations.some(
       (o) =>
         o.result === undefined || ["running", "stop-requested", "held"].includes(o.result.status),
@@ -420,7 +444,8 @@ export function deviceState(
   if (device.membership === "removed") return "removed";
   const operations = deviceActiveOperations(device);
   const pending = operations.find(outstanding);
-  if (pending === undefined && device.verifiedElsewhere !== undefined) return "updated-elsewhere";
+  if (device.verifiedElsewhere !== undefined && canRecordRunningTarget(device))
+    return "updated-elsewhere";
   const latest = pending ?? operations.at(-1);
   if (latest !== undefined) {
     if (latest.step === "directive") {
@@ -462,7 +487,7 @@ export function deviceState(
 /**
  * Settled ledger states that fresh proof of the target running on the host overrides. A later
  * install by another operation can leave an older interrupted or staged download as the latest
- * record; held, unknown and fenced records still require reading the exact operation.
+ * record. Outstanding operations still require exact evidence before their receipts change.
  */
 const SUPERSEDABLE_BY_RUNNING_TARGET: ReadonlySet<InstallPlanDeviceState> = new Set([
   "not-updated",
@@ -472,6 +497,7 @@ const SUPERSEDABLE_BY_RUNNING_TARGET: ReadonlySet<InstallPlanDeviceState> = new 
   "ended",
   "staged",
   "blocked",
+  "fenced",
   "rolled-back",
 ]);
 
@@ -491,7 +517,9 @@ export function deviceStateWithRunningTarget(
 }
 
 export function deviceSettled(plan: JonesInstallPlan, device: JonesInstallPlanDevice): boolean {
-  if (device.abandoning || device.operations.some(outstanding)) return false;
+  if (device.abandoning) return false;
+  if (device.verifiedElsewhere !== undefined && canRecordRunningTarget(device)) return true;
+  if (device.operations.some(outstanding)) return false;
   return [
     "removed",
     "not-started",
@@ -510,9 +538,8 @@ export function isPlanComplete(plan: JonesInstallPlan): boolean {
     plan.dismissedAt === undefined &&
     plan.supersededAt === undefined &&
     laptopSettled(plan) &&
-    plan.devices.every(
-      (d) =>
-        !d.operations.some(outstanding) && (d.membership === "removed" || deviceSettled(plan, d)),
+    plan.devices.every((d) =>
+      d.membership === "removed" ? !d.operations.some(outstanding) : deviceSettled(plan, d),
     )
   );
 }
@@ -541,10 +568,11 @@ export function planCompletion(
     return (
       device.membership === "selected" &&
       (deviceRecovery
-        ? deviceStateWithRunningTarget(plan, device, true) === "updated-elsewhere" &&
-          device.verifiedElsewhere === undefined
-        : deviceState(plan, device) === "staged") &&
-      !device.operations.some(outstanding) &&
+        ? canRecordRunningTarget(device) &&
+          device.verifiedElsewhere === undefined &&
+          (deviceStateWithRunningTarget(plan, device, true) === "updated-elsewhere" ||
+            device.operations.some(outstanding))
+        : deviceState(plan, device) === "staged" && !device.operations.some(outstanding)) &&
       observation?.freshness === "fresh" &&
       (!deviceRecovery || observation.state?.currentVersion !== undefined) &&
       matchesPlanTarget(plan, device, observation.state)

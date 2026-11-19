@@ -177,10 +177,12 @@ export function createTargetOperations(options: {
       )
         return r;
       let native = await options.reconcileNative(id);
+      const acceptanceRecorded = r.phase === "handed-off" || r.updateId !== undefined;
       // The launcher queues this query after the server's original handoff. File absence
       // alone cannot settle the attempt or allow a second install.
       let rejected = false;
       if (
+        !acceptanceRecorded &&
         !terminal(r) &&
         (native.state === "absent" ||
           (nativeInstallMatches(r, native) &&
@@ -195,7 +197,8 @@ export function createTargetOperations(options: {
       const matches = nativeInstallMatches(r, native);
       const { outcome } = native;
       const fields: Partial<JonesOperationReceipt> | undefined =
-        (matches && native.state === "rejected") || (rejected && native.state === "absent")
+        !acceptanceRecorded &&
+        ((matches && native.state === "rejected") || (rejected && native.state === "absent"))
           ? {
               phase: "refused",
               code: "launcher-rejected",
@@ -247,9 +250,11 @@ export function createTargetOperations(options: {
     refusal?: JonesInstallBeforeDispatchRefusal,
   ) => {
     const native = await options.reconcileNative(r.operationId);
+    const acceptanceRecorded = r.phase === "handed-off" || r.updateId !== undefined;
     if (native.state === "absent") {
       const a = r.action;
       if (
+        !acceptanceRecorded &&
         a.kind === "install" &&
         refusal?.kind === "before-dispatch" &&
         refusal.operationId === r.operationId &&
@@ -276,6 +281,7 @@ export function createTargetOperations(options: {
     const a = r.action;
     if (
       !nativeInstallMatches(r, native) ||
+      (acceptanceRecorded && native.state === "rejected") ||
       (native.state === "blocked" && native.updateId !== r.operationId)
     ) {
       updater.setHeldJobs([r.operationId]);
@@ -726,6 +732,7 @@ export function createTargetOperations(options: {
           s.capability.abandonStage !== 1 ||
           active.size > 0 ||
           recoveryFailed ||
+          s.currentVersion === undefined ||
           s.installedSource?.sha !== r.expectedInstalledSource ||
           (s.stagedHandle !== undefined &&
             (s.stagedHandle !== r.staged.stagedHandle ||

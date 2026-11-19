@@ -351,8 +351,8 @@ export async function performPanelAction(
     if (environmentId === "laptop" && read.refused !== undefined)
       throw new Error(read.refused.message);
     store.update({ desktop: await services.bridge.getUpdateState() });
-    const checked = plan ?? (read.state.last?.cancelled === true ? read.state.last : null);
-    if (environmentId !== "laptop" && checked !== null) {
+    const checked = plan ?? read.state.last;
+    if (environmentId !== "laptop") {
       services.kick?.(environmentId);
       const refresh = async () => {
         const observed = await services.observe(environmentId);
@@ -373,10 +373,13 @@ export async function performPanelAction(
         });
       const observed = await refresh();
       update(observed);
-      const message = await refreshDeviceEvidence(binding, environmentId, checked, observed, {
-        refreshInstallOutcome: true,
-      });
-      if (services.readStatus !== undefined) {
+      const message =
+        checked === null
+          ? undefined
+          : await refreshDeviceEvidence(binding, environmentId, checked, observed, {
+              refreshInstallOutcome: true,
+            });
+      if (checked !== null && services.readStatus !== undefined) {
         const state = await services.readStatus(environmentId);
         if (state?.environmentId === environmentId)
           update({

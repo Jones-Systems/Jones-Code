@@ -199,6 +199,7 @@ export const JonesInstallPlanLaptop = Schema.Struct({
     Schema.Struct({
       operationId: JonesOperationId,
       handle: TrimmedNonEmptyString,
+      selectionName: Schema.optionalKey(TrimmedNonEmptyString),
       status: Schema.Literals(["pending", "retired", "unconfirmed"]),
     }),
   ),
@@ -241,6 +242,7 @@ const RunningBuild = Schema.Struct({
   sourceSha: JonesSourceSha,
   sourceTree: JonesSourceSha,
 });
+const RunningTargetObservation = Schema.Struct({ build: RunningBuild, observedAt: Schema.Int });
 
 const ManualInstallObservationFields = {
   environmentId: EnvironmentId,
@@ -394,9 +396,7 @@ export const JonesInstallPlanRequest = Schema.Union([
     planId: JonesOperationId,
     environmentId: EnvironmentId,
     expectedRevision: Schema.Number,
-    runningTarget: Schema.optionalKey(
-      Schema.Struct({ build: RunningBuild, observedAt: Schema.Int }),
-    ),
+    runningTarget: Schema.optionalKey(RunningTargetObservation),
   }),
   Schema.Struct({
     type: Schema.Literal("abandon-device"),
@@ -405,6 +405,7 @@ export const JonesInstallPlanRequest = Schema.Union([
     environmentId: EnvironmentId,
     expectedRevision: Schema.Number,
     directiveRelease: Schema.optionalKey(FleetHostStatus),
+    runningTarget: Schema.optionalKey(RunningTargetObservation),
   }),
   Schema.Struct({
     type: Schema.Literal("dismiss"),

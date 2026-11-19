@@ -739,6 +739,39 @@ describe("target operations", () => {
       expect(retire).toHaveBeenCalledTimes(1);
     }));
 
+  it("preserves a recorded launcher acceptance when its native files are missing", async () =>
+    fixture(async (f) => {
+      const operationId = input.operationId;
+      await f.ledger.accept({
+        ...input,
+        action: {
+          kind: "install",
+          stagedHandle: "stage",
+          currentVersion: "old",
+          targetSource: candidate.source,
+        },
+      });
+      await f.ledger.transition(operationId, (receipt) => ({ ...receipt, phase: "running" }));
+      await f.ledger.transition(operationId, (receipt) => ({
+        ...receipt,
+        phase: "handed-off",
+        updateId: operationId,
+      }));
+      await f.operations.reconcile();
+      f.resolveNativeHandoff.mockResolvedValue("rejected");
+      const result = await f.operations.read({
+        environmentId: input.environmentId,
+        operationIds: [operationId],
+        refreshInstallOutcome: operationId,
+      });
+      expect(result.receipts[0]?.receipt).toMatchObject({
+        phase: "handed-off",
+        updateId: operationId,
+      });
+      expect(f.updater.admissionHeld()).toBe(true);
+      expect(f.resolveNativeHandoff).not.toHaveBeenCalled();
+    }));
+
   it("holds a restarted download whose worker release is unknown", async () =>
     fixture(async (f) => {
       await f.ledger.accept(input);

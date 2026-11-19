@@ -11,6 +11,7 @@ import {
   planCompletion,
   deviceStateWithRunningTarget,
   deviceActiveOperations,
+  deviceStagedReceipt,
   deviceSelectionLocked,
   operationOutstanding,
   isPlanComplete,
@@ -53,6 +54,7 @@ const LEDGER_TEXT_WINS = new Set<InstallPlanDeviceState>([
   "unknown",
   "stop-requested",
   "fenced",
+  "updated-elsewhere",
 ]);
 const ALREADY_RUNNING_TEXT = "Downloaded · already running this build";
 
@@ -119,12 +121,8 @@ export function installPlanPresentation(
     const latest = operations.find(operationOutstanding) ?? operations.at(-1);
     const lastDownload = operations.findLast((o) => o.step === "download");
     const receipt = latest?.receipt;
-    const ownedStage = operations.findLast(
-      (operation) =>
-        operation.step === "download" &&
-        operation.receipt?.phase === "completed" &&
-        operation.receipt.stageRetiredAt === undefined,
-    )?.receipt?.staged;
+    const ownedStage = deviceStagedReceipt(operations)?.staged;
+    const appliedDirective = operations.findLast((op) => op.directive?.kind === "applied");
     const recoveredDownload =
       receipt?.code === "cleanup-recovered" &&
       receipt.jobId !== undefined &&
@@ -172,6 +170,8 @@ export function installPlanPresentation(
       hostState.provenance?.sourceSha === stage.sourceSha &&
       hostState.provenance.sourceTree === stage.sourceTree;
     let text = copy[ledgerPhase];
+    if (ledgerPhase === "removed" && device.operations.length > 0)
+      text = "Removed · earlier attempts kept";
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";
     if (phase === "directive") text = `Getting ${device.label} ready…`;
@@ -195,13 +195,17 @@ export function installPlanPresentation(
       observed?.observation.freshness === "fresh" &&
       hostState?.stagedAlreadyRunning === true;
     if (alreadyRunning) text = ALREADY_RUNNING_TEXT;
-    const attemptText = sourceHeadline
-      ? `This plan's attempt: ${text}${latest?.receipt?.code !== undefined && !text.endsWith(latest.receipt.code) ? ` · ${latest.receipt.code}` : ""}`
-      : undefined;
+    const attemptText =
+      device.verifiedElsewhere !== undefined && latest?.receipt?.code === "launcher-unconfirmed"
+        ? "This plan’s launcher outcome remains unconfirmed."
+        : sourceHeadline
+          ? `This plan's attempt: ${text}${latest?.receipt?.code !== undefined && !text.endsWith(latest.receipt.code) ? ` · ${latest.receipt.code}` : ""}`
+          : undefined;
     const reportedProgress = rowProgress(observed?.observation, latest?.operationId, planless);
     // Older hosts can retain a restart warning after the exact install receipt commits.
     const progress =
-      phase === "done" && confirmedInstall && reportedProgress?.phase !== "done"
+      (phase === "done" && confirmedInstall && reportedProgress?.phase !== "done") ||
+      (device.verifiedElsewhere !== undefined && receipt?.code === "launcher-unconfirmed")
         ? undefined
         : reportedProgress;
     if (progress?.text !== undefined && !LEDGER_TEXT_WINS.has(phase)) text = progress.text;
@@ -235,10 +239,14 @@ export function installPlanPresentation(
           observed.observation.freshness === "fresh" &&
           !operations.some(operationOutstanding) &&
           !confirmedInstall &&
+          (!runningTarget || device.abandoning === true) &&
           (ownedStage === undefined ||
+            (runningTarget && device.abandoning === true) ||
             (ownedStage.createdByOperation === true && hostState?.capability.abandonStage === 1)) &&
-          (!operations.some((operation) => operation.directive?.kind === "applied") ||
-            observed.fleetStatus?.releasePlanDirective === 1),
+          (appliedDirective === undefined ||
+            (observed.fleetStatus?.releasePlanDirective === 1 &&
+              (device.abandoning === true ||
+                observed.fleetStatus.releasableDirectiveId === appliedDirective.operationId))),
         download:
           mutable &&
           (["stopped", "not-updated", "fenced"].includes(phase) ||

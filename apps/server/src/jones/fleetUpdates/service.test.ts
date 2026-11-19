@@ -962,6 +962,24 @@ describe("plan-managed follower targets", () => {
         successor.directiveId,
       );
       expect((yield* f.service.planDirective(successor).pipe(Effect.flip)).reason).toBe("conflict");
+      expect(
+        (yield* f.service.releaseDirective(directive)).follower?.planDirective,
+      ).toBeUndefined();
+    }),
+  );
+
+  it.effect("preserves a legacy directive with unknown predecessor history", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+      yield* f.service.planDirective(directive);
+      const { directiveHistory: _unrecorded, ...legacy } = f.follower()!;
+      f.setFollower(legacy);
+      expect((yield* f.service.status()).releasableDirectiveId).toBeUndefined();
+      expect((yield* f.service.releaseDirective(directive).pipe(Effect.flip)).reason).toBe(
+        "conflict",
+      );
+      expect(f.follower()).toEqual(legacy);
     }),
   );
 
