@@ -25,7 +25,7 @@ const decodeThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
 );
 
-const destinationShellWorkspace = (join: Path.Path["Service"]["join"], stateDir: string) =>
+const destinationShellWorkspace = (join: Path.Path["join"], stateDir: string) =>
   join(stateDir, "destination-shell");
 
 export const makeDestinationShellLaunch = Effect.gen(function* () {
