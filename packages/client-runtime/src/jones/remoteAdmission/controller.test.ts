@@ -63,9 +63,9 @@ it("surfaces a current hold on reconnect while Done is selected and the next cha
     lookupAccess: vi.fn(),
     mutate: vi.fn(),
     head: vi.fn(async () => "receiver-head"),
-    changes: vi.fn(
+    changes: vi.fn<ReviewClient["changes"]>(
       (_cursor, signal) =>
-        new Promise((_resolve, reject) =>
+        new Promise<never>((_resolve, reject) =>
           signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }),
         ),
     ),
