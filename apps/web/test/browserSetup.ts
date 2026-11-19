@@ -2,6 +2,9 @@ import { beforeEach } from "vite-plus/test";
 import { commands } from "vite-plus/test/browser";
 
 import { initializeI18n } from "../src/i18n/initializeI18n";
+import { syntheticDiscoveryLog } from "../src/jones/testing/syntheticDiscoveryLog";
+
+console.log = syntheticDiscoveryLog(console.log.bind(console), window.location.origin);
 
 declare module "vite-plus/test/browser" {
   interface BrowserCommands {

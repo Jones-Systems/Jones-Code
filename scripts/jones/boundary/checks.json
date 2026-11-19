@@ -423,6 +423,15 @@
       ]
     },
     {
+      "id": "jones-browser-test-discovery",
+      "tests": ["apps/web/src/jones/testing/syntheticDiscoveryLog.test.ts"],
+      "commands": [
+        "cd apps/web && vp test run --project unit src/jones/testing/syntheticDiscoveryLog.test.ts",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-word-ci-trace",
       "tests": [
         "apps/web/src/jones/wordCiTrace.test.ts",
