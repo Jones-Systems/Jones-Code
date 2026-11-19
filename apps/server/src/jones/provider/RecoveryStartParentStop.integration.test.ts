@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  CheckpointScopeId,
   CommandId,
   EnvironmentId,
   EventId,
@@ -7,6 +8,7 @@ import {
   NodeId,
   type OrchestrationV2AppThread,
   type OrchestrationV2ConversationMessage,
+  type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
@@ -28,7 +30,9 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
 
 import * as Environment from "../../environment/ServerEnvironment.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -47,12 +51,14 @@ import * as NativeStartAdmission from "../nativeCreation/NativeStartAdmission.ts
 import * as Control from "../orchestration/ControlAdmission.ts";
 import * as Restart from "../orchestration/RestartPreparation.ts";
 import * as Refusals from "../startRefusal/Store.ts";
+import * as RecoveryStartDenial from "./RecoveryStartDenial.ts";
 import { StartAdmission } from "./StartAdmission.ts";
 import * as UnattendedStartAdmission from "./UnattendedStartAdmission.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
 const database = Sqlite.layerMemory;
+const openSession = vi.fn(() => Effect.die("A denied start must not reach the adapter."));
 const replay = Replay.layerWithRegistryAndServices(
   { name: "recovery-parent-stop" },
   Registry.layerFromAdapters([
@@ -61,12 +67,16 @@ const replay = Replay.layerWithRegistryAndServices(
       driver,
       getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
       planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
-      openSession: () => Effect.die("The test observes the admitted dispatch in the worker."),
+      openSession,
     },
   ]),
   { databaseLayer: database, runEffectWorker: false, continueThreadsAfterServerUpdate: true },
 );
-const runtime = Layer.merge(Recovery.layer, NativeStartAdmission.layer).pipe(
+const runtime = Layer.mergeAll(
+  Recovery.layer,
+  NativeStartAdmission.layer,
+  RecoveryStartDenial.layer,
+).pipe(
   Layer.provide(UnattendedStartAdmission.layer),
   Layer.provideMerge(
     Layer.mergeAll(
@@ -182,6 +192,23 @@ const fixture = Effect.fnUntraced(function* (
     providerTurnId: null,
     reason: "initial",
     status: "pending",
+    startedAt: null,
+    completedAt: null,
+  };
+  const root: OrchestrationV2ExecutionNode = {
+    id: attempt.rootNodeId,
+    threadId: childId,
+    runId: run.id,
+    parentNodeId: null,
+    rootNodeId: attempt.rootNodeId,
+    kind: "root_turn",
+    status: "pending",
+    countsForRun: true,
+    providerThreadId: provider.id,
+    providerTurnId: null,
+    nativeItemRef: null,
+    runtimeRequestId: null,
+    checkpointScopeId: CheckpointScopeId.make("scope:recovery-child"),
     startedAt: null,
     completedAt: null,
   };
@@ -311,6 +338,25 @@ const fixture = Effect.fnUntraced(function* (
           payload: queued ? { ...run, status: "queued", queuePosition: 1 } : run,
         },
         { ...runEvent, id: eventId("attempt"), type: "run-attempt.created", payload: attempt },
+        { ...runEvent, id: eventId("root"), type: "node.updated", payload: root },
+        {
+          ...runEvent,
+          id: eventId("scope"),
+          type: "checkpoint-scope.created",
+          payload: {
+            id: root.checkpointScopeId!,
+            threadId: childId,
+            runId: run.id,
+            nodeId: root.id,
+            parentScopeId: null,
+            providerThreadId: provider.id,
+            kind: "root_run",
+            ordinalWithinParent: 1,
+            advancesAppRunCount: true,
+            cwd: process.cwd(),
+            createdAt: now,
+          },
+        },
         { ...runEvent, id: eventId("input"), type: "message.updated", payload: message },
       ],
       effects: queued ? [] : [original],
@@ -353,6 +399,7 @@ const fixture = Effect.fnUntraced(function* (
   });
   const stopCommandId = CommandId.make("command:recovery-parent:stop");
   const stopEffectId = `effect:${stopCommandId}:delegated-tasks.stop`;
+  const stopWorkerId = "parked-parent-stop";
   const outbox = yield* Outbox.EffectOutboxV2;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const recordStop = Effect.gen(function* () {
@@ -365,14 +412,39 @@ const fixture = Effect.fnUntraced(function* (
     assert.equal(stopped.storedEvents.length > 0, stopHasEvent);
   });
   const parkStop = Effect.gen(function* () {
-    const parked = yield* outbox.claimNext({ workerId: "parked-parent-stop", urgentOnly: true });
+    const parked = yield* outbox.claimNext({ workerId: stopWorkerId, urgentOnly: true });
     assert.deepInclude(Option.getOrThrow(parked), { id: stopEffectId, status: "running" });
   });
-  return { run, attempt, provider, send, promote, recordStop, parkStop, stopEffectId, originalId };
+  return {
+    run,
+    attempt,
+    provider,
+    send,
+    promote,
+    recordStop,
+    parkStop,
+    stopEffectId,
+    stopWorkerId,
+    originalId,
+  };
 });
 
 it.effect.each([
   { name: "Stop before claim", source: "delegated", stop: "before claim", attempts: 0, sends: 0 },
+  {
+    name: "a failed Stop fan-out and an interrupted denial write",
+    source: "delegated",
+    stop: "failed fan-out",
+    attempts: 0,
+    sends: 0,
+  },
+  {
+    name: "a previously leased replacement",
+    source: "delegated",
+    stop: "after prior lease",
+    attempts: 1,
+    sends: 0,
+  },
   { name: "Stop after capture", source: "delegated", stop: "after capture", attempts: 1, sends: 0 },
   { name: "ordinary recovery", source: "delegated", stop: "none", attempts: 1, sends: 1 },
   { name: "a newer send", source: "delegated", stop: "before send", attempts: 1, sends: 1 },
@@ -418,9 +490,12 @@ it.effect.each([
     const outbox = yield* Outbox.EffectOutboxV2;
     const projections = yield* Projections.ProjectionStoreV2;
     const recovery = yield* Recovery.ProviderRuntimeRecoveryService;
+    const recoveryStartDenial = yield* RecoveryStartDenial.RecoveryStartDenial;
     const admission = yield* StartAdmission;
+    const realExecutor = yield* Worker.OrchestrationEffectExecutorV2;
     const captured = yield* Deferred.make<void>();
     const beforeNative = yield* Deferred.make<void>();
+    const opensBefore = openSession.mock.calls.length;
     let nativeSends = 0;
     if (stop === "before send" || stop === "before queued send") yield* f.recordStop;
     yield* f.send;
@@ -438,10 +513,27 @@ it.effect.each([
         attemptCount: 0,
       },
     );
-    if (stop === "before claim") yield* f.recordStop;
+    if (stop === "after prior lease") {
+      const workerId = "prior-lease";
+      const claim = Option.getOrThrow(yield* outbox.claimNext({ workerId }));
+      assert.equal(claim.id, replacement!.id);
+      assert.isTrue(
+        yield* outbox.retry({ effectId: claim.id, workerId, claim, error: "fixture", delayMs: 0 }),
+      );
+    }
+    if (stop === "before claim" || stop === "failed fan-out" || stop === "after prior lease")
+      yield* f.recordStop;
     if (stop !== "none" && stop !== "after capture") yield* f.parkStop;
+    if (stop === "failed fan-out")
+      assert.isTrue(
+        yield* outbox.fail({
+          effectId: f.stopEffectId,
+          workerId: f.stopWorkerId,
+          error: "The fixture blocked fan-out.",
+        }),
+      );
     const executor = Layer.succeed(Worker.OrchestrationEffectExecutorV2, {
-      execute: (effect) =>
+      execute: (effect, options) =>
         Effect.gen(function* () {
           assert.equal(effect.id, replacement!.id);
           const token = yield* admission.capture({
@@ -453,6 +545,9 @@ it.effect.each([
           if (stop === "after capture") {
             yield* Deferred.succeed(captured, undefined);
             yield* Deferred.await(beforeNative);
+            const refusal = yield* token.revalidate.pipe(Effect.flip);
+            assert.include(refusal.message, "no longer has current execution authority");
+            return yield* realExecutor.execute(effect, options);
           }
           yield* token.revalidate;
           nativeSends++;
@@ -469,6 +564,20 @@ it.effect.each([
     });
     yield* Effect.gen(function* () {
       const worker = yield* Worker.OrchestrationEffectWorkerV2;
+      if (stop === "failed fan-out") {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TEMP TRIGGER reject_recovery_denial
+          BEFORE UPDATE OF status ON orchestration_v2_projection_runs WHEN NEW.status = 'failed'
+          BEGIN SELECT RAISE(ABORT, 'fixture could not persist run denial'); END`;
+        assert.equal((yield* Effect.exit(worker.runOnce()))._tag, "Failure");
+        assert.deepInclude(Option.getOrThrow(yield* outbox.get(replacement!.id)), {
+          status: "pending",
+          attemptCount: 0,
+          completedAt: null,
+        });
+        assert.equal((yield* projections.getRun(childId, f.run.id))?.status, "starting");
+        yield* sql`DROP TRIGGER reject_recovery_denial`;
+      }
       if (stop === "after capture") {
         const dispatch = yield* worker.runOnce().pipe(Effect.forkChild);
         yield* Effect.raceFirst(
@@ -486,28 +595,135 @@ it.effect.each([
         yield* Deferred.succeed(beforeNative, undefined);
         assert.isTrue(yield* Fiber.join(dispatch));
         assert.deepInclude(Option.getOrThrow(yield* outbox.get(replacement!.id)), {
-          status: "failed",
+          status: "succeeded",
           attemptCount: 1,
         });
       } else {
-        assert.equal(yield* worker.runOnce(), attempts > 0);
+        assert.equal(yield* worker.runOnce(), sends > 0);
       }
       yield* TestClock.setTime(time + 60_000);
       assert.isFalse(yield* worker.runOnce());
     }).pipe(
       Effect.provide(
-        Worker.layerWithOptions({ workerId: "recovered-start-test" }).pipe(Layer.provide(executor)),
+        Worker.layerWithOptions({ workerId: "recovered-start-test" }).pipe(
+          Layer.provide(executor),
+          Layer.provide(
+            Layer.succeed(RecoveryStartDenial.RecoveryStartDenial, recoveryStartDenial),
+          ),
+        ),
       ),
     );
     assert.deepInclude(Option.getOrThrow(yield* outbox.get(replacement!.id)), {
-      status: sends > 0 ? "succeeded" : "failed",
+      status: sends > 0 || stop === "after capture" ? "succeeded" : "failed",
       attemptCount: attempts,
       leaseOwner: null,
     });
+    assert.equal(openSession.mock.calls.length, opensBefore);
     assert.equal(nativeSends, sends);
+    const fanOutStatus = stop === "failed fan-out" ? "failed" : "running";
     if (stop !== "none") {
-      assert.equal(Option.getOrThrow(yield* outbox.get(f.stopEffectId)).status, "running");
+      assert.equal(Option.getOrThrow(yield* outbox.get(f.stopEffectId)).status, fanOutStatus);
       assert.isFalse(yield* projections.hasRunInterruptRequest(childId, f.run.id));
+    }
+    if (sends === 0 && stop !== "after prior lease") {
+      const child = yield* projections.getThreadProjection(childId);
+      assert.deepInclude(
+        child.runs.find((run) => run.id === f.run.id),
+        {
+          status: "failed",
+          startedAt: null,
+        },
+      );
+      const attempt = child.attempts.find((attempt) => attempt.id === f.attempt.id)!;
+      assert.deepInclude(attempt, { status: "failed", startedAt: null, providerTurnId: null });
+      assert.isNull(attempt.providerSettlement ?? null);
+      assert.deepInclude(
+        child.nodes.find((node) => node.id === f.run.rootNodeId),
+        {
+          status: "failed",
+          startedAt: null,
+          providerTurnId: null,
+        },
+      );
+      assert.isEmpty(child.providerTurns);
+      assert.isTrue(
+        child.turnItems.some(
+          (item) =>
+            item.runId === f.run.id &&
+            item.type === "error" &&
+            item.title ===
+              (stop === "after capture" ? "Turn failed to start" : "Recovered turn did not start"),
+        ),
+      );
+    }
+    if (stop === "after prior lease") {
+      const child = yield* projections.getThreadProjection(childId);
+      assert.deepInclude(
+        child.runs.find((run) => run.id === f.run.id),
+        { status: "starting" },
+      );
+      assert.deepInclude(
+        child.attempts.find((attempt) => attempt.id === f.attempt.id),
+        {
+          status: "pending",
+          providerTurnId: null,
+        },
+      );
+      assert.isEmpty(child.providerTurns);
+    }
+    if (source === "delegated" && (stop === "before claim" || stop === "failed fan-out")) {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const laterCommandId = CommandId.make("command:recovery-child:later-user-message");
+      const laterMessageId = MessageId.make("message:recovery-child:later-user-message");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: laterCommandId,
+        threadId: childId,
+        messageId: laterMessageId,
+        text: "Start a new turn after the parent Stop",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const child = yield* projections.getThreadProjection(childId);
+      assert.deepEqual(
+        {
+          recoveryRun: child.runs.find((run) => run.id === f.run.id)?.status,
+          recoveryAttempt: child.attempts.find((attempt) => attempt.id === f.attempt.id)?.status,
+          recoveryRoot: child.nodes.find((node) => node.id === f.run.rootNodeId)?.status,
+          laterRun: child.runs.find((run) => run.userMessageId === laterMessageId)?.status,
+          laterEffects: (yield* outbox.listByCommandId(laterCommandId)).filter(
+            (effect) => effect.request.type === "provider-turn.start",
+          ).length,
+        },
+        {
+          recoveryRun: "failed",
+          recoveryAttempt: "failed",
+          recoveryRoot: "failed",
+          laterRun: "starting",
+          laterEffects: 1,
+        },
+      );
+      assert.equal(Option.getOrThrow(yield* outbox.get(f.stopEffectId)).status, fanOutStatus);
+      const parentCommandId = CommandId.make("command:recovery-parent:later-user-message");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: parentCommandId,
+        threadId: parentId,
+        messageId: MessageId.make("message:recovery-parent:later-user-message"),
+        text: "Continue the parent thread",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      assert.deepInclude(
+        (yield* outbox.listByCommandId(parentCommandId)).find(
+          (effect) => effect.request.type === "provider-turn.start",
+        ),
+        { status: "pending", attemptCount: 0 },
+      );
     }
   }).pipe(Effect.provide(runtime)),
 );

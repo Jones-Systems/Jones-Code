@@ -1022,7 +1022,7 @@
         "apps/server/src/jones/provider/RecoveryStartParentStop.integration.test.ts",
         "apps/server/src/jones/provider/UnsentStartRecovery.integration.test.ts"
       ],
-      "scope": "The outbox checks durable delegated Stop authority before leasing a recovered start and native admission checks again before dispatch. Recovery of released preparation requires the exact accepted input and a checkout identity captured at release. Tests exercise parent-scoped delegation receipts, Stop ordering, multiple reconciliations, original attachments, and physical checkout replacement."
+      "scope": "The outbox checks durable delegated Stop authority before leasing a recovered start and native admission checks again before dispatch. A proven unclaimed denial settles the exact run, attempt and root with the outbox transition. Recovery of released preparation requires the accepted input and a checkout identity captured at release. Tests cover unavailable Stop fan-out, later admission, delegated birth, repeated reconciliation, original attachments, and checkout replacement."
     },
     {
       "id": "deletion-worktree-removal",

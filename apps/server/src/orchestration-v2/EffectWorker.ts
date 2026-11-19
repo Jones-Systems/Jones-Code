@@ -2,6 +2,7 @@ import { interactiveRead } from "../jones/serverParallelism/readClassification.t
 import { withRuntimeUseClaim } from "../jones/cleanup/RuntimeUseClaim.ts";
 import { isAccountTransferDetach } from "../jones/providerRetirement/accountTransferRetirement.ts";
 import { isRecoveryStartReplacement } from "../jones/provider/RecoveryStartParentStop.ts";
+import { RecoveryStartDenial } from "../jones/provider/RecoveryStartDenial.ts";
 import {
   GoalNotificationDeliveryUnknown,
   isGoalNotificationDeliveryUnknown,
@@ -1169,6 +1170,9 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const executor = yield* OrchestrationEffectExecutorV2;
+      const recoveryStartDenial = Option.getOrUndefined(
+        yield* Effect.serviceOption(RecoveryStartDenial),
+      );
       const managedClaims = Option.isSome(yield* Effect.serviceOption(LifecycleConfiguration));
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
@@ -1282,6 +1286,7 @@ export const layerWithOptions = (
           const claimExit = yield* Effect.exit(
             outbox.claimNext({
               workerId,
+              ...(recoveryStartDenial === undefined ? {} : { recoveryStartDenial }),
               ...filter,
             }),
           );

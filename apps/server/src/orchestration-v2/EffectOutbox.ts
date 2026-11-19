@@ -9,6 +9,7 @@ import {
   admitsRecoveryStartClaim,
   recoveryStartParentAllowed,
 } from "../jones/provider/RecoveryStartParentStop.ts";
+import type { RecoveryStartDenial } from "../jones/provider/RecoveryStartDenial.ts";
 import { CommandId, ThreadId, type OrchestrationV2Run } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -138,6 +139,7 @@ export interface EffectOutboxV2Shape {
     readonly maxRunningTitleGenerations?: number;
     readonly excludeTitleGeneration?: boolean;
     readonly urgentOnly?: boolean;
+    readonly recoveryStartDenial?: RecoveryStartDenial["Service"];
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly allowsClaimedRecoveryStart: (
     claim: OrchestrationEffectV2,
@@ -188,6 +190,7 @@ type EffectRow = {
   readonly completed_at: string | null;
   readonly last_error: string | null;
 };
+type ClaimRow = EffectRow & { readonly rejected_unclaimed: number };
 
 const decodeRequest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationEffectRequestV2),
@@ -239,19 +242,17 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const deletionWriterFence = yield* DeletionWriterFence.make;
-    // Only the SQL statement runs under this transaction; existing publication,
-    // cancellation and wake effects remain after its commit.
-    const guardedRows = Effect.fn("EffectOutbox.withDeletionWriterFence")(function* <A>(
+    const withDeletionWriterFence = Effect.fn("EffectOutbox.withDeletionWriterFence")(function* <A>(
       column: Statement.Fragment,
       execute: (allowed: Statement.Fragment) => Effect.Effect<A, SqlError>,
     ) {
-      return yield* sql.withTransaction(
-        Effect.gen(function* () {
-          const allowed = yield* deletionWriterFence.excludeReservedThreads(column);
-          return yield* execute(allowed);
-        }),
-      );
+      const allowed = yield* deletionWriterFence.excludeReservedThreads(column);
+      return yield* execute(allowed);
     });
+    const guardedRows = <A>(
+      column: Statement.Fragment,
+      execute: (allowed: Statement.Fragment) => Effect.Effect<A, SqlError>,
+    ) => sql.withTransaction(withDeletionWriterFence(column, execute));
     const available = yield* Queue.dropping<void>(64);
     const completionChanges = yield* PubSub.sliding<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
@@ -625,13 +626,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           maxRunningTitleGenerations,
           excludeTitleGeneration = false,
           urgentOnly = false,
+          recoveryStartDenial,
         }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           // Idle claims return empty; tracing their full SQL on every poll overwhelms useful traces.
-          const claimStatement = guardedRows(
+          const claimStatement = withDeletionWriterFence(
             sql`candidate.thread_id`,
-            (allowed) => sql<EffectRow>`
+            (allowed) => sql<ClaimRow>`
             WITH candidate AS MATERIALIZED (
               SELECT candidate.effect_id, candidate.command_id, candidate.thread_id,
                 candidate.effect_type, candidate.attempt_count, candidate.payload_json,
@@ -654,12 +656,37 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               completed_at = CASE WHEN selected.admitted THEN completed_at ELSE ${nowIso} END,
               last_error = CASE WHEN selected.admitted THEN NULL ELSE ${recoveryStartAdmissionError} END
             FROM selected WHERE effect.effect_id = selected.effect_id
-            RETURNING *
+            RETURNING *, CASE WHEN status = 'failed' THEN (
+              SELECT attempt_count = 0 AND lease_owner IS NULL AND completed_at IS NULL
+              FROM candidate
+            ) ELSE 0 END AS rejected_unclaimed
           `,
           );
+          const claim = Effect.gen(function* () {
+            const [row] = yield* claimStatement;
+            if (row?.rejected_unclaimed === 1) {
+              const decoded = yield* Effect.option(rowToEffect(row));
+              if (Option.isSome(decoded)) {
+                if (recoveryStartDenial === undefined)
+                  return yield* new EffectOutboxError({
+                    operation: "claim",
+                    effectId: row.effect_id,
+                    cause: "Recovered start denial requires a run settlement owner.",
+                  });
+                yield* recoveryStartDenial.settle(decoded.value, now);
+              }
+            }
+            return row;
+          });
+          // EventSink owns the commit and event publication when the claim can
+          // reject a recovered start. Its run events and the denial commit together.
+          const commitClaim = (
+            recoveryStartDenial === undefined || urgentOnly
+              ? sql.withTransaction(claim)
+              : recoveryStartDenial.withTransaction(claim)
+          ).pipe(Effect.withTracerEnabled(false));
           while (true) {
-            const rows = yield* claimStatement.pipe(Effect.withTracerEnabled(false));
-            const row = rows[0];
+            const row = yield* commitClaim;
             if (row === undefined) return Option.none();
             if (row.status === "failed") {
               yield* signalSettled([row.effect_id]);

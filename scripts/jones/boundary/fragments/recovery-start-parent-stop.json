@@ -3,8 +3,9 @@
   "feature": "recovery-start-parent-stop",
   "jonesOwnedPaths": [
     "apps/server/src/jones/provider/PreparedStartBirth.ts",
-    "apps/server/src/jones/provider/RecoveryStartParentStop.ts",
+    "apps/server/src/jones/provider/RecoveryStartDenial.ts",
     "apps/server/src/jones/provider/RecoveryStartParentStop.integration.test.ts",
+    "apps/server/src/jones/provider/RecoveryStartParentStop.ts",
     "apps/server/src/jones/workspaceLifecycle/PreparedStartCheckout.ts"
   ],
   "hookPaths": [],
@@ -12,7 +13,15 @@
   "allowedImports": [
     {
       "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/provider/RecoveryStartDenial.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
       "to": "apps/server/src/jones/provider/RecoveryStartParentStop.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/provider/RecoveryStartDenial.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
@@ -25,6 +34,10 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
       "to": "apps/server/src/jones/workspaceLifecycle/PreparedStartCheckout.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/provider/RecoveryStartDenial.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",

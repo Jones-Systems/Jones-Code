@@ -10,6 +10,7 @@ import * as NativeCreationRepositorySqlite from "../jones/nativeCreation/NativeC
 import * as NativeCreationAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
 import * as NativeCreationProviderExecutor from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
 import * as NativeStartAdmission from "../jones/nativeCreation/NativeStartAdmission.ts";
+import * as RecoveryStartDenial from "../jones/provider/RecoveryStartDenial.ts";
 import * as StartAdmission from "../jones/provider/StartAdmission.ts";
 import * as UnattendedStartAdmission from "../jones/provider/UnattendedStartAdmission.ts";
 import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
@@ -532,6 +533,11 @@ const layerEffectExecutorProvided = CapturedRuntimeStop.layer.pipe(
   ),
 );
 const layerEffectWorkerProvided = EffectWorker.layer.pipe(
+  Layer.provide(
+    RecoveryStartDenial.layer.pipe(
+      Layer.provide(Layer.mergeAll(layerStores, layerEventSink, IdAllocator.layer)),
+    ),
+  ),
   Layer.provide(
     Layer.mergeAll(
       layerStores,
