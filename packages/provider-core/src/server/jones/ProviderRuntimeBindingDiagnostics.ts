@@ -8,15 +8,26 @@ function reasonForText(value: unknown) {
     case "The launch reservation or native ownership was lost.":
       return "reservation_or_ownership_lost";
     case "Another producer already owns this native conversation.":
+    case "The original predecessor changed before binding publication.":
       return "previous_generation_mismatch";
     case "The native binding changed before its boundary committed.":
+    case "The native binding boundary did not commit.":
       return "boundary_commit_empty";
+    case "The original publication runtime attachment changed.":
+      return "publication_runtime_attachment_changed";
+    case "Original publication authority was lost.":
+      return "publication_authority_lost";
+    case "The runtime identity observation did not commit.":
+      return "observation_commit_empty";
     case "Native execution has no committed physical runtime binding.":
       return "physical_binding_absent";
     case "Codex cannot admit a thread to an unconfirmed or replaced runtime.":
       return "runtime_unconfirmed_or_replaced";
     case "Codex cannot admit a thread while a native start is unconfirmed.":
+    case "Codex startup has an unconfirmed native effect for this conversation; another admission is not safe.":
       return "native_start_unconfirmed";
+    case "An original native load still owns unpublished or uncertain work.":
+      return "native_load_publication_pending";
     case "Codex cannot admit a thread to an inactive or replaced runtime producer.":
       return "runtime_producer_not_current";
     case "Codex resumed a different native conversation; continuation is unconfirmed.":

@@ -22,6 +22,14 @@ const refusals = [
   ["The launch reservation or native ownership was lost.", "reservation_or_ownership_lost"],
   ["Another producer already owns this native conversation.", "previous_generation_mismatch"],
   ["The native binding changed before its boundary committed.", "boundary_commit_empty"],
+  ["The native binding boundary did not commit.", "boundary_commit_empty"],
+  ["The original predecessor changed before binding publication.", "previous_generation_mismatch"],
+  [
+    "The original publication runtime attachment changed.",
+    "publication_runtime_attachment_changed",
+  ],
+  ["Original publication authority was lost.", "publication_authority_lost"],
+  ["The runtime identity observation did not commit.", "observation_commit_empty"],
   ["Native execution has no committed physical runtime binding.", "physical_binding_absent"],
   [
     "Codex cannot admit a thread to an unconfirmed or replaced runtime.",
@@ -51,6 +59,14 @@ const refusals = [
   [
     "Codex has an unconfirmed native effect; another resume is not safe.",
     "native_effect_unconfirmed_resume",
+  ],
+  [
+    "Codex startup has an unconfirmed native effect for this conversation; another admission is not safe.",
+    "native_start_unconfirmed",
+  ],
+  [
+    "An original native load still owns unpublished or uncertain work.",
+    "native_load_publication_pending",
   ],
 ] as const;
 const lifecycleDetail =
