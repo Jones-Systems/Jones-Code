@@ -650,6 +650,59 @@ describe("personal thread pointer placement", () => {
     expect(setup.placeThread).toHaveBeenLastCalledWith(source, "Drag Alpha", null, false);
   });
 
+  it.each([
+    { id: "Drag Alpha", boundary: "pointerleave" },
+    { id: null, boundary: "outside viewport" },
+    { id: "Drag Alpha", boundary: "lostpointercapture" },
+  ])("discards a missed release after $boundary in $id", async ({ id, boundary }) => {
+    using setup = fixture();
+    setup.registry.set(setup.state, {
+      ...setup.initial,
+      assignmentsByThreadKey: new Map(
+        id === null ? [] : [source, first, last].map((thread) => assignment(thread, id)),
+      ),
+    });
+    await using screen = await render(setup.ui(), { container: container() });
+    const sourceRow = row(screen.container, source);
+    const lastRow = row(screen.container, last);
+    await start(sourceRow, point(lastRow, 0.8));
+    expect(insertion()?.previousElementSibling).toBe(lastRow);
+    const outside = { x: -1, y: point(lastRow).y };
+
+    await act(() => {
+      if (boundary === "outside viewport") {
+        pointer(document.documentElement, "pointermove", outside);
+      } else if (boundary === "lostpointercapture") {
+        pointer(sourceRow, boundary, point(lastRow));
+      } else {
+        document.documentElement.dispatchEvent(
+          new PointerEvent("pointerleave", {
+            isPrimary: true,
+            pointerType: "mouse",
+            pointerId: 1,
+            buttons: 1,
+            clientX: outside.x,
+            clientY: outside.y,
+          }),
+        );
+      }
+    });
+    const gapAfterBoundary = insertion();
+    const reentry = point(lastRow, 0.8);
+    await act(() => pointer(document, "pointermove", reentry, 0));
+    expect(setup.placeThread).not.toHaveBeenCalled();
+    expect(gapAfterBoundary).toBeNull();
+    expect(document.querySelector("[data-personal-thread-drag]")).toBeNull();
+    expect(sourceRow.style.opacity).toBe("");
+
+    await start(sourceRow, point(lastRow, 0.2));
+    expect(insertion()?.nextElementSibling).toBe(lastRow);
+    const release = id === null ? "pointermove" : "pointerup";
+    await act(() => pointer(document, release, point(lastRow, 0.8), 0));
+    expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(source, id, last, true);
+    expect(insertion()).toBeNull();
+  });
+
   it.each(["Escape", "pointercancel", "unmount"])(
     "cleans the card and sensor after %s",
     async (cancel) => {
