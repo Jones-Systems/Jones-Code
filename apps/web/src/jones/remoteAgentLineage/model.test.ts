@@ -67,6 +67,8 @@ describe("machine identity", () => {
     ["TEST_server", "test", "Test Server"],
     ["mac-mini", "mini", "Mini"],
     ["Laptop", "laptop", "Laptop"],
+    ["Example’s Mac mini (2)", "mini", "Mini"],
+    ["Example's MacBook Pro", "laptop", "Laptop"],
   ])("resolves exact normalized %s", (label, identity, shortLabel) => {
     expect(resolveMachineIdentity(label)).toMatchObject({ identity, shortLabel });
   });

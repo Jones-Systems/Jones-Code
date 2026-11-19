@@ -7,6 +7,17 @@ import { useQuietThreadShell } from "../../state/entities";
 import { MachineIcon } from "./MachineIcon";
 export { MachineIcon } from "./MachineIcon";
 
+function useOriginMachine(environmentId: EnvironmentId, threadId: ThreadId) {
+  const thread = useQuietThreadShell(scopeThreadRef(environmentId, threadId));
+  const source = useEnvironment(thread?.delegatedFrom?.environmentId ?? null);
+  // A linked launch can have only the saved client label.
+  const savedLabel = thread?.linkOrigin?.label?.replace(/^(?:T3|Jones) Code ·\s*/i, "").trim();
+  return {
+    label: source?.label ?? savedLabel,
+    kind: source?.serverConfig?.environment.platform.machine,
+  };
+}
+
 export function MachineRouteBadge({
   environmentId,
   threadId,
@@ -14,11 +25,10 @@ export function MachineRouteBadge({
   environmentId: EnvironmentId;
   threadId: ThreadId;
 }) {
-  const thread = useQuietThreadShell(scopeThreadRef(environmentId, threadId));
+  const source = useOriginMachine(environmentId, threadId);
   const destination = useEnvironment(environmentId);
-  const source = useEnvironment(thread?.delegatedFrom?.environmentId ?? null);
-  const sourceLabel = source?.label ?? thread?.linkOrigin?.label;
-  if (!sourceLabel) return null;
+  if (!source.label) return null;
+  const sourceLabel = source.label;
   const destinationLabel = destination?.label ?? "Unknown environment";
   return (
     <Tooltip>
@@ -31,11 +41,7 @@ export function MachineRouteBadge({
           />
         }
       >
-        <MachineIcon
-          label={sourceLabel}
-          kind={source?.serverConfig?.environment.platform.machine}
-          className="size-4 shrink-0"
-        />
+        <MachineIcon label={sourceLabel} kind={source.kind} className="size-4 shrink-0" />
         <MachineIcon
           label={destinationLabel}
           kind={destination?.serverConfig?.environment.platform.machine}
@@ -68,9 +74,7 @@ export function MachineOrigin({
   environmentId: EnvironmentId;
   threadId: ThreadId;
 }) {
-  const thread = useQuietThreadShell(scopeThreadRef(environmentId, threadId));
-  const source = useEnvironment(thread?.delegatedFrom?.environmentId ?? null);
-  const label = source?.label ?? thread?.linkOrigin?.label;
+  const { label, kind } = useOriginMachine(environmentId, threadId);
   return label ? (
     <Tooltip>
       <TooltipTrigger
@@ -81,12 +85,7 @@ export function MachineOrigin({
           />
         }
       >
-        from{" "}
-        <MachineIcon
-          label={label}
-          kind={source?.serverConfig?.environment.platform.machine}
-          className="size-4"
-        />
+        from <MachineIcon label={label} kind={kind} className="size-4" />
       </TooltipTrigger>
       <TooltipPopup>{`From ${label}`}</TooltipPopup>
     </Tooltip>
