@@ -10,8 +10,10 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 import { qualificationDecision, nativeBlockMatrixDecision } from "./qualificationResult.mjs";
 const [output, installedRoot, scope = "full", priorDirectory] = process.argv.slice(2);
-const diagnosticModes =
-  scope === "observer-cadence"
+const observerIsolation = scope === "observer-isolation";
+const diagnosticModes = observerIsolation
+  ? ["inline", "isolated", "isolated", "inline"]
+  : scope === "observer-cadence"
     ? ["cadence-standard", "cadence-reduced"]
     : scope === "observer-control"
       ? ["cpu-stat-only"]
@@ -279,7 +281,7 @@ try {
     NodePath.join(output, "source-build.patch"),
     NodeChildProcess.execFileSync("git", ["diff", "--binary"], { cwd: root }),
   );
-  await node("deterministic", [
+  const deterministic = await node("deterministic", [
     "--test",
     "--test-concurrency=1",
     "scripts/jones/serverParallelism/buildIdentity.node-test.mjs",
@@ -289,7 +291,12 @@ try {
     "scripts/jones/serverParallelism/native-block-proof.node-test.mjs",
     "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs",
     "scripts/jones/serverParallelism/macos-resource-sampler.node-test.mjs",
+    ...(observerIsolation
+      ? ["scripts/jones/serverParallelism/linux-resource-observer.node-test.mjs"]
+      : []),
   ]);
+  if (observerIsolation && !deterministic)
+    throw new Error("Linux observer comparison requires deterministic checks");
   const sourceManifest = NodePath.join(output, "source-command.json");
   const sourceAvailable = await node("manifest-source", [
     "scripts/jones/serverParallelism/source-command.mjs",
@@ -355,6 +362,48 @@ try {
     diagnosticComplete =
       (await writerTraceVerified("writer-baseline.json", "baseline.mjs", "baseline")) &&
       (await writerTraceVerified("writer-native.json", "qualify.mjs", "combined"));
+  } else if (observerIsolation) {
+    if (!sourceAvailable) throw new Error("Linux observer comparison requires the source manifest");
+    const baseline = await runBaseline("vps");
+    if (predicates["baseline-vps"] !== true)
+      throw new Error("Linux observer comparison requires a complete baseline");
+    diagnosticComplete = true;
+    for (const [index, arm] of diagnosticModes.entries()) {
+      const name = `observer-isolation-${index + 1}-${arm}`;
+      const path = NodePath.join(output, `${name}.json`);
+      const succeeded = await node(name, [
+        "scripts/jones/serverParallelism/qualify.mjs",
+        sourceManifest,
+        path,
+        "vps",
+        baseline,
+        arm,
+      ]);
+      let evidence;
+      try {
+        evidence = JSON.parse(await NodeFSP.readFile(path, "utf8"));
+      } catch {
+        /* Missing evidence closes admission below. */
+      }
+      diagnosticComplete &&=
+        succeeded &&
+        evidence?.source === source &&
+        evidence?.sourceTree === sourceTree &&
+        evidence?.observerArm === arm &&
+        evidence?.eligible === false &&
+        evidence?.outcome === "recorded";
+      reports.push({
+        name,
+        path,
+        eligible: false,
+        outcome: evidence?.outcome ?? "unknown",
+        cleanupProved: evidence?.cleanupProved ?? null,
+      });
+      requireRetirement(
+        evidence?.cleanupProved === true && results.at(-1)?.capturedExit === true,
+        name,
+      );
+    }
   } else if (diagnosticScope) {
     const { verifyDiagnosticArtifacts } = await import("./observer-diagnostic.mjs");
     let baseline;

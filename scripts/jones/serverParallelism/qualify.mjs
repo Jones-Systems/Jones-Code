@@ -9,7 +9,8 @@ import { runNativeQualification } from "../../../apps/server/src/jones/serverPar
 import { minimalWorkerEnvironment } from "../../../apps/server/src/jones/serverCompute/workerCommand.ts";
 import { qualificationDecision, requiredNativePredicates } from "./qualificationResult.mjs";
 import { startMacResourceSampler } from "./macos-resource-sampler.mjs";
-const [manifestPath, output, profile, baselinePath] = process.argv.slice(2);
+import { startLinuxResourceObserver } from "./linux-resource-observer.mjs";
+const [manifestPath, output, profile, baselinePath, observerArm] = process.argv.slice(2);
 if (
   !manifestPath ||
   !output ||
@@ -23,6 +24,17 @@ const required = JSON.parse(
   await NodeFSP.readFile(new URL("../../../package.json", import.meta.url), "utf8"),
 ).engines.node;
 if (process.versions.node !== required) throw new Error(`Qualification requires Node ${required}`);
+if (
+  observerArm !== undefined &&
+  (!["inline", "isolated"].includes(observerArm) ||
+    !baselinePath ||
+    profile !== "vps" ||
+    Effect.runSync(HostProcess.Platform) !== "linux" ||
+    process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
+    process.env.JONES_SP_SCOPE !== "observer-isolation")
+) {
+  throw new Error("The Linux observer comparison requires its manual diagnostic scope");
+}
 const manifest = JSON.parse(await NodeFSP.readFile(manifestPath, "utf8"));
 const count = profile === "vps" ? 3 : 2;
 if (
@@ -96,10 +108,13 @@ try {
     [baseline.writer?.p95, baseline.writer?.p99, baseline.loop?.p99].every(
       (value) => Number.isFinite(value) && value > 0,
     );
-  if (process.env.JONES_SP_MAC_RESOURCE_SAMPLER === "1")
+  if (observerArm === "isolated") {
+    resourceSampler = await startLinuxResourceObserver();
+  } else if (process.env.JONES_SP_MAC_RESOURCE_SAMPLER === "1") {
     resourceSampler = await startMacResourceSampler(
       await runnerMacHelper("jones-macos-resource-sampler"),
     );
+  }
   const report = await runNativeQualification({
     count,
     command,
@@ -128,6 +143,18 @@ try {
       }
     : report.predicates;
   const decision = qualificationDecision(predicates, requiredNativePredicates);
+  const observationRecorded =
+    observerArm !== undefined &&
+    usable &&
+    cleanupProved &&
+    report.windows.length === 3 &&
+    report.churnWindows.length === 2 &&
+    predicates.resourcesComplete === true &&
+    predicates.observationComplete === true &&
+    predicates.generationEvidenceComplete === true &&
+    (observerArm === "inline" ||
+      (predicates.resourceSamplerClosed === true &&
+        resourceObserver.samples === report.resources.length));
   await NodeFSP.writeFile(
     output,
     JSON.stringify(
@@ -135,6 +162,15 @@ try {
         ...report,
         ...decision,
         predicates,
+        ...(observerArm !== undefined
+          ? {
+              eligible: false,
+              passed: false,
+              outcome: observationRecorded ? "recorded" : "incomplete",
+              observerArm,
+              qualification: decision,
+            }
+          : {}),
         ...(resourceObserver ? { resourceObserver } : {}),
         source: process.env.JONES_SP_SOURCE_SHA ?? null,
         sourceTree: process.env.JONES_SP_SOURCE_TREE ?? null,
@@ -153,7 +189,7 @@ try {
     ) + "\n",
     { flag: "wx", mode: 0o600 },
   );
-  if (!decision.passed) process.exitCode = 1;
+  if (!(observerArm === undefined ? decision.passed : observationRecorded)) process.exitCode = 1;
 } catch (cause) {
   const resourceObserver = await retireSampler();
   await NodeFSP.writeFile(
@@ -168,6 +204,7 @@ try {
         profile,
         scratch,
         cleanupProved,
+        ...(observerArm !== undefined ? { eligible: false, observerArm } : {}),
         ...(resourceObserver ? { resourceObserver } : {}),
         error: String(cause),
       },

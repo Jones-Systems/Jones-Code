@@ -13,6 +13,7 @@ on:
             observer-diagnostic,
             observer-control,
             observer-cadence,
+            observer-isolation,
             observer-residency,
             writer-timing,
           ]
@@ -63,7 +64,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: server-parallel-qualification-${{ github.event.pull_request.number || github.ref }}${{ (inputs.scope == 'observer-cadence' || inputs.scope == 'observer-residency') && format('-{0}', inputs.scope) || '' }}
+  group: server-parallel-qualification-${{ github.event.pull_request.number || github.ref }}${{ (inputs.scope == 'observer-cadence' || inputs.scope == 'observer-residency' || inputs.scope == 'observer-isolation') && format('-{0}', inputs.scope) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -82,7 +83,7 @@ jobs:
         include: >-
           ${{ fromJSON(
             github.event.inputs.scope == 'observer-cadence' && '[{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]' ||
-            (github.event.inputs.scope == 'observer-diagnostic' || github.event.inputs.scope == 'observer-control' || github.event.inputs.scope == 'observer-residency' || github.event.inputs.scope == 'writer-timing') && '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"}]' ||
+            (github.event.inputs.scope == 'observer-diagnostic' || github.event.inputs.scope == 'observer-control' || github.event.inputs.scope == 'observer-isolation' || github.event.inputs.scope == 'observer-residency' || github.event.inputs.scope == 'writer-timing') && '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"}]' ||
             '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"},{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]'
           ) }}
     defaults:
