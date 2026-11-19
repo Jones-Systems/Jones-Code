@@ -161,6 +161,22 @@ export const makeRuntimeStopMethods = (
         ON fence.thread_id = ${threadId} AND fence.run_id = affected.value
       ORDER BY fence.run_id, fence.command_id`;
   });
+  const matchesBinding = (binding: ProviderRuntimeBinding) => sql`
+    intent.thread_id=${binding.threadId}
+    AND json_extract(intent.identity_json,'$.request.target.binding.threadId')=${binding.threadId}
+    AND json_extract(intent.identity_json,'$.request.target.binding.providerThreadId')=${binding.providerThreadId}
+    AND json_extract(intent.identity_json,'$.request.target.binding.providerSessionId')=${binding.providerSessionId}
+    AND json_extract(intent.identity_json,'$.request.target.binding.providerInstanceId')=${binding.providerInstanceId}
+    AND json_extract(intent.identity_json,'$.request.target.binding.driver')=${binding.driver}
+    AND json_extract(intent.identity_json,'$.request.target.binding.nativeThreadId')=${binding.nativeThreadId}
+    AND json_extract(intent.identity_json,'$.request.target.binding.runtimeGeneration')=${binding.runtimeGeneration}`;
+  const hasStopIntent = Effect.fnUntraced(function* (binding: ProviderRuntimeBinding) {
+    if (!(yield* available)) return false;
+    const rows = yield* sql`
+      SELECT 1 FROM jones_runtime_stop_intents AS intent WHERE ${matchesBinding(binding)} LIMIT 1
+    `;
+    return rows.length !== 0;
+  });
   const assertStartAllowed = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
@@ -246,14 +262,7 @@ export const makeRuntimeStopMethods = (
       FROM jones_runtime_stop_intents AS intent
       JOIN jones_runtime_stop_observations AS observation ON observation.command_id=intent.command_id
       WHERE observation.phase='completed' AND observation.result='stopped'
-        AND intent.thread_id=${binding.threadId}
-        AND json_extract(intent.identity_json,'$.request.target.binding.threadId')=${binding.threadId}
-        AND json_extract(intent.identity_json,'$.request.target.binding.providerThreadId')=${binding.providerThreadId}
-        AND json_extract(intent.identity_json,'$.request.target.binding.providerSessionId')=${binding.providerSessionId}
-        AND json_extract(intent.identity_json,'$.request.target.binding.providerInstanceId')=${binding.providerInstanceId}
-        AND json_extract(intent.identity_json,'$.request.target.binding.driver')=${binding.driver}
-        AND json_extract(intent.identity_json,'$.request.target.binding.nativeThreadId')=${binding.nativeThreadId}
-        AND json_extract(intent.identity_json,'$.request.target.binding.runtimeGeneration')=${binding.runtimeGeneration}
+        AND ${matchesBinding(binding)}
       LIMIT 1
       `;
       return rows.length === 1;
@@ -346,6 +355,7 @@ export const makeRuntimeStopMethods = (
     assertStartAllowed,
     hasRunFence,
     readRunFences,
+    hasStopIntent,
     hasStoppedRuntime,
     readStoppedRuntime,
   };

@@ -1803,20 +1803,20 @@ const layerBase: Layer.Layer<
             };
           }
           if (input.selfSettlementRevalidate !== undefined) yield* input.selfSettlementRevalidate;
-          if (
-            input.queuedActionBasis !== undefined &&
-            (input.queuedActionBasis.threadId !== input.threadId ||
-              !(yield* QueuedAction.isCurrent(
-                projectionStore,
-                runtimeStops,
-                input.queuedActionBasis,
-              )))
-          )
-            return yield* new EventSinkWriteError({
-              commandId: input.commandId,
-              eventCount: input.events.length,
-              cause: "Queued input changed before acceptance. Refresh the queue and retry.",
-            });
+          if (input.queuedActionBasis !== undefined) {
+            const rejection = yield* QueuedAction.rejectionReason(
+              projectionStore,
+              runtimeStops,
+              input.threadId,
+              input.queuedActionBasis,
+            );
+            if (rejection !== undefined)
+              return yield* new EventSinkWriteError({
+                commandId: input.commandId,
+                eventCount: input.events.length,
+                cause: rejection,
+              });
+          }
 
           // Planning does not lock the source. Once deletion commits, maintenance
           // can remove its checkpoints, so a new fork must not revive that history.

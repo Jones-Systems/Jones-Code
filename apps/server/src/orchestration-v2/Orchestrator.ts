@@ -13277,7 +13277,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       planning,
     );
     const automatic = yield* AutomaticQueuedToolBoundary;
-    const batch = validateQueuedSteerBatch(projection, command, automatic !== undefined);
+    planning.automaticBatchDelivery = automatic !== undefined;
+    const batch = validateQueuedSteerBatch(projection, command, planning.automaticBatchDelivery);
     if ("error" in batch)
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -18164,7 +18165,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       effects: yield* Ref.get(effects),
       ...(queuePlanning.snapshot === undefined
         ? {}
-        : { queuedActionBasis: QueuedAction.forCommand(queuePlanning.snapshot, plannedEvents) }),
+        : {
+            queuedActionBasis: QueuedAction.forCommand(
+              queuePlanning.snapshot,
+              plannedEvents,
+              queuePlanning.automaticBatchDelivery,
+            ),
+          }),
       ...(cancelUnsettledEffects === undefined ? {} : { cancelUnsettledEffects }),
       ...(updateDelegatedCompletionOnlyRunId === undefined
         ? {}

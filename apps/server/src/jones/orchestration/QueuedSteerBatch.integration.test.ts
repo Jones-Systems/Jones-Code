@@ -46,6 +46,7 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { queuedToolBoundaryTarget } from "../../orchestration-v2/QueuedToolBoundary.ts";
 import * as RuntimeStop from "../runtime/RuntimeStop.ts";
+import { makeRuntimeStopMethods } from "../runtime/RuntimeStopSqlite.ts";
 
 const makeQueuedProviderFixture = ({
   cwd,
@@ -286,9 +287,17 @@ it.effect.each([
   { action: "reorder", intervening: "stop" },
   { action: "single steer", intervening: "stop" },
   { action: "batch steer", intervening: "stop" },
+  { action: "single steer", intervening: "stop before planning" },
+  { action: "batch steer", intervening: "stop before planning" },
+  { action: "cancel", intervening: "stop before planning" },
+  { action: "single steer", intervening: "successor generation" },
+  { action: "batch steer", intervening: "successor generation" },
+  { action: "batch steer", intervening: "pending request" },
+  { action: "batch steer", intervening: "new queue leader" },
   { action: "batch steer", intervening: "edit" },
   { action: "batch steer", intervening: "receipt" },
   { action: "single steer", intervening: "unrelated edit" },
+  { action: "batch steer", intervening: "unrelated edit" },
   { action: "resume", intervening: "none" },
   { action: "single steer", intervening: "none" },
   { action: "batch steer", intervening: "none" },
@@ -354,19 +363,31 @@ it.effect.each([
         yield* Fiber.join(running);
         yield* send("first queued");
         yield* send("second queued");
+        const thirdQueued =
+          intervening === "new queue leader" ||
+          (action === "batch steer" && intervening === "unrelated edit");
+        if (thirdQueued) yield* send("third queued");
         const before = yield* read;
         const target = before.runs[0]!;
         const queued = before.runs.slice(1);
         assert.deepEqual(
           queued.map(({ status }) => status),
-          ["queued", "queued"],
+          Array.from({ length: thirdQueued ? 3 : 2 }, () => "queued"),
         );
-        const legacyHeld = action === "resume" && ["stop held queue", "none"].includes(intervening);
+        const stopFirst = intervening === "stop before planning";
+        const successor = intervening === "successor generation";
+        const preHeld =
+          stopFirst ||
+          successor ||
+          (action === "resume" && ["stop held queue", "none"].includes(intervening));
         const now = yield* DateTime.now;
-        if (legacyHeld)
-          yield* sink.write({
+        const queuedRunIds = queued.map((run) => run.id);
+        if (preHeld)
+          yield* sink.writeWithEffects({
+            effects: [],
+            queueHold: { reason: "restart", runIds: queuedRunIds },
             events: queued.map((run) => ({
-              id: EventId.make(`queue-action:legacy-hold:${run.id}`),
+              id: EventId.make(`queue-action:restart-hold:${run.id}`),
               type: "run.updated",
               threadId,
               runId: run.id,
@@ -374,8 +395,107 @@ it.effect.each([
               payload: { ...run, queueHeld: true },
             })),
           });
+        const captureStop = Effect.gen(function* () {
+          const stop = yield* RuntimeStop.CurrentRuntimeStop;
+          const sessions = yield* AuthSessions.AuthSessionRepository;
+          const principal = {
+            sessionId: AuthSessionId.make("queue-action:actor"),
+            subject: "Synthetic queue actor",
+            method: "browser-session-cookie" as const,
+            scopes: new Set(["orchestration:read", "orchestration:operate"] as const),
+          };
+          yield* sessions.create({
+            ...principal,
+            scopes: [...principal.scopes],
+            client: {
+              label: null,
+              userAgent: null,
+              ipAddress: null,
+              deviceType: "bot",
+              browser: null,
+              os: null,
+            },
+            issuedAt: now,
+            expiresAt: DateTime.add(now, { hours: 1 }),
+          });
+          yield* Effect.gen(function* () {
+            const target = yield* stop.readTarget(threadId);
+            assert.equal(target.status, "available");
+            if (target.status !== "available") return yield* Effect.die("Missing Stop target");
+            const request = {
+              commandId: CommandId.make("queue-action:stop"),
+              threadId,
+              target: target.target,
+            };
+            if (successor) {
+              // Seed the predecessor's durable intent. The same provider and
+              // native conversation IDs now belong to the recording runtime.
+              yield* sql.withTransaction(
+                makeRuntimeStopMethods(sql).record({
+                  identity: {
+                    request: {
+                      ...request,
+                      target: {
+                        ...request.target,
+                        binding: {
+                          ...request.target.binding,
+                          runtimeGeneration: "queue-action:predecessor",
+                        },
+                      },
+                    },
+                    affectedRunIds: queuedRunIds,
+                    actor: principal,
+                    actorDigest: "synthetic-prior-stop",
+                  },
+                  revalidate: Effect.void,
+                }),
+              );
+            } else {
+              const stopped = yield* stop.stop(request);
+              assert.sameMembers([...stopped.affectedRunIds], queuedRunIds);
+            }
+          }).pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+          const fenced = yield* read;
+          assert.deepEqual(
+            fenced.runs.slice(1).map(({ status }) => status),
+            preHeld ? ["queued", "queued"] : ["cancelled", "cancelled"],
+          );
+          const activeTurn = fenced.providerTurns.find((turn) => turn.status === "running");
+          assert.equal(activeTurn?.runAttemptId, target.activeAttemptId);
+        });
+        if (stopFirst || successor) yield* captureStop;
+
+        const openRequest = sink.write({
+          events: [
+            {
+              id: EventId.make("queue-action:question-opened"),
+              type: "runtime-request.updated",
+              threadId,
+              runId: target.id,
+              occurredAt: now,
+              payload: {
+                id: RuntimeRequestId.make("queue-action:question"),
+                nodeId: target.rootNodeId!,
+                providerTurnId: before.providerTurns[0]!.id,
+                nativeRequestRef: null,
+                kind: "user_input",
+                status: "pending",
+                responseCapability: { type: "message" },
+                createdAt: now,
+                resolvedAt: null,
+              },
+            },
+          ],
+        });
         const commandId = CommandId.make("queue-action:mutation");
         const common = { threadId, commandId };
+        const batchItems = queued.slice(0, 2).map((run) => ({
+          queuedRunId: run.id,
+          messageId: run.userMessageId,
+          messageUpdatedAt: DateTime.formatIso(
+            before.messages.find((message) => message.id === run.userMessageId)!.updatedAt,
+          ),
+        }));
         const command: OrchestrationV2Command =
           action === "resume"
             ? { ...common, type: "queue.resume" }
@@ -393,20 +513,38 @@ it.effect.each([
                     queuedRunId: queued[0]!.id,
                     targetRunId: target.id,
                   }
-                : {
-                    ...common,
-                    type: "queued-message.promote-batch-to-steer",
-                    targetRunId: target.id,
-                    items: queued.map((run) => ({
-                      queuedRunId: run.id,
-                      messageId: run.userMessageId,
-                      messageUpdatedAt: DateTime.formatIso(
-                        before.messages.find((message) => message.id === run.userMessageId)!
-                          .updatedAt,
-                      ),
-                    })),
-                  };
-        if (intervening === "none") {
+                : action === "cancel"
+                  ? { ...common, type: "queued-run.cancel", runId: queued[0]!.id }
+                  : {
+                      ...common,
+                      type: "queued-message.promote-batch-to-steer",
+                      targetRunId: target.id,
+                      items: batchItems,
+                    };
+        if (action === "cancel") {
+          yield* orchestrator.dispatch(command);
+          const after = yield* read;
+          assert.include(
+            after.runs.find(({ id }) => id === queued[0]!.id),
+            {
+              status: "cancelled",
+            },
+          );
+          assert.include(
+            after.runs.find(({ id }) => id === queued[1]!.id),
+            {
+              status: "queued",
+              queueHeld: true,
+            },
+          );
+          assert.equal(
+            after.messages.find(({ id }) => id === queued[0]!.userMessageId)?.runId,
+            queued[0]!.id,
+          );
+          assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+          return;
+        }
+        if (intervening === "none" || successor) {
           const accepted = yield* orchestrator.dispatch(command);
           const replay = yield* orchestrator.dispatch(command);
           assert.isTrue(replay.replayed);
@@ -432,6 +570,8 @@ it.effect.each([
               effects.map(({ request }) => request.type),
               [action === "single steer" ? "provider-turn.steer" : "provider-turn.steer-batch"],
             );
+            yield* worker.drain();
+            assert.lengthOf(steered, 1);
           }
           return;
         }
@@ -462,6 +602,7 @@ it.effect.each([
           // The same receipt is accepted by another writer after dispatch checked for replay.
           const accepted = yield* commit(queuedCommit);
           assert.isTrue(accepted.committed);
+          yield* openRequest;
           const acceptedState = yield* read;
           yield* Deferred.succeed(release, undefined);
           const replay = yield* Fiber.join(pending);
@@ -476,7 +617,7 @@ it.effect.each([
           return;
         }
         if (intervening === "edit" || intervening === "unrelated edit") {
-          const run = queued[intervening === "edit" ? 0 : 1]!;
+          const run = intervening === "edit" ? queued[0]! : queued.at(-1)!;
           const message = before.messages.find(({ id }) => id === run.userMessageId)!;
           yield* sink.write({
             events: [
@@ -490,80 +631,81 @@ it.effect.each([
               },
             ],
           });
-        } else {
-          const stop = yield* RuntimeStop.CurrentRuntimeStop;
-          const sessions = yield* AuthSessions.AuthSessionRepository;
-          const principal = {
-            sessionId: AuthSessionId.make("queue-action:actor"),
-            subject: "Synthetic queue actor",
-            method: "browser-session-cookie" as const,
-            scopes: new Set(["orchestration:read", "orchestration:operate"] as const),
-          };
-          yield* sessions.create({
-            ...principal,
-            scopes: [...principal.scopes],
-            client: {
-              label: null,
-              userAgent: null,
-              ipAddress: null,
-              deviceType: "bot",
-              browser: null,
-              os: null,
-            },
-            issuedAt: now,
-            expiresAt: DateTime.add(now, { hours: 1 }),
+        } else if (intervening === "pending request") {
+          yield* openRequest;
+        } else if (intervening === "new queue leader") {
+          const run = queued[2]!;
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("queue-action:move-to-front"),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: { ...run, queuePosition: 1 },
+              },
+            ],
           });
-          const stopped = yield* Effect.gen(function* () {
-            const target = yield* stop.readTarget(threadId);
-            assert.equal(target.status, "available");
-            if (target.status !== "available") return yield* Effect.die("Missing Stop target");
-            return yield* stop.stop({
-              commandId: CommandId.make("queue-action:stop"),
-              threadId,
-              target: target.target,
-            });
-          }).pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
-          assert.sameMembers(
-            [...stopped.affectedRunIds],
-            queued.map(({ id }) => id),
-          );
-          const fenced = yield* read;
-          assert.deepEqual(
-            fenced.runs.slice(1).map(({ status }) => status),
-            legacyHeld ? ["queued", "queued"] : ["cancelled", "cancelled"],
-          );
+        } else if (!stopFirst) {
+          yield* captureStop;
         }
         const acceptedState = yield* read;
+        const readHolds = sql`SELECT run_id, reason, held_at FROM jones_queue_holds
+          WHERE thread_id = ${threadId} ORDER BY run_id`;
+        const heldBefore = yield* readHolds;
         yield* Deferred.succeed(release, undefined);
         const result = yield* Fiber.join(pending);
         const after = yield* read;
         if (intervening === "unrelated edit") {
           assert.equal(result._tag, "Success");
-          assert.include(
-            after.messages.find(({ id }) => id === queued[0]!.userMessageId),
-            {
-              runId: target.id,
-            },
-          );
+          const promoted = queued.slice(0, action === "single steer" ? 1 : 2);
+          for (const run of promoted)
+            assert.include(
+              after.messages.find(({ id }) => id === run.userMessageId),
+              {
+                runId: target.id,
+              },
+            );
+          const { userMessageId } = queued.at(-1)!;
           assert.deepEqual(
-            after.messages.find(({ id }) => id === queued[1]!.userMessageId),
-            acceptedState.messages.find(({ id }) => id === queued[1]!.userMessageId),
+            after.messages.find(({ id }) => id === userMessageId),
+            acceptedState.messages.find(({ id }) => id === userMessageId),
           );
           assert.equal((yield* outbox.listByCommandId(commandId)).length, 1);
           return;
         }
+        const effects = yield* outbox.listByCommandId(commandId);
+        const receipts =
+          yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id = ${commandId}`;
+        const events =
+          yield* sql`SELECT event_type FROM orchestration_events WHERE command_id = ${commandId}`;
+        if (intervening === "pending request" || intervening === "new queue leader")
+          yield* worker.drain();
+        assert.deepEqual(
+          {
+            result: result._tag,
+            events: events.length,
+            receipts: receipts.length,
+            outbox: effects.map(({ request }) => request.type),
+            providerInvocations: steered.length,
+            queued: after.runs.filter((run) => run.status === "queued").length,
+          },
+          {
+            result: "Failure",
+            events: 0,
+            receipts: 0,
+            outbox: [],
+            providerInvocations: 0,
+            queued: acceptedState.runs.filter((run) => run.status === "queued").length,
+          },
+        );
         assert.deepEqual(after.runs, acceptedState.runs, "stale queue command changed run state");
         assert.deepEqual(after.attempts, acceptedState.attempts);
         assert.deepEqual(after.nodes, acceptedState.nodes);
         assert.deepEqual(after.messages, acceptedState.messages, "stale queue command moved input");
         assert.deepEqual(after.turnItems, acceptedState.turnItems);
-        assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
-        assert.deepEqual(
-          yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
-          [],
-        );
-        assert.deepEqual(steered, []);
-        assert.equal(result._tag, "Failure");
+        assert.deepEqual(yield* readHolds, heldBefore);
       }).pipe(
         Effect.provide(
           ProviderReplayHarness.layerWithRegistryAndServices(
