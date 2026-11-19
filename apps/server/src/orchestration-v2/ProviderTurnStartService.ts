@@ -3484,13 +3484,11 @@ export const layer: Layer.Layer<
                   ]),
             ],
             (record) =>
-              record.pipe(
-                Effect.catchCause(() =>
-                  Effect.logWarning("Failed to record accepted context handoff delivery", {
-                    runId: run.id,
-                    deliveryStatus: "pending",
-                  }),
-                ),
+              Effect.catchCause(record, () =>
+                Effect.logWarning("Failed to record accepted context handoff delivery", {
+                  runId: run.id,
+                  deliveryStatus: "pending",
+                }),
               ),
             { discard: true },
           );

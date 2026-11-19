@@ -4482,19 +4482,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           runId: originalRunId,
           attemptOrdinal: 1,
         });
+        const codexDriver = ProviderDriverKind.make("codex");
         const originalProviderThreadId = IdAllocator.derive.providerThread({
-          driver: "codex",
+          driver: codexDriver,
           nativeThreadId: `pending:${originalRunId}`,
         });
         const userItemId = IdAllocator.derive.userTurnItem({
           messageId: MessageId.make("original-inline-prompt"),
         });
         const refusedTurnId = IdAllocator.derive.providerTurn({
-          driver: "codex",
+          driver: codexDriver,
           nativeTurnId: `failed:${originalAttemptId}`,
         });
         const failureItemId = IdAllocator.derive.turnItemFromProviderItem({
-          driver: "codex",
+          driver: codexDriver,
           nativeItemId: `terminal-failure:${refusedTurnId}`,
         });
         const historicalFields = {

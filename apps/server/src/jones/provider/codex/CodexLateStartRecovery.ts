@@ -41,9 +41,9 @@ export interface CodexStartDispatch extends NativeBinding {
   overflow: boolean;
 }
 
-const matchesNativeBinding = (dispatch: CodexStartDispatch, binding: NativeBinding) =>
-  dispatch.runtimeGeneration === binding.runtimeGeneration &&
-  dispatch.nativeThreadId === binding.nativeThreadId;
+const matchesNativeBinding = (left: NativeBinding, right: NativeBinding) =>
+  left.runtimeGeneration === right.runtimeGeneration &&
+  left.nativeThreadId === right.nativeThreadId;
 
 type StartRejection =
   | { readonly kind: "other_error" | "unverified" }

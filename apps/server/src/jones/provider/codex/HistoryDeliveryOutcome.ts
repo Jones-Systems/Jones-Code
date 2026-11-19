@@ -111,29 +111,32 @@ const ownsPendingHistoryDelivery = Effect.fn("HistoryDeliveryOutcome.ownsPending
 );
 
 /** Compare and restore only pending writes committed by this delivery invocation. */
-export function makeCodexHistoryDeliveryPersistence(
-  write: (handoff: OrchestrationV2ContextHandoff) => ReturnType<EventSinkV2Shape["write"]>,
+export function makeCodexHistoryDeliveryPersistence<WriteError>(
+  write: (
+    handoff: OrchestrationV2ContextHandoff,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, WriteError>,
   withProviderBatch: EventSinkV2Shape["withProviderBatch"],
 ) {
   const pending = new Map<OrchestrationV2ContextHandoff["id"], OrchestrationV2StoredEvent>();
+  const restore = (handoff: OrchestrationV2ContextHandoff) =>
+    Effect.suspend(() => {
+      const marker = pending.get(handoff.id);
+      if (marker === undefined) return Effect.void;
+      return withProviderBatch(
+        Effect.gen(function* () {
+          if (yield* ownsPendingHistoryDelivery(marker)) yield* write(handoff);
+        }),
+      );
+    });
   return {
-    persist: (handoff: OrchestrationV2ContextHandoff) =>
+    persist: (handoff: OrchestrationV2ContextHandoff): ReturnType<typeof restore> =>
       write(handoff).pipe(
         Effect.map(([stored]) => {
           if (handoff.delivery?.status === "pending" && stored !== undefined)
             pending.set(handoff.id, stored);
         }),
       ),
-    restore: (handoff: OrchestrationV2ContextHandoff) =>
-      Effect.suspend(() => {
-        const marker = pending.get(handoff.id);
-        if (marker === undefined) return Effect.void;
-        return withProviderBatch(
-          Effect.gen(function* () {
-            if (yield* ownsPendingHistoryDelivery(marker)) yield* write(handoff);
-          }),
-        );
-      }),
+    restore,
   };
 }
 
