@@ -9,6 +9,7 @@ import {
   ReceiverAccessUnavailable,
 } from "./ReceiverAccess.ts";
 import { makeReviewProjection } from "./ReviewProjection.ts";
+import { ownerRequestPredicate } from "./peerBookkeeping.ts";
 // @effect-diagnostics nodeBuiltinImport:off -- Canonical binding hashes and opaque IDs are synchronous server-local primitives.
 import { admissionOperation } from "../threadResultDependencies/RemoteRequestProtocol.ts";
 import { makeDependencyStore } from "../threadResultDependencies/DependencyStore.ts";
@@ -643,8 +644,9 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
     listPending: Effect.fn("RemoteAdmission.listPending")(() =>
       database(
         Effect.gen(function* () {
-          const rows = yield* sql<Row>`SELECT * FROM jones_remote_admissions
-        WHERE status IN ('held','evaluating','approved','dispatching') ORDER BY created_at, id LIMIT 200`;
+          const rows = yield* sql<Row>`SELECT a.* FROM jones_remote_admissions a
+        WHERE status IN ('held','evaluating','approved','dispatching') AND ${ownerRequestPredicate(sql)}
+        ORDER BY created_at, id LIMIT 200`;
           return yield* Effect.forEach(rows, decodeRow);
         }),
       ),

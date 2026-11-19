@@ -1,3 +1,5 @@
+import { isPeerBookkeeping } from "../remoteAdmission/peerBookkeeping.ts";
+
 // Cancellation always remains available. Mutation metadata covers new intake
 // surfaces automatically; these observations do not start or change work.
 const observations = new Set([
@@ -20,6 +22,7 @@ export const screensRemoteOperation = (
   readOnly = false,
 ) =>
   !readOnly &&
+  !isPeerBookkeeping(operation) &&
   !observations.has(operation) &&
   !cancellations.has(operation) &&
   !(operation === "t3_queue" && ["list", "read", "cancel"].includes(String(params.action))) &&

@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import type * as DTO from "@t3tools/contracts/jones/remoteAdmissionReview";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -10,6 +11,8 @@ import * as Invocation from "../../mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
 import { ReceiverInspection } from "./Inspection.ts";
 import { handlers, ReceiverPeerProtocol, toolkit } from "./protocolTools.ts";
+import { RemoteAdmissionIntake } from "./RemoteAdmissionIntake.ts";
+import { screensRemoteOperation } from "./operations.ts";
 
 const scope: Invocation.McpInvocationScope = {
   environmentId: EnvironmentId.make("synthetic-receiver"),
@@ -88,6 +91,14 @@ const fixture = () => {
               acknowledgments.push({ scope: caller, input });
               return { acknowledged: true as const };
             }),
+          registerCapabilities: (_caller, input) => Effect.succeed(input),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(RemoteAdmissionIntake)({
+          isLiveClaim: () => false,
+          register: () => undefined,
+          invoke: () => Effect.die("Peer protocol calls must reach the checked handler directly"),
         }),
       ),
       Layer.provide(
@@ -124,6 +135,15 @@ it("all eight protocol tools advertise object roots before and after JSON codec 
   }
 });
 
+it("peer protocol tools reach their own authorization without task admission", () => {
+  for (const tool of Object.values(toolkit.tools)) {
+    expect(
+      screensRemoteOperation(tool.name, {}, Context.get(tool.annotations, Tool.Readonly)),
+    ).toBe(false);
+  }
+  expect(screensRemoteOperation("t3_remote_admission_unrecognized_mutation", {})).toBe(true);
+});
+
 it.effect(
   "production registration preserves both exact selector variants and ack dispositions",
   () => {
@@ -133,6 +153,10 @@ it.effect(
       expect(server.tools.map(({ tool }) => tool.name).toSorted()).toEqual(toolNames);
       for (const { tool } of server.tools)
         expect(tool.inputSchema).toMatchObject({ type: "object" });
+      const registration = { coordinatorGeneration: "generation-1", versions: {} };
+      const registered = yield* call("t3_remote_admission_capabilities_register", registration);
+      expect(registered.isError).toBe(false);
+      expect(registered.structuredContent).toEqual(registration);
       const selectors: ReadonlyArray<DTO.RemoteAdmissionObservationInput> = [
         { clientRequestId: "original-request" },
         { attemptId: "retry-attempt", observationKey: "registered-observation" },

@@ -17,15 +17,19 @@ export function RequestsPage() {
   const { environments, isReady } = useEnvironments();
   return (
     <main className="h-full overflow-y-auto">
-      <WorkspacePageContainer>
-        <header className="space-y-2">
-          <h1 className="text-xl font-semibold">Requests</h1>
-          <p className="text-sm text-muted-foreground">
-            Review incoming tasks on their receiving environment. Dismissing a notification leaves
-            requests here.
-          </p>
-          <Link to="/settings/connections" className="text-xs underline underline-offset-2">
-            Configure background evaluation
+      <WorkspacePageContainer width="expanded" className="pt-14 sm:pt-6">
+        <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-semibold tracking-tight">Requests</h1>
+            <p className="text-sm text-muted-foreground">
+              Review incoming requests on each receiving environment.
+            </p>
+          </div>
+          <Link
+            to="/settings/connections"
+            className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            Background evaluation settings
           </Link>
         </header>
         {!isReady ? (

@@ -307,12 +307,12 @@ function IncomingRow({
             threadId={item.threadId}
             fallback={view.title ?? "Incoming request"}
           />
+          <span className="mt-0.5 block truncate text-xs font-normal text-muted-foreground">
+            {view.operation}
+          </span>
         </button>
-        <span className="rounded bg-muted px-1 text-xs text-muted-foreground">
-          {view.operation}
-        </span>
         <a
-          className="p-2 text-3xs"
+          className="shrink-0 p-2 text-3xs"
           aria-label="Open exact request"
           href={requestHref(receiver, item.record.id, item.record.bindingDigest)}
         >

@@ -106,12 +106,6 @@ export const bindingKey = (item: Pick<RemoteAdmissionRecord, "id" | "bindingDige
   JSON.stringify([item.id, item.bindingDigest]);
 export const attentionKey = (receiver: string, item: Item) =>
   JSON.stringify([receiver, item.record.id, item.record.bindingDigest, item.attempt]);
-export type GroupView = "access" | "inflight" | "unresolved";
-export interface ReviewGroup {
-  page: Page | null;
-  loading: boolean;
-  error: string | null;
-}
 export interface AttentionSnapshot {
   cursor: string | null;
   results: readonly Item[];
@@ -128,7 +122,6 @@ export interface AttentionPersistence {
 }
 export interface ReviewState {
   capabilities: Capabilities | null;
-  groups: Record<GroupView, ReviewGroup>;
   view: View;
   page: Page | null;
   loading: boolean;
@@ -148,11 +141,6 @@ export interface ReviewState {
 export function createReviewController(client: ReviewClient) {
   let state: ReviewState = {
     capabilities: null,
-    groups: {
-      access: { page: null, loading: false, error: null },
-      inflight: { page: null, loading: false, error: null },
-      unresolved: { page: null, loading: false, error: null },
-    },
     view: "current",
     page: null,
     loading: false,
@@ -180,7 +168,7 @@ export function createReviewController(client: ReviewClient) {
   >();
   const conflictedAccess = new Set<string>();
   let accessReadOrdinal = 0;
-  const groupOrdinals = { access: 0, inflight: 0, unresolved: 0 };
+  let requestReadOrdinal = 0;
   let feed: AbortController | null = null;
   const committed = new Map<string, Item>();
   const listeners = new Set<() => void>();
@@ -221,18 +209,10 @@ export function createReviewController(client: ReviewClient) {
   const acceptAccess = (access: Access, fromId = access.id) => {
     const replace = (entries: readonly Access[]) =>
       entries.map((entry) => (entry.id === access.id || entry.id === fromId ? access : entry));
-    const accessPage = state.groups.access.page;
     publish({
       selectedAccess: access,
       selectedAccessFromId: fromId,
       accessSelectionRevision: state.accessSelectionRevision + 1,
-      groups: {
-        ...state.groups,
-        access: {
-          ...state.groups.access,
-          ...(accessPage ? { page: { ...accessPage, access: replace(accessPage.access) } } : {}),
-        },
-      },
       ...(state.page
         ? {
             page: {
@@ -274,80 +254,24 @@ export function createReviewController(client: ReviewClient) {
       persistAttention();
     }
   };
-  const loadGroup = async (view: GroupView, older = false) => {
-    if (
-      !state.capabilities?.canDecide ||
-      state.pending.size > 0 ||
-      policyWriting ||
-      state.groups[view].loading
-    )
-      return;
-    const ordinal = ++groupOrdinals[view];
-    const epoch = mutationEpoch;
-    const previous = state.groups[view].page;
-    if (older && !previous?.nextCursor) return;
-    const update = (patch: Partial<ReviewGroup>) =>
-      publish({ groups: { ...state.groups, [view]: { ...state.groups[view], ...patch } } });
-    update({ loading: true, error: null });
-    try {
-      const page = await client.page(view, older ? previous!.nextCursor! : undefined);
-      if (ordinal !== groupOrdinals[view] || !state.capabilities?.canDecide) return;
-      if (epoch !== mutationEpoch) {
-        update({ error: "State changed while loading this group. Refresh for current evidence." });
-        return;
-      }
-      if (older && previous && previous.revision !== page.revision) {
-        update({ error: "This group changed. Refresh it before loading more." });
-        return;
-      }
-      update({
-        page:
-          older && previous
-            ? {
-                ...page,
-                records: [
-                  ...previous.records,
-                  ...page.records.filter(
-                    (item) =>
-                      !previous.records.some(
-                        (old) => bindingKey(old.record) === bindingKey(item.record),
-                      ),
-                  ),
-                ],
-                access: [
-                  ...previous.access,
-                  ...page.access.filter(
-                    (entry) => !previous.access.some((old) => old.id === entry.id),
-                  ),
-                ],
-              }
-            : page,
-      });
-    } catch {
-      if (ordinal === groupOrdinals[view])
-        update({ error: "This group is unavailable. Refresh for current evidence." });
-    } finally {
-      if (ordinal === groupOrdinals[view]) update({ loading: false });
-    }
-  };
   const load = async (view = state.view, older = false) => {
     if (state.pending.size > 0 || policyWriting) return;
+    const previous = state.view === view ? state.page : null;
+    if (older && !previous?.nextCursor) return;
     const ordinal = ++readOrdinal;
     const epoch = mutationEpoch;
-    const previous = state.page;
-    publish({ loading: true, error: null, view });
+    publish({ loading: true, error: null, view, page: previous });
     try {
       const capabilities = await client.capabilities();
+      if (ordinal !== readOrdinal || epoch !== mutationEpoch) return;
       publish({ capabilities });
       if (!capabilities.canDecide) {
         publish({
-          groups: {
-            access: { page: null, loading: false, error: null },
-            inflight: { page: null, loading: false, error: null },
-            unresolved: { page: null, loading: false, error: null },
-          },
           page: null,
+          selectedItem: null,
+          selectedAccess: null,
           incoming: [],
+          currentHeldCount: 0,
           loadFailed: true,
           error: "Owner access is required to review requests.",
         });
@@ -386,6 +310,13 @@ export function createReviewController(client: ReviewClient) {
               ),
             ]
           : [...observed];
+      const access =
+        older && previous
+          ? [
+              ...previous.access,
+              ...page.access.filter((entry) => !previous.access.some((old) => old.id === entry.id)),
+            ]
+          : page.access;
       const refreshedAccess = page.access.find((entry) => entry.id === state.selectedAccess?.id);
       if (
         refreshedAccess &&
@@ -395,20 +326,16 @@ export function createReviewController(client: ReviewClient) {
       )
         acceptAccess(refreshedAccess);
       publish({
-        page: { ...page, records },
+        page: { ...page, records, access },
         uncertain,
         loadFailed: false,
-        ...(view === "current"
+        currentHeldCount: page.counts.currentHeldAdmissions,
+        ...(view === "current" && !older
           ? {
               incoming: observed.filter((item) => !item.blocked && item.record.status === "held"),
-              currentHeldCount: page.counts.currentHeldAdmissions,
             }
           : {}),
       });
-      if (view === "current" && !older)
-        await Promise.all(
-          (["access", "inflight", "unresolved"] as const).map((group) => loadGroup(group)),
-        );
     } catch {
       if (ordinal === readOrdinal)
         publish({
@@ -552,7 +479,6 @@ export function createReviewController(client: ReviewClient) {
       };
     },
     load,
-    loadGroup,
     mutate,
     lookupAccess,
     setAttentionPersistence(value: AttentionPersistence) {
@@ -577,13 +503,15 @@ export function createReviewController(client: ReviewClient) {
       }
     },
     async lookup(id: string, digest?: string) {
+      const ordinal = ++requestReadOrdinal;
       const epoch = mutationEpoch;
       const item = await client.lookup(id, digest);
       if (item.record.id !== id || (digest !== undefined && item.record.bindingDigest !== digest))
         throw new Error("Request binding mismatch");
-      if (epoch !== mutationEpoch) return;
+      if (ordinal !== requestReadOrdinal || epoch !== mutationEpoch) return;
       publish({ selectedItem: item });
       acceptItem(item);
+      return item;
     },
     async withPolicyBarrier(write: () => Promise<void>) {
       if (policyWriting || state.pending.size > 0 || state.uncertain.size > 0) return;

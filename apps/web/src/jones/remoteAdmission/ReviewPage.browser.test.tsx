@@ -10,6 +10,7 @@ import { TooltipProvider } from "../../components/ui/tooltip";
 import { installReviewClient, reviewControllerFor } from "./reviewRuntime";
 import { ReviewPage } from "./ReviewPage";
 import { admissionFixture } from "./testFixtures";
+import "../../index.css";
 
 vi.mock("../../state/environments", async (original) => ({
   ...(await original<typeof import("../../state/environments")>()),
@@ -92,12 +93,10 @@ it("selects cards into the real pane, keeps exact request and thread links separ
       <ReviewPage environmentId={f.environmentId} label="Laptop" />
     </TooltipProvider>,
   );
-  expect(screen.container.textContent).toContain("Current · 1");
-  expect(
-    [...screen.container.querySelectorAll('[role="tab"]')].find(
-      (tab) => tab.textContent === "Done",
-    ),
-  ).toBeTruthy();
+  await expect
+    .element(screen.getByRole("button", { name: "Current 1" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect.element(screen.getByRole("button", { name: "Done" })).toBeVisible();
   const exact = screen.container.querySelector<HTMLAnchorElement>(
     '[aria-label="Open exact request"]',
   )!;
@@ -225,20 +224,86 @@ it("opens Manage Access for an exact offpage grant without leaving Requests", as
   expect(f.client.mutate).not.toHaveBeenCalled();
 });
 
-it("shows collapsible Current groups with independently paged active and unresolved cards", async () => {
-  const f = setup("review-browser-current-groups");
-  const active = { ...f.page.access[0]!, id: "current-active-access", title: "Active destination" };
-  const unknown: Item = {
-    ...f.item,
-    record: admissionFixture({ id: "unknown-in-current", status: "dispatching" }),
-    outcome: "unknown",
-    threadId: null,
+it("refuses a wrong-digest link even when the matching ID is in the visible queue", async () => {
+  const f = setup("review-browser-wrong-digest");
+  const before = window.location.href;
+  const link = new URL(before);
+  link.search = new URLSearchParams({
+    receiver: f.environmentId,
+    request: f.item.record.id,
+    binding: "wrong-digest",
+  }).toString();
+  window.history.replaceState(null, "", link);
+  try {
+    await using screen = await render(
+      <TooltipProvider>
+        <ReviewPage environmentId={f.environmentId} label="Laptop" />
+      </TooltipProvider>,
+    );
+    expect(screen.container.textContent).toContain("Inspect synthetic project");
+    expect(screen.container.textContent).toContain("Exact request unavailable.");
+    expect(screen.container.querySelector("article button[aria-current]")).toBeNull();
+    expect(screen.getByRole("button", { name: "Approve", exact: true }).query()).toBeNull();
+    expect(f.client.mutate).not.toHaveBeenCalled();
+  } finally {
+    window.history.replaceState(null, "", before);
+  }
+});
+
+it("keeps long labels in compact rows and brings selected details into view on narrow screens", async () => {
+  const f = setup("review-browser-layout");
+  const record = admissionFixture({
+    id: "long-operation",
+    envelope: {
+      ...f.item.record.envelope,
+      operation: `t3_extension_${"long_operation_".repeat(12)}`,
+    },
+  });
+  const longItem = { ...f.item, record };
+  f.client.lookup = async () => longItem;
+  f.client.page = vi.fn(async () => ({ ...f.page, records: [longItem], access: [] }));
+  const container = document.createElement("div");
+  await using screen = await render(
+    <TooltipProvider>
+      <ReviewPage environmentId={f.environmentId} label="Laptop" />
+    </TooltipProvider>,
+    { container },
+  );
+  const row = container.querySelector("article")!;
+  const titleButton = row.querySelector("button")!;
+  for (const width of [320, 900, 1440]) {
+    container.style.width = `${width}px`;
+    expect(titleButton.offsetWidth).toBeGreaterThan(row.offsetWidth / 2);
+    expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+    expect(row.offsetHeight).toBeLessThan(144);
+  }
+  container.style.width = "320px";
+  await act(() => titleButton.click());
+  await expect.element(screen.getByRole("button", { name: "Back to requests" })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
+  await screen.getByRole("button", { name: "Back to requests" }).click();
+  expect(titleButton.getBoundingClientRect().width).toBeGreaterThan(0);
+});
+
+it("opens Access at zero active scopes and keeps pending and revoked grants across pages", async () => {
+  const f = setup("review-browser-access-pages");
+  const pending = {
+    ...f.page.access[0]!,
+    id: "pending-access",
+    title: "Pending destination",
+    state: "pending" as const,
   };
-  f.client.lookupAccess = vi.fn(async () => active);
+  const revoked = {
+    ...pending,
+    id: "revoked-access",
+    title: "Revoked destination",
+    state: "revoked" as const,
+  };
   f.client.page = vi.fn(async (view, cursor) => ({
     ...f.page,
-    records: view === "current" ? [f.item] : view === "unresolved" ? [unknown] : [],
-    access: view === "access" ? [{ ...active, id: cursor ? "next-access" : active.id }] : [],
+    counts: { ...f.page.counts, activeAccessScopes: 0 },
+    records: view === "current" ? [f.item] : [],
+    access: view === "access" ? [cursor ? revoked : pending] : [],
     nextCursor: view === "access" && !cursor ? "access-page-2" : null,
   }));
   await using screen = await render(
@@ -246,39 +311,17 @@ it("shows collapsible Current groups with independently paged active and unresol
       <ReviewPage environmentId={f.environmentId} label="Laptop" />
     </TooltipProvider>,
   );
-  const progress = [...screen.container.querySelectorAll("details")].find(
-    (node) => node.querySelector("summary")?.textContent === "In progress",
-  )!;
-  const awaiting = [...screen.container.querySelectorAll("details")].find(
-    (node) => node.querySelector("summary")?.textContent === "Awaiting confirmation",
-  )!;
-  expect(progress.open).toBe(true);
-  expect(awaiting.open).toBe(true);
-  expect(progress.textContent).toContain("Active destination");
-  expect(awaiting.textContent).toContain("Outcome unknown");
-  expect(screen.container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe(
-    "Current · 1",
-  );
-  await act(() => progress.querySelector("summary")!.click());
-  expect(progress.open).toBe(false);
-  await act(() => progress.querySelector("summary")!.click());
-  const activeButton = [...progress.querySelectorAll("button")].find((button) =>
-    button.textContent?.includes("Active destination"),
-  )!;
-  await act(() => activeButton.click());
-  expect(f.client.lookupAccess).toHaveBeenCalledWith(active.id);
-  expect(screen.container.textContent).toContain("Update access");
-  const more = [...progress.querySelectorAll("button")].find(
-    (button) => button.textContent === "Load more active access",
-  )!;
-  await act(() => more.click());
+  const accessView = screen.getByRole("button", { name: "Access 0 active" });
+  await accessView.click();
+  await expect.element(accessView).toHaveAttribute("aria-pressed", "true");
+  await expect.element(screen.getByText("Pending destination")).toBeVisible();
+  await screen.getByRole("button", { name: "Load older records" }).click();
   expect(f.client.page).toHaveBeenCalledWith("access", "access-page-2");
-  expect(screen.container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe(
-    "Current · 1",
-  );
+  await expect.element(screen.getByText("Pending destination")).toBeVisible();
+  await expect.element(screen.getByText("Revoked destination")).toBeVisible();
+  expect(screen.container.querySelectorAll('nav button[aria-pressed="true"]')).toHaveLength(1);
 });
-
-it("freezes Current active group targets until keyboard focus leaves the group", async () => {
+it("freezes Access targets until keyboard focus leaves the group", async () => {
   const f = setup("review-browser-group-freeze");
   const access = { ...f.page.access[0]!, title: "Pinned active target" };
   let active = [access];
@@ -292,12 +335,13 @@ it("freezes Current active group targets until keyboard focus leaves the group",
       <ReviewPage environmentId={f.environmentId} label="Laptop" />
     </TooltipProvider>,
   );
+  await screen.getByRole("button", { name: "Access 1 active" }).click();
   const target = [...screen.container.querySelectorAll("button")].find((button) =>
     button.textContent?.includes("Pinned active target"),
   )!;
   await act(() => target.focus());
   active = [{ ...access, id: "new-active", title: "New active target" }];
-  await act(() => reviewControllerFor(f.environmentId)!.loadGroup("access"));
+  await act(() => reviewControllerFor(f.environmentId)!.load("access"));
   expect(target.isConnected).toBe(true);
   expect(target.getAttribute("aria-disabled")).toBe("true");
   expect(screen.container.textContent).not.toContain("New active target");
