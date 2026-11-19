@@ -92,6 +92,12 @@ import {
   usePersonalThreadWindow,
   type PersonalThreadLimit,
 } from "../../jones/workstreams/personalThreadWindow";
+import {
+  finishWorkstreamReferenceDrag,
+  startWorkstreamReferenceDrag,
+  workstreamDragType,
+  type WorkstreamReference,
+} from "../../jones/workstreams/workstreamReferenceDrop";
 
 function currentSnoozePresets(
   timestampFormat: Parameters<typeof resolveSnoozePresets>[1],
@@ -100,7 +106,6 @@ function currentSnoozePresets(
   return resolveSnoozePresets(new Date(), timestampFormat, environmentId);
 }
 
-const workstreamDragType = "application/x-jones-workstream";
 const lifecycles = ["planned", "active", "paused", "completed", "deferred", "abandoned"] as const;
 const lifecycleLabel = (value: string) => value[0]!.toUpperCase() + value.slice(1);
 
@@ -355,7 +360,7 @@ function Group({
       <div
         data-workstream-header
         className="flex min-w-0 cursor-pointer"
-        draggable={state.canCreate && !pending && !confirmingDelete && !editing}
+        draggable={!pending && !confirmingDelete && !editing}
         onDragStart={onDragStart}
         onContextMenu={(event) => {
           if (event.target instanceof HTMLElement && event.target.closest("input")) return;
@@ -607,6 +612,7 @@ export function WorkstreamSidebarSection({
   rosterTotals,
   unassignedSummary = emptySummary,
   memberCounts,
+  referenceMembers,
   dropTargetId,
   snoozedIds = new Set<string>(),
 }: {
@@ -621,6 +627,7 @@ export function WorkstreamSidebarSection({
     window?: { limit: PersonalThreadLimit; expanded: boolean },
   ) => ReactNode;
   memberCounts?: ReadonlyMap<string, number>;
+  referenceMembers?: (id: string) => WorkstreamReference["threads"];
   summaries?: ReadonlyMap<string, PersonalThreadSummary>;
   rosterTotals?: ReadonlyMap<string, number>;
   unassignedSummary?: PersonalThreadSummary;
@@ -685,6 +692,7 @@ export function WorkstreamSidebarSection({
   } | null>(null);
   const reorderPending = useRef(false);
   const clearDrag = () => {
+    finishWorkstreamReferenceDrag();
     draggedRef.current = null;
     setDraggedId(null);
     setInsertion(null);
@@ -911,12 +919,10 @@ export function WorkstreamSidebarSection({
                       event.preventDefault();
                       return;
                     }
-                    if (!state.canCreate || reorderPending.current) {
-                      event.preventDefault();
-                      return;
-                    }
-                    event.dataTransfer.setData(workstreamDragType, item.id);
-                    event.dataTransfer.effectAllowed = "move";
+                    startWorkstreamReferenceDrag(event, item.id, {
+                      name: item.name,
+                      threads: referenceMembers?.(item.id) ?? [],
+                    });
                     draggedRef.current = item.id;
                     setDraggedId(item.id);
                     setInsertion(null);

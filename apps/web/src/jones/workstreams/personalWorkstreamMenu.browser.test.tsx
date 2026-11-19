@@ -314,9 +314,9 @@ describe("Workstream options and header ordering", () => {
     await act(() =>
       setup.registry.set(setup.state, { ...setup.registry.get(setup.state), canCreate: false }),
     );
-    expect(draggable.draggable).toBe(false);
+    expect(draggable.draggable).toBe(true);
     expect(getComputedStyle(draggable).cursor).toBe("pointer");
-    expect(getComputedStyle(title).cursor).toBe("pointer");
+    expect(getComputedStyle(title).cursor).toBe("grab");
   });
 
   it("segments menu actions and display choices and supports inline rename", async () => {

@@ -695,6 +695,10 @@ function useSidebarThreads(input: {
     environmentThreads,
     workstreamSummaryThreads: personalSidebarSummaryThreads(sidebarThreads, partition.snoozeNow),
     workstreamRosterThreads: sidebarThreads,
+    readWorkstreamReferenceThreads: () =>
+      scopedProjectKeys === null
+        ? scopedThreads
+        : filterSidebarV2VisibleThreads(environmentThreads, null, delegatedUnderParent),
     snoozedWorkstreams: workstreamSnooze.snoozed,
     visibleWorkstreamState: workstreamSnooze.visibleState,
     statusFilter,
@@ -1459,6 +1463,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     searchableThreads,
     workstreamSummaryThreads,
     workstreamRosterThreads,
+    readWorkstreamReferenceThreads,
     snoozedWorkstreams,
     visibleWorkstreamState,
     settledVisibleCount,
@@ -4028,6 +4033,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 }
                                 reorder={reorderWorkstreamThread}
                                 placeThread={placeWorkstreamThread}
+                                readReferenceThreads={readWorkstreamReferenceThreads}
                               />
                             </li>
                           ) : null,

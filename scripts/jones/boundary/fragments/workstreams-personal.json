@@ -48,6 +48,7 @@
     "apps/web/src/jones/workstreams/personalThreadWindow.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalEnvironmentBinding.ts",
     "apps/web/src/jones/workstreams/personalNative.browser.test.tsx",
+    "apps/web/src/jones/workstreams/workstreamReferenceDrop.ts",
     "apps/web/src/jones/workstreams/personalNotifications.test.ts",
     "apps/web/src/jones/workstreams/personalNotifications.tsx",
     "apps/web/src/jones/workstreams/personalPresentation.test.ts",
@@ -774,6 +775,14 @@
     "scripts/jones/boundary/fragments/workstreams-rebuild-integration.json"
   ],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/workstreams/workstreamReferenceDrop.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/workstreams/workstreamReferenceDrop.ts"
+    },
     {
       "from": "apps/web/src/components/ChatView.tsx",
       "to": "apps/web/src/jones/composer/NewThreadWorkstreamPicker.tsx"

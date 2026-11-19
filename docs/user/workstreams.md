@@ -28,6 +28,8 @@ Use **+** and **−** beside the Workstreams label to expand or collapse every g
 
 Drag a thread card or the active thread’s title in the chat header into the composer to add a thread mention. When you drag the header title into the sidebar, the preview becomes a card. Drop it where the sidebar shows an insertion point, or on a Workstream to move it. Sidebar drops use the same ordering rules as dragging a card.
 
+Drag a Workstream name from the web or desktop sidebar into the conversation or composer to add it to your draft. The drop includes mentions for its unsettled threads available in the sidebar’s environments, including collapsed or filtered members. To include an excerpt from a specific thread, drag that thread by itself.
+
 Assignments are saved on the environment that owns each thread. Clients connected to that environment see confirmed changes. Group names, colors and other details reach another environment when a client that can write to it connects to both copies. A group created through an agent or the CLI on a server stays there until such a client connects. Disconnected environments can therefore show different details temporarily. When edits conflict, one complete edit wins; changes to different fields can overwrite each other.
 
 Read-only access lets you view groups but cannot save changes or synchronize a lagging environment. Settings → Jones Code → **Workstreams** shows each environment as **Ready**, **Offline**, **Update required**, **Read only** or **Couldn’t sync**. Use the ordinary connection or update controls for the affected environment. Older servers do not support personal Workstreams.
