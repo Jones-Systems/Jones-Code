@@ -507,7 +507,6 @@ Every other check is advisory:
 - `Linux CLI artifacts`;
 - `Mac Desktop Artifact`, including the opt-in #873 original-worker reproduction job;
 - `Mac CLI artifact`;
-- `Rotate macOS dependency cache`;
 - any native E2E workflow.
 
 An advisory failure gets investigated, fixed, or filed as an issue, but it
@@ -546,10 +545,11 @@ again and uses the original full-shard command when it is off. To replace
 every shard's result with fresh evidence, choose **Re-run all jobs**. Reruns
 that predate the rollout retain their original workflow definition.
 
-Apple Silicon PR jobs install dependencies from the lockfile without saving
-or restoring the large macOS pnpm archive. The archive is available to main
-builds. After successful CI for the current main commit, rotation retires older
-main macOS pnpm keys once the replacement is visible in the Actions cache.
+Apple Silicon jobs install dependencies from the lockfile on every run.
+They do not restore or save the pnpm package-store archive. In recent CI runs,
+restoring and unpacking the full archive took longer than a fresh install.
+The Linux server cache above reuses test results. macOS native qualification
+and measurements execute on the selected runner and runtime.
 
 ### Standing delivery and merge contract
 
