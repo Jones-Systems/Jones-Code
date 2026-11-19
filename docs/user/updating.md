@@ -73,9 +73,11 @@ join a later plan. Unresolved Laptop work pauses new Laptop plans until native
 verification can confirm the outcome.
 
 **Update setup unconfirmed** means an enrolled host has yet to confirm its
-setup request. **Check setup status** shows what the host reports. When the
-host still reports the expected prior setup, the plan can resend the same
-request after reconnecting. Installation still needs your review.
+setup request. **Check setup status** shows what the host reports. The plan can
+resend the same request after reconnecting when it confirms the original
+enrollment and the expected prior setup. If enrollment changed, you can still
+check the original download or install outcome in **Recovery history**.
+Installation still needs your review.
 After closing the queue, use **Check setup status** on the original row for a
 late confirmation. If offered, **Fence original setup** lets the host confirm
 what happened or prevent that exact pending setup from applying. For a download

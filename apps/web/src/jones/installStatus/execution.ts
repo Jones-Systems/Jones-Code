@@ -10,8 +10,8 @@ import type {
   JonesActionJournal,
 } from "@t3tools/client-runtime/jones/updates/action-journal";
 import {
+  connectionsPlanDispatch,
   legacyConnectionsGate,
-  planGateFor,
   readLegacyConnectionsAuthority,
   routeNativeLaptopAction,
   type LegacyConnectionsAuthority,
@@ -96,16 +96,18 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
     const binding = installPlanServices();
     const canHandOff = () =>
       sameAuthority(input.host, { observation, canOperate: true }, input.environmentId);
-    const native = nativeJonesDispatch({
-      environmentId: input.environmentId,
-      targetSource: input.targetSource,
-      action: input.action.kind,
-      commandId: input.operationId,
-      journal,
-      ...(input.action.kind === "install" ? { stagedHandle: input.action.stagedHandle } : {}),
-      canOperate: canHandOff,
-      send: (request) => requestInstallPlan(request, binding),
-    });
+    const native = (canClaim = canHandOff) =>
+      nativeJonesDispatch({
+        environmentId: input.environmentId,
+        targetSource: input.targetSource,
+        action: input.action.kind,
+        commandId: input.operationId,
+        journal,
+        ...(input.action.kind === "install" ? { stagedHandle: input.action.stagedHandle } : {}),
+        canOperate: canClaim,
+        send: (request) => requestInstallPlan(request, binding),
+      });
+    let connections: ReturnType<typeof connectionsPlanDispatch> | undefined;
     try {
       if (typeof window !== "undefined" && window.desktopBridge?.installPlan !== undefined) {
         const local = await routeNativeLaptopAction(
@@ -113,7 +115,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
           input.targetSource,
           input.action,
           input.review,
-          native,
+          native(),
           canHandOff,
         );
         if (local !== undefined)
@@ -121,9 +123,16 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
             kind: local.kind === "handled" ? "accepted" : "refused",
             message: local.kind === "grant" ? "Open Install status." : local.message,
           };
-        if (observation.state?.capability.operations === 1)
-          host = { ...host, planGate: planGateFor(input.action, input.review, native, canHandOff) };
-        else {
+        if (observation.state?.capability.operations === 1) {
+          connections = connectionsPlanDispatch(
+            binding,
+            input.action,
+            input.review,
+            native,
+            () => !input.cancelled?.() && canHandOff(),
+          );
+          host = { ...host, planGate: connections.planGate };
+        } else {
           const refusal = await legacyConnectionsGate(input.targetSource, input.environmentId);
           if (refusal !== null) return { kind: "refused", message: refusal };
           nativeLegacy = true;
@@ -208,6 +217,17 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
             });
           else if (!host.readLatest().canOperate)
             throw new Error("This control no longer authorizes the action.");
+          if (
+            connections !== undefined &&
+            request.action.kind === "install" &&
+            !connections.canStart(request)
+          ) {
+            if (localReservation) {
+              await journal.notSent(input.operationId);
+              localReservation = false;
+            }
+            throw new Error("The selected device changed before install dispatch.");
+          }
           dispatched = true;
           const receipt = await host.start(request);
           await journal.reconcileReceipt(receipt);
@@ -215,6 +235,18 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
         },
       },
     });
+    if (
+      !dispatched &&
+      connections !== undefined &&
+      input.action.kind === "install" &&
+      journal.getSnapshot().duties.some((d) => d.id === input.operationId && d.kind === "native")
+    )
+      return {
+        kind: "unknown",
+        code: "native-handoff-unknown",
+        message:
+          "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
+      };
     const stopped = [...journal.getSnapshot().duties, ...journal.getSnapshot().history].find(
       (d) =>
         d.kind === "stop" &&

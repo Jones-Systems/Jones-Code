@@ -13,7 +13,8 @@ import type {
   JonesOperationReceipt,
   JonesOperationStartInput,
 } from "@t3tools/contracts/jones/jonesOperations";
-import { startPlan } from "./model.ts";
+import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
+import { matchPlanEnrollment, startPlan } from "./model.ts";
 import { advanceInstallPlan, type InstallPlanDriver } from "./runner.ts";
 
 const env = EnvironmentId.make("host");
@@ -122,15 +123,23 @@ function fixture(recoveryHistory?: 1) {
   const host = vi.fn<InstallPlanDriver["host"]>(async () => {
     throw new Error("unused");
   });
-  const canDispatch = vi.fn<InstallPlanDriver["canDispatch"]>(() => true);
+  let observed: Awaited<ReturnType<InstallPlanDriver["observe"]>>;
+  const canDispatch = vi.fn(() => true);
+  const canReadReceipt = vi.fn(() => true);
+  const authority = vi.fn<InstallPlanDriver["authority"]>((device) => ({
+    canDispatch: canDispatch(),
+    canReadReceipt: canReadReceipt(),
+    enrollment: matchPlanEnrollment(device, observed.observation.state, observed.fleetStatus),
+    fleetStatus: observed.fleetStatus,
+  }));
   return {
     driver: {
       claimant: "window:a",
       now: () => Date.parse(now),
       cancelled: () => false,
       desktop,
-      observe,
-      canDispatch,
+      observe: async (id: EnvironmentId) => (observed = await observe(id)),
+      authority,
       operation,
       host,
     },
@@ -145,7 +154,20 @@ function fixture(recoveryHistory?: 1) {
     operation,
     observe,
     canDispatch,
+    canReadReceipt,
+    authority,
     host,
+  };
+}
+
+function enrolled(): FleetHostStatus & { enrollment: NonNullable<FleetHostStatus["enrollment"]> } {
+  return {
+    environmentId: env,
+    operationProtocol: 1,
+    planDirectiveProtocol: 1,
+    enrollment: { environmentId: env, enrollmentId, enabled: true, continueRunningThreads: false },
+    operation: null,
+    update: null,
   };
 }
 
@@ -471,6 +493,144 @@ describe("bounded install plan runner", () => {
     expect(f.operation).not.toHaveBeenCalled();
   });
 
+  it.each(["new download", "reclaim"] as const)(
+    "requires positive per-pass enrollment for %s even when newer evidence matches",
+    async (step) => {
+      const f = fixture(1);
+      const p = f.plan();
+      const following = {
+        ...p,
+        devices: [{ ...p.devices[0]!, route: "follower-operations" as const, enrollmentId }],
+      };
+      f.setPlan(step === "reclaim" ? withReservation(following) : following);
+      const { fleetStatus: _fleet, ...unknown } = await f.observe(env);
+      f.authority.mockReturnValue({
+        canDispatch: true,
+        canReadReceipt: true,
+        enrollment: "match",
+        fleetStatus: enrolled(),
+      });
+      for (const bad of [
+        unknown,
+        { ...unknown, fleetStatus: null },
+        {
+          ...unknown,
+          fleetStatus: {
+            ...enrolled(),
+            enrollment: { ...enrolled().enrollment, enrollmentId: otherOpId },
+          },
+        },
+        {
+          ...unknown,
+          fleetStatus: {
+            ...enrolled(),
+            enrollment: { ...enrolled().enrollment, environmentId: otherEnv },
+          },
+        },
+      ]) {
+        f.observe.mockResolvedValueOnce(bad);
+        f.operation.mockResolvedValueOnce({ receipts: [{ operationId: opId, receipt: null }] });
+        await advanceInstallPlan(f.driver);
+      }
+      expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "read", "read", "read"]);
+      expect(f.operation.mock.calls).toEqual(
+        step === "new download"
+          ? []
+          : Array.from({ length: 4 }, () => [
+              env,
+              { action: "operationRead", input: { environmentId: env, operationIds: [opId] } },
+            ]),
+      );
+      expect(f.host).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["unknown", "changed"] as const)(
+    "reads the original reservation if route becomes %s while reclaim is pending",
+    async (enrollment) => {
+      const f = fixture(1);
+      f.setPlan(withReservation(f.plan()));
+      const admitted = f.desktop.getMockImplementation()!;
+      f.desktop.mockImplementation(async (r) => {
+        if (r.type === "claim")
+          f.authority.mockReturnValue({
+            canDispatch: false,
+            canReadReceipt: true,
+            enrollment,
+            fleetStatus: undefined,
+          });
+        return admitted(r);
+      });
+      await advanceInstallPlan(f.driver);
+      expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "claim", "report"]);
+      expect(f.operation.mock.calls).toEqual([
+        [env, { action: "operationRead", input: { environmentId: env, operationIds: [opId] } }],
+      ]);
+      expect(f.host).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fences only an expired exact operation when fleet enrollment is unknown", async () => {
+    const f = fixture(1);
+    const { fleetStatus: _fleet, ...unknown } = await f.observe(env);
+    f.observe.mockResolvedValue(unknown);
+    f.setPlan(
+      withReservation(f.plan(), {
+        ...reservation(),
+        lease: { ...reservation().lease, leaseUntil: now },
+      }),
+    );
+    f.desktop.mockResolvedValue({
+      state: f.state(),
+      grant: { ...f.grant, step: "fence", request: { kind: "operation-fence", input: request } },
+    });
+    const fenced: JonesOperationReceipt = {
+      ...request,
+      protocol: 1,
+      phase: "fenced",
+      updatedAt: now,
+    };
+    f.operation.mockResolvedValueOnce(fenced);
+    await advanceInstallPlan(f.driver);
+    expect(f.desktop.mock.calls[1]?.[0]).toMatchObject({
+      step: "fence",
+      operationId: opId,
+      explicit: false,
+    });
+    expect(f.operation.mock.calls).toEqual([[env, { action: "operationFence", input: request }]]);
+    expect(f.host).not.toHaveBeenCalled();
+
+    for (const contradictory of [enrolled(), { ...enrolled(), environmentId: otherEnv }]) {
+      f.desktop.mockClear();
+      f.operation.mockClear();
+      f.observe.mockResolvedValueOnce({ ...unknown, fleetStatus: contradictory });
+      f.operation.mockResolvedValueOnce({ receipts: [{ operationId: opId, receipt: null }] });
+      await advanceInstallPlan(f.driver);
+      expect(f.desktop.mock.calls).toEqual([[{ type: "read" }]]);
+      expect(f.operation.mock.calls).toEqual([
+        [env, { action: "operationRead", input: { environmentId: env, operationIds: [opId] } }],
+      ]);
+    }
+  });
+
+  it("reauthorizes an exact receipt read and report independently of enrollment", async () => {
+    const f = fixture(1);
+    const { fleetStatus: _fleet, ...unknown } = await f.observe(env);
+    f.observe.mockResolvedValue({ ...unknown, canOperate: false });
+    f.setPlan(withReservation(f.plan()));
+    f.canReadReceipt.mockReturnValue(false);
+    await advanceInstallPlan(f.driver);
+    expect(f.operation).not.toHaveBeenCalled();
+    f.canReadReceipt.mockReturnValue(true);
+    f.operation.mockImplementationOnce(async () => {
+      f.canReadReceipt.mockReturnValue(false);
+      return { receipts: [{ operationId: opId, receipt: f.receipt }] };
+    });
+    await advanceInstallPlan(f.driver);
+    expect(f.operation.mock.calls.map(([, r]) => r.action)).toEqual(["operationRead"]);
+    expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "read"]);
+  });
+
   it("resends only its own identical live reservation and fences an abandoned one", async () => {
     const f = fixture(1);
     f.setPlan(withReservation(f.plan()));
@@ -593,12 +753,14 @@ describe("bounded install plan runner", () => {
     });
   });
 
-  it.each(["another operation", "start payload"] as const)(
+  it.each(["another operation", "start payload", "different body"] as const)(
     "rejects a fence grant for %s",
     async (kind) => {
       const f = fixture(1);
       f.setPlan(withReservation(f.plan()));
       f.driver.now = () => Date.parse(leaseUntil);
+      const { fleetStatus: _fleet, ...unknown } = await f.observe(env);
+      f.observe.mockResolvedValue(unknown);
       f.desktop.mockImplementation(async (r) => ({
         state: f.state(),
         ...(r.type === "claim"
@@ -615,7 +777,14 @@ describe("bounded install plan runner", () => {
                         input: { ...request, operationId: otherOpId },
                       },
                     }
-                  : {}),
+                  : kind === "different body"
+                    ? {
+                        request: {
+                          kind: "operation-fence",
+                          input: { ...request, expectedInstalledSource: "d".repeat(40) },
+                        },
+                      }
+                    : {}),
               },
             }
           : {}),

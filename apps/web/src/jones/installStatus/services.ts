@@ -6,6 +6,11 @@ import type {
 } from "@t3tools/client-runtime/jones/updates";
 import type { JonesExecutorHost } from "@t3tools/client-runtime/jones/updates/executor";
 import type { FleetHostRequest } from "@t3tools/client-runtime/jones/fleet-updates";
+import {
+  matchPlanEnrollment,
+  supportsInstallPlanMutations,
+  supportsOperationReceiptReads,
+} from "@t3tools/client-runtime/jones/install-plan";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import type {
   JonesOperationReadResult,
@@ -18,12 +23,13 @@ import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type {
   JonesInstallPlan,
   JonesInstallPlanDevice,
-  JonesInstallPlanHostOperation,
   JonesInstallPlanResult,
   JonesInstallPlanState,
 } from "@t3tools/contracts/jones/installPlan";
 import type { InstallStatusDevice, InstallStatusStore } from "./panelUi";
 import { archivedPlanFrom, installStatusStore, isOlderNativeState, statusTurn } from "./panelUi";
+
+export { exactOperationRequest } from "@t3tools/client-runtime/jones/install-plan";
 
 export interface InstallPlanServices {
   readonly bridge: Pick<
@@ -33,6 +39,8 @@ export interface InstallPlanServices {
     Partial<Pick<DesktopBridge, "checkForUpdate">>;
   readonly devices: () => readonly InstallStatusDevice[];
   readonly observe: (environmentId: EnvironmentId) => Promise<InstallStatusDevice>;
+  /** Current read scope for receipt reads and late reporting over the authenticated transport. */
+  readonly canReadReceipts?: (environmentId: EnvironmentId) => boolean;
   readonly readStatus?: (environmentId: EnvironmentId) => Promise<JonesUpdateState | null>;
   readonly legacy: (
     environmentId: EnvironmentId,
@@ -67,9 +75,15 @@ export function authorizedUpdateStatus(
   device: InstallStatusDevice | undefined,
   environmentId: EnvironmentId,
 ): JonesUpdateState | undefined {
+  return device?.canOperate ? matchingUpdateStatus(device, environmentId) : undefined;
+}
+
+function matchingUpdateStatus(
+  device: InstallStatusDevice | undefined,
+  environmentId: EnvironmentId,
+) {
   if (
     device?.environmentId === environmentId &&
-    device.canOperate &&
     device.observation.freshness === "fresh" &&
     device.observation.state?.environmentId === environmentId
   )
@@ -118,19 +132,9 @@ function sameStatus(left: JonesUpdateState | null, right: JonesUpdateState | nul
 }
 
 export function hasPlanEnrollment(device: JonesInstallPlanDevice, observed: InstallStatusDevice) {
-  const { fleetStatus } = observed;
   return (
     device.environmentId === observed.environmentId &&
-    (device.route === "operations"
-      ? fleetStatus === null ||
-        (fleetStatus?.environmentId === device.environmentId &&
-          (fleetStatus.enrollment === null ||
-            (!fleetStatus.enrollment.enabled &&
-              fleetStatus.enrollment.environmentId === device.environmentId)))
-      : fleetStatus?.environmentId === device.environmentId &&
-        fleetStatus.enrollment?.enabled === true &&
-        fleetStatus.enrollment.environmentId === device.environmentId &&
-        fleetStatus.enrollment.enrollmentId === device.enrollmentId)
+    matchPlanEnrollment(device, observed.observation.state, observed.fleetStatus) === "match"
   );
 }
 
@@ -147,25 +151,65 @@ export function hasCurrentPlanEnrollment(
   );
 }
 
-export function exactOperationRequest(
-  planId: string,
-  environmentId: EnvironmentId,
-  operation: JonesInstallPlanHostOperation,
-) {
-  const input = operation.request.kind === "operation-start" ? operation.request.input : undefined;
-  return input?.environmentId === environmentId &&
-    input.operationId === operation.operationId &&
-    input.correlation?.planId === planId &&
-    input.correlation.deviceKey === environmentId
-    ? input
-    : undefined;
-}
-
 export interface InstallPlanBinding {
   readonly services: InstallPlanServices;
   readonly store: InstallStatusStore;
 }
-let active: InstallPlanBinding | undefined;
+
+interface PlanHostObservation {
+  readonly sequence: number;
+  readonly direct: InstallStatusDevice | undefined;
+  readonly knownFleet: FleetHostStatus | null | undefined;
+}
+
+interface ActiveInstallPlanBinding extends InstallPlanBinding {
+  readonly latestObservation: (environmentId: EnvironmentId) => PlanHostObservation | undefined;
+}
+
+export function currentPlanHostAuthority(
+  binding: InstallPlanBinding,
+  device: JonesInstallPlanDevice,
+) {
+  const { services, store } = binding;
+  const { environmentId } = device;
+  const current = services.devices().find((item) => item.environmentId === environmentId);
+  const status = matchingUpdateStatus(current, environmentId);
+  const latest = active === binding ? active.latestObservation(environmentId) : undefined;
+  const direct = latest?.direct;
+  const directStatus = matchingUpdateStatus(direct, environmentId);
+  const match = (evidence: InstallStatusDevice | undefined) =>
+    evidence === undefined
+      ? "unknown"
+      : evidence.environmentId !== environmentId
+        ? "changed"
+        : matchPlanEnrollment(device, evidence.observation.state, evidence.fleetStatus);
+  // The device projection may omit fleet status. A failed direct read erases forward proof,
+  // while a known fleet contradiction still blocks an automatic fence until reliably cleared.
+  const contradicted =
+    match(current) === "changed" ||
+    match(direct) === "changed" ||
+    matchPlanEnrollment(device, null, latest?.knownFleet) === "changed";
+  const { native, nativeRefusal } = store.get();
+  return {
+    status,
+    canDispatch:
+      active === binding &&
+      native?.readOnly === undefined &&
+      nativeRefusal === null &&
+      current?.canOperate === true &&
+      status !== undefined &&
+      supportsInstallPlanMutations(status.capability) &&
+      (directStatus === undefined || supportsInstallPlanMutations(directStatus.capability)),
+    canReadReceipt:
+      status !== undefined &&
+      supportsOperationReceiptReads(status.capability) &&
+      (services.canReadReceipts?.(environmentId) ?? true),
+    enrollment: contradicted ? "changed" : directStatus === undefined ? "unknown" : match(direct),
+    fleetStatus: direct?.fleetStatus,
+  } as const;
+}
+
+let active: ActiveInstallPlanBinding | undefined;
 const bindingListeners = new Set<() => void>();
 
 export function subscribeInstallPlanServices(listener: () => void) {
@@ -173,8 +217,38 @@ export function subscribeInstallPlanServices(listener: () => void) {
   return () => bindingListeners.delete(listener);
 }
 
-export function bindInstallPlanServices(services: InstallPlanServices, store = installStatusStore) {
-  const binding = { services, store };
+export function bindInstallPlanServices(source: InstallPlanServices, store = installStatusStore) {
+  let sequence = 0;
+  const latest = new Map<EnvironmentId, PlanHostObservation>();
+  const services: InstallPlanServices = {
+    ...source,
+    async observe(environmentId) {
+      const started = ++sequence;
+      const remember = (device?: InstallStatusDevice) => {
+        const previous = latest.get(environmentId);
+        if (started > (previous?.sequence ?? 0))
+          latest.set(environmentId, {
+            sequence: started,
+            direct: device,
+            knownFleet:
+              device?.fleetStatus === undefined ? previous?.knownFleet : device.fleetStatus,
+          });
+      };
+      try {
+        const device = await source.observe(environmentId);
+        remember(device);
+        return device;
+      } catch (error) {
+        remember();
+        throw error;
+      }
+    },
+  };
+  const binding: ActiveInstallPlanBinding = {
+    services,
+    store,
+    latestObservation: (environmentId) => latest.get(environmentId),
+  };
   active = binding;
   store.bindDesk(services.bridge.installPlan);
   for (const listener of bindingListeners) listener();
@@ -184,7 +258,7 @@ export function bindInstallPlanServices(services: InstallPlanServices, store = i
     for (const listener of bindingListeners) listener();
   };
 }
-export function installPlanServices() {
+export function installPlanServices(): InstallPlanBinding | undefined {
   return active;
 }
 
@@ -272,7 +346,7 @@ export async function confirmClosedPlan(
 
 export async function requestInstallPlan(
   request: Parameters<NonNullable<DesktopBridge["installPlan"]>>[0],
-  binding = active,
+  binding: InstallPlanBinding | undefined = active,
 ) {
   if (binding?.services.bridge.installPlan === undefined)
     throw new Error("Install status is unavailable in this desktop build.");

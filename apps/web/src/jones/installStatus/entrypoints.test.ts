@@ -11,7 +11,7 @@ import type {
   JonesOperationReceipt,
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
-import { startPlan } from "@t3tools/client-runtime/jones/install-plan";
+import { advanceInstallPlan, startPlan } from "@t3tools/client-runtime/jones/install-plan";
 import type { JonesUpdateObservation } from "@t3tools/client-runtime/jones/updates";
 import {
   describeUpdateEverything,
@@ -36,10 +36,19 @@ import { createInstallStatusStore, installStatusStore, type InstallStatusDevice 
 import {
   bindInstallPlanServices,
   confirmClosedPlan,
+  currentPlanHostAuthority,
   installPlanServices,
   type InstallPlanServices,
 } from "./services";
 import { abandonDevice, deviceAbandonTarget } from "./abandonDevice";
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 const environmentId = EnvironmentId.make("laptop-test");
 const source = "a".repeat(40);
@@ -227,6 +236,145 @@ describe("bound Install status actions", () => {
       unbind: bindInstallPlanServices(services, store),
     };
   }
+
+  it.each([
+    "same route",
+    "new failed read",
+    "changed route",
+    "lost read scope",
+    "fence with unknown fleet status",
+    "fence with a retained contradiction",
+  ] as const)(
+    "uses live enrollment and read authority in the background runner for %s",
+    async (scenario) => {
+      const f = bindFixture();
+      const observed = await f.services.observe(hostId);
+      const { fleetStatus: _previous, ...withoutFleet } = observed;
+      const current = f.state.current!;
+      const member = current.devices[0]!;
+      const { receipt: _receipt, ...pending } = member.operations[0]!;
+      const fencing = scenario.startsWith("fence");
+      const reservation = fencing
+        ? { ...pending, lease: { ...pending.lease, leaseUntil: at } }
+        : pending;
+      const state: JonesInstallPlanState = {
+        ...f.state,
+        view: { ...f.state.view, recoveryHistory: 1 },
+        current: { ...current, devices: [{ ...member, operations: [reservation] }] },
+      };
+      let latest = fencing ? withoutFleet : observed;
+      let projection: InstallStatusDevice = withoutFleet;
+      let canRead = true;
+      const enrolled = {
+        ...withoutFleet,
+        fleetStatus: {
+          environmentId: hostId,
+          operationProtocol: 1 as const,
+          planDirectiveProtocol: 1 as const,
+          enrollment: {
+            environmentId: hostId,
+            enrollmentId: earlierOperationId,
+            enabled: true,
+            continueRunningThreads: false,
+          },
+          operation: null,
+          update: null,
+        },
+      };
+      const arrived = deferred();
+      const reply = deferred();
+      f.installPlan.mockImplementation(async (request) => {
+        if (request.type !== "claim") return { state };
+        arrived.resolve();
+        await reply.promise;
+        return {
+          state,
+          grant: {
+            ...grant,
+            step: fencing ? "fence" : "download",
+            request: { kind: fencing ? "operation-fence" : "operation-start", input },
+          },
+        };
+      });
+      const unbind = bindInstallPlanServices(
+        {
+          ...f.services,
+          devices: () => [projection],
+          observe: async () => latest,
+          canReadReceipts: () => canRead,
+        },
+        f.store,
+      );
+      const binding = installPlanServices()!;
+      const operation = vi.fn<Parameters<typeof advanceInstallPlan>[0]["operation"]>(
+        async (_, request) =>
+          request.action !== "operationRead"
+            ? running
+            : { receipts: [{ operationId: hostOperationId, receipt: running }] },
+      );
+      try {
+        const pass = advanceInstallPlan({
+          claimant: "window:a",
+          now: binding.services.now,
+          cancelled: () => false,
+          desktop: f.installPlan,
+          observe: binding.services.observe,
+          authority: (device) => currentPlanHostAuthority(binding, device),
+          operation,
+          host: binding.services.host,
+        });
+        await Promise.race([arrived.promise, pass]);
+        if (scenario === "new failed read" || scenario === "lost read scope") {
+          // A successful cache projection cannot restore authority after a later direct failure.
+          projection = { ...observed, canOperate: false };
+          latest = withoutFleet;
+          canRead = scenario !== "lost read scope";
+          await binding.services.observe(hostId);
+        } else if (scenario === "changed route") {
+          projection = enrolled;
+        } else if (scenario === "fence with a retained contradiction") {
+          latest = enrolled;
+          await binding.services.observe(hostId);
+          latest = withoutFleet;
+          await binding.services.observe(hostId);
+        }
+        reply.resolve();
+        await pass;
+        expect(f.installPlan.mock.calls[1]?.[0]).toMatchObject({
+          type: "claim",
+          step: fencing ? "fence" : "download",
+          operationId: hostOperationId,
+        });
+        if (scenario === "lost read scope") {
+          expect(operation).not.toHaveBeenCalled();
+          expect(f.installPlan.mock.calls.map(([r]) => r.type)).toEqual(["read", "claim"]);
+        } else {
+          expect(operation.mock.calls).toEqual([
+            [
+              hostId,
+              scenario === "same route"
+                ? { action: "operationStart", input }
+                : scenario === "fence with unknown fleet status"
+                  ? { action: "operationFence", input }
+                  : {
+                      action: "operationRead",
+                      input: { environmentId: hostId, operationIds: [hostOperationId] },
+                    },
+            ],
+          ]);
+          expect(f.installPlan.mock.calls.map(([r]) => r.type)).toEqual([
+            "read",
+            "claim",
+            "report",
+          ]);
+        }
+      } finally {
+        reply.resolve();
+        unbind();
+        f.unbind();
+      }
+    },
+  );
 
   it.each(["laptop", "device"] as const)("refuses to retarget a stale %s Stop", async (kind) => {
     const f = bindFixture();

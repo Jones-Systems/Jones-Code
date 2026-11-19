@@ -8,6 +8,7 @@ import type {
 } from "@t3tools/contracts/jones/installPlan";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
+import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import {
   applyEdit,
   canSupersede,
@@ -17,6 +18,7 @@ import {
   deviceState,
   isPlanComplete,
   laptopSettled,
+  matchPlanEnrollment,
   nextRunnerStep,
   planCompletion,
   planHasLaptopRecoveryDuty,
@@ -98,6 +100,54 @@ const state: JonesUpdateState = {
 };
 
 describe("install plan model", () => {
+  it("requires matching ordinary and fleet identities and distinguishes null from a failed read", () => {
+    const enrollment = {
+      environmentId: env,
+      enrollmentId: id,
+      enabled: true,
+      continueRunningThreads: false,
+    };
+    const fleet = {
+      environmentId: env,
+      operationProtocol: 1,
+      enrollment,
+      operation: null,
+      update: state,
+    } satisfies FleetHostStatus;
+    const follower = { ...selection, route: "follower-operations" as const, enrollmentId: id };
+    expect(matchPlanEnrollment(selection, state, null)).toBe("match");
+    expect(matchPlanEnrollment(selection, state, undefined)).toBe("unknown");
+    expect(matchPlanEnrollment(selection, state, fleet)).toBe("changed");
+    expect(
+      matchPlanEnrollment(selection, state, {
+        ...fleet,
+        enrollment: { ...enrollment, enabled: false },
+      }),
+    ).toBe("match");
+    expect(
+      matchPlanEnrollment(
+        selection,
+        { ...state, policy: { role: "follower", leaderSource: null } },
+        null,
+      ),
+    ).toBe("changed");
+    expect(matchPlanEnrollment(follower, state, fleet)).toBe("match");
+    expect(matchPlanEnrollment(follower, state, undefined)).toBe("unknown");
+    expect(matchPlanEnrollment(follower, state, null)).toBe("changed");
+    for (const contradictory of [
+      { ...fleet, environmentId: laptop },
+      { ...fleet, update: { ...state, environmentId: laptop } },
+      { ...fleet, enrollment: { ...enrollment, environmentId: laptop } },
+      { ...fleet, enrollment: { ...enrollment, enrollmentId: operationId } },
+    ]) {
+      expect(matchPlanEnrollment(follower, state, contradictory)).toBe("changed");
+    }
+    expect(matchPlanEnrollment(follower, { ...state, environmentId: laptop }, fleet)).toBe(
+      "changed",
+    );
+    expect(matchPlanEnrollment(follower, null, fleet)).toBe("unknown");
+  });
+
   it("does not recover an earlier stage after retiring the replacement", () => {
     const first = { ...operation(), receipt: receipt("completed") };
     const replacement = {

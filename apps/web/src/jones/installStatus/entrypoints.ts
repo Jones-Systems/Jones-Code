@@ -12,7 +12,10 @@ import type {
   JonesInstallPlanState,
   JonesInstallPlanTarget,
 } from "@t3tools/contracts/jones/installPlan";
-import type { JonesOperationAction } from "@t3tools/contracts/jones/jonesOperations";
+import type {
+  JonesOperationAction,
+  JonesOperationStartInput,
+} from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateProvenance } from "@t3tools/contracts/jones/jonesUpdates";
 import type {
   JonesExecutorHost,
@@ -28,6 +31,7 @@ import {
   deviceHasRecoveryDuty,
   planHasLaptopRecoveryDuty,
   selectability,
+  supportsInstallPlanMutations,
 } from "@t3tools/client-runtime/jones/install-plan";
 import {
   installStatusStore,
@@ -36,6 +40,8 @@ import {
 } from "./panelUi";
 import {
   authorizedUpdateStatus,
+  currentPlanHostAuthority,
+  hasPlanEnrollment,
   installPlanServices,
   nativePlanIssue,
   requireWritablePlan,
@@ -575,15 +581,19 @@ export async function legacyConnectionsGate(
   const authority = await readLegacyConnectionsAuthority(targetSource, environmentId);
   return typeof authority === "string" ? authority : null;
 }
-export function planGateFor(
+export function connectionsPlanDispatch(
+  binding: ReturnType<typeof installPlanServices>,
   action: JonesOperationAction,
-  review?: JonesReviewedInstall,
-  dispatch?: NativeJonesDispatch,
-  canOperate = () => true,
-): NonNullable<JonesExecutorHost["planGate"]> {
-  return async (environmentId, targetSource): Promise<JonesPlanGateResult> => {
-    const binding = installPlanServices();
-    if (binding === undefined)
+  review: JonesReviewedInstall | undefined,
+  dispatch: (canClaim?: () => boolean) => NativeJonesDispatch,
+  canOperate: () => boolean,
+) {
+  let canStart = (_request: JonesOperationStartInput): boolean => false;
+  const planGate: NonNullable<JonesExecutorHost["planGate"]> = async (
+    environmentId,
+    targetSource,
+  ) => {
+    if (binding === undefined || installPlanServices() !== binding)
       return { kind: "refused", message: "Open Install status on Laptop first." };
     const active = await requestInstallPlan({ type: "read" }, binding);
     const issue = nativePlanIssue(active) ?? retainedRecoveryIssue(active.state, environmentId);
@@ -600,7 +610,7 @@ export function planGateFor(
       const device = binding.services.devices().find((d) => d.environmentId === environmentId);
       const results = await handOffJonesTargets(
         [{ environmentId, label: device?.label ?? "Device" }],
-        dispatch,
+        dispatch(),
       );
       return results[0]?.handedOff
         ? { kind: "handled", message: results[0].message }
@@ -612,17 +622,52 @@ export function planGateFor(
         kind: "refused",
         message: "Open this source's current plan to review installation.",
       };
-    const observed = await binding.services.observe(environmentId);
-    requireWritablePlan(binding, active);
+    const device = current.devices.find((candidate) => candidate.environmentId === environmentId);
     if (
-      !canOperate() ||
-      authorizedUpdateStatus(observed, environmentId)?.capability.operations !== 1 ||
+      device?.membership !== "selected" ||
       review === undefined ||
       !isNativeJonesInstallReview(review)
     )
       return {
         kind: "refused",
         message: "Fresh control authority and a native install review are required.",
+      };
+    const observed = await binding.services.observe(environmentId);
+    const directStatus = authorizedUpdateStatus(observed, environmentId);
+    const canDispatch = (expectedRevision?: number) => {
+      const plan = binding.store.get().native?.current;
+      const member = plan?.devices.find((candidate) => candidate.environmentId === environmentId);
+      const latest = currentPlanHostAuthority(binding, device);
+      return (
+        canOperate() &&
+        plan?.planId === current.planId &&
+        plan.target.repository === current.target.repository &&
+        plan.target.sourceSha === current.target.sourceSha &&
+        plan.target.sourceTree === current.target.sourceTree &&
+        (expectedRevision === undefined || plan.revision === expectedRevision) &&
+        member?.membership === "selected" &&
+        member.route === device.route &&
+        member.enrollmentId === device.enrollmentId &&
+        !member.abandoning &&
+        latest.canDispatch &&
+        latest.enrollment === "match" &&
+        latest.status?.installedSource?.sha === review.expectedInstalledSource &&
+        latest.status?.stagedHandle === review.stagedHandle
+      );
+    };
+    const canClaim = () => canDispatch(current.revision);
+    requireWritablePlan(binding, active);
+    if (
+      directStatus === undefined ||
+      !supportsInstallPlanMutations(directStatus.capability) ||
+      directStatus.installedSource?.sha !== review.expectedInstalledSource ||
+      directStatus.stagedHandle !== review.stagedHandle ||
+      !hasPlanEnrollment(device, observed) ||
+      !canClaim()
+    )
+      return {
+        kind: "refused",
+        message: "Fresh control authority and the selected device's enrollment are required.",
       };
     const request = {
       type: "claim" as const,
@@ -634,18 +679,27 @@ export function planGateFor(
       action,
       review,
       ...revisionFor(active.state, current),
-      ...(observed.observation.state?.installedSource === undefined
-        ? {}
-        : { expectedInstalledSource: observed.observation.state.installedSource.sha }),
+      expectedInstalledSource: review.expectedInstalledSource,
     };
-    const result = await (dispatch === undefined
-      ? requestInstallPlan(request, binding)
-      : dispatch(request, active.state));
+    const result = await dispatch(canClaim)(request, active.state);
     const refusal = nativePlanIssue(result);
-    return result.grant?.planId !== current.planId || refusal !== undefined
-      ? { kind: "refused", message: refusal ?? "Install was not granted." }
-      : { kind: "grant", grant: result.grant };
+    const grant = result.grant;
+    if (
+      refusal !== undefined ||
+      grant?.planId !== current.planId ||
+      grant.environmentId !== environmentId ||
+      grant.step !== "install" ||
+      grant.request.kind !== "operation-start" ||
+      grant.request.input.correlation?.planId !== current.planId ||
+      grant.request.input.correlation.deviceKey !== environmentId
+    )
+      return { kind: "refused", message: refusal ?? "Install was not granted." };
+    const granted = grant.request.input;
+    canStart = (input) =>
+      input === granted && Date.parse(grant.leaseUntil) > binding.services.now() && canDispatch();
+    return { kind: "grant", grant };
   };
+  return { planGate, canStart: (request: JonesOperationStartInput) => canStart(request) };
 }
 let claimant: string | undefined;
 export function claimantId() {
