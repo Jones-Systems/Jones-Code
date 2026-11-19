@@ -559,7 +559,11 @@ export class JonesDesktopUpdateController {
   #latest: JonesActionsCandidate | undefined;
   #latestBuildStartedAt: string | undefined;
   #bootstrap: ActiveInstall | undefined;
-  #activationBlocked = false;
+  #nativeActivationBlocked = false;
+  #unconfirmedDiscard: { readonly selectionName: string; readonly handle: string } | undefined;
+  get #activationBlocked(): boolean {
+    return this.#nativeActivationBlocked || this.#unconfirmedDiscard !== undefined;
+  }
   #candidateStartupGateUnavailable = false;
   #terminalPhase: "committed" | "rolled-back" | undefined;
   #activationMessage: string | undefined;
@@ -1539,7 +1543,7 @@ export class JonesDesktopUpdateController {
   async configure(): Promise<void> {
     const { activeGeneration, trialDescriptorPath } = this.#options;
     if (trialDescriptorPath !== undefined) {
-      this.#activationBlocked = true;
+      this.#nativeActivationBlocked = true;
       if (
         activeGeneration !== undefined &&
         /^[a-f0-9]{64}$/.test(activeGeneration) &&
@@ -1622,7 +1626,7 @@ export class JonesDesktopUpdateController {
           (cause as NodeJS.ErrnoException).code !== "ENOENT" ||
           this.#options.trialDescriptorPath !== undefined
         ) {
-          this.#activationBlocked = true;
+          this.#nativeActivationBlocked = true;
           throw cause;
         }
         active = await this.#adopt(metadata);
@@ -1672,7 +1676,7 @@ export class JonesDesktopUpdateController {
           sha: active.sourceSha,
           tree: active.sourceTree,
         };
-      this.#activationBlocked = false;
+      this.#nativeActivationBlocked = false;
       const transactions = NodePath.join(this.updaterRoot, "transactions");
       const entries = await NodeFSP.readdir(transactions).catch((cause: NodeJS.ErrnoException) => {
         if (cause.code === "ENOENT") return [];
@@ -1737,14 +1741,14 @@ export class JonesDesktopUpdateController {
           if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
             try {
               await NodeFSP.lstat(NodePath.join(directory, "intent.json"));
-              this.#activationBlocked = true;
+              this.#nativeActivationBlocked = true;
               throw new Error("Native activation has unknown effects.", { cause });
             } catch (intentError) {
               if ((intentError as NodeJS.ErrnoException).code !== "ENOENT") throw intentError;
             }
             try {
               await NodeFSP.lstat(NodePath.join(directory, "prepare-intent.json"));
-              this.#activationBlocked = true;
+              this.#nativeActivationBlocked = true;
               const failure = await this.#preparationFailure(directory);
               throw new Error(
                 `Update preparation ${entry} was not activated${failure === undefined ? "" : ` (${failure})`} and could not be proved safe to retry (${preparationHolds.get(entry) ?? "unknown-state"}). Quit Jones Code, then run the native helper's --retire-preparation recovery.`,
@@ -1762,7 +1766,7 @@ export class JonesDesktopUpdateController {
           journal.intent.transactionId !== entry ||
           (journal.phase !== "resumed" && journal.phase !== "rolled-back")
         ) {
-          this.#activationBlocked = true;
+          this.#nativeActivationBlocked = true;
           this.#lastJournal = journal;
           throw new Error(journal.message ?? "Native activation requires reconciliation.");
         }
@@ -1834,7 +1838,7 @@ export class JonesDesktopUpdateController {
       }
     } catch (cause) {
       this.#activeCommittedTransaction = undefined;
-      if (boundManifest) this.#activationBlocked = true;
+      if (boundManifest) this.#nativeActivationBlocked = true;
       this.#activationMessage =
         cause instanceof Error ? cause.message : "Native app setup could not be proved.";
       this.#bootstrap = undefined;
@@ -1845,7 +1849,7 @@ export class JonesDesktopUpdateController {
     try {
       await this.#hydrateStage();
     } catch {
-      this.#activationBlocked = true;
+      this.#nativeActivationBlocked = true;
       await this.#publish(
         "blocked",
         "error",
@@ -2447,22 +2451,67 @@ export class JonesDesktopUpdateController {
       : undefined;
   }
 
-  async isLaptopStageAbsent(selectionName: string): Promise<boolean> {
+  async isLaptopStageAbsent(selectionName: string, handle: string): Promise<boolean> {
+    const unconfirmed = this.#unconfirmedDiscard;
     if (
       this.#busy !== null ||
-      this.#activationBlocked ||
+      this.#nativeActivationBlocked ||
       this.#bootstrap === undefined ||
-      this.#staged !== undefined
+      this.#heldDownload !== undefined ||
+      !/^[a-f0-9]{40}-[a-f0-9]{64}\.json$/.test(selectionName) ||
+      (unconfirmed !== undefined &&
+        (unconfirmed.selectionName !== selectionName || unconfirmed.handle !== handle))
     )
       return false;
-    const selection = await this.#selectionFile();
-    if (NodePath.basename(selection) !== selectionName) return false;
+    this.#busy = "discard";
     try {
-      await NodeFSP.lstat(selection);
-      return false;
-    } catch (cause) {
-      return (cause as NodeJS.ErrnoException).code === "ENOENT";
+      const currentName = NodePath.basename(await this.#selectionFile());
+      if (
+        currentName === selectionName &&
+        this.#staged?.handle !== undefined &&
+        this.#staged.handle !== handle
+      )
+        return false;
+      // A restart can bind a new generation. Check the exact original pointer in the owned root.
+      const root = NodePath.join(this.#bootstrap.home, "runtime", "jones-updates", "staging");
+      if ((await NodeFSP.realpath(root)) !== root) return false;
+      const directory = await NodeFSP.open(
+        root,
+        NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+      );
+      try {
+        if (!(await directory.stat()).isDirectory()) return false;
+        try {
+          await NodeFSP.lstat(NodePath.join(root, selectionName));
+          return false;
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code !== "ENOENT") return false;
+        }
+        // A preference can be unlinked even when the native helper loses its final sync reply.
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+      this.#unconfirmedDiscard = undefined;
+      if (currentName === selectionName && this.#staged?.handle === handle)
+        await this.#publishDiscardedStage();
+      return true;
+    } finally {
+      this.#busy = null;
     }
+  }
+
+  async #publishDiscardedStage(): Promise<void> {
+    this.#staged = undefined;
+    this.#candidate = undefined;
+    this.#candidateBuildStartedAt = undefined;
+    this.#selectedAttempt = undefined;
+    this.#candidateStartupGateUnavailable = false;
+    await this.#publish(
+      "no-new",
+      "idle",
+      "Downloaded selection discarded. Check for builds to select another update.",
+    );
   }
 
   async discard(handle: string): Promise<{ accepted: boolean; completed: boolean }> {
@@ -2476,7 +2525,7 @@ export class JonesDesktopUpdateController {
       return { accepted: false, completed: false };
     }
     this.#busy = "discard";
-    const dispatch = { dispatched: false };
+    const dispatch: { dispatched: boolean; selectionName?: string } = { dispatched: false };
     try {
       if ((await this.#runNativeDiscard(handle, dispatch)) === "refused") {
         await this.#publish(
@@ -2486,19 +2535,11 @@ export class JonesDesktopUpdateController {
         );
         return { accepted: false, completed: false };
       }
-      this.#staged = undefined;
-      this.#candidate = undefined;
-      this.#candidateBuildStartedAt = undefined;
-      this.#selectedAttempt = undefined;
-      this.#candidateStartupGateUnavailable = false;
-      await this.#publish(
-        "no-new",
-        "idle",
-        "Downloaded selection discarded. Check for builds to select another update.",
-      );
+      await this.#publishDiscardedStage();
       return { accepted: true, completed: true };
     } catch {
-      if (dispatch.dispatched) this.#activationBlocked = true;
+      if (dispatch.dispatched && dispatch.selectionName !== undefined)
+        this.#unconfirmedDiscard = { selectionName: dispatch.selectionName, handle };
       await this.#publish(
         "blocked",
         "downloaded",
@@ -2515,13 +2556,14 @@ export class JonesDesktopUpdateController {
   /** The helper's validated discard. The caller owns the busy latch and what it publishes. */
   async #runNativeDiscard(
     handle: string,
-    dispatch: { dispatched: boolean },
+    dispatch: { dispatched: boolean; selectionName?: string },
   ): Promise<"discarded" | "refused"> {
     const selection = await this.#selectionFile();
     const raw = await NodeFSP.readFile(selection, "utf8");
     if (decodeStageSelection(JSON.parse(raw)).app.handle !== handle)
       throw new Error("Selection changed.");
     const helper = await this.#helperPath();
+    dispatch.selectionName = NodePath.basename(selection);
     dispatch.dispatched = true;
     const result = decodeNativeSelectionResult(
       JSON.parse(
@@ -2581,7 +2623,7 @@ export class JonesDesktopUpdateController {
     }
     if (discarded !== "discarded") {
       const uncertain = discarded === "failed" && dispatch.dispatched;
-      if (uncertain) this.#activationBlocked = true;
+      if (uncertain) this.#nativeActivationBlocked = true;
       this.#busy = null;
       await this.#publish(
         "blocked",
@@ -2890,7 +2932,7 @@ export class JonesDesktopUpdateController {
       const requesters = captured.proofs;
       await this.#publish("preparing", "downloaded");
       // Claim preparation under the same native lock as discard before the backend can create effects.
-      this.#activationBlocked = true;
+      this.#nativeActivationBlocked = true;
       const preparation = decodeNativeSelectionResult(
         JSON.parse(
           await runNativeCommand("/usr/bin/python3", [
@@ -2916,7 +2958,7 @@ export class JonesDesktopUpdateController {
       )
         throw new Error("Native preparation claim identity changed.");
       if (preparation.status === "refused" && preparation.reason === "selection-mismatch") {
-        this.#activationBlocked = false;
+        this.#nativeActivationBlocked = false;
         this.#selectedAttempt = undefined;
       }
       if (preparation.status !== "preparation-claimed")
@@ -3018,7 +3060,7 @@ export class JonesDesktopUpdateController {
           fromGeneration: expected.generation,
         });
       }
-      this.#activationBlocked = true;
+      this.#nativeActivationBlocked = true;
       const claim = decodeNativeSelectionResult(
         JSON.parse(
           await runNativeCommand("/usr/bin/python3", [
@@ -3055,7 +3097,7 @@ export class JonesDesktopUpdateController {
         child.once("exit", () => {
           if (this.#busy !== "install") return;
           this.#busy = null;
-          this.#activationBlocked = true;
+          this.#nativeActivationBlocked = true;
           void (async () => {
             try {
               this.#lastJournal = decodeActivationJournal(
@@ -3129,7 +3171,7 @@ export class JonesDesktopUpdateController {
     const recovery = await this.#retirePreparation(transactionId);
     this.#busy = null;
     if (recovery.retired) {
-      this.#activationBlocked = false;
+      this.#nativeActivationBlocked = false;
       this.#selectedAttempt = undefined;
       await this.#publish(
         "staged",

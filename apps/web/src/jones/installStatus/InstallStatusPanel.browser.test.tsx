@@ -1161,6 +1161,45 @@ describe("Install status step progress", () => {
       .querySelector(`[aria-label="${label} update details"] [data-row-text]`)
       ?.textContent?.trim();
 
+  it("keeps the launcher outcome check available after Done archives the verified build", async () => {
+    await using world = await setup();
+    const { screen, fixture, controller } = world;
+    await act(() => fixture.showcaseStepProgress());
+    controller.close();
+    const current = fixture.snapshot().current!;
+    const vps = current.devices.find((device) => device.label === "VPS")!;
+    const attempt = vps.operations[0]!;
+    await act(() => {
+      fixture.store.update({
+        native: {
+          ...fixture.snapshot(),
+          last: {
+            ...current,
+            dismissedAt: current.createdAt,
+            devices: [
+              {
+                ...vps,
+                verifiedElsewhere: {
+                  version: current.target.version,
+                  observedAt: Date.parse(current.createdAt),
+                },
+                operations: [
+                  { ...attempt, receipt: { ...attempt.receipt!, code: "launcher-unconfirmed" } },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      fixture.store.open(true);
+    });
+    await click(screen, "VPS update details");
+    await expect
+      .element(screen.getByRole("button", { name: "Check update outcome" }))
+      .toBeEnabled();
+    expect(screen.container.textContent).toContain("launcher outcome remains unconfirmed");
+  });
+
   it("keeps cleanup inspection available in the cancelled plan's history", async () => {
     await using world = await setup();
     const { screen, fixture, calls } = world;

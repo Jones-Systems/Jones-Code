@@ -341,6 +341,7 @@ export async function refreshDeviceEvidence(
 export async function performPanelAction(
   environmentId: EnvironmentId | "laptop",
   action: PanelAction,
+  checkedPlanId?: string,
 ) {
   const binding = installPlanServices();
   if (binding === undefined) throw new Error("Install status is not connected.");
@@ -351,7 +352,13 @@ export async function performPanelAction(
     if (environmentId === "laptop" && read.refused !== undefined)
       throw new Error(read.refused.message);
     store.update({ desktop: await services.bridge.getUpdateState() });
-    const checked = plan ?? read.state.last;
+    const checked =
+      checkedPlanId === undefined
+        ? (plan ?? read.state.last)
+        : ([plan, read.state.last].find((candidate) => candidate?.planId === checkedPlanId) ??
+          null);
+    if (checkedPlanId !== undefined && checked === null)
+      throw new Error("This update plan is no longer available. Refresh Install status.");
     if (environmentId !== "laptop") {
       services.kick?.(environmentId);
       const refresh = async () => {
@@ -391,7 +398,9 @@ export async function performPanelAction(
         .get()
         .devices.find((item) => item.environmentId === environmentId);
       const latestState = store.get().native;
-      const latestPlan = latestState?.current ?? latestState?.last;
+      const latestPlan = [latestState?.current, latestState?.last].find(
+        (candidate) => checked !== null && candidate?.planId === checked.planId,
+      );
       const latestOperation = latestPlan?.devices
         .find((item) => item.environmentId === environmentId)
         ?.operations.find(operationOutstanding);
@@ -405,8 +414,7 @@ export async function performPanelAction(
               : `Checked ${observed.label}. Its update outcome is still pending.`),
       });
     } else if (environmentId === "laptop") {
-      const current = read.state.current ?? read.state.last;
-      const held = current?.laptop.operations.some(
+      const held = checked?.laptop.operations.some(
         (operation) => operation.result?.status === "held",
       );
       store.update({

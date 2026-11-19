@@ -134,6 +134,12 @@ export const JonesInstallPlanHostOperation = Schema.Struct({
 });
 export type JonesInstallPlanHostOperation = typeof JonesInstallPlanHostOperation.Type;
 
+const StageReplacement = Schema.Struct({
+  operationId: JonesOperationId,
+  stagedHandle: TrimmedNonEmptyString,
+  observedAt: Schema.Int,
+});
+
 export const JonesInstallPlanDevice = Schema.Struct({
   environmentId: EnvironmentId,
   label: Bounded(64),
@@ -151,6 +157,7 @@ export const JonesInstallPlanDevice = Schema.Struct({
   verifiedElsewhere: Schema.optionalKey(
     Schema.Struct({ version: TrimmedNonEmptyString, observedAt: Schema.Int }),
   ),
+  stageReplacement: Schema.optionalKey(StageReplacement),
 });
 export type JonesInstallPlanDevice = typeof JonesInstallPlanDevice.Type;
 
@@ -406,6 +413,7 @@ export const JonesInstallPlanRequest = Schema.Union([
     expectedRevision: Schema.Number,
     directiveRelease: Schema.optionalKey(FleetHostStatus),
     runningTarget: Schema.optionalKey(RunningTargetObservation),
+    stageReplacement: Schema.optionalKey(StageReplacement),
   }),
   Schema.Struct({
     type: Schema.Literal("dismiss"),

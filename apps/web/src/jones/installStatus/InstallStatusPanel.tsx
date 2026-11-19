@@ -17,6 +17,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/toolt
 import {
   deviceSelectionLocked,
   deviceStatusActive,
+  operationOutstanding,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { cn } from "../../lib/utils";
 import { useInstallPlan } from "./useInstallPlan";
@@ -140,7 +141,13 @@ export function InstallStatusPanel({
       });
   };
   const action = (environmentId: EnvironmentId | "laptop", value: PanelAction) =>
-    void perform(`${environmentId}:${value}`, () => performPanelAction(environmentId, value));
+    void perform(`${environmentId}:${value}`, () =>
+      performPanelAction(
+        environmentId,
+        value,
+        !view.preview && value === "check" ? plan.planId : undefined,
+      ),
+    );
   const editDone = () =>
     void perform("edit", async () => {
       if (!editing) return;
@@ -596,12 +603,15 @@ export function InstallStatusPanel({
               const open = focusedDevice === environmentId;
               const updated = row?.phase === "done" || row?.phase === "updated-elsewhere";
               const held = row?.phase === "held" || row?.phase === "unknown";
-              const operation = plan.devices
-                .find((d) => d.environmentId === environmentId)
-                ?.operations.at(-1);
+              const operations = plan.devices.find(
+                (d) => d.environmentId === environmentId,
+              )?.operations;
+              const operation = operations?.find(operationOutstanding) ?? operations?.at(-1);
               const receipt = operation?.receipt;
               const setupUnconfirmed =
                 operation?.step === "directive" && operation.directive === undefined;
+              const launcherUnconfirmed =
+                operation?.step === "install" && receipt?.code === "launcher-unconfirmed";
               const inspectKey =
                 receipt?.phase === "held" &&
                 receipt.code === "cleanup-unconfirmed" &&
@@ -612,8 +622,8 @@ export function InstallStatusPanel({
               const cleanup = cleanupInspection?.key === inspectKey ? cleanupInspection : null;
               const canCheckArchived =
                 snapshot.native?.readOnly === undefined &&
-                plan.cancelled === true &&
-                (inspectKey !== null || setupUnconfirmed);
+                ((plan.cancelled === true && (inspectKey !== null || setupUnconfirmed)) ||
+                  launcherUnconfirmed);
               return (
                 <li key={environmentId}>
                   <div className="flex min-w-0 items-center gap-1">
@@ -928,7 +938,7 @@ export function InstallStatusPanel({
                               ? "Checking…"
                               : setupUnconfirmed
                                 ? "Check setup status"
-                                : held
+                                : held || launcherUnconfirmed
                                   ? "Check update outcome"
                                   : "Refresh now"}
                           </Button>

@@ -42,14 +42,23 @@ export async function abandonDevice(environmentId: EnvironmentId, planId: string
   const staged = deviceStagedReceipt(operations);
   const directive = operations.findLast((operation) => operation.directive?.kind === "applied");
   const host = await services.observe(environmentId);
-  const state = host.observation.state;
+  const liveRead = services.readStatus;
+  const state = liveRead === undefined ? host.observation.state : await liveRead(environmentId);
+  const observedAt =
+    liveRead === undefined ? (host.observation.heardAt ?? services.now()) : services.now();
   if (
     !host.canOperate ||
-    host.observation.freshness !== "fresh" ||
+    (liveRead === undefined && host.observation.freshness !== "fresh") ||
     state?.environmentId !== environmentId
   )
     throw new Error("Refresh the device before abandoning its update.");
   const needsStage = staged !== undefined;
+  const stageReplacement =
+    staged?.staged?.createdByOperation === true &&
+    state.stagedHandle !== undefined &&
+    state.stagedHandle !== staged.staged.stagedHandle
+      ? { operationId: staged.operationId, stagedHandle: state.stagedHandle, observedAt }
+      : undefined;
   const targetRunning = matchesPlanTarget(plan, device, state);
   if (targetRunning && !device.abandoning)
     throw new Error(
@@ -63,12 +72,13 @@ export async function abandonDevice(environmentId: EnvironmentId, planId: string
             sourceSha: plan.target.sourceSha,
             sourceTree: plan.target.sourceTree,
           },
-          observedAt: host.observation.heardAt ?? services.now(),
+          observedAt,
         }
       : undefined;
   if (
     needsStage &&
     runningTarget === undefined &&
+    stageReplacement === undefined &&
     (staged.staged?.createdByOperation !== true || state.capability.abandonStage !== 1)
   )
     throw new Error("This host cannot prove ownership or retire the staged selection.");
@@ -97,7 +107,12 @@ export async function abandonDevice(environmentId: EnvironmentId, planId: string
   )
     throw new Error("Abandonment was not recorded. Refresh the device.");
 
-  if (needsStage && staged.staged !== undefined && runningTarget === undefined) {
+  if (
+    needsStage &&
+    staged.staged !== undefined &&
+    runningTarget === undefined &&
+    stageReplacement === undefined
+  ) {
     const reply = await services.operation(environmentId, {
       action: "abandonStage",
       input: {
@@ -143,6 +158,9 @@ export async function abandonDevice(environmentId: EnvironmentId, planId: string
       expectedRevision: latest.plan.revision,
       ...(directiveRelease === undefined ? {} : { directiveRelease }),
       ...(runningTarget === undefined ? {} : { runningTarget }),
+      ...(stageReplacement === undefined || runningTarget !== undefined
+        ? {}
+        : { stageReplacement }),
     },
     binding,
   );

@@ -326,9 +326,10 @@ export function createInstallPlanCoordinator(options: {
       abandonment.status !== "retired" &&
       abandonment.selectionName !== undefined &&
       !active.has(abandonment.operationId) &&
-      !evidence.activationBlocked &&
       evidence.environmentId === plan.laptop.environmentId &&
-      (await options.controller.isLaptopStageAbsent(abandonment.selectionName).catch(() => false));
+      (await options.controller
+        .isLaptopStageAbsent(abandonment.selectionName, abandonment.handle)
+        .catch(() => false));
     if (retired) plan = withStageAbandonmentResult(plan, abandonment.operationId, true);
     let changed = false;
     const operations = await Promise.all(
@@ -765,7 +766,6 @@ export function createInstallPlanCoordinator(options: {
         document = refreshCommands(document);
         const archived = document.last;
         const reportArchived =
-          plan === null &&
           archived !== null &&
           req.type === "report" &&
           req.planId === archived.planId &&
@@ -1417,6 +1417,14 @@ export function createInstallPlanCoordinator(options: {
               (operation) => operation.directive?.kind === "applied",
             );
             const release = req.directiveRelease;
+            const replacement = req.stageReplacement;
+            const validReplacement =
+              replacement !== undefined &&
+              download?.staged?.createdByOperation === true &&
+              replacement.operationId === download.operationId &&
+              replacement.stagedHandle !== download.staged.stagedHandle &&
+              replacement.observedAt <= options.now() &&
+              options.now() - replacement.observedAt <= LEASE_MS;
             if (req.expectedRevision !== plan.revision)
               refuse("stale-revision", "The plan changed. Refresh the device before abandoning.");
             else if (
@@ -1447,7 +1455,8 @@ export function createInstallPlanCoordinator(options: {
             } else if (
               !device.abandoning ||
               (runningTarget !== undefined && !validRunningTarget) ||
-              (download !== undefined && !validRunningTarget) ||
+              (replacement !== undefined && !validReplacement) ||
+              (download !== undefined && !validRunningTarget && !validReplacement) ||
               (directive !== undefined &&
                 (release?.environmentId !== device.environmentId ||
                   release.enrollment?.enrollmentId !== device.enrollmentId ||
@@ -1484,6 +1493,7 @@ export function createInstallPlanCoordinator(options: {
                           membership: "removed",
                           removedAt: now(),
                           archivedOperationCount: device.operations.length,
+                          ...(replacement === undefined ? {} : { stageReplacement: replacement }),
                         }
                     : d,
                 ),

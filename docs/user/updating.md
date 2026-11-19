@@ -51,6 +51,8 @@ On Laptop, **Abandon staged update** releases the plan's staged app before
 installation. These actions preserve installed builds and user data. If a
 device still has active work, use its Stop or Check action first. If cleanup
 is interrupted, open the device again to resume it before closing the plan.
+If another update replaced the staged selection, resuming abandonment keeps
+that replacement in place.
 
 To end the rollout, choose **Cancel update plan** in **All** or **Laptop** and
 confirm. This closes the queue and keeps the attempt in **Last update**.

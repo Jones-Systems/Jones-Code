@@ -171,7 +171,10 @@ export function installPlanPresentation(
       hostState.provenance.sourceTree === stage.sourceTree;
     let text = copy[ledgerPhase];
     if (ledgerPhase === "removed" && device.operations.length > 0)
-      text = "Removed · earlier attempts kept";
+      text =
+        device.stageReplacement === undefined
+          ? "Removed · earlier attempts kept"
+          : "Removed · replacement kept";
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";
     if (phase === "directive") text = `Getting ${device.label} ready…`;
@@ -242,7 +245,10 @@ export function installPlanPresentation(
           (!runningTarget || device.abandoning === true) &&
           (ownedStage === undefined ||
             (runningTarget && device.abandoning === true) ||
-            (ownedStage.createdByOperation === true && hostState?.capability.abandonStage === 1)) &&
+            (ownedStage.createdByOperation === true &&
+              (hostState?.capability.abandonStage === 1 ||
+                (hostState?.stagedHandle !== undefined &&
+                  hostState.stagedHandle !== ownedStage.stagedHandle)))) &&
           (appliedDirective === undefined ||
             (observed.fleetStatus?.releasePlanDirective === 1 &&
               (device.abandoning === true ||

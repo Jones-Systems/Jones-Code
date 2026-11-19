@@ -270,6 +270,29 @@ it("stale proof at click time cannot end or dismiss a stage", async () => {
   expect(world.calls.map((r) => r.type)).toEqual(["read"]);
 });
 
+it("rechecks retained plan proof directly before recording an observed install", async () => {
+  const world = setup();
+  world.native = { ...world.native, view: { ...world.native.view, deviceRecovery: 1 } };
+  world.store.update({
+    devices: world.store.get().devices.map((device) => ({
+      ...device,
+      observation: {
+        ...device.observation,
+        state: { ...device.observation.state!, currentVersion: "new" },
+      },
+    })),
+  });
+  const services = { ...world.services, readStatus: vi.fn().mockResolvedValue(null) };
+  const unbind = bindInstallPlanServices(services, world.store);
+  try {
+    await expect(finishPlan(world.planId)).rejects.toThrow("Running source proof changed");
+    expect(world.calls.map((request) => request.type)).toEqual(["read"]);
+    expect(services.readStatus).toHaveBeenCalledTimes(1);
+  } finally {
+    unbind();
+  }
+});
+
 it("rechecks the next candidate's proof after the previous response", async () => {
   const world = setup();
   world.intercept((r) => {
