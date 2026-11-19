@@ -12,6 +12,7 @@ import {
 } from "@t3tools/client-runtime/jones/updates/executor";
 import {
   canReplayDirective,
+  operationOutstanding,
   validateDirectiveEvidence,
   validateReceipt,
 } from "@t3tools/client-runtime/jones/install-plan";
@@ -19,7 +20,15 @@ import { claimantId, routeLaptopDownload, routeLaptopInstall } from "./entrypoin
 import { installPlanServices, requestInstallPlan } from "./services";
 import type { InstallStatusDevice } from "./panelUi";
 
-export type PanelAction = "download" | "install" | "stop" | "remove" | "end" | "check";
+export type PanelAction =
+  | "download"
+  | "install"
+  | "stop"
+  | "remove"
+  | "end"
+  | "check"
+  | "abandon-stage"
+  | "check-build";
 function executorHostFor(environmentId: EnvironmentId): JonesExecutorHost {
   const binding = installPlanServices();
   if (binding === undefined) throw new Error("Install status is not connected.");
@@ -258,7 +267,8 @@ export async function refreshDeviceEvidence(
   options: { readonly refreshInstallOutcome: boolean },
 ) {
   const { services } = binding;
-  const operation = plan.devices.find((d) => d.environmentId === environmentId)?.operations.at(-1);
+  const operations = plan.devices.find((d) => d.environmentId === environmentId)?.operations ?? [];
+  const operation = operations.find(operationOutstanding) ?? operations.at(-1);
   if (operation?.request.kind === "plan-directive") {
     const { observation, fleetStatus } = observed;
     if (operation.directive !== undefined) return;
@@ -331,6 +341,7 @@ export async function refreshDeviceEvidence(
 export async function performPanelAction(
   environmentId: EnvironmentId | "laptop",
   action: PanelAction,
+  checkedPlanId?: string,
 ) {
   const binding = installPlanServices();
   if (binding === undefined) throw new Error("Install status is not connected.");
@@ -341,17 +352,76 @@ export async function performPanelAction(
     if (environmentId === "laptop" && read.refused !== undefined)
       throw new Error(read.refused.message);
     store.update({ desktop: await services.bridge.getUpdateState() });
-    const checked = plan ?? (read.state.last?.cancelled === true ? read.state.last : null);
-    if (environmentId !== "laptop" && checked !== null) {
+    const checked =
+      checkedPlanId === undefined
+        ? (plan ?? read.state.last)
+        : ([plan, read.state.last].find((candidate) => candidate?.planId === checkedPlanId) ??
+          null);
+    if (checkedPlanId !== undefined && checked === null)
+      throw new Error("This update plan is no longer available. Refresh Install status.");
+    if (environmentId !== "laptop") {
       services.kick?.(environmentId);
-      const observed = await services.observe(environmentId);
+      const refresh = async () => {
+        const observed = await services.observe(environmentId);
+        if (services.readStatus === undefined) return observed;
+        const state = await services.readStatus(environmentId);
+        if (state?.environmentId !== environmentId)
+          throw new Error("Could not read current status for this device.");
+        return {
+          ...observed,
+          observation: { state, freshness: "fresh" as const, heardAt: services.now() },
+        };
+      };
+      const update = (observed: InstallStatusDevice) =>
+        store.update({
+          devices: store
+            .get()
+            .devices.map((d) => (d.environmentId === environmentId ? observed : d)),
+        });
+      const observed = await refresh();
+      update(observed);
+      const message =
+        checked === null
+          ? undefined
+          : await refreshDeviceEvidence(binding, environmentId, checked, observed, {
+              refreshInstallOutcome: true,
+            });
+      if (checked !== null && services.readStatus !== undefined) {
+        const state = await services.readStatus(environmentId);
+        if (state?.environmentId === environmentId)
+          update({
+            ...observed,
+            observation: { state, freshness: "fresh", heardAt: services.now() },
+          });
+      }
+      const currentDevice = store
+        .get()
+        .devices.find((item) => item.environmentId === environmentId);
+      const latestState = store.get().native;
+      const latestPlan = [latestState?.current, latestState?.last].find(
+        (candidate) => checked !== null && candidate?.planId === checked.planId,
+      );
+      const latestOperation = latestPlan?.devices
+        .find((item) => item.environmentId === environmentId)
+        ?.operations.find(operationOutstanding);
       store.update({
-        devices: store.get().devices.map((d) => (d.environmentId === environmentId ? observed : d)),
+        error:
+          message ??
+          (currentDevice?.observation.freshness !== "fresh"
+            ? `Could not refresh ${observed.label}. Check its connection and try again.`
+            : latestOperation === undefined
+              ? `Refreshed ${observed.label}.`
+              : `Checked ${observed.label}. Its update outcome is still pending.`),
       });
-      const message = await refreshDeviceEvidence(binding, environmentId, checked, observed, {
-        refreshInstallOutcome: true,
+    } else if (environmentId === "laptop") {
+      const held = checked?.laptop.operations.some(
+        (operation) => operation.result?.status === "held",
+      );
+      store.update({
+        error: held
+          ? "Checked Laptop. Its update outcome is still unconfirmed."
+          : "Refreshed Laptop.",
       });
-      if (message !== undefined) store.update({ error: message });
     }
     return;
   }
@@ -364,6 +434,25 @@ export async function performPanelAction(
     }
     if (action === "install") {
       await routeLaptopInstall(services.bridge, desktop);
+      return;
+    }
+    if (action === "check-build" && services.bridge.checkForUpdate !== undefined) {
+      const checked = await services.bridge.checkForUpdate();
+      store.update({ desktop: checked.state });
+      return;
+    }
+    if (action === "abandon-stage" && plan !== null) {
+      if (
+        !(await services.confirm(
+          "Abandon the Laptop's staged update? The downloaded selection will be discarded.",
+        ))
+      )
+        return;
+      const result = await requestInstallPlan(
+        { type: "laptop", planId: plan.planId, action: "abandon-stage" },
+        binding,
+      );
+      if (result.refused !== undefined) throw new Error(result.refused.message);
       return;
     }
     if (action === "stop" && plan !== null) {
@@ -398,6 +487,8 @@ export async function performPanelAction(
       );
     return;
   }
+  if (action === "abandon-stage" || action === "check-build")
+    throw new Error("This action is only available on Laptop.");
   const observed = await services.observe(environmentId);
   if (
     !observed.canOperate ||

@@ -26,6 +26,8 @@ import {
   JonesOperationReadInput,
   JonesOperationReceipt,
   JonesOperationReadResult,
+  JonesAbandonStageInput,
+  JonesAbandonStageResult,
   JonesRecoverCleanupInput,
   JonesRecoverCleanupResult,
   JonesRecoveryPreflightInput,
@@ -563,6 +565,14 @@ export const makeJonesHttpGroups = ({
         headers: OptionalBearerHeaders,
         payload: JonesOperationReadInput,
         success: JonesOperationReadResult,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("abandonStage", "/api/jones-updates/operations/abandon-stage", {
+        headers: OptionalBearerHeaders,
+        payload: JonesAbandonStageInput,
+        success: JonesAbandonStageResult,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
     )

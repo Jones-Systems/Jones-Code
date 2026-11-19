@@ -87,6 +87,7 @@ export const JonesUpdateCapability = Schema.Struct({
   /** Durable operations require download and install support. Absent means unsupported. */
   operations: Schema.optionalKey(Schema.Literal(1)),
   recoveryPolicy: Schema.optionalKey(Schema.Literal(1)),
+  abandonStage: Schema.optionalKey(Schema.Literal(1)),
   reason: Schema.optionalKey(
     Schema.Literals([
       "bootstrap-required",

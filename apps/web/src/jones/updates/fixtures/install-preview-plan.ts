@@ -465,7 +465,7 @@ export function createScriptedInstallPlan(input: {
       return result();
     }
     if (request.type === "laptop")
-      return request.action === "preflight"
+      return request.action === "preflight" || request.action === "abandon-stage"
         ? refuse("unsupported", "Fixture recovery capability is not advertised.")
         : laptop(request.action, request.review);
     const device = plan.devices.find((d) => d.environmentId === request.environmentId);
@@ -505,6 +505,8 @@ export function createScriptedInstallPlan(input: {
       });
       return result();
     }
+    if (request.type !== "claim")
+      return refuse("unsupported", "The fixture has no recovery script for this operation.");
     if (plan.laptop.gate === undefined || plan.laptop.gateClosed !== undefined)
       return refuse("gate-closed", "Laptop is not verified.");
     const lease = {
@@ -672,6 +674,8 @@ export function createScriptedInstallPlan(input: {
           })),
         };
       if (command.action === "recoverCleanup") return { recoveredCleanup: null };
+      if (command.action === "abandonStage")
+        return { receipt: null, reason: "Fixture has no owned stage." };
       if (command.action === "recoveryPreflight")
         throw new Error("Fixture recovery is unsupported.");
       const previous = receipts.get(command.input.operationId);

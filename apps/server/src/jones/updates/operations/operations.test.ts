@@ -214,6 +214,9 @@ async function make(
   });
   const refreshPolicy = vi.fn(async () => {});
   const reconcileNative = vi.fn(async (_operationId: string) => native);
+  const resolveNativeHandoff = vi.fn(
+    async (_id: string): Promise<"accepted" | "rejected" | "unknown"> => "unknown",
+  );
   const operations = createTargetOperations({
     key: base,
     ledger,
@@ -222,6 +225,7 @@ async function make(
     refreshPolicy,
     install,
     reconcileNative,
+    resolveNativeHandoff,
     onFailure: () => {},
     ...(recoveryEnabled
       ? { recovery: { validate: recovery.validate, observed: async () => "clone" as const } }
@@ -232,6 +236,7 @@ async function make(
     base,
     ledger,
     operations,
+    resolveNativeHandoff,
     preparation,
     updater,
     install,
@@ -653,6 +658,120 @@ describe("target operations", () => {
         expect(f.install).not.toHaveBeenCalled();
       }),
   );
+  it("only releases an install with no reservation after ordered launcher rejection", async () =>
+    fixture(async (f) => {
+      const operationId = input.operationId;
+      const action = {
+        kind: "install",
+        stagedHandle: "stage",
+        currentVersion: "old",
+        targetSource: candidate.source,
+      } as const;
+      await f.ledger.accept({ ...input, action });
+      await f.ledger.transition(operationId, (receipt) => ({ ...receipt, phase: "running" }));
+      await f.operations.reconcile();
+      expect(f.updater.admissionHeld()).toBe(true);
+      const request = {
+        environmentId: input.environmentId,
+        operationIds: [operationId],
+        refreshInstallOutcome: operationId,
+      };
+      expect((await f.operations.read(request)).receipts[0]?.receipt).toMatchObject({
+        phase: "running",
+        code: "launcher-unconfirmed",
+      });
+      expect(f.updater.admissionHeld()).toBe(true);
+      f.resolveNativeHandoff.mockResolvedValue("rejected");
+      expect((await f.operations.read(request)).receipts[0]?.receipt).toMatchObject({
+        phase: "refused",
+        code: "launcher-rejected",
+      });
+      expect((await f.receipt())?.phase).toBe("refused");
+      expect(f.updater.admissionHeld()).toBe(false);
+      expect(f.install).not.toHaveBeenCalled();
+    }));
+
+  it("retires only a stage proved to belong to this plan and recognizes a retry", async () =>
+    fixture(async (f) => {
+      const planId = NodeCrypto.randomUUID();
+      const operationId = input.operationId;
+      const stagedHandle = "owned-stage";
+      const correlation = { planId, deviceKey: input.environmentId };
+      const snapshot = f.updater.snapshot();
+      const retire = vi
+        .spyOn(f.updater, "retireStagedOperation")
+        .mockResolvedValue({ retired: true });
+      vi.spyOn(f.updater, "snapshot").mockReturnValue({
+        ...snapshot,
+        capability: { ...snapshot.capability, abandonStage: 1 },
+      });
+      await f.ledger.accept({ ...input, correlation });
+      await f.ledger.transition(operationId, (receipt) => ({ ...receipt, phase: "running" }));
+      await f.ledger.transition(operationId, (receipt) => ({ ...receipt, phase: "adopting" }));
+      await f.ledger.transition(operationId, (receipt) => ({
+        ...receipt,
+        phase: "completed",
+        staged: {
+          stagedHandle,
+          artifactId: 4,
+          sourceSha: candidate.source,
+          sourceTree: candidate.tree,
+          createdByOperation: true,
+        },
+      }));
+      const abandon = {
+        planId,
+        operationId,
+        environmentId: input.environmentId,
+        stagedHandle,
+        confirmed: true,
+      } as const;
+      expect(
+        (await f.operations.abandonStage({ ...abandon, planId: NodeCrypto.randomUUID() })).receipt,
+      ).toBeNull();
+      expect(
+        (await f.operations.abandonStage({ ...abandon, stagedHandle: "other" })).receipt,
+      ).toBeNull();
+      expect(retire).not.toHaveBeenCalled();
+      const settled = await f.operations.abandonStage(abandon);
+      expect(settled.receipt?.stageRetiredAt).toEqual(expect.any(String));
+      expect(await f.operations.abandonStage(abandon)).toEqual(settled);
+      expect(retire).toHaveBeenCalledTimes(1);
+    }));
+
+  it("preserves a recorded launcher acceptance when its native files are missing", async () =>
+    fixture(async (f) => {
+      const operationId = input.operationId;
+      await f.ledger.accept({
+        ...input,
+        action: {
+          kind: "install",
+          stagedHandle: "stage",
+          currentVersion: "old",
+          targetSource: candidate.source,
+        },
+      });
+      await f.ledger.transition(operationId, (receipt) => ({ ...receipt, phase: "running" }));
+      await f.ledger.transition(operationId, (receipt) => ({
+        ...receipt,
+        phase: "handed-off",
+        updateId: operationId,
+      }));
+      await f.operations.reconcile();
+      f.resolveNativeHandoff.mockResolvedValue("rejected");
+      const result = await f.operations.read({
+        environmentId: input.environmentId,
+        operationIds: [operationId],
+        refreshInstallOutcome: operationId,
+      });
+      expect(result.receipts[0]?.receipt).toMatchObject({
+        phase: "handed-off",
+        updateId: operationId,
+      });
+      expect(f.updater.admissionHeld()).toBe(true);
+      expect(f.resolveNativeHandoff).not.toHaveBeenCalled();
+    }));
+
   it("holds a restarted download whose worker release is unknown", async () =>
     fixture(async (f) => {
       await f.ledger.accept(input);

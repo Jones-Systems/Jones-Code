@@ -10,6 +10,10 @@ import {
   matchesPlanTarget,
   planCompletion,
   deviceStateWithRunningTarget,
+  deviceActiveOperations,
+  deviceStagedReceipt,
+  deviceSelectionLocked,
+  operationOutstanding,
   isPlanComplete,
   type InstallPlanDeviceState,
 } from "./model.ts";
@@ -50,6 +54,7 @@ const LEDGER_TEXT_WINS = new Set<InstallPlanDeviceState>([
   "unknown",
   "stop-requested",
   "fenced",
+  "updated-elsewhere",
 ]);
 const ALREADY_RUNNING_TEXT = "Downloaded · already running this build";
 
@@ -104,16 +109,20 @@ export function installPlanPresentation(
             planId: plan.planId,
           });
     const nativeGate = plan.laptop.gate !== undefined && plan.laptop.gateClosed === undefined;
-    const mutable =
+    const canRecover =
       !readOnly &&
       device.membership === "selected" &&
-      nativeGate &&
+      !device.abandoning &&
       observed?.observation.freshness === "fresh" &&
       observed.canOperate &&
       observed.observation.state?.capability.operations === 1;
-    const latest = device.operations.at(-1);
-    const lastDownload = device.operations.filter((o) => o.step === "download").at(-1);
+    const mutable = canRecover && nativeGate;
+    const operations = deviceActiveOperations(device);
+    const latest = operations.find(operationOutstanding) ?? operations.at(-1);
+    const lastDownload = operations.findLast((o) => o.step === "download");
     const receipt = latest?.receipt;
+    const ownedStage = deviceStagedReceipt(operations)?.staged;
+    const appliedDirective = operations.findLast((op) => op.directive?.kind === "applied");
     const recoveredDownload =
       receipt?.code === "cleanup-recovered" &&
       receipt.jobId !== undefined &&
@@ -122,7 +131,8 @@ export function installPlanPresentation(
       latest?.step === "download" &&
       (recoveredDownload || receipt?.phase === "failed" || receipt?.phase === "refused");
     const retryInstall =
-      latest?.step === "install" && (receipt?.phase === "failed" || receipt?.phase === "refused");
+      latest?.step === "install" &&
+      ["failed", "refused", "rolled-back"].includes(receipt?.phase ?? "");
     const stage = lastDownload?.receipt?.staged;
     const hostState = observed?.observation.state;
     const confirmedInstall = device.operations.some(
@@ -160,6 +170,11 @@ export function installPlanPresentation(
       hostState.provenance?.sourceSha === stage.sourceSha &&
       hostState.provenance.sourceTree === stage.sourceTree;
     let text = copy[ledgerPhase];
+    if (ledgerPhase === "removed" && device.operations.length > 0)
+      text =
+        device.stageReplacement === undefined
+          ? "Removed · earlier attempts kept"
+          : "Removed · replacement kept";
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";
     if (phase === "directive") text = `Getting ${device.label} ready…`;
@@ -183,16 +198,21 @@ export function installPlanPresentation(
       observed?.observation.freshness === "fresh" &&
       hostState?.stagedAlreadyRunning === true;
     if (alreadyRunning) text = ALREADY_RUNNING_TEXT;
-    const attemptText = sourceHeadline
-      ? `This plan's attempt: ${text}${latest?.receipt?.code !== undefined && !text.endsWith(latest.receipt.code) ? ` · ${latest.receipt.code}` : ""}`
-      : undefined;
+    const attemptText =
+      device.verifiedElsewhere !== undefined && latest?.receipt?.code === "launcher-unconfirmed"
+        ? "This plan’s launcher outcome remains unconfirmed."
+        : sourceHeadline
+          ? `This plan's attempt: ${text}${latest?.receipt?.code !== undefined && !text.endsWith(latest.receipt.code) ? ` · ${latest.receipt.code}` : ""}`
+          : undefined;
     const reportedProgress = rowProgress(observed?.observation, latest?.operationId, planless);
     // Older hosts can retain a restart warning after the exact install receipt commits.
     const progress =
-      phase === "done" && confirmedInstall && reportedProgress?.phase !== "done"
+      (phase === "done" && confirmedInstall && reportedProgress?.phase !== "done") ||
+      (device.verifiedElsewhere !== undefined && receipt?.code === "launcher-unconfirmed")
         ? undefined
         : reportedProgress;
     if (progress?.text !== undefined && !LEDGER_TEXT_WINS.has(phase)) text = progress.text;
+    if (receipt?.code === "launcher-rejected") text = "Install request did not start";
     if (sourceHeadline) text = sourceText!;
     return {
       attemptText,
@@ -211,24 +231,46 @@ export function installPlanPresentation(
       ...(progress === undefined ? {} : { progress }),
       ...(latest === undefined ? {} : { operationId: latest.operationId }),
       actions: {
-        remove: !readOnly && device.membership === "selected" && device.operations.length === 0,
+        remove:
+          !readOnly && device.membership === "selected" && !deviceSelectionLocked(plan, device),
+        abandon:
+          !readOnly &&
+          state.view.deviceRecovery === 1 &&
+          device.membership === "selected" &&
+          operations.length > 0 &&
+          observed?.canOperate === true &&
+          observed.observation.freshness === "fresh" &&
+          !operations.some(operationOutstanding) &&
+          !confirmedInstall &&
+          (!runningTarget || device.abandoning === true) &&
+          (ownedStage === undefined ||
+            (runningTarget && device.abandoning === true) ||
+            (ownedStage.createdByOperation === true &&
+              (hostState?.capability.abandonStage === 1 ||
+                (hostState?.stagedHandle !== undefined &&
+                  hostState.stagedHandle !== ownedStage.stagedHandle)))) &&
+          (appliedDirective === undefined ||
+            (observed.fleetStatus?.releasePlanDirective === 1 &&
+              (device.abandoning === true ||
+                observed.fleetStatus.releasableDirectiveId === appliedDirective.operationId))),
         download:
           mutable &&
-          ["stopped", "not-updated"].includes(phase) &&
+          (["stopped", "not-updated", "fenced"].includes(phase) ||
+            (retryInstall && !matchingRetryStage && hostState?.stagedHandle === undefined)) &&
           status?.actions.download === true,
         install:
           mutable &&
-          phase === "staged" &&
+          (phase === "staged" || phase === "rolled-back") &&
           !alreadyRunning &&
           status?.actions.install === true &&
           (!retryInstall || matchingRetryStage),
         stop:
-          mutable &&
+          canRecover &&
           phase === "downloading" &&
           latest?.receipt !== undefined &&
           ["accepted", "running"].includes(latest.receipt.phase) &&
           status?.actions.stop === true,
-        end: mutable && phase === "staged",
+        end: canRecover && phase === "staged",
         checkAgain: true,
       },
     };
@@ -247,7 +289,9 @@ export function installPlanPresentation(
     laptopState.provenance.sourceTree === plan.target.sourceTree;
   const retryLaptopInstall =
     laptopOperation?.step === "install" &&
-    ["failed", "refused", "interrupted"].includes(laptopOperation.result?.status ?? "") &&
+    ["failed", "refused", "interrupted", "rolled-back"].includes(
+      laptopOperation.result?.status ?? "",
+    ) &&
     !state.laptop.activationBlocked &&
     laptopState?.phase === "staged" &&
     laptopState.stagedHandle !== undefined &&
@@ -309,7 +353,21 @@ export function installPlanPresentation(
           : laptopAlreadyRunning
             ? ALREADY_RUNNING_TEXT
             : (laptopCopy[laptopPhase] ?? "Not confirmed");
+  const abandoningStage = plan.laptop.stageAbandonment;
   const laptopActions = {
+    abandon:
+      !readOnly &&
+      state.view.deviceRecovery === 1 &&
+      plan.laptop.gate === undefined &&
+      (!state.laptop.activationBlocked || abandoningStage?.status === "unconfirmed") &&
+      laptopState?.stagedHandle !== undefined &&
+      plan.laptop.operations.findLast((op) => op.step === "download")?.createdStagedHandle ===
+        laptopState.stagedHandle &&
+      !plan.laptop.operations.some(
+        (op) =>
+          op.result === undefined ||
+          ["running", "held", "stop-requested"].includes(op.result.status),
+      ),
     download:
       !readOnly &&
       ["preview", "stopped", "interrupted", "failed", "refused"].includes(laptopPhase) &&
@@ -318,6 +376,7 @@ export function installPlanPresentation(
       laptopState.provenance?.sourceSha === plan.target.sourceSha,
     install:
       !readOnly &&
+      (abandoningStage === undefined || abandoningStage.status === "retired") &&
       (laptopPhase === "staged" || retryLaptopInstall) &&
       !laptopAlreadyRunning &&
       plan.laptop.gate === undefined &&
@@ -347,6 +406,7 @@ export function installPlanPresentation(
         planCompletion(
           plan,
           new Map([...(options.devices ?? [])].map(([id, value]) => [id, value.observation])),
+          state.view.deviceRecovery === 1,
         ).completable),
     laptop: {
       phase: laptopPhase,

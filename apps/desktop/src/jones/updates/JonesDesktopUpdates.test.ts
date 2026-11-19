@@ -1329,6 +1329,30 @@ describe("Jones desktop updates", () => {
           expect((await NodeFSP.lstat(selectionPath)).isFile()).toBe(true);
           if (status === "uncertain")
             expect(f.controller.state.jones?.capability.reason).toBe("blocked");
+          if (status === "uncertain") {
+            nativeCommand.mockImplementationOnce((_command, args, _options, callback) => {
+              if (typeof callback !== "function" || !Array.isArray(args))
+                throw new Error("Invalid command fixture.");
+              expect(args[6]).toBe(selectionPath);
+              void NodeFSP.unlink(selectionPath).then(
+                () =>
+                  callback(
+                    null,
+                    JSON.stringify({
+                      protocol: 1,
+                      operation: "discard-staged",
+                      handle,
+                      status: "discarded",
+                    }),
+                    "",
+                  ),
+                (cause: NodeChildProcess.ExecFileException) => callback(cause, "", ""),
+              );
+              return new NodeChildProcess.ChildProcess();
+            });
+            expect(await f.controller.discard(handle)).toEqual({ accepted: true, completed: true });
+            expect((await f.controller.laptopEvidence()).activationBlocked).toBe(false);
+          }
         }
         expect(
           (
@@ -1337,6 +1361,52 @@ describe("Jones desktop updates", () => {
             )
           ).isDirectory(),
         ).toBe(true);
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+      } finally {
+        nativeCommand.mockReset();
+        await f.cleanup();
+      }
+    },
+  );
+
+  it.each(["same process", "new generation"] as const)(
+    "recovers a lost discard reply in the %s",
+    async (mode) => {
+      const f = await fixture();
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      try {
+        await f.controller.configure();
+        await f.controller.check();
+        await f.controller.download();
+        const selectionName = (await f.controller.laptopStageSelectionName(handle))!;
+        nativeCommand.mockImplementation((_command, args, _options, callback) => {
+          if (typeof callback !== "function" || !Array.isArray(args))
+            throw new Error("Invalid command fixture.");
+          expect(args[3]).toBe("--discard-staged");
+          void NodeFSP.unlink(String(args[6])).then(
+            () => callback(new Error("Fixture lost the reply."), "", ""),
+            (cause: NodeChildProcess.ExecFileException) => callback(cause, "", ""),
+          );
+          return new NodeChildProcess.ChildProcess();
+        });
+        expect(await f.controller.discard(handle)).toEqual({ accepted: false, completed: false });
+        expect((await f.controller.laptopEvidence()).activationBlocked).toBe(true);
+        expect(await f.controller.isLaptopStageAbsent(selectionName, "other-stage")).toBe(false);
+        let active = f.controller;
+        if (mode === "new generation") {
+          const generation = "8".repeat(64);
+          await NodeFSP.writeFile(
+            f.controller.manifestPath,
+            JSON.stringify({ ...f.active, generation }),
+          );
+          nativeCommand.mockReset();
+          active = new JonesDesktopUpdateController({ ...f.options, activeGeneration: generation });
+          await active.configure();
+          expect((await active.laptopEvidence()).activeGeneration).toBe(generation);
+        }
+        expect(await active.isLaptopStageAbsent(selectionName, handle)).toBe(true);
+        expect((await active.laptopEvidence()).activationBlocked).toBe(false);
+        expect(active.state.jones?.stagedHandle).toBeUndefined();
         expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
       } finally {
         nativeCommand.mockReset();

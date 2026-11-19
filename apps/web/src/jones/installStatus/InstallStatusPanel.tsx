@@ -9,11 +9,16 @@ import {
   Clock3Icon,
   LaptopIcon,
   TriangleAlertIcon,
+  XIcon,
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
-import { deviceStatusActive } from "@t3tools/client-runtime/jones/install-plan";
+import {
+  deviceSelectionLocked,
+  deviceStatusActive,
+  operationOutstanding,
+} from "@t3tools/client-runtime/jones/install-plan";
 import { cn } from "../../lib/utils";
 import { useInstallPlan } from "./useInstallPlan";
 import { installStatusStore, type InstallStatusStore } from "./panelUi";
@@ -36,6 +41,7 @@ import {
   type PanelAction,
 } from "./actions";
 import { finishPlan } from "./finishPlan";
+import { abandonDevice } from "./abandonDevice";
 import { ManualInstallClosure } from "./ManualInstallClosure";
 import { INSTALL_PLAN_GO, INSTALL_PLAN_WAIT, lastUpdateLabel } from "./copy";
 
@@ -88,9 +94,9 @@ export function InstallStatusPanel({
     const device = devices.get(environmentId);
     const member = plan.devices.find((d) => d.environmentId === environmentId);
     const selection = device === undefined ? undefined : selectionFor(device);
-    const locked = (member?.operations.length ?? 0) > 0;
+    const locked = member !== undefined && deviceSelectionLocked(plan, member);
     const reason = locked
-      ? "Already started. Open this device to stop its download."
+      ? "Open device details for recovery options."
       : selection === undefined
         ? (device?.observation.message ??
           (device?.canOperate === false
@@ -135,7 +141,13 @@ export function InstallStatusPanel({
       });
   };
   const action = (environmentId: EnvironmentId | "laptop", value: PanelAction) =>
-    void perform(`${environmentId}:${value}`, () => performPanelAction(environmentId, value));
+    void perform(`${environmentId}:${value}`, () =>
+      performPanelAction(
+        environmentId,
+        value,
+        !view.preview && value === "check" ? plan.planId : undefined,
+      ),
+    );
   const editDone = () =>
     void perform("edit", async () => {
       if (!editing) return;
@@ -164,7 +176,7 @@ export function InstallStatusPanel({
             error: locked
               .map(
                 (d) =>
-                  `${choices.find((c) => c.environmentId === d.environmentId)?.label ?? "Device"} started before the edit applied, so it stays in. Open it to stop the download.`,
+                  `${choices.find((c) => c.environmentId === d.environmentId)?.label ?? "Device"} started before the edit applied. Open device details for recovery options.`,
               )
               .join(" "),
           });
@@ -227,7 +239,7 @@ export function InstallStatusPanel({
       }}
     >
       <header
-        className="grid min-h-9 shrink-0 grid-cols-[auto_minmax(0,1fr)_2.5rem_1.5rem] items-center gap-1 px-2"
+        className="grid min-h-9 shrink-0 grid-cols-[auto_minmax(0,1fr)_2.5rem_3rem] items-center gap-1 px-2"
         data-install-header
       >
         <h2 className="whitespace-nowrap text-xs font-medium" data-install-title>
@@ -258,7 +270,7 @@ export function InstallStatusPanel({
             Done
           </Button>
         </span>
-        <span className="flex size-6 items-center justify-center">
+        <span className="flex w-12 items-center justify-end">
           <Button
             variant="ghost-muted"
             size="icon-micro"
@@ -268,6 +280,18 @@ export function InstallStatusPanel({
             onClick={collapse}
           >
             <ChevronDownIcon className={cn("size-3.5", snapshot.collapsed && "-rotate-90")} />
+          </Button>
+          <Button
+            variant="ghost-muted"
+            size="icon-micro"
+            aria-label="Hide Install status"
+            onClick={() => {
+              setDraft(null);
+              setDetail(null);
+              store.update({ open: false });
+            }}
+          >
+            <XIcon className="size-3.5" />
           </Button>
         </span>
       </header>
@@ -408,6 +432,33 @@ export function InstallStatusPanel({
                           : "Check whether the previous download has finished or stopped."}
                     </p>
                   ) : null}
+                  {availableLaptop?.abandon ? (
+                    <Button
+                      variant="outline"
+                      size="micro"
+                      disabled={pending.has("laptop:abandon-stage")}
+                      onClick={() => action("laptop", "abandon-stage")}
+                    >
+                      {plan.laptop.stageAbandonment?.status === "pending"
+                        ? "Abandoning staged update…"
+                        : plan.laptop.stageAbandonment?.status === "unconfirmed"
+                          ? "Retry abandoning staged update"
+                          : "Abandon staged update"}
+                    </Button>
+                  ) : null}
+                  {!view.readOnly &&
+                  plan.laptop.stageAbandonment?.status === "retired" &&
+                  availableLaptop?.download !== true &&
+                  installPlanServices()?.services.bridge.checkForUpdate !== undefined ? (
+                    <Button
+                      variant="ghost-muted"
+                      size="micro"
+                      disabled={pending.has("laptop:check-build")}
+                      onClick={() => action("laptop", "check-build")}
+                    >
+                      Check for builds
+                    </Button>
+                  ) : null}
                   {canCheckLaptop ? (
                     <Button
                       variant="ghost-muted"
@@ -489,6 +540,14 @@ export function InstallStatusPanel({
                       >
                         Done
                       </Button>
+                      <Button
+                        variant="ghost-muted"
+                        size="micro"
+                        disabled={pending.has("edit")}
+                        onClick={() => setDraft(null)}
+                      >
+                        Cancel
+                      </Button>
                     </>
                   ) : (
                     <Button
@@ -544,12 +603,15 @@ export function InstallStatusPanel({
               const open = focusedDevice === environmentId;
               const updated = row?.phase === "done" || row?.phase === "updated-elsewhere";
               const held = row?.phase === "held" || row?.phase === "unknown";
-              const operation = plan.devices
-                .find((d) => d.environmentId === environmentId)
-                ?.operations.at(-1);
+              const operations = plan.devices.find(
+                (d) => d.environmentId === environmentId,
+              )?.operations;
+              const operation = operations?.find(operationOutstanding) ?? operations?.at(-1);
               const receipt = operation?.receipt;
               const setupUnconfirmed =
                 operation?.step === "directive" && operation.directive === undefined;
+              const launcherUnconfirmed =
+                operation?.step === "install" && receipt?.code === "launcher-unconfirmed";
               const inspectKey =
                 receipt?.phase === "held" &&
                 receipt.code === "cleanup-unconfirmed" &&
@@ -560,8 +622,8 @@ export function InstallStatusPanel({
               const cleanup = cleanupInspection?.key === inspectKey ? cleanupInspection : null;
               const canCheckArchived =
                 snapshot.native?.readOnly === undefined &&
-                plan.cancelled === true &&
-                (inspectKey !== null || setupUnconfirmed);
+                ((plan.cancelled === true && (inspectKey !== null || setupUnconfirmed)) ||
+                  launcherUnconfirmed);
               return (
                 <li key={environmentId}>
                   <div className="flex min-w-0 items-center gap-1">
@@ -569,7 +631,7 @@ export function InstallStatusPanel({
                       <Checkbox
                         aria-label={`Include ${label}`}
                         checked={included}
-                        disabled={choice.locked || choice.selection === undefined}
+                        disabled={choice.locked || (!included && choice.selection === undefined)}
                         aria-describedby={
                           choice.reason === undefined
                             ? undefined
@@ -587,12 +649,16 @@ export function InstallStatusPanel({
                     <Tooltip>
                       <TooltipTrigger
                         render={
-                          <button type="button" className={rowClass} aria-disabled={editing} />
+                          <button
+                            type="button"
+                            className={rowClass}
+                            disabled={pending.has("edit")}
+                          />
                         }
                         aria-label={`${label} update details`}
                         aria-expanded={open}
                         onClick={() => {
-                          if (editing) return;
+                          if (editing) setDraft(null);
                           if (open) returnToOverview();
                           else setDetail(environmentId);
                         }}
@@ -638,7 +704,7 @@ export function InstallStatusPanel({
                             </>
                           ) : null}
                         </span>
-                        {!open && !editing ? (
+                        {!open ? (
                           <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
                         ) : null}
                       </TooltipTrigger>
@@ -830,6 +896,26 @@ export function InstallStatusPanel({
                                 : `Stop download on ${label}`}
                             </Button>
                           ) : null}
+                          {row?.actions.abandon ? (
+                            <Button
+                              variant="outline"
+                              size="micro"
+                              disabled={pending.has(`${environmentId}:abandon`)}
+                              onClick={() =>
+                                void perform(`${environmentId}:abandon`, () =>
+                                  abandonDevice(environmentId, plan.planId),
+                                )
+                              }
+                            >
+                              {pending.has(`${environmentId}:abandon`)
+                                ? "Abandoning update…"
+                                : plan.devices.find(
+                                      (device) => device.environmentId === environmentId,
+                                    )?.abandoning
+                                  ? "Resume abandonment"
+                                  : "Abandon update"}
+                            </Button>
+                          ) : null}
                           {row?.actions.end ? (
                             <Button
                               variant="ghost-muted"
@@ -852,7 +938,7 @@ export function InstallStatusPanel({
                               ? "Checking…"
                               : setupUnconfirmed
                                 ? "Check setup status"
-                                : held
+                                : held || launcherUnconfirmed
                                   ? "Check update outcome"
                                   : "Refresh now"}
                           </Button>

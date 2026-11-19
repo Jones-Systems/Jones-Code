@@ -66,7 +66,7 @@ async function createTwoHostCampaign(
     if (offline.has(environmentId)) throw new Error("Synthetic host offline.");
     if (request.action === "enroll") throw new Error("Enrollment belongs to fixture setup.");
     if (request.action === "leader") throw new Error("This campaign publishes no laptop build.");
-    if (request.action === "planDirective")
+    if (request.action === "planDirective" || request.action === "releaseDirective")
       throw new Error("Manual-review directives belong to plan fixtures.");
     const selectedEnrollment =
       environmentId === enrollment.environmentId ? enrollment : secondEnrollment;

@@ -13,6 +13,18 @@ import {
 } from "@t3tools/contracts/jones/fleet-updates";
 import { withQualifiedRuntimeLock } from "../cloud/qualifiedRuntime.ts";
 
+const StoredDirective = Schema.Struct({
+  directiveId: FleetOperationId,
+  enrollmentId: FleetOperationId,
+  targetSource: FleetSourceSha,
+  targetTree: FleetSourceSha,
+  mode: Schema.Literal("manual-review"),
+  issuedAt: Schema.String,
+  leaderAtIssue: Schema.NullOr(
+    Schema.Struct({ committedSource: FleetSourceSha, publishedAt: Schema.String }),
+  ),
+});
+
 /**
  * What this host knows about following its laptop. The leader is bound to the enrollment that
  * published it, so re-enrolling discards it. The automatic-activation time is host-wide and
@@ -38,18 +50,14 @@ export const FleetFollowerRecord = Schema.Struct({
     }),
   ),
   lastAutomaticActivationAt: Schema.NullOr(Schema.String),
-  directive: Schema.optionalKey(
-    Schema.Struct({
-      directiveId: FleetOperationId,
-      enrollmentId: FleetOperationId,
-      targetSource: FleetSourceSha,
-      targetTree: FleetSourceSha,
-      mode: Schema.Literal("manual-review"),
-      issuedAt: Schema.String,
-      leaderAtIssue: Schema.NullOr(
-        Schema.Struct({ committedSource: FleetSourceSha, publishedAt: Schema.String }),
-      ),
-    }),
+  directive: Schema.optionalKey(StoredDirective),
+  directiveHistory: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({ directiveId: FleetOperationId, prior: Schema.NullOr(StoredDirective) }),
+    ).check(Schema.isMaxLength(128)),
+  ),
+  releasedDirectives: Schema.optionalKey(
+    Schema.Array(FleetOperationId).check(Schema.isMaxLength(128)),
   ),
 });
 export type FleetFollowerRecord = typeof FleetFollowerRecord.Type;

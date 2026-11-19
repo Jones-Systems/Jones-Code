@@ -12,10 +12,12 @@ import {
   applyEdit,
   canSupersede,
   deviceSettled,
+  deviceStagedReceipt,
   deviceState,
   isPlanComplete,
   laptopSettled,
   nextRunnerStep,
+  planCompletion,
   selectability,
   startPlan,
   validateDirectiveEvidence,
@@ -94,6 +96,52 @@ const state: JonesUpdateState = {
 };
 
 describe("install plan model", () => {
+  it("does not recover an earlier stage after retiring the replacement", () => {
+    const first = { ...operation(), receipt: receipt("completed") };
+    const replacement = {
+      ...operation(),
+      operationId: "33333333-3333-4333-8333-333333333333",
+      receipt: { ...receipt("completed"), stageRetiredAt: now },
+    };
+    expect(deviceStagedReceipt([first])).toBe(first.receipt);
+    expect(deviceStagedReceipt([first, replacement])).toBeUndefined();
+  });
+
+  it("finishes only the running-source observation when the launcher's attempt is unconfirmed", () => {
+    const plan = opened();
+    const install = {
+      ...operation(),
+      step: "install",
+      receipt: { ...receipt("running"), code: "launcher-unconfirmed" },
+    } as const;
+    const withOperation = (operations: readonly JonesInstallPlanHostOperation[]) => ({
+      ...plan,
+      devices: [{ ...plan.devices[0]!, operations }],
+    });
+    const target = {
+      ...state,
+      installedSource: { repository: plan.target.repository, sha: source, tree },
+    };
+    const observed = new Map([[env, { freshness: "fresh" as const, state: target }]]);
+    const pending = withOperation([install]);
+    expect(isPlanComplete(pending)).toBe(false);
+    expect(planCompletion(pending, observed, true)).toMatchObject({ completable: true });
+    expect(
+      planCompletion(
+        withOperation([{ ...install, receipt: { ...install.receipt, updateId: operationId } }]),
+        observed,
+        true,
+      ).completable,
+    ).toBe(false);
+    expect(
+      planCompletion(
+        withOperation([{ ...operation(), receipt: receipt("fenced") }]),
+        observed,
+        true,
+      ).completable,
+    ).toBe(true);
+  });
+
   it("uses the current membership for completion and locks a device reserved while Edit was open", () => {
     const plan = opened();
     expect(isPlanComplete(plan)).toBe(false);

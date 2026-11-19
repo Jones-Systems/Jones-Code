@@ -10,6 +10,7 @@ import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import type {
   JonesOperationReadResult,
   JonesOperationReceipt,
+  JonesAbandonStageResult,
   JonesRecoverCleanupResult,
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
@@ -21,7 +22,8 @@ export interface InstallPlanServices {
   readonly bridge: Pick<
     DesktopBridge,
     "installPlan" | "onInstallPlan" | "getUpdateState" | "onUpdateState"
-  >;
+  > &
+    Partial<Pick<DesktopBridge, "checkForUpdate">>;
   readonly devices: () => readonly InstallStatusDevice[];
   readonly observe: (environmentId: EnvironmentId) => Promise<InstallStatusDevice>;
   readonly readStatus?: (environmentId: EnvironmentId) => Promise<JonesUpdateState | null>;
@@ -36,6 +38,7 @@ export interface InstallPlanServices {
     | JonesOperationReceipt
     | JonesOperationReadResult
     | JonesRecoveryPreflight
+    | JonesAbandonStageResult
     | JonesRecoverCleanupResult
   >;
   readonly stop: (

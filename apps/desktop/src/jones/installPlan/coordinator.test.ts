@@ -106,8 +106,14 @@ function fixture() {
     validateRecoveryReview: vi.fn(async () => {}),
     laptopEvidence: async () => evidence,
     retiredLaptopInstall: vi.fn(async () => false),
+    discard: vi.fn(async (_handle: string) => ({ accepted: true, completed: true })),
+    laptopStageSelectionName: vi.fn(async (_handle: string) => "selection.json"),
+    isLaptopStageAbsent: vi.fn(async (_name: string, _handle: string) => false),
     isStaged: vi.fn(() => staged),
-    download: vi.fn(async () => ({ accepted: true, completed: true })),
+    download: vi.fn(async (): ReturnType<JonesDesktopUpdateController["download"]> => ({
+      accepted: true,
+      completed: true,
+    })),
     stopDownload: vi.fn(async () => "stopped" as const),
     install: vi.fn(
       async (
@@ -125,6 +131,9 @@ function fixture() {
     | "busy"
     | "laptopEvidence"
     | "retiredLaptopInstall"
+    | "discard"
+    | "laptopStageSelectionName"
+    | "isLaptopStageAbsent"
     | "download"
     | "stopDownload"
     | "install"
@@ -207,8 +216,8 @@ function fixture() {
         Object.entries({ ...evidence, ...value }).filter(([, v]) => v !== undefined),
       ) as JonesInstallPlanLaptopEvidence;
     },
-    setStaged: () => {
-      staged = true;
+    setStaged: (value = true) => {
+      staged = value;
     },
     advance: () => {
       clock += 120_001;
@@ -1510,3 +1519,188 @@ it("independent preflight leaves an existing plan and dispositions byte-for-byte
   expect(refused.refused?.code).toBe("invalid-evidence");
   expect(f.controller.recoveryPreflight).toHaveBeenCalledTimes(1);
 });
+
+it("abandons only the Laptop stage created by the plan", async () => {
+  const f = fixture();
+  const originalPlan = await f.start([]);
+  f.setEvidence({ activeSource: old, committedTransactionId: undefined });
+  const abandon = () =>
+    f.coordinator.request({ type: "laptop", planId: originalPlan.planId, action: "abandon-stage" });
+  f.setStaged();
+  expect((await abandon()).refused?.code).toBe("invalid-evidence");
+  expect(f.controller.discard).not.toHaveBeenCalled();
+});
+
+it("rechecks a Laptop abandonment after losing the discard result", async () => {
+  const f = fixture();
+  f.setEvidence({ activeSource: old, committedTransactionId: undefined });
+  f.controller.download.mockImplementation(async () => {
+    f.setStaged();
+    return { accepted: true, completed: true, createdStagedHandle: "stage" };
+  });
+  const started = await f.coordinator.request({
+    type: "start",
+    origin: "update-button",
+    target,
+    select: [],
+    laptop: { action: "download" },
+  });
+  expect(started.refused).toBeUndefined();
+  const planId = started.state.current!.planId;
+  const abandon = () => f.coordinator.request({ type: "laptop", planId, action: "abandon-stage" });
+  const operation = () => f.snapshot().document.current?.laptop.operations.at(-1);
+  await vi.waitFor(() => expect(operation()?.createdStagedHandle).toBe("stage"));
+  f.controller.discard.mockResolvedValueOnce({ accepted: false, completed: false });
+  expect((await abandon()).refused).toBeUndefined();
+  const abandonment = () => f.snapshot().document.current?.laptop.stageAbandonment?.status;
+  await vi.waitFor(() => expect(abandonment()).toBe("unconfirmed"));
+  f.setEvidence({ activationBlocked: true });
+  f.controller.isLaptopStageAbsent.mockResolvedValueOnce(true);
+  await f.coordinator.request({ type: "read" });
+  expect(abandonment()).toBe("retired");
+  expect(operation()?.result).toMatchObject({ status: "stopped", code: "stage-retired" });
+  expect(f.controller.discard.mock.calls).toEqual([["stage"]]);
+  expect(f.controller.isLaptopStageAbsent).toHaveBeenCalledWith("selection.json", "stage");
+  expect(f.controller.install).not.toHaveBeenCalled();
+});
+
+it("keeps an abandoned attempt in history and admits a distinct download after re-adding", async () => {
+  const f = fixture();
+  const plan = await f.start();
+  const grant = (await f.claim(plan.planId)).grant!;
+  const request = (revision: number, phase: "begin" | "finish") =>
+    f.coordinator.request({
+      type: "abandon-device",
+      phase,
+      planId: plan.planId,
+      environmentId: remote,
+      expectedRevision: revision,
+    });
+  const current = () => f.snapshot().document.current!;
+  expect((await request(current().revision, "begin")).refused?.code).toBe("outstanding-operation");
+  await f.coordinator.request({
+    type: "report",
+    planId: plan.planId,
+    environmentId: remote,
+    operationId: grant.operationId,
+    evidence: { kind: "receipt", receipt: { ...f.receipt(grant), phase: "failed" } },
+  });
+  expect((await request(current().revision, "begin")).refused).toBeUndefined();
+  expect((await f.claim(plan.planId)).refused).toBeDefined();
+  expect(
+    (
+      await f.coordinator.request({
+        type: "cancel-plan",
+        planId: plan.planId,
+        expectedRevision: current().revision,
+      })
+    ).refused?.code,
+  ).toBe("outstanding-operation");
+  expect((await request(current().revision, "finish")).refused).toBeUndefined();
+  expect(current().devices[0]).toMatchObject({ membership: "removed", archivedOperationCount: 1 });
+  await f.coordinator.request({
+    type: "edit",
+    planId: plan.planId,
+    expectedRevision: current().revision,
+    select: [selection],
+    deselect: [],
+  });
+  const retry = (await f.claim(plan.planId)).grant;
+  expect(retry?.operationId).toBeDefined();
+  expect(retry?.operationId).not.toEqual(grant.operationId);
+  expect(current().devices[0]?.operations.map((operation) => operation.operationId)).toEqual([
+    grant.operationId,
+    retry?.operationId,
+  ]);
+});
+
+it("keeps proof of a running external build without claiming it was installed by the plan", async () => {
+  const f = fixture();
+  const plan = await f.start();
+  const end = (sourceTree: string) =>
+    f.coordinator.request({
+      type: "end",
+      planId: plan.planId,
+      environmentId: remote,
+      expectedRevision: plan.revision,
+      runningTarget: {
+        build: { version: target.version, sourceSha: source, sourceTree },
+        observedAt: f.options.now(),
+      },
+    });
+  expect((await end("f".repeat(40))).refused?.code).toBe("invalid-evidence");
+  const result = await end(tree);
+  expect(result.refused).toBeUndefined();
+  expect(result.state.current?.devices[0]).toMatchObject({
+    verifiedElsewhere: { version: target.version },
+    operations: [],
+  });
+  expect(result.state.view.complete).toBe(true);
+});
+
+it.each(["installed", "replaced"] as const)(
+  "finishes abandonment after the selected stage was %s externally",
+  async (disposition) => {
+    const f = fixture();
+    const plan = await f.start();
+    const grant = (await f.claim(plan.planId)).grant!;
+    const downloaded = f.receipt(grant, "completed");
+    const report = await f.coordinator.request({
+      type: "report",
+      planId: plan.planId,
+      environmentId: remote,
+      operationId: grant.operationId,
+      evidence: {
+        kind: "receipt",
+        receipt: { ...downloaded, staged: { ...downloaded.staged!, createdByOperation: true } },
+      },
+    });
+    expect(report.refused).toBeUndefined();
+    const abandon = { type: "abandon-device", planId: plan.planId, environmentId: remote } as const;
+    const begun = await f.coordinator.request({
+      ...abandon,
+      phase: "begin",
+      expectedRevision: report.state.current!.revision,
+    });
+    expect(begun.refused).toBeUndefined();
+    const finish = {
+      ...abandon,
+      phase: "finish",
+      expectedRevision: begun.state.current!.revision,
+    } as const;
+    expect((await f.coordinator.request(finish)).refused?.code).toBe("invalid-evidence");
+    const replacement = {
+      operationId: grant.operationId,
+      stagedHandle: "replacement-stage",
+      observedAt: f.options.now(),
+    };
+    if (disposition === "replaced") {
+      expect(
+        (
+          await f.coordinator.request({
+            ...finish,
+            stageReplacement: { ...replacement, stagedHandle: downloaded.staged!.stagedHandle },
+          })
+        ).refused?.code,
+      ).toBe("invalid-evidence");
+    }
+    const result = await f.coordinator.request({
+      ...finish,
+      ...(disposition === "replaced"
+        ? { stageReplacement: replacement }
+        : {
+            runningTarget: {
+              build: { version: target.version, sourceSha: source, sourceTree: tree },
+              observedAt: f.options.now(),
+            },
+          }),
+    });
+    expect(result.refused).toBeUndefined();
+    expect(result.state.view.complete).toBe(true);
+    const device = result.state.current!.devices[0]!;
+    expect(device.abandoning).toBeUndefined();
+    if (disposition === "installed") expect(device.verifiedElsewhere?.version).toBe(target.version);
+    else expect(device).toMatchObject({ membership: "removed", stageReplacement: replacement });
+    expect(device.operations[0]?.receipt?.stageRetiredAt).toBeUndefined();
+  },
+);

@@ -12,6 +12,7 @@ import {
   FleetLeaderInput,
   FleetOperationId,
   FleetPlanDirectiveInput,
+  FleetReleasePlanDirectiveInput,
   FleetStageInput,
   FleetRetireInput,
 } from "./host.ts";
@@ -67,6 +68,16 @@ export function makeFleetUpdatesHttpGroup({
         ...common,
         payload: FleetLeaderInput,
       }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post(
+        "releaseDirective",
+        `${FLEET_UPDATES_HTTP_BASE}/plan-directive/release`,
+        {
+          ...common,
+          payload: FleetReleasePlanDirectiveInput,
+        },
+      ).middleware(EnvironmentAuthenticatedAuth),
     )
     .add(
       HttpApiEndpoint.put("planDirective", `${FLEET_UPDATES_HTTP_BASE}/plan-directive`, {

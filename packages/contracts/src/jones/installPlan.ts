@@ -134,6 +134,12 @@ export const JonesInstallPlanHostOperation = Schema.Struct({
 });
 export type JonesInstallPlanHostOperation = typeof JonesInstallPlanHostOperation.Type;
 
+const StageReplacement = Schema.Struct({
+  operationId: JonesOperationId,
+  stagedHandle: TrimmedNonEmptyString,
+  observedAt: Schema.Int,
+});
+
 export const JonesInstallPlanDevice = Schema.Struct({
   environmentId: EnvironmentId,
   label: Bounded(64),
@@ -143,7 +149,15 @@ export const JonesInstallPlanDevice = Schema.Struct({
   addedAt: Schema.String,
   removedAt: Schema.optionalKey(Schema.String),
   operations: Schema.Array(JonesInstallPlanHostOperation).check(Schema.isMaxLength(16)),
+  abandoning: Schema.optionalKey(Schema.Literal(true)),
+  archivedOperationCount: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(16)),
+  ),
   ended: Schema.optionalKey(Schema.Struct({ at: Schema.String })), // "Stop update" on a staged device
+  verifiedElsewhere: Schema.optionalKey(
+    Schema.Struct({ version: TrimmedNonEmptyString, observedAt: Schema.Int }),
+  ),
+  stageReplacement: Schema.optionalKey(StageReplacement),
 });
 export type JonesInstallPlanDevice = typeof JonesInstallPlanDevice.Type;
 
@@ -151,6 +165,7 @@ export const JonesInstallPlanLaptopOperation = Schema.Struct({
   operationId: JonesOperationId,
   step: Schema.Literals(["download", "stop", "install"]),
   requestedAt: Schema.String,
+  createdStagedHandle: Schema.optionalKey(TrimmedNonEmptyString),
   of: Schema.optionalKey(JonesOperationId), // stop: the download it stops
   review: Schema.optionalKey(JonesInstallPlanReview), // install
   worker: Schema.optionalKey(Schema.Struct({ pid: Schema.Number, processGroup: Schema.Number })), // held-exit proof after restart
@@ -187,6 +202,14 @@ const OrdinaryRecovery = Schema.Struct({
 export const JonesInstallPlanLaptop = Schema.Struct({
   environmentId: EnvironmentId,
   operations: Schema.Array(JonesInstallPlanLaptopOperation).check(Schema.isMaxLength(16)),
+  stageAbandonment: Schema.optionalKey(
+    Schema.Struct({
+      operationId: JonesOperationId,
+      handle: TrimmedNonEmptyString,
+      selectionName: Schema.optionalKey(TrimmedNonEmptyString),
+      status: Schema.Literals(["pending", "retired", "unconfirmed"]),
+    }),
+  ),
   // Native-only fields: written by coordinator hooks, never derived from a renderer request.
   binding: Schema.optionalKey(
     Schema.Struct({
@@ -226,6 +249,7 @@ const RunningBuild = Schema.Struct({
   sourceSha: JonesSourceSha,
   sourceTree: JonesSourceSha,
 });
+const RunningTargetObservation = Schema.Struct({ build: RunningBuild, observedAt: Schema.Int });
 
 const ManualInstallObservationFields = {
   environmentId: EnvironmentId,
@@ -293,6 +317,7 @@ export const JonesInstallPlanState = Schema.Struct({
   view: Schema.Struct({
     complete: Schema.Boolean,
     cancelPlan: Schema.optionalKey(Schema.Literal(1)),
+    deviceRecovery: Schema.optionalKey(Schema.Literal(1)),
     manualClose: Schema.optionalKey(
       Schema.Struct({
         laptop: RunningBuild,
@@ -348,7 +373,7 @@ export const JonesInstallPlanRequest = Schema.Union([
     type: Schema.Literal("laptop"),
     command: Schema.optionalKey(JonesInstallPlanClientCommand),
     planId: JonesOperationId,
-    action: Schema.Literals(["download", "stop", "install", "preflight"]),
+    action: Schema.Literals(["download", "stop", "install", "preflight", "abandon-stage"]),
     review: Schema.optionalKey(JonesInstallPlanReview),
   }),
   Schema.Struct({
@@ -378,6 +403,17 @@ export const JonesInstallPlanRequest = Schema.Union([
     planId: JonesOperationId,
     environmentId: EnvironmentId,
     expectedRevision: Schema.Number,
+    runningTarget: Schema.optionalKey(RunningTargetObservation),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("abandon-device"),
+    phase: Schema.Literals(["begin", "finish"]),
+    planId: JonesOperationId,
+    environmentId: EnvironmentId,
+    expectedRevision: Schema.Number,
+    directiveRelease: Schema.optionalKey(FleetHostStatus),
+    runningTarget: Schema.optionalKey(RunningTargetObservation),
+    stageReplacement: Schema.optionalKey(StageReplacement),
   }),
   Schema.Struct({
     type: Schema.Literal("dismiss"),

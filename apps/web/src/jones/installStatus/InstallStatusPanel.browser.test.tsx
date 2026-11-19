@@ -275,6 +275,22 @@ const click = async (screen: Screen, name: string) => {
 // These use real browser interactions and the real pure model/runner against scripted receipts.
 // They cannot qualify native installs, host worker exit, Electron IPC or publication.
 describe("Install status receipt fixture", () => {
+  it("leaves editing through device details or Cancel without saving the draft", async () => {
+    await using world = await setup();
+    const { screen } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+    await click(screen, "Mini update details");
+    expect(screen.getByRole("button", { name: "Back to all devices" }).element()).toBeDefined();
+    await click(screen, "Back to all devices");
+    await click(screen, "Edit");
+    expect(
+      screen.getByRole("checkbox", { name: "Include Mini" }).element().getAttribute("data-checked"),
+    ).toBeNull();
+    await click(screen, "Cancel");
+    expect(screen.getByRole("button", { name: "Edit", exact: true }).element()).toBeDefined();
+  });
+
   it("cancels the held Laptop rollout from its detail and keeps an inactive history entry", async () => {
     await using world = await setup();
     const { screen, fixture, calls, controller } = world;
@@ -375,7 +391,8 @@ describe("Install status receipt fixture", () => {
     const { screen, fixture, calls } = world;
     await click(screen, "Edit");
     expect(visibleDone(screen)).toHaveLength(1);
-    expect(screen.container.textContent).not.toMatch(/Save|Cancel/);
+    expect(screen.container.textContent).not.toMatch(/Save/);
+    expect(button(screen, "Cancel").element()).toBeDefined();
     await click(screen, "All");
     expect(fixture.store.get().previewSelection).toHaveLength(0);
     await click(screen, "None");
@@ -1143,6 +1160,45 @@ describe("Install status step progress", () => {
     screen.container
       .querySelector(`[aria-label="${label} update details"] [data-row-text]`)
       ?.textContent?.trim();
+
+  it("keeps the launcher outcome check available after Done archives the verified build", async () => {
+    await using world = await setup();
+    const { screen, fixture, controller } = world;
+    await act(() => fixture.showcaseStepProgress());
+    controller.close();
+    const current = fixture.snapshot().current!;
+    const vps = current.devices.find((device) => device.label === "VPS")!;
+    const attempt = vps.operations[0]!;
+    await act(() => {
+      fixture.store.update({
+        native: {
+          ...fixture.snapshot(),
+          last: {
+            ...current,
+            dismissedAt: current.createdAt,
+            devices: [
+              {
+                ...vps,
+                verifiedElsewhere: {
+                  version: current.target.version,
+                  observedAt: Date.parse(current.createdAt),
+                },
+                operations: [
+                  { ...attempt, receipt: { ...attempt.receipt!, code: "launcher-unconfirmed" } },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      fixture.store.open(true);
+    });
+    await click(screen, "VPS update details");
+    await expect
+      .element(screen.getByRole("button", { name: "Check update outcome" }))
+      .toBeEnabled();
+    expect(screen.container.textContent).toContain("launcher outcome remains unconfirmed");
+  });
 
   it("keeps cleanup inspection available in the cancelled plan's history", async () => {
     await using world = await setup();

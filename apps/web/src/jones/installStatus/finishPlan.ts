@@ -16,6 +16,7 @@ export async function finishPlan(planId: string) {
   const read = await requestInstallPlan({ type: "read" }, binding);
   if (read.refused !== undefined) throw new Error(read.refused.message);
   let plan = current(read.state);
+  const supportsDeviceRecovery = read.state.view.deviceRecovery === 1;
   const identity = plan.target;
   const unchanged = () => {
     const native = binding.store.get().native;
@@ -29,38 +30,68 @@ export async function finishPlan(planId: string) {
     )
       throw new Error("The update plan changed. Read status before continuing.");
   };
-  if (!isPlanComplete(plan)) {
+  if (supportsDeviceRecovery || !isPlanComplete(plan)) {
+    const readStatus = supportsDeviceRecovery ? binding.services.readStatus : undefined;
     const observations = () =>
       new Map(
-        binding.services.devices().map((device) => [device.environmentId, device.observation]),
+        (readStatus === undefined ? binding.services.devices() : binding.store.get().devices).map(
+          (device) => [device.environmentId, device.observation],
+        ),
       );
-    const completion = planCompletion(plan, observations());
+    const completion = planCompletion(plan, observations(), supportsDeviceRecovery);
     if (!completion.completable) throw new Error("Fresh proof is required to finish this plan.");
     for (const candidate of completion.candidates) {
       unchanged();
+      const observed = observations();
+      if (readStatus !== undefined) {
+        const state = await readStatus(candidate.environmentId);
+        unchanged();
+        observed.set(candidate.environmentId, {
+          state,
+          freshness: "fresh",
+          heardAt: binding.services.now(),
+        });
+      }
       if (
-        !planCompletion(plan, observations()).candidates.some(
+        !planCompletion(plan, observed, supportsDeviceRecovery).candidates.some(
           (d) => d.environmentId === candidate.environmentId,
         )
       )
         throw new Error("Running source proof changed. Read status before continuing.");
+      const status = observed.get(candidate.environmentId)!;
+      const version = status.state?.currentVersion;
+      if (supportsDeviceRecovery && version === undefined)
+        throw new Error("The device did not report its running version. Refresh status again.");
       const result = await requestInstallPlan(
         {
           type: "end",
           planId,
           expectedRevision: plan.revision,
           environmentId: candidate.environmentId,
+          ...(supportsDeviceRecovery && version !== undefined
+            ? {
+                runningTarget: {
+                  build: {
+                    version,
+                    sourceSha: status.state!.installedSource!.sha,
+                    sourceTree: status.state!.installedSource!.tree,
+                  },
+                  observedAt: status.heardAt ?? binding.services.now(),
+                },
+              }
+            : {}),
         },
         binding,
       );
       if (result.refused !== undefined) throw new Error(result.refused.message);
       const next = current(result.state);
+      const updated = next.devices.find((d) => d.environmentId === candidate.environmentId);
       if (
         next.target.repository !== identity.repository ||
         next.target.sourceSha !== identity.sourceSha ||
         next.target.sourceTree !== identity.sourceTree ||
         next.revision <= plan.revision ||
-        next.devices.find((d) => d.environmentId === candidate.environmentId)?.ended === undefined
+        (supportsDeviceRecovery ? updated?.verifiedElsewhere : updated?.ended) === undefined
       )
         throw new Error("Finishing this device was not confirmed. Read status before continuing.");
       plan = next;
