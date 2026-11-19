@@ -34,6 +34,7 @@ import type { InstallPlanServices } from "../../installStatus/services";
 
 const FIXTURE_LAPTOP = EnvironmentId.make("install-fixture-laptop");
 const decodePlanState = Schema.decodeUnknownSync(PlanStateSchema);
+const decodeArchivedPlans = Schema.decodeUnknownSync(Schema.Array(PlanSchema));
 export const FIXTURE_HOSTS = ["VPS", "Mini", "Test"].map((label) => ({
   label,
   environmentId: EnvironmentId.make(`install-fixture-${label.toLowerCase()}`),
@@ -178,8 +179,7 @@ export function createScriptedInstallPlan(input: {
       const data = JSON.parse(saved);
       native = decodePlanState(data);
       if (input.recoveryHistory && Array.isArray(data.archived))
-        for (const plan of Schema.decodeUnknownSync(Schema.Array(PlanSchema))(data.archived))
-          archived.set(plan.planId, plan);
+        for (const plan of decodeArchivedPlans(data.archived)) archived.set(plan.planId, plan);
     }
     for (const device of [
       ...[...archived.values()].flatMap((plan) => plan.devices),

@@ -545,7 +545,7 @@ describe("exact-source action", () => {
     async (mode) => {
       await using _fixture = await setupFixture1();
       const laptop = EnvironmentId.make("replacement-laptop");
-      const now = new Date().toISOString();
+      const now = "2026-11-19T14:00:00.000Z";
       const current = startPlan({
         planId: "11111111-1111-4111-8111-111111111111",
         target: {

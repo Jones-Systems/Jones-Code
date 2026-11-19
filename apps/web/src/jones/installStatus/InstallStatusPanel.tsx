@@ -94,9 +94,10 @@ export function InstallStatusPanel({
       (historyRevision === undefined
         ? snapshot.historyDocumentRevision !== documentRevision
         : historyRevision !== snapshot.historyPlan.revision));
+  const requestedRevision = needsHistory ? (historyRevision ?? documentRevision ?? 0) : null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Archive detail is fetched for this exact desk, selection and durable revision.
   useEffect(() => {
-    if (!needsHistory || binding === undefined || historyId === null) return;
+    if (requestedRevision === null || binding === undefined || historyId === null) return;
     let cancelled = false;
     const showError = (error: string) => {
       if (!cancelled && installPlanServices() === binding && store.historySelection() === selection)
@@ -112,7 +113,7 @@ export function InstallStatusPanel({
     return () => {
       cancelled = true;
     };
-  }, [binding, store, historyId, needsHistory, documentRevision, selection]);
+  }, [binding, store, historyId, requestedRevision, selection]);
 
   if (!snapshot.open || snapshot.native === null) return null;
   if (view?.plan == null) {
@@ -786,7 +787,7 @@ function InstallStatusPlan({
                 !editing &&
                 silent &&
                 !row?.launcherOutcomeUnconfirmed &&
-                !row?.hasRecoveryDuty &&
+                !(view.archived && row?.hasRecoveryDuty) &&
                 row?.attemptText === undefined &&
                 row?.sourceText === undefined
                   ? attention.text

@@ -1145,12 +1145,12 @@ describe("install entrypoint routing", () => {
         expect(services.chooseRecovery).toHaveBeenCalledExactlyOnceWith(measured);
         expect(requests.map((request) => request.type)).toEqual(
           policy === null
-            ? ["read", "recovery-preflight"]
-            : ["read", "recovery-preflight", "read", "start"],
+            ? ["read", "read", "recovery-preflight"]
+            : ["read", "read", "recovery-preflight", "read", "start"],
         );
-        expect(requests[1]).toEqual({ type: "recovery-preflight", input: measured.binding });
+        expect(requests[2]).toEqual({ type: "recovery-preflight", input: measured.binding });
         if (policy !== null)
-          expect(requests[3]).toMatchObject({
+          expect(requests[4]).toMatchObject({
             type: "start",
             laptop: {
               action: "install",

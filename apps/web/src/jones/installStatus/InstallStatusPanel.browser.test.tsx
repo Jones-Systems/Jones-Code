@@ -1067,7 +1067,15 @@ describe("Install status receipt fixture", () => {
           },
         },
       }));
-    const unbind = bindInstallPlanServices({ ...services, devices }, fixture.store);
+    const unbind = bindInstallPlanServices(
+      {
+        ...services,
+        devices,
+        readStatus: async (id) =>
+          devices().find((device) => device.environmentId === id)?.observation.state ?? null,
+      },
+      fixture.store,
+    );
     try {
       await act(() => fixture.store.update({ devices: devices() }));
       expect(visibleDone(screen)).toHaveLength(1);
@@ -1133,9 +1141,11 @@ describe("Install status receipt fixture", () => {
       await click(screen, "Install on Laptop");
       await world.commitLaptop();
       expect(screen.container.textContent).toContain("Laptop verified · Others go");
-      expect(getComputedStyle(gate).color).toBe(neutral);
-      expect(getComputedStyle(gate).borderTopStyle).toBe("dashed");
-      expect(getComputedStyle(gate).borderTopColor).toBe(neutralBorder);
+      const verifiedGate = screen.container.querySelector<HTMLElement>("[data-install-gate]")!;
+      const verified = getComputedStyle(verifiedGate);
+      expect(verified.color).toBe(neutral);
+      expect(verified.borderTopStyle).toBe("dashed");
+      expect(verified.borderTopColor).toBe(neutralBorder);
       expect(screen.container.querySelector('[role="progressbar"]')).toBeNull();
     } finally {
       document.documentElement.className = oldClass;
@@ -1455,7 +1465,7 @@ describe("Install status step progress", () => {
     expect(fixture.snapshot().current).toBeNull();
     expect(fixture.snapshot().last?.cancelled).toBe(true);
     await click(screen, "Studio update details");
-    expect(rowText(screen, "Studio")).toBe("Cleanup unconfirmed");
+    expect(rowText(screen, "Studio")).toBe("Cleanup unconfirmed · Recovery pending");
     await click(screen, "Inspect cleanup");
     await expect
       .poll(() => screen.container.textContent)

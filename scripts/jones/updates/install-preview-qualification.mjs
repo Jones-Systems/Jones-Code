@@ -1316,6 +1316,8 @@ export function rendererSteps(origin, sourceSha, runId) {
   // The same production controls with the negotiated native plan bridge enabled.
   const panel = "[data-install-status]";
   const panelButton = (name) => click(`${panel} >> role=button[name="${name}"]`);
+  const deviceEditButton = (name) =>
+    click(`${panel} [data-install-gate] >> role=button[name="${name}"]`);
   const planCheck = (label, expression) => check(label, expression);
   begin("build-review", "build-review", true);
   wait("available");
@@ -1369,9 +1371,10 @@ export function rendererSteps(origin, sourceSha, runId) {
   );
   sidebar();
   steps.push({ action: "wait", text: "After Laptop is verified" });
-  panelButton("Edit");
+  deviceEditButton("Edit");
   click(`${panel} >> role=checkbox[name="Include VPS"]`);
-  panelButton("Done");
+  deviceEditButton("Done");
+  capture("plan-selection", ["Install status", "VPS", "Download on Laptop"]);
   panelButton("Download on Laptop");
   wait("downloading");
   planCheck(
