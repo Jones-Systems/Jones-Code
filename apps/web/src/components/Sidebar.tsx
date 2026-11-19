@@ -6,6 +6,7 @@ import { SidebarAppearanceLauncher } from "../jones/sidebarAppearance/SidebarApp
 import {
   personalSidebarRoster,
   personalSidebarSummaryThreads,
+  personalSidebarUnsettledThreads,
 } from "../jones/workstreams/personalPresentation";
 import {
   registerThreadMenuOwner,
@@ -43,7 +44,10 @@ import {
 } from "./chat/threadContextDrag";
 import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
-import { dropPinnedThreadOnWorkstream } from "../jones/workstreams/sidebarThreadDrop";
+import {
+  dropPinnedThreadOnWorkstream,
+  isWorkstreamDropLane,
+} from "../jones/workstreams/sidebarThreadDrop";
 import {
   useHiddenPersonalSidebarNeighbor,
   usePersonalSidebarActiveThreads,
@@ -2037,6 +2041,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       const key = contextDragKeyRef.current;
       const thread = key === null ? undefined : threadByKeyRef.current.get(key);
       if (
+        dragSensorRef.current?.cancelOnViewportExit &&
         thread?.pinnedAt != null &&
         key !== null &&
         sectionByThreadKeyRef.current.get(key) === "pinned"
@@ -2085,7 +2090,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   const dropThreadContextDrag = (point: { x: number; y: number }) => {
     if (!pointerOutsideThreadList(point)) {
-      return dropPinnedWorkstreamThread(point, contextDragKeyRef.current);
+      const key = contextDragKeyRef.current;
+      if (dragSensorRef.current?.cancelOnViewportExit)
+        return dropPinnedWorkstreamThread(point, key);
+      const list = threadListRef.current;
+      // A bridge that appeared after the shelf press must not hand its lane off to sorting.
+      return (
+        key !== null &&
+        sectionByThreadKeyRef.current.get(key) === "pinned" &&
+        workstreamExternalDropRef.current !== null &&
+        list !== null &&
+        isWorkstreamDropLane(list, point, key)
+      );
     }
     restoreDragScroll();
     dropThreadContext(point, contextDragThreads());
@@ -2386,8 +2402,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         state: visibleWorkstreamState,
         savedOrder: {
           state: workstreamController.state,
-          readRoster: () =>
-            personalSidebarSummaryThreads(readWorkstreamReferenceThreads(), snoozeNow),
+          readRoster: () => personalSidebarUnsettledThreads(readWorkstreamReferenceThreads()),
         },
         activeThreads,
         orderRoster: neighbor === null ? workstreamSummaryThreads : readWorkstreamOrderRoster(),
@@ -2630,10 +2645,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         clearTitleDrop();
         return;
       }
-      const workstream = list.ownerDocument
-        .elementFromPoint(point.x, point.y)
-        ?.closest("[data-native-workstream]");
-      if (workstream && list.contains(workstream)) {
+      if (isWorkstreamDropLane(list, point)) {
         titleInsertionRow.current = showSidebarTitlePlacement(titleInsertionRow.current, null);
         const bridge = workstreamExternalDropRef.current;
         if (section === "active" || section === "pinned") {

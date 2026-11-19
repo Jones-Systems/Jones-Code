@@ -23,11 +23,11 @@ export class SidebarPointerSensor {
     },
   ];
   autoScrollEnabled = true;
+  readonly cancelOnViewportExit: boolean;
   private phase: "pending" | "dragging" | "finished" = "pending";
   private readonly pointer: PointerEvent;
   private readonly document: Document;
   private readonly window: Window;
-  private readonly cancelOnViewportExit: boolean;
 
   constructor(private readonly props: Omit<SensorProps<Options>, "activeNode" | "context">) {
     this.pointer = props.event as PointerEvent;

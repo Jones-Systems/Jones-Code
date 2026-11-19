@@ -229,7 +229,9 @@ export interface FakeThread {
   readonly projectId?: ProjectId;
   readonly pinnedAt?: OrchestrationV2ThreadShell["pinnedAt"];
   readonly activeOrderKey?: OrchestrationV2ThreadShell["activeOrderKey"];
+  readonly snoozedUntil?: OrchestrationV2ThreadShell["snoozedUntil"];
   readonly lastSnoozeWakeAt?: OrchestrationV2ThreadShell["lastSnoozeWakeAt"];
+  readonly settled?: true;
   /** Makes this a side chat of that thread. */
   readonly sideChatOf?: ThreadId;
   /** Makes this an older settled thread the shell leaves out; only its family read returns it. */
@@ -316,9 +318,11 @@ export function threadWithQuestion(name: string, question: string): FakeThread {
 function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
   const latest = thread.runs.at(-1);
   const modelSelection = thread.modelSelection ?? MODEL;
+  const settled = thread.settled || thread.olderSettled;
   return {
     ...(thread.pinnedAt === undefined ? {} : { pinnedAt: thread.pinnedAt }),
     ...(thread.activeOrderKey === undefined ? {} : { activeOrderKey: thread.activeOrderKey }),
+    ...(thread.snoozedUntil === undefined ? {} : { snoozedUntil: thread.snoozedUntil }),
     ...(thread.lastSnoozeWakeAt === undefined ? {} : { lastSnoozeWakeAt: thread.lastSnoozeWakeAt }),
     id: thread.id,
     projectId: thread.projectId ?? PROJECT_ID,
@@ -352,8 +356,8 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     createdAt: AT,
     updatedAt: AT,
     archivedAt: null,
-    settledOverride: thread.olderSettled ? "settled" : null,
-    settledAt: thread.olderSettled ? AT : null,
+    settledOverride: settled ? "settled" : null,
+    settledAt: settled ? AT : null,
     lastVisitedAt: AT,
     deletedAt: null,
   };
@@ -373,6 +377,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
   return {
     thread: {
       ...(shell.pinnedAt === undefined ? {} : { pinnedAt: shell.pinnedAt }),
+      ...(shell.snoozedUntil === undefined ? {} : { snoozedUntil: shell.snoozedUntil }),
       id: shell.id,
       projectId: shell.projectId,
       title: shell.title,

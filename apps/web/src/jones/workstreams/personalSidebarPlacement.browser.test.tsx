@@ -9,11 +9,17 @@ import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import type { Context } from "effect";
 import * as DateTime from "effect/DateTime";
 import { Atom } from "effect/reactivity";
+import { useRef } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 import { AppRoot } from "~/AppRoot";
+import {
+  threadContextDropTargetProps,
+  useThreadContextDrop,
+} from "~/components/chat/threadContextDrag";
 import { toastManager } from "~/components/ui/toast";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
+import { useThreadTitleDrag } from "~/jones/threadTitleDrag/threadTitleDrag";
 import { getRouter } from "~/router";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { readEnvironmentSupportsPinning } from "~/state/entities";
@@ -63,6 +69,8 @@ vi.mock(import("./personalThreadPlacement"), async (original) => {
 });
 
 const at = "2026-03-17T19:12:28.000Z";
+const woke = { lastSnoozeWakeAt: DateTime.makeUnsafe("2026-03-18T00:00:00Z") };
+const individuallySnoozed = { snoozedUntil: DateTime.makeUnsafe("2098-01-01T00:00:00Z") };
 const outsideProject = ProjectId.make("outside-project");
 const makeThread = (id: string, fields: Partial<FakeThread> = {}): FakeThread => ({
   ...threadWithHistory(id, 0),
@@ -120,9 +128,8 @@ function press(
 const insertion = () => document.querySelector("[data-personal-thread-insertion]");
 const positionNotice = () => page.getByText("Thread can't be placed here", { exact: true });
 
-async function previewDropAt(from: HTMLElement, neighbor: HTMLElement, after = false) {
+async function beginDrag(from: HTMLElement) {
   const source = from.querySelector<HTMLElement>("[data-sidebar-row]") ?? from;
-  const fraction = after ? 0.8 : 0.2;
   const fromShelf = from.dataset.threadItem !== undefined;
   if (fromShelf) {
     await vi.waitFor(() => expect(readEnvironmentSupportsPinning(ENVIRONMENT_ID)).toBe(true));
@@ -134,6 +141,34 @@ async function previewDropAt(from: HTMLElement, neighbor: HTMLElement, after = f
     );
     if (fromShelf) press(document, "pointermove", source, 0.7);
   });
+}
+
+const shelfBoundaries = ["pointerleave", "outside viewport", "lostpointercapture"] as const;
+
+function leaveShelfDrag(boundary: (typeof shelfBoundaries)[number], source: HTMLElement) {
+  return act(() => {
+    if (boundary === "lostpointercapture") {
+      press(source, boundary, source, 0.5);
+      return;
+    }
+    document.documentElement.dispatchEvent(
+      new PointerEvent(boundary === "pointerleave" ? "pointerleave" : "pointermove", {
+        bubbles: boundary !== "pointerleave",
+        cancelable: true,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+        buttons: 1,
+        clientX: -1,
+        clientY: source.getBoundingClientRect().top,
+      }),
+    );
+  });
+}
+
+async function previewDropAt(from: HTMLElement, neighbor: HTMLElement, after = false) {
+  const fraction = after ? 0.8 : 0.2;
+  await beginDrag(from);
   await act(() => {
     press(document, "pointermove", neighbor, fraction);
   });
@@ -158,6 +193,8 @@ async function selectProject(name: "render" | "All projects") {
 const activeWrites = () =>
   dispatchedCommands().filter((command) => command.type === "thread.active.reorder");
 const unpins = () => dispatchedCommands().filter((command) => command.type === "thread.unpin");
+const pinWrites = () =>
+  dispatchedCommands().filter((command) => command.type === "thread.pin.reorder");
 
 async function withSidebar(
   {
@@ -165,17 +202,21 @@ async function withSidebar(
     assignments,
     folders = false,
     snoozed = false,
+    workstreamsReady = true,
   }: {
     threads: FakeThread[];
     assignments: Readonly<Record<string, string>>;
     folders?: boolean;
     snoozed?: boolean;
+    workstreamsReady?: boolean;
   },
   inspect: (fixture: {
     assign: ReturnType<typeof vi.fn>;
     finishDrop: () => Promise<boolean>;
     replaySavedOrder: () => Promise<void>;
     wakeAlpha: () => Promise<void>;
+    wakeThread: (id: string) => Promise<void>;
+    enableWorkstreams: () => Promise<void>;
     remount: () => Promise<void>;
   }) => Promise<void>,
 ) {
@@ -207,7 +248,12 @@ async function withSidebar(
         : {}),
     })),
     environments: [
-      { environmentId: ENVIRONMENT_ID, status: "ready", confirmed: true, workstreamCount: 2 },
+      {
+        environmentId: ENVIRONMENT_ID,
+        status: workstreamsReady ? "ready" : "update_required",
+        confirmed: true,
+        workstreamCount: 2,
+      },
     ],
     assignmentsByThreadKey: new Map(
       threads.flatMap(({ id }) => {
@@ -319,6 +365,22 @@ async function withSidebar(
             ),
           });
         }),
+      wakeThread: async (id) => {
+        const index = threads.findIndex((thread) => thread.id === id);
+        threads[index] = { ...threads[index]!, snoozedUntil: null, ...woke };
+        await refreshFakeShell();
+      },
+      enableWorkstreams: () =>
+        act(() => {
+          const current = appAtomRegistry.get(stateAtom);
+          appAtomRegistry.set(stateAtom, {
+            ...current,
+            environments: current.environments.map((environment) => ({
+              ...environment,
+              status: "ready" as const,
+            })),
+          });
+        }),
       remount: async () => {
         const saved = structuredClone(appAtomRegistry.get(stateAtom));
         await screen[Symbol.asyncDispose]();
@@ -335,7 +397,6 @@ async function withSidebar(
 }
 
 it("reorders a woken snoozed-group member in Unassigned and restores its saved membership on wake", async () => {
-  const woke = { lastSnoozeWakeAt: DateTime.makeUnsafe("2026-03-18T00:00:00Z") };
   await withSidebar(
     {
       threads: [
@@ -405,6 +466,120 @@ it("keeps the project-filtered Alpha members in saved order when an unrelated dr
         woken: ["sleep-anchor", "sleep-tail"],
         remounted: ["sleep-anchor", "sleep-tail"],
       });
+      expect(assign).not.toHaveBeenCalled();
+      expect(unpins()).toEqual([]);
+    },
+  );
+});
+
+it.each([
+  "same project",
+  "pin shelf",
+  "outside project",
+  "harmless rekey",
+  "settled sibling",
+  "different saved lane",
+])("preserves saved order through individual and Workstream wake (%s)", async (scenario) => {
+  const pinned = scenario === "pin shelf";
+  const filtered = scenario === "outside project";
+  const harmless = scenario === "harmless rekey";
+  const settled = scenario === "settled sibling";
+  const otherLane = scenario === "different saved lane";
+  const tailId = harmless ? "early-tail" : "sleep-tail";
+  const blocks = !harmless && !settled && !otherLane;
+  const savedAlpha =
+    settled || otherLane
+      ? ["sleep-anchor"]
+      : harmless
+        ? [tailId, "sleep-anchor"]
+        : ["sleep-anchor", tailId];
+  await withSidebar(
+    {
+      threads: [
+        makeThread("other"),
+        makeThread("sleep-anchor", woke),
+        makeThread(tailId, {
+          ...individuallySnoozed,
+          ...(filtered ? { projectId: outsideProject } : {}),
+          ...(settled ? { settled: true } : {}),
+        }),
+        makeThread("a4", {
+          activeOrderKey: "t",
+          ...(pinned ? { pinnedAt: DateTime.makeUnsafe(at) } : {}),
+        }),
+      ],
+      assignments: { "sleep-anchor": "alpha", [tailId]: otherLane ? "beta" : "alpha" },
+      snoozed: true,
+      folders: true,
+    },
+    async ({ assign, finishDrop, replaySavedOrder, wakeAlpha, wakeThread, remount }) => {
+      if (filtered) await selectProject("render");
+      await vi.waitFor(() =>
+        expect(rows(null)).toEqual(
+          pinned ? ["other", "sleep-anchor"] : ["other", "sleep-anchor", "a4"],
+        ),
+      );
+      expect(lane("alpha")).toBeUndefined();
+      expect(await dropAt(row("a4", pinned), row("other"))).toBe(true);
+      const saved = await finishDrop();
+      const writes = activeWrites().map(({ threadId, orderKey }) => [threadId, orderKey]);
+      const notices = positionNotice().elements().length;
+      await replaySavedOrder();
+      await wakeThread(tailId);
+      await wakeAlpha();
+      if (filtered) await selectProject("All projects");
+      await vi.waitFor(() => expect(rows("alpha")).toHaveLength(savedAlpha.length));
+      const woken = rows("alpha");
+      await remount();
+      await vi.waitFor(() => expect(rows("alpha")).toHaveLength(savedAlpha.length));
+      expect({
+        saved,
+        assignments: assign.mock.calls,
+        unpinned: unpins().map(({ threadId }) => threadId),
+        writes,
+        notices,
+        woken,
+        remounted: rows("alpha"),
+      }).toEqual({
+        saved: !blocks,
+        assignments: [],
+        unpinned: [],
+        writes: blocks
+          ? []
+          : [
+              ["sleep-anchor", "n"],
+              ["other", "h"],
+              ["a4", "e"],
+            ],
+        notices: blocks ? 1 : 0,
+        woken: savedAlpha,
+        remounted: savedAlpha,
+      });
+      if (otherLane) expect(rows("beta")).toEqual([tailId]);
+    },
+  );
+});
+
+it("rejects a saved-lane inversion from the second stationary write before the first write", async () => {
+  await withSidebar(
+    {
+      threads: [
+        makeThread("a1", woke),
+        makeThread("a2", individuallySnoozed),
+        makeThread("a3", woke),
+        makeThread("a4", { activeOrderKey: "t" }),
+      ],
+      assignments: { a1: "alpha", a2: "alpha", a3: "alpha" },
+      snoozed: true,
+    },
+    async ({ assign, finishDrop }) => {
+      await vi.waitFor(() => expect(rows(null)).toEqual(["a1", "a3", "a4"]));
+      expect(await dropAt(row("a4"), row("a1"))).toBe(true);
+      expect({
+        saved: await finishDrop(),
+        writes: activeWrites().map(({ threadId, orderKey }) => [threadId, orderKey]),
+        notices: positionNotice().elements().length,
+      }).toEqual({ saved: false, writes: [], notices: 1 });
       expect(assign).not.toHaveBeenCalled();
       expect(unpins()).toEqual([]);
     },
@@ -513,7 +688,7 @@ it.each([null, "t"])(
   },
 );
 
-it.each(["pointerleave", "outside viewport", "lostpointercapture"])(
+it.each(shelfBoundaries)(
   "cancels a pin-shelf drag after %s and keeps a fresh in-window release possible",
   async (boundary) => {
     await withSidebar(
@@ -530,24 +705,7 @@ it.each(["pointerleave", "outside viewport", "lostpointercapture"])(
         const pin = row("a2", true);
         const anchor = row("a1");
         expect(await previewDropAt(pin, anchor, true)).not.toBeNull();
-        await act(() => {
-          if (boundary === "lostpointercapture") {
-            press(pin, boundary, anchor, 0.5);
-          } else {
-            document.documentElement.dispatchEvent(
-              new PointerEvent(boundary === "pointerleave" ? "pointerleave" : "pointermove", {
-                bubbles: boundary !== "pointerleave",
-                cancelable: true,
-                pointerId: 1,
-                pointerType: "mouse",
-                isPrimary: true,
-                buttons: 1,
-                clientX: -1,
-                clientY: anchor.getBoundingClientRect().top,
-              }),
-            );
-          }
-        });
+        await leaveShelfDrag(boundary, pin);
         const gapCleared = insertion() === null;
         await act(() => {
           press(document, "pointermove", anchor, 0.8, 0);
@@ -580,6 +738,152 @@ it.each(["pointerleave", "outside viewport", "lostpointercapture"])(
     );
   },
 );
+
+it.each([...shelfBoundaries, "pointerup"] as const)(
+  "does not let a late Workstream bridge claim a shelf press (%s)",
+  async (release) => {
+    await withSidebar(
+      {
+        threads: [
+          makeThread("a1"),
+          makeThread("a2", { pinnedAt: DateTime.makeUnsafe(at) }),
+          makeThread("a3"),
+          makeThread("a0", { pinnedAt: DateTime.makeUnsafe(at) }),
+        ],
+        assignments: { a1: "alpha", a3: "alpha" },
+        workstreamsReady: false,
+      },
+      async ({ assign, enableWorkstreams, finishDrop }) => {
+        expect(lane("alpha")).toBeUndefined();
+        const pin = row("a2", true);
+        await beginDrag(pin);
+        if (release !== "pointerup") await leaveShelfDrag(release, pin);
+        await enableWorkstreams();
+        await vi.waitFor(() => expect(rows("alpha")).toEqual(["a1", "a3"]));
+        expect(row("a2", true)).toBe(pin);
+        const anchor = row("a1");
+        if (release === "pointerup") await act(() => press(document, "pointermove", anchor, 0.8));
+        const gap = insertion();
+        await act(() => {
+          if (release === "pointerup") press(document, "pointerup", anchor, 0.8);
+          else {
+            press(document, "pointermove", anchor, 0.8, 0);
+            press(document, "pointerup", anchor, 0.8);
+          }
+        });
+        const submitted = placements.length;
+        if (submitted > 0) await finishDrop();
+        expect({
+          showedGap: gap !== null,
+          gapCleared: insertion() === null,
+          submitted,
+          assignments: assign.mock.calls.length,
+          unpins: unpins().length,
+          activeWrites: activeWrites().length,
+          pinWrites: pinWrites().length,
+          notices: positionNotice().elements().length,
+        }).toEqual({
+          showedGap: false,
+          gapCleared: true,
+          submitted: 0,
+          assignments: 0,
+          unpins: 0,
+          activeWrites: 0,
+          pinWrites: 0,
+          notices: 0,
+        });
+      },
+    );
+  },
+);
+
+function ComposerDropTarget({ onDrop }: { onDrop: Parameters<typeof useThreadContextDrop>[3] }) {
+  const target = useRef<HTMLDivElement>(null);
+  useThreadContextDrop(target, ENVIRONMENT_ID, "fixture", onDrop);
+  return (
+    <div
+      {...threadContextDropTargetProps()}
+      ref={target}
+      style={{ position: "fixed", left: 600, top: 100, width: 200, height: 40 }}
+    >
+      Composer
+    </div>
+  );
+}
+
+it("preserves composer drops and local pin sorting while Workstreams is unavailable", async () => {
+  await withSidebar(
+    {
+      threads: [
+        makeThread("p1", { pinnedAt: DateTime.makeUnsafe(at) }),
+        makeThread("p2", { pinnedAt: DateTime.makeUnsafe(at) }),
+      ],
+      assignments: {},
+      workstreamsReady: false,
+    },
+    async ({ assign }) => {
+      const mention = vi.fn();
+      await using screen = await render(<ComposerDropTarget onDrop={mention} />, { router: false });
+      const target = screen.container.querySelector("[data-thread-context-drop]")!;
+      const source = row("p2", true);
+      await dropAt(source, target as HTMLElement);
+      expect(mention).toHaveBeenCalledExactlyOnceWith(
+        [scopeThreadRef(ENVIRONMENT_ID, ThreadId.make("p2"))],
+        expect.any(Function),
+      );
+      expect(pinWrites()).toEqual([]);
+      expect(lane(null)).toBeUndefined();
+
+      await dropAt(source, row("p1", true));
+      await vi.waitFor(() => expect(pinWrites().map(({ threadId }) => threadId)).toContain("p2"));
+      expect(placements).toEqual([]);
+      expect(assign).not.toHaveBeenCalled();
+      expect(unpins()).toEqual([]);
+      expect(activeWrites()).toEqual([]);
+    },
+  );
+});
+
+function PinnedChatTitle() {
+  const onPointerDown = useThreadTitleDrag(
+    scopeThreadRef(ENVIRONMENT_ID, ThreadId.make("a2")),
+    "Pinned chat",
+  );
+  return (
+    <button
+      type="button"
+      onPointerDown={onPointerDown}
+      style={{ position: "fixed", left: 600, top: 100 }}
+    >
+      Pinned chat
+    </button>
+  );
+}
+
+it("still places a pinned thread on a Workstream from its chat title", async () => {
+  await withSidebar(
+    {
+      threads: [
+        makeThread("a1"),
+        makeThread("a2", { pinnedAt: DateTime.makeUnsafe(at) }),
+        makeThread("a3"),
+      ],
+      assignments: { a1: "alpha", a3: "alpha" },
+    },
+    async ({ assign, finishDrop, replaySavedOrder }) => {
+      await vi.waitFor(() => expect(rows("alpha")).toEqual(["a1", "a3"]));
+      await using screen = await render(<PinnedChatTitle />, { router: false });
+      const source = screen.container.querySelector("button")!;
+      expect(await dropAt(source, row("a1"), true)).toBe(true);
+      expect(await finishDrop()).toBe(true);
+      expect(assign.mock.calls.map(([thread, id]) => [thread.id, id])).toEqual([["a2", "alpha"]]);
+      expect(unpins().map(({ threadId }) => threadId)).toEqual(["a2"]);
+      expect(activeWrites()).toEqual([]);
+      await replaySavedOrder();
+      await vi.waitFor(() => expect(rows("alpha")).toEqual(["a1", "a2", "a3"]));
+    },
+  );
+});
 
 it.each([
   { destination: "alpha", folders: false },
