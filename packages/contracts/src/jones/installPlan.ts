@@ -521,3 +521,39 @@ export const JonesInstallPlanResult = Schema.Struct({
   ),
 });
 export type JonesInstallPlanResult = typeof JonesInstallPlanResult.Type;
+
+// Local desktop control accepts intent only. Native proof and remote reports are
+// produced by the existing coordinator and runner.
+export const JonesInstallPlanCliRequest = Schema.Struct({
+  version: Schema.Literal(1),
+  requestId: JonesOperationId,
+  type: Schema.Literal("jones-install-plan"),
+  action: Schema.Union([
+    Schema.Struct({ type: Schema.Literal("read") }),
+    Schema.Struct({
+      type: Schema.Literal("cancel-plan"),
+      confirmed: Schema.Literal(true),
+      environmentId: EnvironmentId,
+      planId: JonesOperationId,
+      expectedRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  ]),
+});
+export type JonesInstallPlanCliRequest = typeof JonesInstallPlanCliRequest.Type;
+
+export const JonesInstallPlanCliResponse = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(1),
+    requestId: JonesOperationId,
+    ok: Schema.Literal(true),
+    result: JonesInstallPlanResult,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    requestId: JonesOperationId,
+    ok: Schema.Literal(false),
+    code: Schema.Literals(["unsupported", "environment-mismatch", "unavailable"]),
+    message: Bounded(512),
+  }),
+]);
+export type JonesInstallPlanCliResponse = typeof JonesInstallPlanCliResponse.Type;

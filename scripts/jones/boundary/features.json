@@ -307,6 +307,11 @@
       "scope": "The advisory Linux pilot compares a cold and restored weighted shard with the required fresh run. Per-file Vite+ tasks can optionally declare their case reports as cache outputs. The existing upstream task fixture proves report replay, dependency invalidation and failure propagation. The Jones evidence adapter compares file and case identities, keeps transfer evidence fresh, and audits a hit without caching."
     },
     {
+      "id": "jones-pr-cache-capacity",
+      "tests": ["scripts/jones/ci/pr-cache-capacity.node-test.mjs"],
+      "scope": "A default-branch Actions workflow frees space below the included cache cap by evicting least recently used PR archives first. Policy tests cover paginated inventory, exact deletion IDs, shared archive protection, and refusal on incomplete evidence."
+    },
+    {
       "id": "native-stack-projection-order",
       "tests": ["apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts"],
       "scope": "The existing MCP projection harness verifies the reported seven-layer GitHub membership, stale saved layer lists, appended top and every native position. Runtime ordering stays in the shared upstream resolver; a test in the existing harness exercises the actual list_thread_pull_requests interface without duplicating it."
@@ -2842,6 +2847,7 @@
         "apps/server/src/jones/updates/JonesUpdater.test.ts",
         "apps/server/src/jones/updates/followerPolicy.test.ts",
         "apps/server/src/jones/updates/http.test.ts",
+        "apps/server/src/jones/updates/installRecoveryCli.test.ts",
         "apps/server/src/jones/updates/operations/cleanupReview.test.ts",
         "apps/server/src/jones/updates/operations/ledger.test.ts",
         "apps/server/src/jones/updates/operations/operations.test.ts",
@@ -2883,7 +2889,7 @@
         "packages/contracts/src/jones/jonesOperations.test.ts",
         "packages/shared/src/jones/jonesActions.test.ts"
       ],
-      "scope": "Native Laptop-first install plans use durable CAS membership, grants and target dispositions without changing enrollment. Native committed health evidence gates selected-host preparation; durable target receipts and true worker joins distinguish completion, Stop, held and unknown. Exact-source entrypoints share fresh reviewed installs and capability-aware status across desktop/web/mobile, with separately negotiated target-owned recovery policy and no clone-required copy fallback. Cold staged Laptop reviews use bound preflight without creating a plan. Existing updater, follower and provider/npm owners retain their modules; shared hooks register the panel, typed IPC, bulk handoff results and mobile React test discovery. Synthetic source tests do not establish native clone sharing, packaged/signing acceptance, installed-runtime adoption or UI interaction proof."
+      "scope": "Native Laptop-first install plans use durable CAS membership, grants and target dispositions without changing enrollment. Native committed health evidence gates selected-host preparation; durable target receipts and true worker joins distinguish completion, Stop, held and unknown. Exact-source entrypoints share fresh reviewed installs and capability-aware status across desktop/web/mobile, with separately negotiated target-owned recovery policy and no clone-required copy fallback. Cold staged Laptop reviews use bound preflight without creating a plan. Existing updater, follower and provider/npm owners retain their modules; shared hooks register the panel, typed IPC, bulk handoff results and mobile React test discovery. The local CLI calls the existing operation APIs and native plan coordinator with exact recovery identifiers. Synthetic source tests do not establish native clone sharing, packaged/signing acceptance, installed-runtime adoption or UI interaction proof."
     },
     {
       "id": "thread-result-dependencies",
@@ -3462,7 +3468,6 @@
         "apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
         "apps/web/src/jones/workstreams/personalRail.test.ts",
-        "apps/web/src/jones/workstreams/PersonalWorkstreamColorDialog.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalInlineRename.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadWindow.test.ts",
         "apps/web/src/jones/workstreams/personalThreadWindow.browser.test.tsx",

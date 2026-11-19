@@ -4,7 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeZlib from "node:zlib";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   JonesActionsClient,
@@ -279,6 +279,55 @@ describe("Jones Actions qualification", () => {
       unavailable: false,
     });
   });
+
+  it.each(["main lookup", "older build lookup"] as const)(
+    "bounds the build list during the %s and keeps qualified results",
+    async (stalledLookup) => {
+      const { transport, run } = fixture();
+      const deadline = new AbortController();
+      const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+      const signals = new Set<AbortSignal | undefined>();
+      const endpoints: string[] = [];
+      const blocked = `${ROOT}/${stalledLookup === "main lookup" ? "commits/main" : "actions/runs/100"}`;
+      const client = new JonesActionsClient({
+        now: () => NOW,
+        transport: {
+          ...transport,
+          async api(endpoint, signal) {
+            signals.add(signal);
+            endpoints.push(endpoint);
+            if (endpoint === blocked) {
+              if (signal === undefined) throw new Error("Build list request has no deadline");
+              return await new Promise((_resolve, reject) => {
+                signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+                deadline.abort();
+              });
+            }
+            if (endpoint.includes("/actions/workflows/artifact-cli-linux.yml/runs?")) {
+              return { workflow_runs: [run, { ...run, id: 100 }] };
+            }
+            return transport.api(endpoint, signal);
+          },
+        },
+      });
+      try {
+        const result = await client.listQualifiedBuilds({
+          installedSource: OLD,
+          platform: "linux",
+          architecture: "x64",
+        });
+        expect(result.unavailable).toBe(true);
+        expect(result.builds.map(({ candidate }) => candidate.artifactId)).toEqual(
+          stalledLookup === "main lookup" ? [] : [301],
+        );
+        expect(timeout).toHaveBeenCalledExactlyOnceWith(15_000);
+        expect(signals).toEqual(new Set([deadline.signal]));
+        expect(endpoints.at(-1)).toBe(blocked);
+      } finally {
+        timeout.mockRestore();
+      }
+    },
+  );
 
   it.each([undefined, "2026-10-02T10:00:00Z", "invalid", "2026-02-30T10:00:00Z"])(
     "keeps build time %s outside the candidate and its handle",

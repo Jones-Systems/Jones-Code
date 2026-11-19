@@ -535,8 +535,13 @@ evidence. Each shard with hits reruns one of them fresh as an audit. The
 transfer-budget and service-control tests always run fresh. Shards using the
 cache path do not contribute timings. Main pushes run fresh and supply the
 shard weights. Manual, stacked, fork and unknown-scope runs also stay fresh.
-New archives require headroom within GitHub's included cache allowance. When
-headroom is low or unknown and there is no usable archive, the shard runs fresh.
+New archives require headroom within GitHub's included cache allowance. The
+[Jones PR cache capacity workflow](../../.github/workflows/jones-pr-cache-capacity.yml)
+checks usage during and after PR CI. Above 9 GiB, it deletes PR-scoped
+archives in order of oldest access until usage returns to 9 GiB or the PR
+archives run out. Shared branch caches stay outside this cleanup. GitHub's own
+repository-wide eviction still applies at its limit. When headroom is low or
+unknown and there is no usable archive, the shard runs fresh.
 
 For a rollback, go to **Settings → Secrets and variables → Actions → Variables**
 and set `JONES_SERVER_RESULT_CACHE` to `off` or remove it. Re-run the affected

@@ -1,7 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - Deterministic synthetic native and host evidence; no real processes or install effects.
+import { it as effectIt } from "@effect/vitest";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, type DesktopUpdateState } from "@t3tools/contracts";
 import type {
+  JonesInstallPlanCliRequest,
   JonesInstallPlanLaptopEvidence,
   JonesInstallPlanState,
   JonesInstallPlanReview,
@@ -11,7 +13,9 @@ import type {
   JonesRecoveryPreflight,
   JonesOperationReceipt,
 } from "@t3tools/contracts/jones/jonesOperations";
+import * as Effect from "effect/Effect";
 import type { JonesDesktopUpdateController } from "../updates/JonesDesktopUpdates.ts";
+import { dispatchInstallPlanCli } from "./cliControl.ts";
 import { createInstallPlanCoordinator } from "./coordinator.ts";
 import type { InstallPlanStore, PlanSnapshot } from "./store.ts";
 
@@ -547,6 +551,48 @@ describe("Laptop install recovery", () => {
     expect(await reopened.preparationHeld()).toBe(false);
     expect(f.controller.install).toHaveBeenCalledTimes(1);
   });
+
+  effectIt.effect("only cancels the exact Laptop plan revision through the CLI control", () =>
+    Effect.gen(function* () {
+      const f = fixture();
+      const { state } = yield* Effect.promise(() => startInstall(f, [selection]));
+      const plan = state.current!;
+      const request = (action: JonesInstallPlanCliRequest["action"]) =>
+        dispatchInstallPlanCli(
+          { version: 1, requestId: id(92), type: "jones-install-plan", action },
+          (input) => Effect.promise(() => f.coordinator.request(input)),
+        );
+      const read = yield* request({ type: "read" });
+      expect(read).toMatchObject({
+        ok: true,
+        result: { state: { current: { planId: plan.planId } } },
+      });
+      const current = yield* Effect.promise(() => f.coordinator.request({ type: "read" }));
+      const cancel = {
+        type: "cancel-plan",
+        confirmed: true,
+        environmentId: laptop,
+        planId: plan.planId,
+        expectedRevision: current.state.current!.revision,
+      } as const;
+      expect(yield* request({ ...cancel, environmentId: remote })).toMatchObject({
+        ok: false,
+        code: "environment-mismatch",
+      });
+      expect(
+        yield* request({ ...cancel, expectedRevision: cancel.expectedRevision + 1 }),
+      ).toMatchObject({
+        ok: true,
+        result: { refused: { code: "stale-revision" } },
+      });
+      const cancelled = yield* request(cancel);
+      expect(cancelled).toMatchObject({
+        ok: true,
+        result: { state: { current: null, last: { planId: plan.planId, cancelled: true } } },
+      });
+      expect(yield* request(cancel)).toEqual(cancelled);
+    }),
+  );
 
   it("preserves a plan with a reserved remote operation when cancellation is requested", async () => {
     const f = fixture();

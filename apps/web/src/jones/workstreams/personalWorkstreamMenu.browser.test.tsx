@@ -319,7 +319,7 @@ describe("Workstream options and header ordering", () => {
     expect(getComputedStyle(title).cursor).toBe("pointer");
   });
 
-  it("segments menu actions and display choices and supports inline rename and color editing", async () => {
+  it("segments menu actions and display choices and supports inline rename", async () => {
     using setup = fixture();
     await using screen = await render(setup.ui);
     await options();
@@ -337,11 +337,6 @@ describe("Workstream options and header ordering", () => {
     await userEvent.fill(page.getByRole("textbox", { name: "Workstream name" }), "Renamed");
     await userEvent.keyboard("{Enter}");
     expect(setup.controller.rename).toHaveBeenCalledWith("menu-Alpha", "Renamed");
-    await options();
-    await userEvent.click(page.getByRole("menuitem", { name: "Change color", exact: true }));
-    await userEvent.fill(page.getByRole("textbox", { name: "Hex color" }), "#abcdef");
-    await userEvent.click(page.getByRole("button", { name: "Save", exact: true }));
-    expect(setup.controller.setColor).toHaveBeenCalledWith("menu-Alpha", "#ABCDEF");
     await options("Gamma");
     await expect
       .element(page.getByRole("menuitem", { name: "Move down", exact: true }))
@@ -351,6 +346,78 @@ describe("Workstream options and header ordering", () => {
     await expect
       .poll(() => section(screen.container, "Alpha").textContent)
       .not.toContain("Members of menu-Alpha");
+  });
+
+  it("applies a preset from the context submenu and restores Automatic with the keyboard", async () => {
+    let sequence = 0;
+    const put = vi.fn<PersonalWorkstreamsTransport["put"]>(async (_connection, workstream) => ({
+      outcome: "applied",
+      workstream,
+      sequence: ++sequence,
+    }));
+    using setup = fixture(put);
+    await using screen = await render(setup.ui);
+    const alpha = section(screen.container, "Alpha");
+    const accent = () => alpha.style.getPropertyValue("--jones-board-section-accent");
+    const initialAccent = accent();
+    const changeColor = page.getByRole("menuitem", { name: "Change color", exact: true });
+    const automatic = page.getByRole("menuitemradio", { name: "Automatic", exact: true });
+    const rose = page.getByRole("menuitemradio", { name: "Rose", exact: true });
+
+    await options();
+    await expect.element(changeColor).toHaveAttribute("aria-haspopup", "menu");
+    await userEvent.click(changeColor);
+    await expect.element(automatic).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(rose);
+    await expect.poll(accent).toBe("#F43F5E");
+    await expect.element(changeColor).not.toBeInTheDocument();
+    expect(put).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        id: "menu-Alpha",
+        color: "#F43F5E",
+      }),
+    );
+
+    await act(() => header(screen.container, "Alpha").focus());
+    await userEvent.keyboard("{Shift>}{F10}{/Shift}");
+    await expect.element(changeColor).toBeVisible();
+    await userEvent.keyboard("{Home}{ArrowDown}");
+    await expect.element(changeColor).toHaveFocus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect.element(rose).toHaveAttribute("aria-checked", "true");
+    await userEvent.keyboard("{Home}{Enter}");
+    await expect.poll(accent).toBe(initialAccent);
+    await expect.element(changeColor).not.toBeInTheDocument();
+    expect(put).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({
+        id: "menu-Alpha",
+        color: null,
+      }),
+    );
+  });
+
+  it("keeps an existing custom color selected until a different choice is made", async () => {
+    using setup = fixture();
+    setup.registry.set(setup.state, {
+      ...setup.initial,
+      workstreams: [{ ...groups[0]!, color: "#abcde0" }, ...groups.slice(1)],
+    });
+    await using screen = await render(setup.ui);
+    const alpha = section(screen.container, "Alpha");
+    const changeColor = page.getByRole("menuitem", { name: "Change color", exact: true });
+    const custom = page.getByRole("menuitemradio", { name: "Custom (#ABCDE0)", exact: true });
+
+    await options();
+    await userEvent.click(changeColor);
+    await expect.element(custom).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(custom);
+    await expect.element(changeColor).not.toBeInTheDocument();
+    expect(alpha.style.getPropertyValue("--jones-board-section-accent")).toBe("#abcde0");
+    expect(setup.controller.setColor).not.toHaveBeenCalled();
   });
 
   it("uses a compact Show more footer and updates its count while the window menu stays open", async () => {

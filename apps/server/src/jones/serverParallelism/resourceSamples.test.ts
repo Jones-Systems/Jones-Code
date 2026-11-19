@@ -20,18 +20,16 @@ import {
 } from "./resourceSamples.ts";
 
 const censusNames = ["fff-bg-0", "fff-bg-1", "fff-search-0", ""];
-function census(pid: number, start = 42) {
-  const rows = censusNames.map(
-    (name, index) => `${index + 1}\t${Buffer.from(name).toString("hex")}`,
-  );
+function census(pid: number, start = 42, names = censusNames) {
+  const rows = names.map((name, index) => `${index + 1}\t${Buffer.from(name).toString("hex")}`);
   return `${pid}\t${start}\t123456\n${rows.join("\n")}\n`;
 }
-function referencePool(pid: number): NativePoolObservation {
+function referencePool(pid: number, names = censusNames): NativePoolObservation {
   return {
     pid,
     method: "macos-sample",
     status: "complete",
-    threads: censusNames.map((name, index) => ({
+    threads: names.map((name, index) => ({
       tid: String(index + 10),
       name: name || "runtime",
     })),
@@ -71,6 +69,78 @@ it("keeps the reference read and adopts the census after a stable comparison", a
   expect(sampler.comparison()).toMatchObject({ pid: 123, verified: true, threads: 4 });
   expect(reference).toHaveBeenCalledTimes(1);
   expect(read).toHaveBeenCalledTimes(3);
+});
+
+it("rechecks once when finder watchers start during the first comparison", async () => {
+  const withWatchers = [...censusNames, "fff-watcher-own", "notify-rs fsevents loop"];
+  const reference = vi.fn(async (pid: number) => referencePool(pid, withWatchers));
+  const read = vi
+    .fn(async (pid: number) => census(pid, 42, withWatchers))
+    .mockImplementationOnce(async (pid) => census(pid));
+  const sampler = makeMacNativePoolCensus("/fixture", reference, read);
+  expect((await sampler.sample(123)).method).toBe("macos-sample");
+  expect((await sampler.sample(124)).method).toBe("macos-proc-info");
+  expect(sampler.comparison()).toMatchObject({
+    verified: true,
+    threads: 6,
+    initial: { verified: false, before: census(123), after: census(123, 42, withWatchers) },
+  });
+  expect(reference).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledTimes(4);
+});
+
+it("keeps the fallback when watcher growth repeats during the recheck", async () => {
+  const first = [...censusNames, "fff-watcher-own"];
+  const second = [...first, "notify-rs debouncer loop"];
+  const reference = vi
+    .fn(async (pid: number) => referencePool(pid, second))
+    .mockImplementationOnce(async (pid) => referencePool(pid, first));
+  const read = vi
+    .fn(async (pid: number) => census(pid, 42, second))
+    .mockImplementationOnce(async (pid) => census(pid))
+    .mockImplementationOnce(async (pid) => census(pid, 42, first));
+  const sampler = makeMacNativePoolCensus("/fixture", reference, read);
+  expect((await sampler.sample(123)).method).toBe("macos-sample");
+  expect(sampler.comparison()).toMatchObject({ verified: false, initial: { verified: false } });
+  expect(reference).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledTimes(3);
+  expect((await sampler.sample(124)).method).toBe("macos-sample");
+});
+
+it("keeps the fallback when the initial process exits during the recheck", async () => {
+  const withWatchers = [...censusNames, "fff-watcher-own"];
+  const reference = vi
+    .fn(async (pid: number) => ({ ...referencePool(pid, withWatchers), raw: "replacement" }))
+    .mockImplementationOnce(async (pid) => ({
+      ...referencePool(pid, withWatchers),
+      raw: "original",
+    }));
+  const read = vi
+    .fn(async (pid: number) => census(pid, 43, withWatchers))
+    .mockImplementationOnce(async (pid) => census(pid))
+    .mockImplementationOnce(async (pid) => census(pid, 42, withWatchers));
+  const sampler = makeMacNativePoolCensus("/fixture", reference, read);
+  expect(await sampler.sample(123)).toMatchObject({ method: "macos-sample", raw: "original" });
+  expect(sampler.comparison()).toMatchObject({
+    verified: false,
+    reference: "replacement",
+    initial: { verified: false, reference: "original" },
+  });
+  expect(reference).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledTimes(3);
+});
+
+it("keeps the fallback when a non-watcher thread starts during the comparison", async () => {
+  const growth = [...censusNames, "other"];
+  const reference = vi.fn(async (pid: number) => referencePool(pid, growth));
+  const read = vi
+    .fn(async (pid: number) => census(pid, 42, growth))
+    .mockImplementationOnce(async (pid) => census(pid));
+  const sampler = makeMacNativePoolCensus("/fixture", reference, read);
+  expect((await sampler.sample(123)).method).toBe("macos-sample");
+  expect(sampler.comparison()).toMatchObject({ verified: false });
+  expect(reference).toHaveBeenCalledTimes(1);
+  expect(read).toHaveBeenCalledTimes(2);
 });
 
 it("uses the reference when process identity changes or a later census fails", async () => {

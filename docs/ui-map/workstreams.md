@@ -10,9 +10,10 @@ Thread navigation shortcuts follow the displayed order.
 
 | Journey                                           | Surface                                                               | Coverage                                                              |
 | ------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Create, rename, color, lifecycle, reorder, delete | Sidebar group menu; mobile group controls                             | Personal browser and mobile presentation/control tests                |
+| Create, rename, lifecycle, reorder, delete        | Sidebar group menu; mobile group controls                             | Personal browser and mobile presentation/control tests                |
+| Change a Workstream color                         | Sidebar group menu; mobile group controls                             | Web browser tests for mouse, keyboard, and color readback             |
 | Start a thread in a Workstream                    | Right-click a named group or focus its header and press Shift+F10     | Group menu activation and draft seeding tests                         |
-| Set, change or clear a name icon                  | Inline toolbar form and Workstream group menu on web and desktop      | Picker alignment and order, wrapped title geometry, and sync tests    |
+| Set, change or clear a name icon                  | Inline toolbar form and **Change icon** submenu on web and desktop    | Ordered selection, wrapped titles and sync tests                      |
 | Assign, unassign, create and assign               | Thread picker, sidebar drag, mobile thread menu                       | Personal browser tests and shared controller command tests            |
 | Move a pinned thread                              | Sidebar drag; assigned members keep their pin                         | Personal browser tests                                                |
 | Find a thread drop target                         | Collapsed tint; expanded ring and insertion gap                       | Drag browser tests, including the pinned external bridge              |
@@ -31,6 +32,8 @@ Availability rows use the ordinary settings primitives and say Ready, Offline, U
 Assignment confirmation belongs to the thread’s environment. Definition propagation requires an eventual client bridge with write access to the lagging environment. Read-only observation and offline suppression do not prove durable synchronization. Group lifecycle is metadata and does not change thread settlement.
 
 For **New thread**, use two open Workstreams on a writable test environment with **No project** support. Set a name icon from a registered project on one group and leave the other group without an icon. Open each group’s menu and choose **New thread**. Check the Workstream picker and the project shown in the composer, then send a fixture message and check the thread in its group after reload. Discard unsent drafts and use isolated test state for the sent threads.
+
+For **Change icon**, use an open Workstream and two or more registered projects on a writable test environment with icon support. Note the order in **Filter threads by project** in the sidebar toolbar. Right-click the Workstream header or focus it and press Shift+F10. Open **Change icon** beneath **Workstream state** and compare the order of the registered projects. Pick a project, confirm its icon appears beside the title, and reload. Check that the icon remains selected when the submenu reopens. Choose **None** to restore the initial state.
 
 ## Retained history boundary
 

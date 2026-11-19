@@ -25,8 +25,6 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   ChevronDownIcon,
-  PaletteIcon,
-  ImageIcon,
   PencilIcon,
   PlusIcon,
   TrashIcon,
@@ -70,9 +68,10 @@ import {
   personalWorkstreamAutomaticColors,
   personalWorkstreamGroupColors,
 } from "../../jones/workstreams/personalRail";
-import { PersonalWorkstreamColorDialog } from "../../jones/workstreams/PersonalWorkstreamColorDialog";
+import { PersonalWorkstreamColorMenu } from "../../jones/workstreams/PersonalWorkstreamColorMenu";
 import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalWorkstreamTitleEditor";
 import {
+  WorkstreamNameIconMenu,
   WorkstreamNameIconPicker,
   type WorkstreamNameIconProject,
 } from "../../jones/workstreams/WorkstreamNameIconPicker";
@@ -244,14 +243,14 @@ function Group({
     false,
     collapsedSchema,
   );
-  const [editing, setEditing] = useState<"name" | "color" | "nameIcon" | null>(null);
+  const [editing, setEditing] = useState<"name" | null>(null);
   const threadWindow = usePersonalThreadWindow(item.id);
   const { filter: statusFilter, setFilter: setStatusFilter } = usePersonalStatusFilter(item.id);
   const overflowCount = memberCount - threadWindow.limit;
   const shownCount = threadWindow.expanded
     ? memberCount
     : Math.min(memberCount, threadWindow.limit);
-  const [draftNameIcon, setDraftNameIcon] = useState<string | null>(null);
+  const setNameIcon = controller.setNameIcon;
   const nameIconProject = nameIconProjects.find(
     (project) => project.projectKey === item.nameIcon?.projectKey,
   );
@@ -451,20 +450,12 @@ function Group({
           <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
             <PencilIcon aria-hidden /> Rename
           </MenuItem>
-          <MenuItem disabled={!state.canCreate || pending} onClick={() => setEditing("color")}>
-            <PaletteIcon aria-hidden /> Change color
-          </MenuItem>
-          {state.canSetNameIcon && controller.setNameIcon ? (
-            <MenuItem
-              disabled={pending}
-              onClick={() => {
-                setDraftNameIcon(item.nameIcon?.projectKey ?? null);
-                setEditing("nameIcon");
-              }}
-            >
-              <ImageIcon aria-hidden /> Change name icon
-            </MenuItem>
-          ) : null}
+          <PersonalWorkstreamColorMenu
+            color={item.color}
+            automaticColor={colors.automaticColor}
+            disabled={!state.canCreate || pending}
+            onSelect={(color) => void run(() => controller.setColor(item.id, color))}
+          />
           <MenuSub>
             <MenuSubTrigger disabled={!state.canSnooze || pending || !snoozeEnvironmentId}>
               <AlarmClockIcon aria-hidden /> Snooze
@@ -509,6 +500,20 @@ function Group({
               </MenuRadioGroup>
             </MenuSubPopup>
           </MenuSub>
+          {setNameIcon ? (
+            <WorkstreamNameIconMenu
+              projects={nameIconProjects}
+              value={item.nameIcon?.projectKey ?? null}
+              unavailableReason={
+                pending
+                  ? "A Workstream change is being saved."
+                  : !state.canSetNameIcon
+                    ? "A writable connection with Workstream icon support is required."
+                    : undefined
+              }
+              onChange={(projectKey) => void run(() => setNameIcon(item.id, projectKey))}
+            />
+          ) : null}
           <MenuSeparator />
           <MenuGroup className="flex items-center justify-between">
             <div className="flex min-w-0 flex-wrap items-baseline">
@@ -564,40 +569,6 @@ function Group({
           </MenuItem>
         </MenuPopup>
       </Menu>
-      {editing === "nameIcon" ? (
-        <form
-          className="grid gap-1 px-2 pb-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const change = controller.setNameIcon;
-            if (!change || !state.canSetNameIcon) return;
-            void run(() => change(item.id, draftNameIcon)).then((result) => {
-              if (result?.ok) setEditing(null);
-            });
-          }}
-        >
-          <WorkstreamNameIconPicker
-            projects={nameIconProjects}
-            value={draftNameIcon}
-            onChange={setDraftNameIcon}
-            disabled={pending}
-          />
-          <div className="flex justify-end gap-1">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              disabled={pending}
-              onClick={() => setEditing(null)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" disabled={pending || !state.canSetNameIcon}>
-              Save
-            </Button>
-          </div>
-        </form>
-      ) : null}
       {!collapsed ? (
         <>
           {children(threadWindow)}
@@ -622,20 +593,6 @@ function Group({
             </button>
           ) : null}
         </>
-      ) : null}
-      {editing === "color" ? (
-        <PersonalWorkstreamColorDialog
-          color={item.color}
-          automaticColor={colors.automaticColor}
-          pending={pending}
-          onOpenChange={(open) => {
-            if (!open && !pendingRef.current) setEditing(null);
-          }}
-          onSave={async (color) => {
-            const result = await run(() => controller.setColor(item.id, color));
-            if (result?.ok) setEditing(null);
-          }}
-        />
       ) : null}
     </section>
   );

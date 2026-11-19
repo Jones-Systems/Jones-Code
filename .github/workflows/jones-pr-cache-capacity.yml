@@ -1,0 +1,41 @@
+name: Jones PR cache capacity
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [in_progress, completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: jones-pr-cache-capacity
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Reclaim space from old PR caches
+    if: >-
+      github.repository == 'Jones-Systems/Jones-Code' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.head_repository.full_name == github.repository &&
+        (github.event.workflow_run.event == 'pull_request' ||
+         (github.event.action == 'completed' && github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_branch == 'main'))))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Reconcile cache usage from trusted main source
+        env:
+          POLICY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # workflow_run's SHA identifies main, not the triggering CI checkout.
+          policy="$(mktemp "$RUNNER_TEMP/pr-cache-capacity.XXXXXXXX.mjs")"
+          gh api --method GET "repos/$GITHUB_REPOSITORY/contents/scripts/jones/ci/pr-cache-capacity.mjs" \
+            --field "ref=$POLICY_SHA" --header "Accept: application/vnd.github.raw+json" > "$policy"
+          node "$policy" --apply | tee "$GITHUB_STEP_SUMMARY"

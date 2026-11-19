@@ -135,6 +135,55 @@ Closing ends the old plan's queue and leaves installed builds, staged downloads
 and follower settings in place. The next plan starts with **Laptop** only.
 Use **Edit** to include other machines.
 
+### Inspect or recover from the command line
+
+Use a Jones Code CLI that lists `jones updates` in its help. Run it as the
+account running Jones Code on the machine that owns the state. On the Laptop,
+keep an updated desktop app running and read the current and last rollout
+plans, including refreshed native evidence.
+
+```sh
+t3 jones updates plan status --json
+```
+
+On the affected server, read its update status and then the exact attempt. Use
+the environment and operation IDs returned by status or the rollout plan.
+
+```sh
+t3 jones updates status --json
+t3 jones updates operation "$operation_id" --environment-id "$environment_id" --json
+t3 jones updates refresh-outcome "$operation_id" --environment-id "$environment_id" --json
+t3 jones updates inspect-cleanup "$operation_id" --environment-id "$environment_id" --json
+```
+
+**Refresh outcome** asks the server to reconcile its native launcher receipt.
+**Inspect cleanup** reports whether the host can prove the preparation's
+cleanup. If it reports `eligible`, use the job ID from the same operation
+receipt to release the hold. The command checks the proof again before
+recording the release. If it reports `unproved`, keep the hold and inspect the
+host in **Connections**.
+
+```sh
+t3 jones updates recover-cleanup "$operation_id" --environment-id "$environment_id" --job-id "$job_id" --confirm --json
+t3 jones updates stop "$operation_id" --environment-id "$environment_id" --stop-id "$stop_id" --confirm --json
+```
+
+A stop request can remain pending. Use a new lowercase UUIDv4 as the stop ID
+and reuse it if the reply is lost. Re-read the receipt to see whether the
+worker has stopped.
+
+To end the rollout from the Laptop, use the plan ID, Laptop environment ID and
+revision from plan status. The desktop applies the same cancellation checks
+used by **Cancel update plan** and keeps the attempt in history.
+
+```sh
+t3 jones updates plan cancel "$plan_id" --environment-id "$laptop_id" --revision "$revision" --confirm --json
+```
+
+Use `--base-dir` when the server or desktop uses a custom state directory.
+After a timeout or lost connection, read the attempt or plan again before
+sending another action.
+
 ### Recovery space
 
 The installation review uses storage measurements and recovery support from the

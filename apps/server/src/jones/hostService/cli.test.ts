@@ -1,7 +1,10 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import * as NetService from "@t3tools/shared/Net";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Command } from "effect/cli";
 
@@ -134,7 +137,7 @@ function testService() {
               printed.push(args.map(String).join(" "));
             },
           }),
-          Effect.provide(NodeServices.layer),
+          Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer)),
         );
       }),
   };

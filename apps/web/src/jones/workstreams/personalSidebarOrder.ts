@@ -4,7 +4,7 @@ import type {
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { personalThreadKey } from "@t3tools/client-runtime/jones/workstreams/personal";
 import * as Schema from "effect/Schema";
-import { useSyncExternalStore } from "react";
+import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import {
   readLocalStorageValue,
   subscribeLocalStorageKey,
@@ -96,5 +96,40 @@ export function usePersonalSidebarActiveThreads<T extends PersonalThreadRef>(
         .find((thread) => personalThreadKey(thread) === currentKey);
       return anchor ? [...visible, anchor] : visible;
     }),
+  };
+}
+
+export function useHiddenPersonalSidebarNeighbor(
+  currentThreadId: string | null,
+  traversalThreadIds: readonly string[],
+  getUnwindowedThreadIds: () => readonly string[],
+) {
+  const lastPosition = useRef<{
+    threadId: string;
+    getOrder: () => readonly string[];
+  } | null>(null);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Remember the committed order for the current route before a status filter removes its row.
+  useLayoutEffect(() => {
+    if (lastPosition.current?.threadId !== currentThreadId) lastPosition.current = null;
+    if (currentThreadId !== null && traversalThreadIds.includes(currentThreadId)) {
+      lastPosition.current = { threadId: currentThreadId, getOrder: getUnwindowedThreadIds };
+    }
+  }, [currentThreadId, traversalThreadIds, getUnwindowedThreadIds]);
+
+  return (direction: "next" | "previous") => {
+    const position = lastPosition.current;
+    if (position === null || traversalThreadIds.includes(position.threadId)) return null;
+
+    const order = position.getOrder();
+    const currentIndex = order.indexOf(position.threadId);
+    if (currentIndex === -1) return null;
+    const visible = new Set(traversalThreadIds);
+    const step = direction === "next" ? 1 : -1;
+    for (let index = currentIndex + step; index >= 0 && index < order.length; index += step) {
+      const candidate = order[index]!;
+      if (visible.has(candidate)) return candidate;
+    }
+    return null;
   };
 }
