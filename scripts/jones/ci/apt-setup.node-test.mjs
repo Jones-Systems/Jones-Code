@@ -202,6 +202,20 @@ NodeTest.test(
   },
 );
 
+NodeTest.test("an APT mirror 503 with status spacing enters the isolated route", async () => {
+  const stdout =
+    "Err:2 https://security.ubuntu.com/ubuntu noble InRelease\n" +
+    "  503  Service Unavailable\n" +
+    "Ign:3 https://archive.ubuntu.com/ubuntu noble-updates InRelease\n";
+  const s = scenario({
+    intercept: (_argv, _settings, count) =>
+      count === 1 ? ok({ code: null, stdout, timedOut: true }) : undefined,
+  });
+  await setupApt(s.options);
+  NodeAssert.ok(aptCalls(s)[1].argv.includes(isolation[1]));
+  NodeAssert.equal(removed(s), true);
+});
+
 NodeTest.test(
   "terminal diagnostics override transport/timeouts; exit 100 and HTTP 404 stay unclassified",
   async () => {
