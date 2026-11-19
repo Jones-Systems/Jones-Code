@@ -21,6 +21,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/cleanup/RuntimeUseTerminal.ts"
+    },
+    {
       "from": "apps/web/src/components/ChatMarkdown.tsx",
       "to": "packages/contracts/src/jones/shellDestinationFence.ts"
     },

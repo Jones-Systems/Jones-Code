@@ -215,8 +215,11 @@ authoritative; an unknown or mismatched agent label is shown as a claim and cann
 select a computer. The toolbar retains its existing insets and actions. Status
 and long labels wrap within the block; the inline terminal has a 256px frame
 and a wrapping header with destination, destination cwd, status, Close and Run
-again. Check narrow widths, keyboard focus and enlarged text alongside an ordinary
-shell block and Mermaid block, which share the toolbar/frame.
+again. Updated destination servers start these shells in their dedicated
+`destination-shell` directory and the header displays the reported working
+directory when the server publishes the session. Check narrow widths, keyboard
+focus and enlarged text alongside an ordinary shell block and Mermaid block,
+which share the toolbar/frame.
 The inline terminal's bottom-right **Copy terminal contents** button uses the
 message-copy confirmation. Run a synthetic command, click Copy, then paste into
 an isolated text field: expect the current plain text including retained

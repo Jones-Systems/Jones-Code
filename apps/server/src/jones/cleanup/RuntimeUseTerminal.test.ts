@@ -4,11 +4,13 @@ import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EventId, ThreadId, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
+import { SHELL_RUN_THREAD_ID } from "@t3tools/contracts/jones/shellDestinationFence";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -20,6 +22,7 @@ import * as Incarnation from "./sharedAdmission/DatabaseIncarnation.ts";
 import { prepareSyntheticOpen } from "./sharedAdmission/DatabaseIncarnation.fixture.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as Manager from "../../terminal/Manager.ts";
+import { ServerConfig } from "../../config.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -27,6 +30,7 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
 import { HeldRuntimeOwner, invalidateCheckedServerOwnership } from "./CheckedRuntimeOwner.ts";
 import { makeRuntimeUseStore } from "./RuntimeUseStore.ts";
+import { makeDestinationShellLaunch } from "./RuntimeUseTerminal.ts";
 
 const platform = ProcessRunner.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
@@ -44,9 +48,13 @@ const fixture = <A, E>(
     readonly setBeforeWrap: (effect: Effect.Effect<void>) => void;
     readonly open: ReturnType<Manager.TerminalManager["Service"]["open"]>;
     readonly workspace: string;
+    readonly destinationWorkspace: string;
+    readonly prepareDestinationShell: Effect.Success<typeof makeDestinationShellLaunch>;
+    readonly serverCwd: string;
     readonly loseOwner: Effect.Effect<void>;
   }) => Effect.Effect<A, E, SqlClient.SqlClient>,
   spawnSucceeds = false,
+  destinationShell = false,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -54,10 +62,15 @@ const fixture = <A, E>(
       const root = yield* fs.realPath(
         yield* fs.makeTempDirectoryScoped({ prefix: "runtime-use-terminal-" }),
       );
-      const stateDir = NodePath.join(root, "userdata"),
-        workspace = NodePath.join(root, "workspace");
-      yield* fs.makeDirectory(stateDir);
+      const config = Context.get(
+        yield* Layer.build(ServerConfig.layerTest(root, root)),
+        ServerConfig,
+      );
+      const { stateDir } = config;
+      const workspace = NodePath.join(root, "workspace");
+      const destinationWorkspace = NodePath.join(stateDir, "destination-shell");
       yield* fs.makeDirectory(workspace);
+      yield* fs.makeDirectory(destinationWorkspace);
       return yield* Effect.gen(function* () {
         const owner = yield* Ownership.acquireServerOwnership(
           NodePath.join(stateDir, "server-runtime.json"),
@@ -162,9 +175,9 @@ const fixture = <A, E>(
                   assert.isTrue(
                     pending.every(
                       (use) =>
-                        use.threadId === threadId &&
+                        use.threadId === (destinationShell ? SHELL_RUN_THREAD_ID : threadId) &&
                         use.actor.kind === "terminal_spawn" &&
-                        use.canonicalPath === workspace,
+                        use.canonicalPath === (destinationShell ? destinationWorkspace : workspace),
                     ),
                   );
                   calls++;
@@ -231,6 +244,9 @@ const fixture = <A, E>(
               beforeWrap = effect;
             },
             workspace,
+            destinationWorkspace,
+            prepareDestinationShell: yield* makeDestinationShellLaunch,
+            serverCwd: config.cwd,
             open: manager.open({
               threadId,
               terminalId: "terminal",
@@ -248,9 +264,68 @@ const fixture = <A, E>(
       }).pipe(
         Effect.provideService(HostProcess.HomeDirectory, root),
         Effect.provideService(HostProcess.Environment, {}),
+        Effect.provideService(ServerConfig, config),
       );
     }).pipe(Effect.provide(platform)),
   );
+
+it.effect("a destination shell starts with a pending use scoped to its own directory", () =>
+  fixture(
+    ({ manager, calls, destinationWorkspace }) =>
+      Effect.gen(function* () {
+        const opened = yield* manager.open({
+          threadId: SHELL_RUN_THREAD_ID,
+          terminalId: "run-destination",
+          cwd: destinationWorkspace,
+        });
+        assert.notStrictEqual(opened.status, "error");
+        assert.strictEqual(calls(), 1);
+      }),
+    true,
+    true,
+  ),
+);
+
+it.effect("destination-shell opens leave unrelated project deletion available", () =>
+  fixture(
+    (input) =>
+      Effect.gen(function* () {
+        const requested = {
+          threadId: SHELL_RUN_THREAD_ID,
+          terminalId: "run-destination",
+          cwd: input.serverCwd,
+        };
+        const prepared = yield* input.prepareDestinationShell(requested);
+        assert.strictEqual(prepared.cwd, input.destinationWorkspace);
+        yield* input.manager.open(prepared);
+        assert.strictEqual(input.calls(), 1);
+
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO jones_deletion_worktree_admissions(effect_id,worktree_path,binding_json,start_json,state)
+ VALUES('unrelated-deletion',${input.workspace},'{}','{}','started')`;
+      }),
+    true,
+    true,
+  ),
+);
+
+it.effect("a reserved destination shell cannot enter a project workspace", () =>
+  fixture((input) =>
+    Effect.gen(function* () {
+      const request = {
+        threadId: SHELL_RUN_THREAD_ID,
+        terminalId: "run-destination",
+        cwd: input.workspace,
+        worktreePath: input.workspace,
+      };
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(input.prepareDestinationShell(request))));
+      const open = yield* input.manager.open(request);
+      assert.strictEqual(open.status, "error");
+      assert.strictEqual(input.calls(), 0);
+      assert.deepStrictEqual(yield* (yield* makeRuntimeUseStore).pending(), []);
+    }),
+  ),
+);
 
 it.effect(
   "actual terminal start commits pending before the PTY boundary and a repeated failed open cannot replay",
