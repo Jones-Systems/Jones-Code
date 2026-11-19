@@ -7,6 +7,28 @@
 #include <sys/proc_info.h>
 #include <unistd.h>
 
+enum {
+    thread_details_unavailable = 5,
+    thread_set_changed = 6,
+};
+
+static int read_thread_snapshot(int pid, uint64_t threads[512], struct proc_threadinfo info[512],
+                                size_t *count) {
+    uint64_t after_threads[512];
+    int size = proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, threads, sizeof(after_threads));
+    if (size <= 0 || size >= (int)sizeof(after_threads) || size % sizeof(threads[0])) return 4;
+    size_t thread_count = (size_t)size / sizeof(threads[0]);
+    for (size_t i = 0; i < thread_count; ++i) {
+        /* LISTTHREADS supplies opaque handles consumed by THREADINFO. */
+        if (proc_pidinfo(pid, PROC_PIDTHREADINFO, threads[i], &info[i], sizeof(info[i])) != sizeof(info[i]) ||
+            !memchr(info[i].pth_name, '\0', sizeof(info[i].pth_name))) return thread_details_unavailable;
+    }
+    if (proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, after_threads, sizeof(after_threads)) != size ||
+        memcmp(threads, after_threads, (size_t)size) != 0) return thread_set_changed;
+    *count = thread_count;
+    return 0;
+}
+
 /* Qualification-only read of one task-captured process. */
 int main(int argc, char **argv) {
     if (argc != 2) return 2;
@@ -16,21 +38,18 @@ int main(int argc, char **argv) {
 
     int pid = (int)value;
     struct proc_bsdinfo before = {0}, after = {0};
-    uint64_t threads[512], after_threads[512];
+    uint64_t threads[512];
     struct proc_threadinfo info[512] = {0};
     if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &before, sizeof(before)) != sizeof(before) ||
         before.pbi_uid != getuid() || before.pbi_pid != (uint32_t)pid) return 3;
 
-    int size = proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, threads, sizeof(threads));
-    if (size <= 0 || size >= (int)sizeof(threads) || size % sizeof(threads[0])) return 4;
-    size_t count = (size_t)size / sizeof(threads[0]);
-    for (size_t i = 0; i < count; ++i) {
-        /* LISTTHREADS supplies opaque handles consumed by THREADINFO. */
-        if (proc_pidinfo(pid, PROC_PIDTHREADINFO, threads[i], &info[i], sizeof(info[i])) != sizeof(info[i]) ||
-            !memchr(info[i].pth_name, '\0', sizeof(info[i].pth_name))) return 5;
+    size_t count = 0;
+    int result = read_thread_snapshot(pid, threads, info, &count);
+    // Thread creation or exit can invalidate a bracket. Try one new bracket before falling back.
+    if (result == thread_details_unavailable || result == thread_set_changed) {
+        result = read_thread_snapshot(pid, threads, info, &count);
     }
-    if (proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, after_threads, sizeof(after_threads)) != size ||
-        memcmp(threads, after_threads, (size_t)size) != 0) return 6;
+    if (result != 0) return result;
     if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &after, sizeof(after)) != sizeof(after) ||
         before.pbi_pid != after.pbi_pid || before.pbi_uid != after.pbi_uid ||
         before.pbi_start_tvsec != after.pbi_start_tvsec ||
