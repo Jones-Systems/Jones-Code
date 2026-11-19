@@ -12,11 +12,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { CommandReceiptStoreV2 } from "../../orchestration-v2/CommandReceiptStore.ts";
 import {
+  decodeOrchestrationEffectPayloadV2,
   EffectOutboxError,
-  EffectOutboxV2,
   type OrchestrationEffectV2,
 } from "../../orchestration-v2/EffectOutbox.ts";
 import { EventSinkV2 } from "../../orchestration-v2/EventSink.ts";
@@ -29,7 +30,7 @@ const decodePayload = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Un
 export class RecoveryStartDenial extends Context.Service<
   RecoveryStartDenial,
   {
-    readonly withTransaction: EventSinkV2["Service"]["withProviderBatch"];
+    readonly withClaimTransaction: EventSinkV2["Service"]["withProviderBatch"];
     readonly settle: (
       effect: OrchestrationEffectV2,
       now: DateTime.Utc,
@@ -41,8 +42,23 @@ const make = Effect.gen(function* () {
   const sink = yield* EventSinkV2;
   const receipts = yield* CommandReceiptStoreV2;
   const projections = yield* ProjectionStoreV2;
-  const outbox = yield* EffectOutboxV2;
+  const sql = yield* SqlClient.SqlClient;
   const ids = yield* IdAllocator.IdAllocatorV2;
+
+  // A start or restart with no reliable run attribution still counts as possible custody.
+  const predecessorRunId = sql`CASE WHEN json_valid(payload_json) THEN CASE
+    WHEN json_type(payload_json, '$.request') IS NULL
+      AND json_type(payload_json, '$.nativeCreationExecutionReference') IS NULL
+      AND json_extract(payload_json, '$.type') IS effect_type
+      AND json_type(payload_json, '$.runId') IS 'text'
+      THEN NULLIF(trim(json_extract(payload_json, '$.runId')), '')
+    WHEN json_type(payload_json, '$.type') IS NULL
+      AND json_type(payload_json, '$.runId') IS NULL
+      AND json_type(payload_json, '$.nativeCreationExecutionReference') IS 'object'
+      AND json_extract(payload_json, '$.request.type') IS effect_type
+      AND json_type(payload_json, '$.request.runId') IS 'text'
+      THEN NULLIF(trim(json_extract(payload_json, '$.request.runId')), '')
+  END END`;
 
   const settle = Effect.fn("RecoveryStartDenial.settle")(function* (
     effect: OrchestrationEffectV2,
@@ -130,25 +146,38 @@ const make = Effect.gen(function* () {
 
     // The reconciliation receipt certifies the original input. Recheck custody in
     // case another start or restart took over the same run after reconciliation.
-    const predecessors = (yield* outbox.listByThreadId(threadId)).filter(
-      (row) =>
-        row.id !== effect.id &&
-        (row.request.type === "provider-turn.start" ||
-          row.request.type === "provider-turn.restart") &&
-        row.request.runId === runId,
-    );
-    if (
-      predecessors.length === 0 ||
-      predecessors.some(
-        (row) =>
-          row.status !== "cancelled" ||
-          row.attemptCount !== 0 ||
-          row.leaseOwner !== null ||
-          row.completedAt === null ||
-          row.nativeCreationExecutionReference !== undefined,
+    const predecessors = yield* sql<{
+      readonly effect_type: string;
+      readonly payload_json: string;
+      readonly status: string;
+      readonly attempt_count: number;
+      readonly lease_owner: string | null;
+      readonly completed_at: string | null;
+    }>`SELECT effect_type, payload_json, status, attempt_count, lease_owner, completed_at
+      FROM orchestration_v2_effect_outbox
+      WHERE thread_id = ${threadId} AND effect_id != ${effect.id}
+        AND effect_type IN ('provider-turn.start', 'provider-turn.restart')
+        AND COALESCE(${predecessorRunId}, ${runId}) = ${runId}`;
+    if (predecessors.length === 0) return;
+    for (const row of predecessors) {
+      if (
+        row.status !== "cancelled" ||
+        row.attempt_count !== 0 ||
+        row.lease_owner !== null ||
+        row.completed_at === null
       )
-    )
-      return;
+        return;
+      const decoded = yield* Effect.option(decodeOrchestrationEffectPayloadV2(row.payload_json));
+      if (Option.isNone(decoded)) return;
+      const { request } = decoded.value;
+      if (
+        "nativeCreationExecutionReference" in decoded.value ||
+        (request.type !== "provider-turn.start" && request.type !== "provider-turn.restart") ||
+        request.type !== row.effect_type ||
+        request.runId !== runId
+      )
+        return;
+    }
 
     const notice: OrchestrationV2TurnItem = {
       id: ids.derive.runSignalTurnItem({ runId, signal: "recovery-start-denied" }),
@@ -204,7 +233,7 @@ const make = Effect.gen(function* () {
         cause: "Recovered start denial could not settle the exact active attempt.",
       });
   });
-  return RecoveryStartDenial.of({ withTransaction: sink.withProviderBatch, settle });
+  return RecoveryStartDenial.of({ withClaimTransaction: sink.withProviderBatch, settle });
 });
 
 export const layer = Layer.effect(RecoveryStartDenial, make);

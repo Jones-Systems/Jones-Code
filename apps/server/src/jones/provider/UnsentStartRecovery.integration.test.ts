@@ -92,6 +92,7 @@ import * as Restart from "../orchestration/RestartPreparation.ts";
 import { EVENT_LOG_PRUNED_THROUGH_PROJECTION } from "../persistence/EventLogPruneBoundary.ts";
 import * as Refusals from "../startRefusal/Store.ts";
 import * as PreparedCheckout from "../workspaceLifecycle/PreparedStartCheckout.ts";
+import * as RecoveryStartDenial from "./RecoveryStartDenial.ts";
 import { StartAdmission } from "./StartAdmission.ts";
 import * as UnattendedStartAdmission from "./UnattendedStartAdmission.ts";
 import { recoveryResendEffect } from "./UnsentStartProof.ts";
@@ -964,7 +965,6 @@ it.effect.each([
     });
     yield* Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       const rows = outbox
         .listByThreadId(prepared.run.threadId)
         .pipe(
@@ -995,11 +995,30 @@ it.effect.each([
           urgentOnly: true,
         });
         assert.equal(Option.getOrThrow(parked).id, `effect:${parentStopId}:delegated-tasks.stop`);
-        yield* worker.runOnce();
+        const ran = yield* Effect.flatMap(EffectWorker.OrchestrationEffectWorkerV2, (worker) =>
+          worker.runOnce(),
+        ).pipe(
+          Effect.provide(
+            EffectWorker.layerWithOptions({ workerId: "prepared-stale-reconciliation" }).pipe(
+              Layer.provide(
+                RecoveryStartDenial.layer.pipe(
+                  Layer.provide(Layer.merge(IdAllocator.layer, Receipts.layer)),
+                ),
+              ),
+            ),
+          ),
+        );
+        assert.isFalse(ran);
         assert.deepInclude(Option.getOrThrow(yield* outbox.get(candidate.id)), {
           status: "failed",
           attemptCount: 0,
+          leaseOwner: null,
         });
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        assert.equal(
+          (yield* projections.getRun(prepared.run.threadId, prepared.run.id))?.status,
+          "starting",
+        );
       }
       assert.deepInclude(
         (yield* rows).find((row) => row.id === prepared.originalId),

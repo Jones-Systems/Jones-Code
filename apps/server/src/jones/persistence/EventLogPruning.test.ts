@@ -168,6 +168,14 @@ const readers: ReadonlyArray<Reader> = [
       "provider/UnsentStartRecovery.integration.test.ts (missing release receipt, pruned delegated birth evidence and missing checkout witness)",
   },
   {
+    file: "provider/RecoveryStartDenial.ts",
+    classification: "tolerate",
+    after:
+      "Without the reconciliation receipt and its exact retained result event, a zero-claim refusal retires the replacement and leaves the run, attempt and root unresolved.",
+    proof:
+      "provider/RecoveryStartParentStop.integration.test.ts (missing reconciliation receipt and pruned reconciliation event)",
+  },
+  {
     file: "provider/RecoveryStartParentStop.ts",
     classification: "tolerate",
     after:

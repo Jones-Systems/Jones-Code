@@ -1019,10 +1019,11 @@
     {
       "id": "recovery-start-parent-stop",
       "tests": [
+        "apps/server/src/jones/persistence/EventLogPruning.test.ts",
         "apps/server/src/jones/provider/RecoveryStartParentStop.integration.test.ts",
         "apps/server/src/jones/provider/UnsentStartRecovery.integration.test.ts"
       ],
-      "scope": "The outbox checks durable delegated Stop authority before leasing a recovered start and native admission checks again before dispatch. A proven unclaimed denial settles the exact run, attempt and root with the outbox transition. Recovery of released preparation requires the accepted input and a checkout identity captured at release. Tests cover unavailable Stop fan-out, later admission, delegated birth, repeated reconciliation, original attachments, and checkout replacement."
+      "scope": "The outbox checks durable delegated Stop authority before leasing a recovered start and native admission checks again before dispatch. A proven unclaimed denial settles the exact run, attempt and root with the outbox transition under one writer. The denial reads only possible start and restart predecessors. Ambiguous custody and missing or pruned reconciliation evidence leave projections unresolved. Only a claim that queues publication uses the EventSink publication lane. Tests cover ordinary claim progress, unavailable Stop fan-out, later admission, delegated birth, repeated reconciliation, original attachments, and checkout identity at release."
     },
     {
       "id": "deletion-worktree-removal",

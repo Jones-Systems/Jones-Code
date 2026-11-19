@@ -24,12 +24,14 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
@@ -40,6 +42,7 @@ import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as Worker from "../../orchestration-v2/EffectWorker.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Projections from "../../orchestration-v2/ProjectionStore.ts";
 import * as Registry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -50,6 +53,7 @@ import * as Goals from "../goals/continuity/GoalContinuity.ts";
 import * as NativeStartAdmission from "../nativeCreation/NativeStartAdmission.ts";
 import * as Control from "../orchestration/ControlAdmission.ts";
 import * as Restart from "../orchestration/RestartPreparation.ts";
+import { pruneEventLogLikeUpstream } from "../persistence/prunedEventLog.testkit.ts";
 import * as Refusals from "../startRefusal/Store.ts";
 import * as RecoveryStartDenial from "./RecoveryStartDenial.ts";
 import { StartAdmission } from "./StartAdmission.ts";
@@ -59,6 +63,30 @@ const providerInstanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
 const database = Sqlite.layerMemory;
 const openSession = vi.fn(() => Effect.die("A denied start must not reach the adapter."));
+const PublicationGate = Context.Reference<
+  | {
+      readonly started: Deferred.Deferred<void>;
+      readonly release: Deferred.Deferred<void>;
+    }
+  | undefined
+>("test/RecoveryStartParentStop/PublicationGate", { defaultValue: () => undefined });
+const eventStoreLayer = Layer.effect(
+  EventStore.EventStoreV2,
+  Effect.map(EventStore.EventStoreV2, (store) =>
+    EventStore.EventStoreV2.of({
+      ...store,
+      publishCommitted: (events) =>
+        Effect.gen(function* () {
+          const gate = yield* PublicationGate;
+          if (gate !== undefined) {
+            yield* Deferred.succeed(gate.started, undefined);
+            yield* Deferred.await(gate.release);
+          }
+          yield* store.publishCommitted(events);
+        }),
+    }),
+  ),
+).pipe(Layer.provide(EventStore.layer));
 const replay = Replay.layerWithRegistryAndServices(
   { name: "recovery-parent-stop" },
   Registry.layerFromAdapters([
@@ -70,7 +98,12 @@ const replay = Replay.layerWithRegistryAndServices(
       openSession,
     },
   ]),
-  { databaseLayer: database, runEffectWorker: false, continueThreadsAfterServerUpdate: true },
+  {
+    databaseLayer: database,
+    eventStoreLayer,
+    runEffectWorker: false,
+    continueThreadsAfterServerUpdate: true,
+  },
 );
 const runtime = Layer.mergeAll(
   Recovery.layer,
@@ -429,6 +462,173 @@ const fixture = Effect.fnUntraced(function* (
   };
 });
 
+const updateChildTitle = Effect.fnUntraced(function* () {
+  const sink = yield* EventSink.EventSinkV2;
+  const projections = yield* Projections.ProjectionStoreV2;
+  const child = (yield* projections.getThread(childId))!;
+  return yield* sink.write({
+    events: [
+      {
+        id: eventId("child-title"),
+        threadId: childId,
+        type: "thread.metadata-updated",
+        occurredAt: yield* DateTime.now,
+        payload: { ...child, title: "Updated child title" },
+      },
+    ],
+  });
+});
+
+it.effect.each([
+  { name: "an unreadable retired integration effect", evidence: "foreign", settles: true },
+  { name: "an unreadable restart for another run", evidence: "other-run", settles: true },
+  { name: "an unreadable restart for this run", evidence: "same-run", settles: false },
+  { name: "an unattributable restart", evidence: "unknown-run", settles: false },
+  { name: "a missing reconciliation receipt", evidence: "missing-receipt", settles: false },
+  { name: "a pruned reconciliation event", evidence: "pruned-receipt-events", settles: false },
+] as const)("keeps claims live with $name", ({ evidence, settles }) =>
+  Effect.gen(function* () {
+    const f = yield* fixture("delegated", false, false);
+    const outbox = yield* Outbox.EffectOutboxV2;
+    const projections = yield* Projections.ProjectionStoreV2;
+    const recovery = yield* Recovery.ProviderRuntimeRecoveryService;
+    const recoveryStartDenial = yield* RecoveryStartDenial.RecoveryStartDenial;
+    const receipts = yield* Receipts.CommandReceiptStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    yield* f.send;
+    yield* TestClock.setTime(time + 1);
+    assert.equal((yield* recovery.reconcile("startup")).terminalizedRuns, 0);
+    const replacement = (yield* outbox.listByThreadId(childId)).find(
+      (row) => row.status === "pending",
+    )!;
+    const receiptId = CommandId.make(
+      replacement.id.slice(`effect:restart-resend:${f.run.id}:`.length),
+    );
+    const receipt = Option.getOrThrow(yield* receipts.getByCommandId(receiptId));
+    const retiredId = "effect:retained-unreadable";
+    const retiredRow = sql`SELECT * FROM orchestration_v2_effect_outbox WHERE effect_id = ${retiredId}`;
+    if (evidence === "missing-receipt") {
+      yield* sql`DELETE FROM orchestration_command_receipts WHERE command_id = ${receiptId}`;
+    } else if (evidence === "pruned-receipt-events") {
+      yield* updateChildTitle();
+      assert.include(
+        yield* pruneEventLogLikeUpstream(receipt.resultSequence),
+        receipt.resultSequence,
+      );
+      assert.deepEqual(Option.getOrThrow(yield* receipts.getByCommandId(receiptId)), receipt);
+    } else {
+      const effectType =
+        evidence === "foreign" ? "fixture.retired-integration" : "provider-turn.restart";
+      const payload = {
+        type: effectType,
+        ...(evidence === "other-run" ? { runId: "run:retired" } : {}),
+        ...(evidence === "same-run" ? { runId: f.run.id } : {}),
+      };
+      yield* sql`INSERT INTO orchestration_v2_effect_outbox
+        (effect_id, command_id, thread_id, effect_type, payload_json, status, attempt_count,
+         available_at, created_at, updated_at, completed_at)
+        SELECT ${retiredId}, ${CommandId.make("command:retained-unreadable")}, thread_id,
+          ${effectType}, ${evidence === "unknown-run" ? "{" : JSON.stringify(payload)},
+          'cancelled', 0, available_at, created_at, updated_at, completed_at
+        FROM orchestration_v2_effect_outbox WHERE effect_id = ${f.originalId}`;
+    }
+    const retiredBefore = yield* retiredRow;
+    yield* f.recordStop;
+    yield* f.parkStop;
+    yield* TestClock.setTime(time + 2);
+    const job = {
+      id: "effect:ordinary-cleanup",
+      commandId: CommandId.make("command:ordinary-cleanup"),
+      threadId: childId,
+      request: { type: "terminal.cleanup" },
+    } satisfies Outbox.PendingOrchestrationEffectV2;
+    yield* outbox.enqueue([job]);
+    const workerId = "lineage-test";
+    const poll = outbox.claimNext({ workerId, recoveryStartDenial }).pipe(Effect.result);
+    const first = yield* poll;
+    const second = yield* poll;
+    const child = yield* projections.getThreadProjection(childId);
+    assert.deepEqual(
+      {
+        claims: [first, second].map((entry) =>
+          Result.isSuccess(entry)
+            ? Option.getOrUndefined(entry.success)?.id
+            : entry.failure.operation,
+        ),
+        replacement: Option.getOrThrow(yield* outbox.get(replacement.id)).status,
+        job: Option.getOrThrow(yield* outbox.get(job.id)).status,
+        run: child.runs.find(({ id }) => id === f.run.id)?.status,
+        attempt: child.attempts.find(({ id }) => id === f.attempt.id)?.status,
+        root: child.nodes.find(({ id }) => id === f.run.rootNodeId)?.status,
+        notices: child.turnItems.filter((item) => item.title === "Recovered turn did not start")
+          .length,
+      },
+      {
+        claims: [job.id, undefined],
+        replacement: "failed",
+        job: "running",
+        run: settles ? "failed" : "starting",
+        attempt: settles ? "failed" : "pending",
+        root: settles ? "failed" : "pending",
+        notices: settles ? 1 : 0,
+      },
+    );
+    assert.deepInclude(Option.getOrThrow(yield* outbox.get(replacement.id)), {
+      attemptCount: 0,
+      leaseOwner: null,
+    });
+    assert.isEmpty(child.providerTurns);
+    assert.deepEqual(yield* retiredRow, retiredBefore);
+    assert.isTrue(yield* outbox.succeed({ effectId: job.id, workerId }));
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect.each(["ordinary", "empty"] as const)(
+  "returns a %s claim during deferred event publication",
+  (kind) =>
+    Effect.gen(function* () {
+      yield* fixture("delegated", false, false);
+      const outbox = yield* Outbox.EffectOutboxV2;
+      const recoveryStartDenial = yield* RecoveryStartDenial.RecoveryStartDenial;
+      const gate = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+      const jobId = "effect:publication-test-cleanup";
+      if (kind === "ordinary")
+        yield* outbox.enqueue([
+          {
+            id: jobId,
+            commandId: CommandId.make("command:publication-test-cleanup"),
+            threadId: parentId,
+            request: { type: "terminal.cleanup" },
+          },
+        ]);
+      const publication = yield* updateChildTitle().pipe(
+        Effect.provideService(PublicationGate, gate),
+        Effect.forkChild({ startImmediately: true }),
+      );
+      const done = yield* Deferred.make<string | undefined>();
+      const { observed, claim } = yield* Effect.gen(function* () {
+        yield* Deferred.await(gate.started);
+        const claim = yield* outbox
+          .claimNext({ workerId: "publication-test", recoveryStartDenial })
+          .pipe(
+            Effect.map((row) => Option.getOrUndefined(row)?.id),
+            Effect.tap((id) => Deferred.succeed(done, id)),
+            Effect.forkChild,
+          );
+        const withinPublication = yield* Deferred.await(done).pipe(
+          Effect.timeoutOption("1 second"),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* TestClock.adjust("1 second");
+        return { observed: yield* Fiber.join(withinPublication), claim };
+      }).pipe(Effect.ensuring(Deferred.succeed(gate.release, undefined)));
+      yield* Fiber.join(publication);
+      const expected = kind === "ordinary" ? jobId : undefined;
+      assert.equal(yield* Fiber.join(claim), expected);
+      assert.deepEqual(observed, Option.some(expected));
+    }).pipe(Effect.provide(runtime)),
+);
+
 it.effect.each([
   { name: "Stop before claim", source: "delegated", stop: "before claim", attempts: 0, sends: 0 },
   {
@@ -566,6 +766,8 @@ it.effect.each([
       const worker = yield* Worker.OrchestrationEffectWorkerV2;
       if (stop === "failed fan-out") {
         const sql = yield* SqlClient.SqlClient;
+        const sink = yield* EventSink.EventSinkV2;
+        const sequence = yield* sink.latestSequence({ threadId: childId });
         yield* sql`CREATE TEMP TRIGGER reject_recovery_denial
           BEFORE UPDATE OF status ON orchestration_v2_projection_runs WHEN NEW.status = 'failed'
           BEGIN SELECT RAISE(ABORT, 'fixture could not persist run denial'); END`;
@@ -576,6 +778,7 @@ it.effect.each([
           completedAt: null,
         });
         assert.equal((yield* projections.getRun(childId, f.run.id))?.status, "starting");
+        assert.equal(yield* sink.latestSequence({ threadId: childId }), sequence);
         yield* sql`DROP TRIGGER reject_recovery_denial`;
       }
       if (stop === "after capture") {

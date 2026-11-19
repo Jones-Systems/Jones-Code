@@ -662,9 +662,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             ) ELSE 0 END AS rejected_unclaimed
           `,
           );
-          const claim = Effect.gen(function* () {
-            const [row] = yield* claimStatement;
-            if (row?.rejected_unclaimed === 1) {
+          const claim = claimStatement.pipe(Effect.map(([row]) => row));
+          const settleDenied = (row: ClaimRow | undefined) => {
+            if (row?.rejected_unclaimed !== 1) return undefined;
+            return Effect.gen(function* () {
               const decoded = yield* Effect.option(rowToEffect(row));
               if (Option.isSome(decoded)) {
                 if (recoveryStartDenial === undefined)
@@ -675,15 +676,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                   });
                 yield* recoveryStartDenial.settle(decoded.value, now);
               }
-            }
-            return row;
-          });
-          // EventSink owns the commit and event publication when the claim can
-          // reject a recovered start. Its run events and the denial commit together.
+            });
+          };
+          // A zero-claim denial can append run events before releasing this writer.
+          // Ordinary claims commit without waiting for the event publication lane.
           const commitClaim = (
             recoveryStartDenial === undefined || urgentOnly
-              ? sql.withTransaction(claim)
-              : recoveryStartDenial.withTransaction(claim)
+              ? sql.withTransaction(Effect.tap(claim, (row) => settleDenied(row) ?? Effect.void))
+              : recoveryStartDenial.withClaimTransaction(claim, settleDenied)
           ).pipe(Effect.withTracerEnabled(false));
           while (true) {
             const row = yield* commitClaim;
