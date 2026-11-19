@@ -271,6 +271,11 @@
       "scope": "Private three-pin frozen source preparation, finite storage/output/deadline admission, Linux subreaper family closure, identity-bound link-aware cleanup/retention, ESM/createRequire source and frozen-package ownership, and strict full two-case qualification receipts. Source imports provide no packaged-build or installed-runtime attestation. Real historical installation and both opt-in cases remain separately assigned qualification."
     },
     {
+      "id": "browser-test-discovery",
+      "tests": ["apps/web/src/jones/testing/syntheticDiscoveryLog.test.ts"],
+      "scope": "Browser test setup retains the first failed discovery of the loopback fixture descriptor per page and folds its identical repeats. Other discovery failures and application logging remain visible. Production discovery and retry behavior stay intact."
+    },
+    {
       "id": "word-ci-trace",
       "tests": [
         "apps/web/src/jones/wordCiTrace.test.ts",
