@@ -226,8 +226,10 @@ function run(
 }
 
 export interface FakeThread {
+  readonly projectId?: ProjectId;
   readonly pinnedAt?: OrchestrationV2ThreadShell["pinnedAt"];
   readonly activeOrderKey?: OrchestrationV2ThreadShell["activeOrderKey"];
+  readonly lastSnoozeWakeAt?: OrchestrationV2ThreadShell["lastSnoozeWakeAt"];
   /** Makes this a side chat of that thread. */
   readonly sideChatOf?: ThreadId;
   /** Makes this an older settled thread the shell leaves out; only its family read returns it. */
@@ -317,8 +319,9 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
   return {
     ...(thread.pinnedAt === undefined ? {} : { pinnedAt: thread.pinnedAt }),
     ...(thread.activeOrderKey === undefined ? {} : { activeOrderKey: thread.activeOrderKey }),
+    ...(thread.lastSnoozeWakeAt === undefined ? {} : { lastSnoozeWakeAt: thread.lastSnoozeWakeAt }),
     id: thread.id,
-    projectId: PROJECT_ID,
+    projectId: thread.projectId ?? PROJECT_ID,
     title: thread.title,
     providerInstanceId: modelSelection.instanceId,
     modelSelection,
@@ -618,6 +621,7 @@ export function installFakeEnvironment(
     readonly holdCommand?: (command: OrchestrationV2Command) => boolean;
     readonly providers?: ReadonlyArray<unknown>;
     readonly activeThreadReorder?: boolean;
+    readonly pinnedThreadReorder?: boolean;
   },
 ): Disposable {
   threads = fixtures;
@@ -625,12 +629,16 @@ export function installFakeEnvironment(
     ...makeServerConfig(options?.providers ?? [CODEX_PROVIDER]),
     keybindings: options?.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
   };
-  if (options?.activeThreadReorder) {
+  if (options?.activeThreadReorder || options?.pinnedThreadReorder) {
     baseServerConfig = {
       ...baseServerConfig,
       environment: {
         ...baseServerConfig.environment,
-        capabilities: { ...baseServerConfig.environment.capabilities, threadActiveReorder: true },
+        capabilities: {
+          ...baseServerConfig.environment.capabilities,
+          ...(options.activeThreadReorder ? { threadActiveReorder: true } : {}),
+          ...(options.pinnedThreadReorder ? { threadPinning: true, threadPinReorder: true } : {}),
+        },
       },
     };
   }
@@ -911,7 +919,7 @@ export async function refreshFakeShell(): Promise<void> {
         snapshot: {
           schemaVersion: 1,
           snapshotSequence: sequence,
-          projects: [project],
+          projects,
           threads: threads.map(shellOf),
           archivedThreads: [],
         },

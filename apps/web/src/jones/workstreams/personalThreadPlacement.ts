@@ -62,10 +62,13 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
       (thread.pinnedAt != null && (!confirmUnpin || !input.reorderableKeys.has(movedId)))
     )
       return false;
-    // Order keys outlive status filters. Keep hidden active siblings in the plan.
-    const activeMembers = sortActiveThreadsByOrderKey(
-      input.orderRoster.filter((member) => member.pinnedAt == null),
+    // Order keys outlive filters. Keep hidden active siblings in the plan.
+    const roster = input.orderRoster.filter(
+      (member) => member.pinnedAt == null && (!confirmUnpin || shellKey(member) !== movedId),
     );
+    // Unpin preserves the active sort fields. Plan its resulting position before any writes.
+    if (confirmUnpin) roster.push(thread);
+    const activeMembers = sortActiveThreadsByOrderKey(roster);
     membersByKey = new Map(activeMembers.map((member) => [shellKey(member), member]));
     const grouping = groupPersonalThreads(input.state, activeMembers);
     const groupIdByKey = new Map(

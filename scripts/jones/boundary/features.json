@@ -3467,6 +3467,7 @@
         "apps/mobile/src/features/workstreams/personalStorage.test.ts",
         "apps/web/src/jones/workstreams/personalThreadReorder.test.ts",
         "apps/web/src/jones/workstreams/personalSidebarOrder.browser.test.tsx",
+        "apps/web/src/jones/workstreams/personalSidebarPlacement.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadDrag.browser.test.tsx",
         "apps/web/src/jones/workstreams/sidebarDragAutoScroll.browser.test.ts",
         "apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx",

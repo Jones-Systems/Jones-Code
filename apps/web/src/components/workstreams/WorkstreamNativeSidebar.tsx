@@ -8,6 +8,7 @@ import {
   type RefObject,
 } from "react";
 import { useAtomValue } from "@effect/atom-react";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   groupPersonalThreads,
   personalThreadKey,
@@ -305,21 +306,20 @@ export function WorkstreamNativeSidebar({
     if (externalDropRef)
       externalDropRef.current = {
         locateExternal: (point, thread, options) => {
+          const key = personalThreadKey(thread);
+          const sidebarKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
           const source = [
             ...document.querySelectorAll<HTMLElement>("[data-thread-item], [data-personal-thread]"),
           ].find(
-            (row) =>
-              row.dataset.threadItem === personalThreadKey(thread) ||
-              row.dataset.personalThread === personalThreadKey(thread),
+            (row) => row.dataset.threadItem === sidebarKey || row.dataset.personalThread === key,
           );
           draggedHeight.current = source?.getBoundingClientRect().height ?? 0;
           const target = locate(point, thread, !options?.fromMember);
           const previous = externalTarget.current;
           externalTarget.current = target
             ? {
-                key: personalThreadKey(thread),
-                sourceId:
-                  previous?.key === personalThreadKey(thread) ? previous.sourceId : groupId(thread),
+                key,
+                sourceId: previous?.key === key ? previous.sourceId : groupId(thread),
                 target,
               }
             : null;

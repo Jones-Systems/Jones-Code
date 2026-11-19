@@ -394,6 +394,43 @@ describe("placePersonalThread", () => {
     expect(f.row("u").pinnedAt).toBe(at);
   });
 
+  it.each([
+    { ids: ["anchor", "moving", "tail"], fixed: ["tail"], key: null },
+    {
+      ids: ["a-fixed", "anchor", "moving", "z-fixed"],
+      fixed: ["a-fixed", "z-fixed"],
+      key: "m",
+    },
+  ])(
+    "assigns and unpins into the natural slot with retained key $key",
+    async ({ ids, fixed, key }) => {
+      const f = fixture(
+        ids,
+        ids.filter((id) => id !== "moving").map((id) => [id, "a"]),
+        "moving",
+        "moving",
+      );
+      if (key !== null) for (const id of ids) f.setOrderKey(id, key);
+      for (const id of fixed) f.denied.add(id);
+      const input = f.input("a", "anchor", true);
+      expect(
+        await placePersonalThread({
+          ...input,
+          activeThreads: input.activeThreads.filter(({ id }) => !f.denied.has(id)),
+          unpin: async () => {
+            expect(f.assignmentWrites).toEqual(["a"]);
+            expect(f.orderWrites).toEqual([]);
+            f.unpin();
+            return true;
+          },
+        }),
+      ).toBe(true);
+      expect(f.row("moving").pinnedAt).toBeNull();
+      expect(f.groupOrder("a")).toEqual(ids);
+      expect(f.orderWrites).toEqual([]);
+    },
+  );
+
   it("places a grouped thread into a mixed Unassigned prefix and keeps the other keys", async () => {
     const f = fixture(
       ["u1", "a1", "b1", "moved", "a2", "u2", "u3"],
@@ -417,6 +454,7 @@ describe("placePersonalThread", () => {
 
   it("admits a pinned arrival to active ordering only after unpinning it", async () => {
     const f = fixture(undefined, undefined, "moved");
+    f.setOrderKey("moved", "t");
     expect(
       await placePersonalThread(
         f.input("a", "a1", true, {
@@ -472,6 +510,7 @@ describe("placePersonalThread", () => {
       );
       f.setOrderKey("a1", "a0");
       f.setOrderKey("a2", "a1");
+      f.setOrderKey("moved", "a0m");
       expect(
         await placePersonalThread(
           f.input("a", after ? "a2" : "a1", after, {

@@ -530,10 +530,11 @@ function useSidebarThreads(input: {
     utcMinute: nowMinute,
     wakeClockMs: snoozeWakeClock,
   });
-  const sidebarThreads =
+  const applyWorkstreamSnoozes = (roster: readonly EnvironmentThreadShell[]) =>
     !input.workstreamsEnabled || workstreamSnooze.snoozed.length === 0
-      ? scopedThreads
-      : scopedThreads.filter((thread) => !workstreamSnooze.hidesThread(thread));
+      ? roster
+      : roster.filter((thread) => !workstreamSnooze.hidesThread(thread));
+  const sidebarThreads = applyWorkstreamSnoozes(scopedThreads);
   const [statusWakeAt, setStatusWakeAt] = useState(() => new Date().toISOString());
   const {
     statusFilter,
@@ -552,10 +553,9 @@ function useSidebarThreads(input: {
   const visibleThreads = input.workstreamsEnabled ? personalVisibleThreads : globallyVisibleThreads;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- schedules the status roster's precise snooze wake, including filtered rows
   useEffect(() => {
-    const next = nextThreadStatusWakeAt(
-      scopedThreads,
-      Math.max(Date.now(), Date.parse(statusWakeAt)),
-    );
+    // oxlint-disable-next-line react/purity -- the effect samples the clock to schedule the next snooze wake
+    const now = Math.max(Date.now(), Date.parse(statusWakeAt));
+    const next = nextThreadStatusWakeAt(scopedThreads, now);
     if (next === null) return;
     return scheduleSnoozeWake(new Date(next).toISOString(), () =>
       setStatusWakeAt(new Date().toISOString()),
@@ -685,6 +685,14 @@ function useSidebarThreads(input: {
   ] as const) {
     for (const thread of list) sectionByThreadKey.set(threadShellKey(thread), section);
   }
+  const workstreamSummaryThreads = personalSidebarSummaryThreads(
+    sidebarThreads,
+    partition.snoozeNow,
+  );
+  const readWorkstreamReferenceThreads = () =>
+    scopedProjectKeys === null
+      ? scopedThreads
+      : filterSidebarV2VisibleThreads(environmentThreads, null, delegatedUnderParent);
   return {
     ...partition,
     pinnedThreads,
@@ -693,12 +701,16 @@ function useSidebarThreads(input: {
     delegatedUnderParent,
     threads,
     environmentThreads,
-    workstreamSummaryThreads: personalSidebarSummaryThreads(sidebarThreads, partition.snoozeNow),
+    workstreamSummaryThreads,
     workstreamRosterThreads: sidebarThreads,
-    readWorkstreamReferenceThreads: () =>
+    readWorkstreamReferenceThreads,
+    readWorkstreamOrderRoster: () =>
       scopedProjectKeys === null
-        ? scopedThreads
-        : filterSidebarV2VisibleThreads(environmentThreads, null, delegatedUnderParent),
+        ? workstreamSummaryThreads
+        : personalSidebarSummaryThreads(
+            applyWorkstreamSnoozes(readWorkstreamReferenceThreads()),
+            partition.snoozeNow,
+          ),
     snoozedWorkstreams: workstreamSnooze.snoozed,
     visibleWorkstreamState: workstreamSnooze.visibleState,
     statusFilter,
@@ -1464,6 +1476,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     workstreamSummaryThreads,
     workstreamRosterThreads,
     readWorkstreamReferenceThreads,
+    readWorkstreamOrderRoster,
     snoozedWorkstreams,
     visibleWorkstreamState,
     settledVisibleCount,
@@ -2365,10 +2378,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         destinationId,
         neighbor: liveNeighbor,
         after,
-        state: workstreamController.state,
+        state: visibleWorkstreamState,
         activeThreads,
-        orderRoster: workstreamSummaryThreads,
+        orderRoster: neighbor === null ? workstreamSummaryThreads : readWorkstreamOrderRoster(),
         activeKeysById,
+        // Project scope limits writes. The order roster also includes fixed out-of-scope siblings.
         reorderableKeys:
           neighbor === null || workingShelfEnabled
             ? activeReorderableThreadKeys
