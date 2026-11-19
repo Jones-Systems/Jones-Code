@@ -307,6 +307,11 @@
       "scope": "The advisory Linux pilot compares a cold and restored weighted shard with the required fresh run. Per-file Vite+ tasks can optionally declare their case reports as cache outputs. The existing upstream task fixture proves report replay, dependency invalidation and failure propagation. The Jones evidence adapter compares file and case identities, keeps transfer evidence fresh, and audits a hit without caching."
     },
     {
+      "id": "jones-pr-cache-capacity",
+      "tests": ["scripts/jones/ci/pr-cache-capacity.node-test.mjs"],
+      "scope": "A default-branch Actions workflow frees space below the included cache cap by evicting least recently used PR archives first. Policy tests cover paginated inventory, exact deletion IDs, shared archive protection, and refusal on incomplete evidence."
+    },
+    {
       "id": "native-stack-projection-order",
       "tests": ["apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts"],
       "scope": "The existing MCP projection harness verifies the reported seven-layer GitHub membership, stale saved layer lists, appended top and every native position. Runtime ordering stays in the shared upstream resolver; a test in the existing harness exercises the actual list_thread_pull_requests interface without duplicating it."
