@@ -34,7 +34,7 @@ const workstream = {
   createdAt: "2026-11-12T12:00:00.000Z",
   updatedAt: "2026-11-12T12:00:00.000Z",
 };
-const state = Atom.make<PersonalWorkstreamsState>({
+const initialState: PersonalWorkstreamsState = {
   workstreams: [workstream],
   environments: [source, target].map((environmentId) => ({
     environmentId,
@@ -43,40 +43,38 @@ const state = Atom.make<PersonalWorkstreamsState>({
     workstreamCount: 1,
   })),
   assignmentsByThreadKey: new Map(),
-  pendingThreadKeys: new Set(),
+  pendingThreadKeys: new Set<string>(),
   canCreate: true,
-}).pipe(Atom.keepAlive);
+};
+const state = Atom.make(initialState).pipe(Atom.keepAlive);
 const linkMetadata = Atom.make(
   AsyncResult.success({ [threadId]: { title: "Linked thread", projectId: null } }),
 );
 
-vi.mock(import("../../state/workstreamsPersonal"), async (original) => ({
-  ...(await original()),
-  personalWorkstreamsController: {
-    get state() {
-      return state;
-    },
-    canAssign: () => true,
-    create: vi.fn(),
-    rename: vi.fn(),
-    setColor: vi.fn(),
-    setLifecycle: vi.fn(),
-    reorder: vi.fn(),
-    remove: vi.fn(),
-    createAndAssign: vi.fn(),
-    assign: async (thread, workstreamId) => {
-      const current = registry.get(state);
-      registry.set(state, {
-        ...current,
-        assignmentsByThreadKey: new Map(current.assignmentsByThreadKey).set(
-          personalThreadKey(thread),
-          { threadId: thread.id, workstreamId, revision: 1, updatedAt: null },
-        ),
-      });
-      return { ok: true, value: undefined };
-    },
-  } satisfies PersonalWorkstreamsController,
-}));
+vi.mock(import("../../state/workstreamsPersonal"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    personalWorkstreamsController: {
+      ...actual.personalWorkstreamsController,
+      get state() {
+        return state;
+      },
+      canAssign: () => true,
+      assign: async (thread, workstreamId) => {
+        const current = registry.get(state);
+        registry.set(state, {
+          ...current,
+          assignmentsByThreadKey: new Map(current.assignmentsByThreadKey).set(
+            personalThreadKey(thread),
+            { threadId: thread.id, workstreamId, revision: 1, updatedAt: null },
+          ),
+        });
+        return { ok: true, value: undefined };
+      },
+    } satisfies PersonalWorkstreamsController,
+  };
+});
 vi.mock(import("../../state/session"), async (original) => ({
   ...(await original()),
   ensureEnvironmentScope: async () => ({ status: "granted" as const }),
