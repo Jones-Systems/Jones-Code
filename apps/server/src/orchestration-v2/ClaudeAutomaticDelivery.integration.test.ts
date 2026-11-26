@@ -132,18 +132,24 @@ const result = (uuid: string, aborted: boolean) =>
 
 // Finish the synthetic active turn while its event consumer can still commit terminal evidence.
 const completeActiveTurn = Effect.fnUntraced(function* (
+  threadId: ThreadId,
   messages: Queue.Queue<SDKMessage, Cause.Done>,
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const events = yield* orchestrator.acquireDomainEvents;
-  const waiting = yield* events.pipe(
-    Stream.filter((event) => event.type === "run.updated" && event.payload.status === "waiting"),
+  const completed = yield* events.pipe(
+    Stream.filter(
+      (event) =>
+        event.type === "run.updated" &&
+        event.threadId === threadId &&
+        event.payload.status === "completed",
+    ),
     Stream.take(1),
     Stream.runDrain,
     Effect.forkScoped,
   );
   yield* Queue.offer(messages, result("completed", false));
-  yield* Fiber.join(waiting);
+  yield* Fiber.join(completed);
 });
 
 const deliveries = [
@@ -612,7 +618,7 @@ it.effect("applies an effort change to the running Claude query without waiting 
       yield* worker.drain();
 
       assert.deepEqual(flagSettings, [{ effortLevel: "medium", fastMode: null, ultracode: null }]);
-      yield* completeActiveTurn(sdkMessages);
+      yield* completeActiveTurn(threadId, sdkMessages);
     }).pipe(
       Effect.provide(
         ProviderReplayHarness.layerWithRegistry(
@@ -740,7 +746,7 @@ const renamedClaudeSessionTitles = (options: { readonly renameDuringStartup: boo
         yield* rename;
       }
       yield* worker.drain();
-      yield* completeActiveTurn(sdkMessages);
+      yield* completeActiveTurn(threadId, sdkMessages);
       return renames;
     }).pipe(
       Effect.provide(
@@ -1115,7 +1121,7 @@ it.effect.each([
 ] as const)("handles an unread steer when %s", (outcome) =>
   Effect.gen(function* () {
     const cwd = yield* checkpointWorkspace("claude-unread-steer");
-    const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+    const sdkMessages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
     const offers: SDKUserMessage[] = [];
     const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
       instanceId: modelSelection.instanceId,
@@ -1146,7 +1152,9 @@ it.effect.each([
             listPermissionRules: Effect.die("unexpected permission rules read"),
             stopTask: () => Effect.void,
             interrupt: Queue.shutdown(sdkMessages),
-            close: Effect.void,
+            close: Queue.end(sdkMessages).pipe(Effect.asVoid),
+            // The fixture has no child process to join, only a reader to drain.
+            termination: Effect.void,
           }),
         forkSession: () => Effect.die("unused"),
         subagentLaunchToolUseId: () => Effect.succeed(null),
@@ -1160,11 +1168,15 @@ it.effect.each([
       const threadId = ThreadId.make("thread:unread-steer");
       const steerId = MessageId.make("steer");
       const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
-        orchestrator.streamDomainEvents.pipe(
-          Stream.filter(predicate),
-          Stream.take(1),
-          Stream.runDrain,
-          Effect.forkScoped,
+        orchestrator.acquireDomainEvents.pipe(
+          Effect.flatMap((events) =>
+            events.pipe(
+              Stream.filter(predicate),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            ),
+          ),
         );
       const settled = (runId: RunId, status: "completed") =>
         watch(
@@ -1324,6 +1336,13 @@ it.effect.each([
         assert.equal(offers.length, 5);
         assert.equal(offers[4]?.priority, undefined);
         assert.include(offeredText(offers[4]), "Message steer");
+        const followUp = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (run) => run.userMessageId === steerId && run.status === "running",
+        );
+        assert.isDefined(followUp);
+        const followUpEnded = yield* settled(followUp!.id, "completed");
+        yield* answer(offers[4]!);
+        yield* Fiber.join(followUpEnded);
         return;
       }
 
@@ -1478,7 +1497,9 @@ const exitWhileIdle = (options: {
                     listPermissionRules: Effect.die("unexpected permission rules read"),
                     stopTask: () => Effect.void,
                     interrupt: Effect.void,
-                    close: Queue.shutdown(sdkMessages),
+                    close: Queue.end(sdkMessages).pipe(Effect.asVoid),
+                    // Ending this process fixture leaves only its queued frames to drain.
+                    termination: Effect.void,
                   };
                 }),
               forkSession: () => Effect.die("unused"),

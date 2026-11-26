@@ -1316,6 +1316,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         assert.equal(
           recovered.runs[finalOrdinal - 1]?.status,
           mode === "unknown-steer" ? "failed" : "completed",
+          `Native replay reached entry ${replayState.cursor} after ${requests.map(({ method }) => method).join(", ")}`,
         );
         assert.notEqual(recovered.runs[finalOrdinal - 1]?.id, recovered.runs[0]?.id);
         if (mode === "unknown-steer") {

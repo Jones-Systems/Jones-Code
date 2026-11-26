@@ -118,6 +118,7 @@ const localChild = (childThreadId: ThreadId | null): ThreadId => {
 // as JSON text, never as `structuredContent`.
 
 const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
+const upstreamActorHeader = `[T3 Code: the agent in T3 thread "${parentThreadId}" sent this message, not the user.]`;
 const projectId = ProjectId.make("project:mcp-orchestrator");
 const foreignProjectId = ProjectId.make("project:mcp-foreign");
 const codexInstanceId = ProviderInstanceId.make("codex");
@@ -647,7 +648,6 @@ describe("orchestrator MCP toolkit", () => {
         sleep: (duration) => liveClock.sleep(duration),
       });
       const replayHeader = `**T3M** · From [MCP replay parent](t3-thread://v1/${parentThreadId}) · Sent: 10/20 10:50:`;
-      const upstreamReplayHeader = `[T3 Code: the agent in T3 thread "${parentThreadId}" sent this message, not the user.]`;
       const decodeRecord = decodeUnknownEffectRecordStringUnknown;
       const entries = yield* Effect.forEach(rawTranscript.entries, (entry) =>
         Effect.gen(function* () {
@@ -662,7 +662,7 @@ describe("orchestrator MCP toolkit", () => {
           const frame = yield* decodeRecord(entry.frame);
           const params = yield* decodeRecord(frame.params);
           expect(params.input).toEqual([
-            { text: `${upstreamReplayHeader}\n\n${body}`, type: "text" },
+            { text: `${upstreamActorHeader}\n\n${body}`, type: "text" },
           ]);
           return {
             ...entry,
@@ -1994,7 +1994,7 @@ describe("orchestrator MCP toolkit", () => {
             );
             expect(remainder.items[0]?.nextTextOffset).toBeNull();
             expect(firstChunk.text + (remainder.items[0]?.text ?? "")).toBe(
-              "Claude completed: Complete before a parent reads this child result directly.",
+              `Claude completed: ${upstreamActorHeader}\n\nComplete before a parent reads this child result directly.`,
             );
             expect(
               (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
@@ -2013,7 +2013,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(terminalResultRead.items).toMatchObject([
               {
                 type: "assistant_message",
-                text: "Claude completed: Complete before a parent reads this child result directly.",
+                text: `Claude completed: ${upstreamActorHeader}\n\nComplete before a parent reads this child result directly.`,
                 textTruncated: false,
               },
             ]);

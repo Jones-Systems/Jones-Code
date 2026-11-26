@@ -148,7 +148,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
           );
           if (injected) {
             yield* persist("injected");
-            return { context: "", delivered: Effect.void, unsent: Effect.void };
+            return { context: "", delivered: Effect.void, unsent: Effect.void, inlineHandoffs: [] };
           }
         } else {
           yield* persist("pending");
@@ -156,12 +156,13 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         if (input.deferInline) {
           // Compaction cannot carry inline transcripts; retain for the next turn if native injection is unsupported.
           yield* outcome.unsent;
-          return { context: "", delivered: Effect.void, unsent: Effect.void };
+          return { context: "", delivered: Effect.void, unsent: Effect.void, inlineHandoffs: [] };
         }
         return {
           context: renderHistory(selected.messages, selected.context),
           delivered: persist("inline"),
           unsent: outcome.unsent,
+          inlineHandoffs: pending,
         };
       }),
     );

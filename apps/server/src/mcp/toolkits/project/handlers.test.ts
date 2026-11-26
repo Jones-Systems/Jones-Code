@@ -428,6 +428,9 @@ const clientLaunchHarness = Effect.fn("test.clientLaunchHarness")(function* (inp
     );
   const settings = {
     fallbackModelSelection: input.fallbackModel ?? null,
+    ...(input.defaultThreadEnvMode === undefined
+      ? {}
+      : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
     ...(input.defaultRuntimeMode === undefined
       ? {}
       : { defaultRuntimeMode: input.defaultRuntimeMode }),
@@ -1579,7 +1582,8 @@ it.effect("a retried worktree launch replays after its base ref is gone", () =>
       runSetup,
       waitForSetup,
     } = yield* clientLaunchHarness({
-      runtimeModeCeiling: "auto",
+      runtimeModeCeiling: "full-access",
+      defaultRuntimeMode: "full-access",
       launched,
       hasCommit: ({ refName }) => Effect.succeed(base.exists && refName === "feature"),
       checkWorktreeBase: ({ projectId, workspaceStrategy }) =>
