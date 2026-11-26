@@ -17,7 +17,6 @@ import {
   mergeWithDefaultKeybindings,
 } from "@t3tools/shared/keybindings";
 import type * as Context from "effect/Context";
-import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import { expect, it, vi } from "vite-plus/test";
 import { cdp, page, userEvent } from "vite-plus/test/browser";
@@ -105,8 +104,6 @@ function acceptAttachmentUploads(): Disposable {
 const insertText = (text: string) => cdp().send("Input.insertText", { text });
 
 /** Holds every call to `method` until `release`, then ends it with `end`, until disposed. */
-class LaunchRefused extends Schema.TaggedError<LaunchRefused>()("LaunchRefused", {}) {}
-
 function holdRpc<Input>(method: string, end: Effect.Effect<never, Error>) {
   let release = () => {};
   const held = new Promise<void>((resolve) => {

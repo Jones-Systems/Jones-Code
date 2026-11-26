@@ -1165,9 +1165,15 @@ function ComposerPromptEditorTiptapInner(
       [updated.state.selection.$from.nodeBefore, updated.state.selection.$from.nodeAfter].some(
         (node) => node?.isInline && node.isAtom && !node.isText && node.type.name !== "hardBreak",
       );
-    readCallbacks().onChange(nextValue, nextCursor, nextExpandedCursor, suppressTrigger, [
-      ...contextIds,
-    ]);
+    readCallbacks().onChange(
+      nextValue,
+      nextCursor,
+      nextExpandedCursor,
+      suppressTrigger,
+      [...contextIds],
+      previousSnapshot.value !== nextValue,
+      isHistoryTransaction(transaction),
+    );
   };
 
   const editorAttributes = {
@@ -1811,7 +1817,7 @@ function ComposerPromptEditorTiptapInner(
         },
       );
     }
-    selectMarkdownOffset(editor, normalizedExpandedCursor, readEditorDoc);
+    selectMarkdownOffset(editor, value, normalizedExpandedCursor, readEditorDoc);
     const map = readEditorDoc(editor);
     if (isFocused) scrollTiptapCaretIntoView(editor);
     // A redraw later in this commit drops the editor's scroll offset, so reveal on the next frame.
@@ -1897,7 +1903,7 @@ function ComposerPromptEditorTiptapInner(
     const boundedCursor = clampEditorCursor(snapshotRef.current.value, nextCursor);
     const expandedCursor =
       exactExpandedCursor ?? expandEditorCursor(snapshotRef.current.value, boundedCursor);
-    selectMarkdownOffset(editor, expandedCursor, readEditorDoc);
+    selectMarkdownOffset(editor, snapshotRef.current.value, expandedCursor, readEditorDoc);
     scrollTiptapCaretIntoView(editor);
     if (boundedCursor === snapshotRef.current.cursor) return;
     snapshotRef.current = {
@@ -1916,6 +1922,7 @@ function ComposerPromptEditorTiptapInner(
       snapshotRef.current.expandedCursor,
       literalText,
       [...snapshotRef.current.contextIds],
+      false,
     );
   };
 
@@ -2128,6 +2135,7 @@ function insertMarkdownParagraphs(
 /** Placing the caret can show Markdown markers, so place it again in the shown source. */
 function selectMarkdownOffset(
   editor: TiptapEditor,
+  source: string,
   offset: number,
   read: (current: TiptapEditor) => ReturnType<ReturnType<typeof createEditorSerializationCache>> = (
     current,
@@ -2135,7 +2143,10 @@ function selectMarkdownOffset(
 ): void {
   for (let pass = 0; pass < 2; pass += 1) {
     const map = read(editor);
-    const pos = flatToPm(map, markdownToFlat(map, offset));
+    const pos = flatToPm(
+      map,
+      markdownToFlat(map, serializedMarkdownOffset(source, map.value, offset)),
+    );
     const { selection } = editor.state;
     if (pass > 0 && selection.empty && selection.from === pos) return;
     editor.commands.setTextSelection(pos);

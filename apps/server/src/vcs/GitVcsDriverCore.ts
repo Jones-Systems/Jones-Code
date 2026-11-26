@@ -1918,27 +1918,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     } satisfies NodeJS.ProcessEnv;
   };
 
-  // Moves finished packs and loose objects into the repository, as Git's own quarantine does. A
-  // pack's index goes last: Git reads a pack as soon as it sees the index.
-  const adoptPrivateObjects = Effect.fn("GitVcsDriver.adoptPrivateObjects")(function* (
-    privateObjects: string,
-    repositoryObjects: string,
-  ) {
-    for (const directory of yield* fileSystem.readDirectory(privateObjects)) {
-      if (directory !== "pack" && !/^[0-9a-f]{2}$/.test(directory)) continue;
-      const names = (yield* fileSystem.readDirectory(path.join(privateObjects, directory)))
-        .filter((name) => !name.startsWith("tmp_"))
-        .toSorted((a, b) => Number(a.endsWith(".idx")) - Number(b.endsWith(".idx")));
-      if (names.length === 0) continue;
-      yield* fileSystem.makeDirectory(path.join(repositoryObjects, directory), { recursive: true });
-      for (const name of names) {
-        const target = path.join(repositoryObjects, directory, name);
-        if (yield* fileSystem.exists(target)) continue;
-        yield* fileSystem.rename(path.join(privateObjects, directory, name), target);
-      }
-    }
-  });
-
   const fetchRemoteForStatus = Effect.fn("GitVcsDriver.fetchRemoteForStatus.wait")(function* (
     gitCommonDir: string,
     remoteName: string,
@@ -6468,7 +6447,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           resolveListRefsSnapshot(repositoryPaths.gitCommonDir, input.refresh === true).pipe(
             timeListRefsPhase("snapshotMs"),
           ),
-          readCurrentBranch("GitVcsDriver.listRefs.currentBranch", input.cwd).pipe(
+          Cache.get(listRefsCurrentBranchCache, normalizeRepositoryPathsCacheKey(input.cwd)).pipe(
             Effect.orElseSucceed(() => repositoryPaths.currentBranch),
           ),
         ],
@@ -8088,6 +8067,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     statusDetails,
     statusDetailsLocal,
     statusDetailsRemote,
+    readStatusPoll,
     readRemoteFetchObservation,
     bindRemoteFetchObservations,
     resolveRepoFreshnessRemote,

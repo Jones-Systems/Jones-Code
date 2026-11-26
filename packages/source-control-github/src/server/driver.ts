@@ -106,6 +106,7 @@ const makeInstance = Effect.gen(function* () {
       discovery: GitHubSourceControlProvider.makeDiscovery,
       pullRequests: GitHubPullRequestProvider.make,
       ci: GitHubPullRequestProvider.makeCiReader,
+      issues: GitHubIssueTracker.make,
       fetchMedia: GitHubMediaFetch.make.pipe(
         Effect.provideService(HttpClient.HttpClient, mediaHttpClient),
       ),

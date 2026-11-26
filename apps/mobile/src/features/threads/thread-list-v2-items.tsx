@@ -858,6 +858,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   const titleLineHeight =
     Platform.OS === "android" ? androidTitleLineHeight : titleTypography.lineHeight * fontScale;
+  const navigation = useNavigation();
   const gt = useGT();
   const m = useMessages();
   const {

@@ -66,6 +66,10 @@ function versionCore(version: string): string {
   return version.replace(/[-+].*$/, "");
 }
 
+const versionMismatchHint = msg(
+  "Version mismatch. Try syncing the client and server to the same T3 Code version.",
+);
+
 export function resolveVersionMismatch(
   serverVersion: string | null | undefined,
   clientVersion: string = APP_VERSION,
@@ -106,9 +110,7 @@ export function resolveVersionMismatch(
   return {
     clientVersion: normalizedClientVersion,
     serverVersion: normalizedServerVersion,
-    hint: m(
-      msg("Version mismatch. Try syncing the client and server to the same T3 Code version."),
-    ),
+    hint: m(versionMismatchHint),
   };
 }
 
@@ -150,6 +152,7 @@ export function resolveServerConfigVersionMismatch(
     ? null
     : {
         ...mismatch,
+        hint: resolve(versionMismatchHint),
         clientBuildStartedAt: APP_BUILD_STARTED_AT,
         serverBuildStartedAt: serverConfig?.environment.jonesBuildStartedAt,
         clientSourceSha: APP_SOURCE_SHA,

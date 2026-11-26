@@ -42,7 +42,6 @@ import {
 import { getThreadListV2OrderedSection } from "../threads/threadListV2";
 import { threadCanArchive } from "./threadArchive";
 import { resolveThreadTitleRename } from "../threads/thread-title-rename";
-import { useStableCallback } from "../../lib/useStableCallback";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 
 function environmentConfigLoaded(environmentId: EnvironmentThreadShell["environmentId"]) {

@@ -4240,10 +4240,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   function openWithWorkspaceLease(
     input: TerminalOpenInput,
+    legacy?: undefined,
+    supportsSnapshotSequenceState?: boolean,
   ): Effect.Effect<TerminalSessionSnapshot, TerminalError>;
   function openWithWorkspaceLease(
     input: TerminalOpenInput,
     legacy: LegacyTerminalPreparationHooks | undefined,
+    supportsSnapshotSequenceState?: boolean,
   ): Effect.Effect<
     TerminalSessionSnapshot,
     TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
@@ -4251,11 +4254,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   function openWithWorkspaceLease(
     input: TerminalOpenInput,
     legacy?: LegacyTerminalPreparationHooks,
+    supportsSnapshotSequenceState = false,
   ): Effect.Effect<
     TerminalSessionSnapshot,
     TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
   > {
     return openWithWorkspaceLeaseEffect(input, legacy).pipe(
+      Effect.map((session) => snapshot(session, supportsSnapshotSequenceState)),
       Effect.mapError((cause) =>
         isNativeSetupNativeSetupControlError(cause)
           ? new LegacyTerminalControlError({
@@ -4269,10 +4274,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   function openLocked(
     input: TerminalOpenInput,
+    legacy?: undefined,
+    supportsSnapshotSequenceState?: boolean,
   ): Effect.Effect<TerminalSessionSnapshot, TerminalError>;
   function openLocked(
     input: TerminalOpenInput,
     legacy: LegacyTerminalPreparationHooks | undefined,
+    supportsSnapshotSequenceState?: boolean,
   ): Effect.Effect<
     TerminalSessionSnapshot,
     TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
@@ -4280,11 +4288,15 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   function openLocked(
     input: TerminalOpenInput,
     legacy?: LegacyTerminalPreparationHooks,
+    supportsSnapshotSequenceState = false,
   ): Effect.Effect<
     TerminalSessionSnapshot,
     TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
   > {
-    return withTerminalWorkspaceLease(input, openWithWorkspaceLease(input, legacy));
+    return withTerminalWorkspaceLease(
+      input,
+      openWithWorkspaceLease(input, legacy, supportsSnapshotSequenceState),
+    );
   }
 
   function open(input: TerminalOpenInput): Effect.Effect<TerminalSessionSnapshot, TerminalError>;
@@ -4340,7 +4352,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         cwd: input.cwd,
       });
       return yield* Effect.uninterruptible(
-        openLocked(resolvedInput, input.supportsSnapshotSequenceState),
+        openLocked(resolvedInput, undefined, input.supportsSnapshotSequenceState),
       );
     }
 
@@ -4355,7 +4367,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         cwd: input.cwd,
       });
       return yield* Effect.uninterruptible(
-        openLocked(resolvedInput, input.supportsSnapshotSequenceState),
+        openLocked(resolvedInput, undefined, input.supportsSnapshotSequenceState),
       );
     }
 
@@ -4695,10 +4707,23 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     viewerId?: string,
   ) {
     const terminalId = input.terminalId;
-    const session = yield* requireSession(input.threadId, terminalId);
+    const phase = input.bracketedPaste ?? input.plainWrite;
+    const bracketed = input.bracketedPaste !== undefined;
+    const found = yield* getSession(input.threadId, terminalId);
+    if (Option.isNone(found)) {
+      if (input.expectedPid !== undefined) return yield* new TerminalProcessChangedError();
+      return yield* new TerminalSessionLookupError({ threadId: input.threadId, terminalId });
+    }
+    const session = found.value;
     if (session.nativeSetupControl !== undefined)
       return yield* new TerminalSessionLookupError({ threadId: input.threadId, terminalId });
     const process = session.process;
+    if (
+      input.expectedPid !== undefined &&
+      (process?.pid !== input.expectedPid || session.status !== "running")
+    ) {
+      return yield* new TerminalProcessChangedError();
+    }
     if (!process || session.status !== "running") {
       if (session.status === "exited") return;
       return yield* new TerminalNotRunningError({
@@ -4709,21 +4734,135 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     if (input.reply && !acceptsQueryReply(toSessionKey(input.threadId, terminalId), viewerId)) {
       return;
     }
-    const cwdObservation = yield* TerminalCwdObservation;
-    const observedCwd =
-      input.observation === undefined
-        ? null
-        : yield* Effect.tryPromise({
-            try: () => cwdObservation.observe(process.pid, session.workspaceDutyIdentity),
-            catch: () => null,
-          }).pipe(Effect.orElseSucceed(() => null));
+    const isCurrent = () => session.process === process && session.status === "running";
+    const inactiveError = () =>
+      input.expectedPid === undefined
+        ? new TerminalNotRunningError({ threadId: input.threadId, terminalId })
+        : new TerminalProcessChangedError();
+    const writeError = (cause: unknown) =>
+      new TerminalWriteError({
+        threadId: input.threadId,
+        terminalId,
+        terminalPid: process.pid,
+        cause,
+      });
+    const noteInput = () => {
+      session.idlePrompt?.input();
+      session.inputCount += 1;
+    };
+    const writeSplitData = (data: string) =>
+      Effect.try({
+        try: () => {
+          noteInput();
+          process.write(PtyAdapter.ptyInput(data, undefined));
+        },
+        catch: writeError,
+      });
+    if (
+      phase &&
+      (viewerId === undefined || input.binary || input.reply || (bracketed && input.plainWrite))
+    ) {
+      return yield* writeError("Invalid split terminal write");
+    }
+    if (phase === "continue" || phase === "end" || phase === "abort") {
+      const paste = activePastes.get(process);
+      if (!paste || paste.owner !== viewerId || paste.bracketed !== bracketed) {
+        if (phase === "abort") return;
+        return yield* writeError("Split terminal write is no longer active");
+      }
+      if (
+        bracketed &&
+        phase === "end" &&
+        !(paste.trailingData + input.data).endsWith(TERMINAL_BRACKETED_PASTE_END)
+      ) {
+        return yield* writeError("Missing end of bracketed paste");
+      }
+      paste.lastWrite = clock.currentTimeMillisUnsafe();
+      if (phase === "continue") {
+        yield* writeSplitData(input.data);
+        paste.trailingData = (paste.trailingData + input.data).slice(-pasteEndOverlap);
+        return;
+      }
+      if (phase !== "abort" || bracketed) {
+        yield* writeSplitData(phase === "abort" ? TERMINAL_BRACKETED_PASTE_END : input.data);
+      }
+      return releasePaste(process);
+    }
+
+    // A waiting write belongs to the captured PTY even when the session restarts.
+    const awaitInputTurn = Effect.gen(function* () {
+      let active = activePastes.get(process);
+      while (active) {
+        if (phase === "start" && active.owner === viewerId) {
+          return yield* writeError("Split terminal write already active");
+        }
+        yield* Deferred.await(active.finished);
+        if (!isCurrent()) return yield* inactiveError();
+        active = activePastes.get(process);
+      }
+    });
+    yield* awaitInputTurn;
+    if (phase === "start" && viewerId !== undefined) {
+      if (bracketed && !input.data.startsWith(TERMINAL_BRACKETED_PASTE_START)) {
+        return yield* writeError("Missing start of bracketed paste");
+      }
+      const paste = {
+        owner: viewerId,
+        bracketed,
+        finished: Deferred.makeUnsafe<void>(),
+        lastWrite: clock.currentTimeMillisUnsafe(),
+        trailingData: input.data.slice(-pasteEndOverlap),
+      };
+      // Close a disconnected sender's bracket on the captured PTY before releasing pending input.
+      yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          yield* writeSplitData(input.data);
+          activePastes.set(process, paste);
+          yield* Effect.gen(function* () {
+            while (activePastes.get(process) === paste && isCurrent()) {
+              const remaining = paste.lastWrite + pasteIdleMillis - clock.currentTimeMillisUnsafe();
+              if (remaining <= 0) {
+                if (bracketed) {
+                  yield* writeSplitData(TERMINAL_BRACKETED_PASTE_END).pipe(
+                    Effect.ignoreCause({ log: true }),
+                  );
+                }
+                break;
+              }
+              const finished = yield* Deferred.await(paste.finished).pipe(
+                Effect.timeoutOption(Duration.millis(remaining)),
+              );
+              if (Option.isSome(finished)) return;
+            }
+            if (activePastes.get(process) === paste) releasePaste(process);
+          }).pipe(Effect.interruptible, Effect.forkIn(workerScope));
+        }),
+      );
+      return;
+    }
+
+    let observedCwd: string | null = null;
+    if (input.observation !== undefined) {
+      const cwdObservation = yield* TerminalCwdObservation;
+      const observeCwd = Effect.tryPromise({
+        try: () => cwdObservation.observe(process.pid, session.workspaceDutyIdentity),
+        catch: () => null,
+      }).pipe(Effect.orElseSucceed(() => null));
+      observedCwd = yield* observeCwd;
+      while (activePastes.has(process)) {
+        yield* awaitInputTurn;
+        observedCwd = yield* observeCwd;
+      }
+    }
     // Optional cwd observation can yield. Re-read the native owner before issuing
     // bytes; closing/replacing that lifecycle must never write to the captured PTY.
-    const current = yield* requireSession(input.threadId, terminalId);
-    if (current !== session || current.process !== process || current.status !== "running")
-      return yield* new TerminalNotRunningError({ threadId: input.threadId, terminalId });
-    session.idlePrompt?.input();
-    session.inputCount += 1;
+    const current = yield* getSession(input.threadId, terminalId);
+    if (Option.isNone(current)) {
+      if (input.expectedPid !== undefined) return yield* new TerminalProcessChangedError();
+      return yield* new TerminalSessionLookupError({ threadId: input.threadId, terminalId });
+    }
+    if (current.value !== session || !isCurrent()) return yield* inactiveError();
+    noteInput();
     yield* Effect.try({
       try: () =>
         scriptObserver.write(
@@ -4736,17 +4875,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             observedCwd,
             shell: session.shellName,
             physical: session.workspaceDutyIdentity,
-            isCurrent: () => session.process === process && session.status === "running",
+            isCurrent,
           },
           (data) => process.write(PtyAdapter.ptyInput(data, input.binary)),
         ),
-      catch: (cause) =>
-        new TerminalWriteError({
-          threadId: input.threadId,
-          terminalId,
-          terminalPid: process.pid,
-          cause,
-        }),
+      catch: writeError,
     });
   });
 

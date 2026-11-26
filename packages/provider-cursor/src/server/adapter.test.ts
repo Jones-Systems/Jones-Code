@@ -1398,16 +1398,29 @@ describe("CursorAdapterV2", () => {
                   const summaryCompleted = nextSummaryCompleted;
                   nextRunStatus = "finished";
                   nextSummaryCompleted = undefined;
+                  const nativeResult = {
+                    id: runId,
+                    requestId: `native-request-${sentMessages.length}`,
+                    status,
+                    ...(status === "error" ? { error: { message: "transient failure" } } : {}),
+                    model: { id: input.options?.model?.id ?? "composer-2.5" },
+                    durationMs: 1,
+                  };
                   return {
                     agentId,
                     runId,
-                    nativeWait: fixtureNativeExit(runId),
-                    wait: Effect.succeed({
-                      id: runId,
-                      requestId: `native-request-${sentMessages.length}`,
-                      status: "finished" as const,
-                      model: { id: "composer-2.5" },
-                      durationMs: 1,
+                    nativeWait: Effect.succeed({
+                      ...nativeResult,
+                      requestId: "synthetic-native-exit",
+                    }),
+                    wait: Effect.gen(function* () {
+                      if (summaryCompleted !== undefined) {
+                        yield* input.onDelta!({
+                          type: "summary-completed",
+                          ...summaryCompleted,
+                        }).pipe(Effect.orDie);
+                      }
+                      return nativeResult;
                     }),
                     cancel: Effect.void,
                   };
@@ -1505,6 +1518,7 @@ describe("CursorAdapterV2", () => {
         return {
           orchestration,
           devices: sent.includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS),
+          runtime: sent.includes("<runtime_info>"),
         };
       });
       const told = (orchestration: boolean, devices: boolean, runtime: boolean) => ({
@@ -1655,7 +1669,6 @@ describe("CursorAdapterV2", () => {
       // Cursor keeps a cancelled run in the conversation only once it saved a checkpoint.
       const checkpointedRuns = new Set<string>();
       const runEnds: Array<Deferred.Deferred<"finished" | "cancelled">> = [];
-      const runDeltas: Array<(update: InteractionUpdate) => Effect.Effect<void>> = [];
       const instanceId = ProviderInstanceId.make("cursor");
       const threadId = ThreadId.make("cursor-steer-thread");
       const modelSelection = { instanceId, model: "composer-2.5" };

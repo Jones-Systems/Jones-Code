@@ -18,10 +18,6 @@ import {
 } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import {
-  isAtomCommandInterrupted,
-  squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { isSlashCommand } from "@t3tools/shared/composerTrigger";
@@ -67,10 +63,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { isImageAttachment, type ChatImageAttachment, type ChatMessage } from "../../types";
 import { cn } from "~/lib/utils";
 import { Button, InlineButton } from "../ui/button";
-import { toastManager } from "../ui/toast";
-import { m } from "../../i18n/messages";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { GuestMessageName } from "./guestMessageStyle";
 import { TimelineRowTimestamp } from "./TimelineRowParts";
@@ -480,6 +473,13 @@ export function QueuedRunsControl({
           // The server decides on the agent's text, and a goal command can stop the turn.
           const sentText = { text: item.message?.text ?? item.text, attachments: item.attachments };
           const movesCommandFirst = isSlashCommand(sentText) && parseGoalCommand(sentText) === null;
+          const steerHint = workflow?.canSendNow
+            ? gt("Start a turn with this message")
+            : workflow?.promoteSkipsCompaction
+              ? gt("Skip compaction and send this message")
+              : movesCommandFirst
+                ? gt("Move this command to the front of the queue")
+                : gt("Send into the current turn");
           return (
             <li
               draggable={rowDraggable}
@@ -579,7 +579,10 @@ export function QueuedRunsControl({
                         </Button>
                       </TooltipTrigger>
                       <TooltipPopup>
-                        {`${workflow?.canSendNow ? "Start a turn with this message" : workflow?.promoteSkipsCompaction ? "Skip compaction and send this message" : "Send into the current turn"}${item.serverIndex === 0 && props.steerShortcutLabel ? ` (${props.steerShortcutLabel})` : ""}`}
+                        {steerHint}
+                        {item.serverIndex === 0 && props.steerShortcutLabel
+                          ? ` (${props.steerShortcutLabel})`
+                          : null}
                       </TooltipPopup>
                     </Tooltip>
                   </>

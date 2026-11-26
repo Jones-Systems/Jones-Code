@@ -14,8 +14,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as ChildProcess from "effect/process/ChildProcess";
-import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as UpdateAdmission from "../jones/updates/UpdateAdmissionFence.ts";
 
@@ -44,7 +42,6 @@ import {
   type ServiceLauncherParentMessage,
   type SupportedLauncherProtocol,
 } from "./serviceProtocol.ts";
-import { RESTORE_OOMD_WATCH_SCRIPT } from "./userManagerOom.ts";
 
 export class ServiceLauncherClientError extends Schema.TaggedError<ServiceLauncherClientError>()(
   "ServiceLauncherClientError",

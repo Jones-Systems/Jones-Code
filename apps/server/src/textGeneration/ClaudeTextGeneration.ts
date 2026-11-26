@@ -369,7 +369,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           apiModelId,
           ...(cliEffort ? ["--effort", cliEffort] : []),
           "--settings",
-          settingsJson,
+          settingsArgument,
           ...(!isEvaluation && investigate
             ? [
                 "--tools",

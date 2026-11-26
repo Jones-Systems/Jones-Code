@@ -12,9 +12,11 @@ import {
 } from "@t3tools/contracts";
 import { initialMessageCommandId } from "@t3tools/contracts/jones/deliveryEvidence";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import { Atom, AsyncResult } from "effect/reactivity";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 
 const harness = vi.hoisted(() => ({
   document: JSON.stringify({ schemaVersion: 1, drafts: {} }),
@@ -400,127 +402,143 @@ describe("mobile evidence-aware editable recovery", () => {
     },
   );
 
-  it.each([true, false])(
+  it.effect.each([true, false])(
     "restores rejection while retaining the proven target (creation accepted: %s)",
-    async (creationAccepted) => {
-      const message = rejectedCreation(creationAccepted);
-      await harness.manager.enqueue(message);
-      expect(
-        await Effect.runPromise(restoreRejectedQueuedMessage(message, "Refused by admission")),
-      ).toBe("restored");
-      const draftKey = creationAccepted
-        ? keyOf(message)
-        : restoredNewTaskDraftKey(message.messageId);
-      const restored = drafts.getComposerDraftSnapshot(draftKey);
-      expect(restored.text).toContain(message.text);
-      expect(restored.attachments).toEqual(message.attachments);
-      expect(restored.modelSelection).toEqual(message.modelSelection);
-      expect(queued()).toEqual([]);
-      if (creationAccepted) {
-        expect(restored.workspaceSelection).toBeUndefined();
-        expect(
-          drafts.getComposerDraftSnapshot(restoredNewTaskDraftKey(message.messageId)).text,
-        ).toBe("");
-        expect(
-          resolvePendingThreadCreation({
-            threadKey: keyOf(message),
-            pending: { message, outcome: { kind: "failed", message, reason: "Refused" } },
-            previous: null,
-            detail: null,
-          }),
-        ).toBeNull();
-        // A deliberate corrected send owns new message/command keys in the existing thread.
-        const corrected = {
-          ...message,
-          creation: undefined,
-          issuance: { state: "unissued" as const },
-          text: "Corrected prompt",
-          commandId: CommandId.make("new-deliberate-command"),
-          messageId: MessageId.make("new-deliberate-message"),
-        };
-        await harness.manager.enqueue(corrected);
-        expect(queued()[0]).toMatchObject({
-          threadId: message.threadId,
-          commandId: corrected.commandId,
-          messageId: corrected.messageId,
-        });
-      } else expect(restored.workspaceSelection?.mode).toBe("worktree");
-    },
+    (creationAccepted) =>
+      Effect.gen(function* () {
+        const message = rejectedCreation(creationAccepted);
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        expect(yield* restoreRejectedQueuedMessage(message, "Refused by admission")).toBe(
+          "restored",
+        );
+        const draftKey = creationAccepted
+          ? keyOf(message)
+          : restoredNewTaskDraftKey(message.messageId);
+        const restored = drafts.getComposerDraftSnapshot(draftKey);
+        expect(restored.text).toContain(message.text);
+        expect(restored.attachments).toEqual(message.attachments);
+        expect(restored.modelSelection).toEqual(message.modelSelection);
+        expect(queued()).toEqual([]);
+        if (creationAccepted) {
+          expect(restored.workspaceSelection).toBeUndefined();
+          expect(
+            drafts.getComposerDraftSnapshot(restoredNewTaskDraftKey(message.messageId)).text,
+          ).toBe("");
+          expect(
+            resolvePendingThreadCreation({
+              threadKey: keyOf(message),
+              pending: { message, outcome: { kind: "failed", message, reason: "Refused" } },
+              previous: null,
+              detail: null,
+            }),
+          ).toBeNull();
+          // A deliberate corrected send owns new message/command keys in the existing thread.
+          const corrected = {
+            ...message,
+            creation: undefined,
+            issuance: { state: "unissued" as const },
+            text: "Corrected prompt",
+            commandId: CommandId.make("new-deliberate-command"),
+            messageId: MessageId.make("new-deliberate-message"),
+          };
+          yield* Effect.promise(() => harness.manager.enqueue(corrected));
+          expect(queued()[0]).toMatchObject({
+            threadId: message.threadId,
+            commandId: corrected.commandId,
+            messageId: corrected.messageId,
+          });
+        } else expect(restored.workspaceSelection?.mode).toBe("worktree");
+      }),
   );
 
-  it("lets late acceptance defeat recovery without erasing newer text, attachments or selection", async () => {
-    const message = rejectedCreation(true);
-    await harness.manager.enqueue(message);
-    const merged = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const merge = drafts.mergeComposerDraftContent;
-    vi.spyOn(drafts, "mergeComposerDraftContent").mockImplementation(async (...args) => {
-      const result = await merge(...args);
-      merged.resolve();
-      await release.promise;
-      return result;
-    });
-    const restoring = Effect.runPromise(restoreRejectedQueuedMessage(message, "Stale refusal"));
-    try {
-      await merged.promise;
-      drafts.setComposerDraftText(keyOf(message), "Newer unsent content");
-      const later = drafts.updateComposerDraftSettings(keyOf(message), {
-        modelSelection: { ...message.modelSelection!, model: "newer-model" },
-        runtimeMode: "approval-required",
-      });
-      const extra = {
-        ...message.attachments[0]!,
-        id: "newer-file",
-        name: "new.txt",
-        fileUri: "file:///synthetic-c3/new.txt",
-      };
-      drafts.appendComposerDraftAttachments(keyOf(message), [extra]);
-      observeQueuedThreadDelivery(message, acceptedQueuedThreadDelivery(message));
-      release.resolve();
-      expect(await restoring).toBe("deferred");
-      const current = drafts.getComposerDraftSnapshot(keyOf(message));
-      expect(current.text).toBe("Newer unsent content");
-      expect(current.attachments).toEqual([extra]);
-      expect(current.modelSelection).toBe(later.modelSelection);
-      expect(current.runtimeMode).toBe("approval-required");
-      expect(queuedThreadDeliveryStatus(queued()[0]!)).toBe("accepted");
-      expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)).toEqual({});
-    } finally {
-      release.resolve();
-      await restoring;
-    }
-  });
+  it.effect(
+    "lets late acceptance defeat recovery without erasing newer text, attachments or selection",
+    () =>
+      Effect.gen(function* () {
+        const message = rejectedCreation(true);
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        const merged = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        const merge = drafts.mergeComposerDraftContent;
+        vi.spyOn(drafts, "mergeComposerDraftContent").mockImplementation(async (...args) => {
+          const result = await merge(...args);
+          merged.resolve();
+          await release.promise;
+          return result;
+        });
+        const restoring = yield* Effect.forkChild(
+          restoreRejectedQueuedMessage(message, "Stale refusal"),
+          { startImmediately: true },
+        );
+        yield* Effect.gen(function* () {
+          yield* Effect.promise(() => merged.promise);
+          drafts.setComposerDraftText(keyOf(message), "Newer unsent content");
+          const later = drafts.updateComposerDraftSettings(keyOf(message), {
+            modelSelection: { ...message.modelSelection!, model: "newer-model" },
+            runtimeMode: "approval-required",
+          });
+          const extra = {
+            ...message.attachments[0]!,
+            id: "newer-file",
+            name: "new.txt",
+            fileUri: "file:///synthetic-c3/new.txt",
+          };
+          drafts.appendComposerDraftAttachments(keyOf(message), [extra]);
+          observeQueuedThreadDelivery(message, acceptedQueuedThreadDelivery(message));
+          release.resolve();
+          expect(yield* Fiber.join(restoring)).toBe("deferred");
+          const current = drafts.getComposerDraftSnapshot(keyOf(message));
+          expect(current.text).toBe("Newer unsent content");
+          expect(current.attachments).toEqual([extra]);
+          expect(current.modelSelection).toBe(later.modelSelection);
+          expect(current.runtimeMode).toBe("approval-required");
+          expect(queuedThreadDeliveryStatus(queued()[0]!)).toBe("accepted");
+          expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)).toEqual({});
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(release.resolve).pipe(Effect.andThen(Fiber.await(restoring))),
+          ),
+        );
+      }),
+  );
 
-  it("fences a stale removal after an editor save and late acceptance during storage", async () => {
-    const message = rejectedCreation(true);
-    await harness.manager.enqueue(message);
-    const removing = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    harness.remove.mockImplementationOnce(async () => {
-      removing.resolve();
-      await release.promise;
-    });
-    const restoring = Effect.runPromise(restoreRejectedQueuedMessage(message, "Stale refusal"));
-    try {
-      await removing.promise;
-      const accepted = observeQueuedThreadDelivery(message, acceptedQueuedThreadDelivery(message));
-      const editorSave = harness.manager.enqueue({
-        ...accepted,
-        text: "Latest saved editor revision",
+  it.effect("fences a stale removal after an editor save and late acceptance during storage", () =>
+    Effect.gen(function* () {
+      const message = rejectedCreation(true);
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      const removing = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      harness.remove.mockImplementationOnce(async () => {
+        removing.resolve();
+        await release.promise;
       });
-      release.resolve();
-      expect(await restoring).toBe("deferred");
-      await editorSave;
-      expect(queued()[0]?.text).toBe("Latest saved editor revision");
-      expect(queuedThreadDeliveryStatus(queued()[0]!)).toBe("accepted");
-      expect(harness.persisted.get(message.messageId)).toMatchObject({
-        text: "Latest saved editor revision",
-      });
-    } finally {
-      release.resolve();
-      await restoring;
-    }
-  });
+      const restoring = yield* Effect.forkChild(
+        restoreRejectedQueuedMessage(message, "Stale refusal"),
+        { startImmediately: true },
+      );
+      yield* Effect.gen(function* () {
+        yield* Effect.promise(() => removing.promise);
+        const accepted = observeQueuedThreadDelivery(
+          message,
+          acceptedQueuedThreadDelivery(message),
+        );
+        const editorSave = harness.manager.enqueue({
+          ...accepted,
+          text: "Latest saved editor revision",
+        });
+        release.resolve();
+        expect(yield* Fiber.join(restoring)).toBe("deferred");
+        yield* Effect.promise(() => editorSave);
+        expect(queued()[0]?.text).toBe("Latest saved editor revision");
+        expect(queuedThreadDeliveryStatus(queued()[0]!)).toBe("accepted");
+        expect(harness.persisted.get(message.messageId)).toMatchObject({
+          text: "Latest saved editor revision",
+        });
+      }).pipe(
+        Effect.ensuring(Effect.sync(release.resolve).pipe(Effect.andThen(Fiber.await(restoring)))),
+      );
+    }),
+  );
 
   it.each([false, true])(
     "preserves newer source edits or late acceptance in failed-task recovery (accepted: %s)",

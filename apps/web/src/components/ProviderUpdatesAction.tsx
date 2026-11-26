@@ -15,7 +15,6 @@ import { useEnvironmentsWithScope } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "./ui/button";
 import { stackedThreadToast, toastManager } from "./ui/toast";
-import { SharedTooltipTrigger } from "./ui/shared-tooltip";
 
 export { useJonesProviderUpdates as useProviderUpdates } from "../jones/updates/useProviderUpdates";
 import { useJonesProviderUpdates as useProviderUpdates } from "../jones/updates/useProviderUpdates";
@@ -98,7 +97,7 @@ export function ProviderUpdatesAction() {
             disabled={isPending || !canManage}
             onClick={() => void handleUpdate()}
           >
-            {isPending ? "Updating…" : "Update all"}
+            {isPending ? <T>Updating…</T> : <T>Update all</T>}
           </Button>
         }
       />

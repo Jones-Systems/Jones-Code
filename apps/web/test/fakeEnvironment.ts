@@ -72,6 +72,9 @@ const descriptor = {
   orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
   capabilities: {
     repositoryIdentity: true,
+    sideChats: true,
+    freshContext: true,
+    fileAttachments: { maxUploadBytes: 10_000_000 },
     serverResolvedCommandContext: true,
     worktreeDefaultBase: true,
   },
@@ -433,7 +436,6 @@ const json = (body: unknown, status = 200) =>
 const shellSubscribers = new Set<Queue.Queue<OrchestrationV2ShellStreamItem>>();
 const threadSubscribers = new Map<string, Queue.Queue<OrchestrationV2ThreadStreamItem>>();
 let terminalMetadataSubscriber: Queue.Queue<TerminalMetadataStreamEvent> | null = null;
-let shellSubscriber: Queue.Queue<OrchestrationV2ShellStreamItem> | null = null;
 let threads: ReadonlyArray<FakeThread> = [];
 let dispatched: OrchestrationV2Command[] = [];
 let acceptCommands = false;

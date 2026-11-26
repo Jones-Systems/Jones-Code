@@ -203,7 +203,7 @@ function UpdateEverythingDialogContent({
                 </span>
                 <span role="cell">
                   {row.app !== null
-                    ? APP_LABELS[row.app]
+                    ? m(APP_LABELS[row.app])
                     : row.jonesHandoffNotice
                       ? "Install status"
                       : null}

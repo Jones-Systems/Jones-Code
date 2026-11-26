@@ -871,20 +871,6 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
           );
           abandonedRunRecoveryAvailable = false;
           runId = run.id;
-          const unsubscribeShellOutput = subscribeShellStreamOutput((output) => {
-            if (output.conversationId !== agent.agentId || typeof output.toolCallId !== "string") {
-              return;
-            }
-            const update: InteractionUpdate = {
-              type: "shell-output-delta",
-              event: { ...output.event, toolCallId: output.toolCallId },
-            };
-            if (!callbacksReady) {
-              pendingUpdates.push(update);
-              return;
-            }
-            void dispatchUpdate(update);
-          });
           // Capture native exit before diagnostics or buffered callbacks can block send's return.
           const nativeWait = yield* Effect.cached(
             Effect.tryPromise({

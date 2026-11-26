@@ -2314,6 +2314,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                   {
                     type: "text",
                     text: buildRuntimeInstructions({
+                      agentFeedback: hasT3Mcp ? (turnInput.agentFeedback ?? "off") : "off",
                       ...(providerHost.appIdentity === undefined
                         ? {}
                         : { appIdentity: providerHost.appIdentity }),

@@ -4099,12 +4099,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         const exited = next.processExit;
         yield* exited === undefined
           ? reconcile().pipe(Effect.timeout(RECONCILE_TIMEOUT))
-          : reconcile().pipe(
-              Effect.retry(OWNED_RECOVERY_RETRY),
-              Effect.raceFirst(
-                exited.pipe(Effect.andThen(Effect.fail(new OpenCode2ServerExitedError()))),
-              ),
-            );
+          : whileAlive(exited, reconcile());
       }).pipe(Effect.provideService(OpenCode2EventProducerContext, producer.origin));
       return { stream, producer };
     }).pipe(

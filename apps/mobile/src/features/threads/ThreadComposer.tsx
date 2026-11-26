@@ -1,4 +1,3 @@
-import { useSidebarWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
 import { ContinuationChoiceNotice } from "../../jones/importedHistory/ContinuationChoiceNotice";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";

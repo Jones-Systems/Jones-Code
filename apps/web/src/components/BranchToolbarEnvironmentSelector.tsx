@@ -19,7 +19,6 @@ import {
   SelectPopup,
   SelectValue,
 } from "./ui/select";
-import { SharedTooltipTrigger } from "./ui/shared-tooltip";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "./ui/tooltip";
 
 interface BranchToolbarEnvironmentSelectorProps {

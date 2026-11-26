@@ -7,7 +7,6 @@ import {
   ANCHORED_COPY_TOAST_TIMEOUT_MS,
   showAnchoredCopyErrorToast,
 } from "../ui/anchoredCopyToast";
-import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 
 export const MessageCopyButton = memo(function MessageCopyButton({

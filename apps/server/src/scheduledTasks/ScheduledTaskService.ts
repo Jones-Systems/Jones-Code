@@ -1,6 +1,6 @@
 import { compareAndSetModelSelection } from "../jones/scheduledTasks/compareAndSetModelSelection.ts";
 import { makePendingWebhookRuns } from "../jones/scheduledTasks/webhookRunRecovery.ts";
-import { queuedWakeSkipReason } from "../jones/scheduledTasks/queuedWake.ts";
+import { queuedWakeSkipReason, readQueuedWake } from "../jones/scheduledTasks/queuedWake.ts";
 import { makeFifoPermit, type FifoPermit } from "../jones/scheduledTasks/fifoPermit.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import { assertScheduledTarget } from "../jones/workspaceRetirement/ScheduledTaskAdmission.ts";
@@ -928,32 +928,6 @@ export const layer = Layer.effect(
         ),
     );
 
-    // Reads every run row but only the queued runs' messages, so the cost per
-    // due interval tracks the thread's run count, not its transcript.
-    const queuedOccurrence = Effect.fn("ScheduledTaskService.queuedOccurrence")(function* (
-      taskId: ScheduledTaskId,
-      threadId: ThreadId,
-    ) {
-      const { runs } = yield* threadManagement.getThreadRecords(threadId, ["runs"]);
-      const queued = runs.filter((run) => run.status === "queued");
-      if (queued.length === 0) return null;
-      const queuedMessageIds = new Set(queued.map((run) => run.userMessageId));
-      const { messages } = yield* threadManagement.getThreadRecords(threadId, ["messages"], {
-        messageIds: [...queuedMessageIds],
-      });
-      const taskMessageIds = new Set(
-        messages
-          .filter((message) => message.scheduledTaskId === taskId)
-          .map((message) => message.id),
-      );
-      const occurrences = queued.filter((run) => taskMessageIds.has(run.userMessageId));
-      return occurrences.some((run) => run.queueHeld === true)
-        ? "held"
-        : occurrences.length > 0
-          ? "queued"
-          : null;
-    });
-
     // The run already started the thread, so a failed write only costs the binding.
     // A thread deleted before the binding landed already ran its task cleanup, so apply that
     // cleanup here; a later deletion finds the binding. An unconfirmed lookup keeps the binding.
@@ -1087,10 +1061,11 @@ export const layer = Layer.effect(
         }
         // An unreadable queue fails closed, including for one-shot schedules.
         if (trigger === "scheduled" && active.threadId !== null) {
-          const occurrence = yield* queuedOccurrence(
-            active.id,
-            ThreadId.make(active.threadId),
-          ).pipe(
+          const occurrence = yield* readQueuedWake(active.id, ThreadId.make(active.threadId)).pipe(
+            Effect.provideService(
+              ThreadManagementService.ThreadManagementService,
+              threadManagement,
+            ),
             Effect.mapError((cause) =>
               taskError("Could not check queued schedule task runs.", { taskId: active.id, cause }),
             ),
@@ -1381,6 +1356,7 @@ export const layer = Layer.effect(
         WHERE enabled = 1 AND next_run_at IS NOT NULL AND last_run_status <> 'running'
       `.pipe(
           NodeSqliteClient.readOnly,
+          backgroundRead,
           Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
         );
         // Compare as text like listDueTasks: expanded years (`+011533-…`) sort first but parse far ahead.
@@ -1396,6 +1372,7 @@ export const layer = Layer.effect(
           return;
         }
         const tasks = yield* listDueTasks(now).pipe(
+          backgroundRead,
           Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
         );
         const due = tasks.flatMap((task) =>

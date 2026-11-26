@@ -3187,9 +3187,20 @@ const make = Effect.gen(function* () {
                 }),
               );
               // Only an explicit show is sure to reach a client; desktop tabs are visible without a viewer.
-              const remainingMs = deadlineMs - performance.now();
-              if (reveal === true && tab.viewers.size === 0 && tab.desktop === null)
-                shown = awaitViewer(tab, Math.min(REVEAL_VIEWER_WAIT_MS, deadlineMs - Date.now()));
+              const remainingMs = Math.max(0, deadlineMs - Date.now());
+              if (reveal === true && tab.viewers.size === 0) {
+                if (tab.desktop === null) {
+                  shown = awaitViewer(tab, Math.min(REVEAL_VIEWER_WAIT_MS, remainingMs));
+                } else {
+                  const channel =
+                    tab.desktop.origin === "local" ? desktopChannel : placement!.channel;
+                  if (!channel.isShown(tab)) {
+                    shown = runPromise(
+                      channel.awaitShown(tab, Math.min(REVEAL_DESKTOP_SHOWN_WAIT_MS, remainingMs)),
+                    ).then(constVoid);
+                  }
+                }
+              }
             }
             await shown;
             return statusWithTitle(tab, request.agentSessionId);

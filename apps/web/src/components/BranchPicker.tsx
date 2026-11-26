@@ -18,7 +18,6 @@ import {
   ComboboxPopup,
   ComboboxStatus,
 } from "./ui/combobox";
-import { SharedTooltipTrigger } from "./ui/shared-tooltip";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "./ui/tooltip";
 
 export function BranchPicker({

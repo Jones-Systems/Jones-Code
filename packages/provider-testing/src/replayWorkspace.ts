@@ -40,9 +40,15 @@ function runGit(
 > {
   return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const env = unsetInheritedGitRepositoryEnv(
+      yield* HostProcess.Environment,
+      yield* HostProcess.Platform,
+    );
     const child = yield* spawner.spawn(
-      ChildProcess.make("git", args, {
+      ChildProcess.make("git", [...NO_BACKGROUND_MAINTENANCE, ...args], {
         cwd,
+        env,
+        extendEnv: true,
         stdin: "ignore",
         stdout: "ignore",
         stderr: "pipe",

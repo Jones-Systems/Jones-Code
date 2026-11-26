@@ -479,6 +479,18 @@ const RunContextSelector = memo(function RunContextSelector({
                   <MiddleTruncate value={resolveCurrentWorkspaceLabel(activeWorktreePath, m)} />
                 </span>
               </MenuRadioItem>
+              {conversationAvailable ? (
+                <MenuRadioItem
+                  disabled={envModeLocked || forceNewWorktree}
+                  value="auto"
+                  closeOnClick
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <FolderIcon className="size-3" />
+                    {resolveEnvModeLabel("auto", m)}
+                  </span>
+                </MenuRadioItem>
+              ) : null}
               <MenuRadioItem disabled={envModeLocked} value="worktree" closeOnClick>
                 <span className="flex min-w-0 items-center gap-1.5">
                   <FolderGit2Icon className="size-3" />
@@ -896,14 +908,21 @@ export const BranchToolbar = memo(function BranchToolbar({
 
       {renderWorkspaceTrailing?.(showGitControls || showEnvironmentIndicator)}
 
-      {showGitControls || trailing ? (
+      {offersRepositoryChoice ? (
+        <WorktreeRepositoriesControl
+          project={activeProject}
+          draftTarget={draftId ?? threadRef}
+          offersBaseBranch={!showBranchControls}
+        />
+      ) : null}
+      {(showGitControls && (showBranchControls || startsNewWorktree)) || trailing ? (
         <div
           className={cn(
             "flex min-w-0 items-center gap-1",
             trailing ? "ms-auto" : "@xl/composer-surface:ms-auto",
           )}
         >
-          {showGitControls ? (
+          {showGitControls && showBranchControls ? (
             <BranchToolbarBranchSelector
               forceNewWorktree={forceNewWorktree}
               ref={branchSelectorRef}
@@ -922,6 +941,16 @@ export const BranchToolbar = memo(function BranchToolbar({
               {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
               {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
             />
+          ) : startsNewWorktree ? (
+            <span className="min-w-0 flex-initial truncate px-1.75" data-composer-context-control>
+              {plainProjectBaseBranch === ""
+                ? m(msg("Each repository starts from its own default branch"))
+                : m(
+                    msg("Repositories start from {branch} where they have it", {
+                      branch: plainProjectBaseBranch,
+                    }),
+                  )}
+            </span>
           ) : null}
           {trailing}
         </div>

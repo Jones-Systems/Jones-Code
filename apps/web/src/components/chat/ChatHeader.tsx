@@ -166,14 +166,8 @@ export const ChatHeader = memo(function ChatHeader({
       document.fonts.removeEventListener("loadingdone", measure);
       stopObserving();
     };
-  }, [
-    // Title, font and rename changes resize the breadcrumb text without resizing the list, so it re-measures.
-    activeProjectName,
-    activeThreadTitle,
-    parentThreadLink,
-    interfaceFont,
-    isRenamingTitle,
-  ]);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- text, font and rename changes affect the measured breadcrumb even when the list box stays the same size
+  }, [activeProjectName, activeThreadTitle, parentThreadLink, interfaceFont, isRenamingTitle]);
   const renameCommittedRef = useRef(false);
   const startRename = () => {
     if (
@@ -381,6 +375,7 @@ export const ChatHeader = memo(function ChatHeader({
                   aria-label={gt("Thread actions for {title}", { title: activeThreadTitle })}
                   aria-haspopup="menu"
                   onClick={openMenuFromTitle}
+                  onPointerDown={startThreadTitleDrag}
                   onDoubleClick={canOperateThread ? handleTitleDoubleClick : undefined}
                   className="group/thread-title inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1 rounded-sm text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 />

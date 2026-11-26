@@ -145,15 +145,15 @@ function withFakeClaudeEnv<A, E, R>(
 }
 
 const reviewGuideInput = {
-  number: 12,
-  title: "Review a change",
-  description: "",
+  number: 1,
+  title: "Synthetic guide",
+  description: "Explain the parser change.",
   baseBranch: "main",
-  baseCommit: "base",
-  settledReview: "",
+  baseCommit: "synthetic-base",
+  settledReview: "No outstanding findings.",
   modelSelection: createModelSelection(
     ProviderInstanceId.make("claudeAgent"),
-    SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+    SYNTHETIC_CLAUDE_STANDARD_MODEL,
   ),
 };
 
@@ -288,17 +288,8 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
         (generation) =>
           Effect.gen(function* () {
             const generated = yield* generation.generateReviewGuide({
+              ...reviewGuideInput,
               cwd: process.cwd(),
-              number: 1,
-              title: "Synthetic guide",
-              description: "Explain the parser change.",
-              baseBranch: "main",
-              baseCommit: "synthetic-base",
-              settledReview: "No outstanding findings.",
-              modelSelection: createModelSelection(
-                ProviderInstanceId.make("claudeAgent"),
-                SYNTHETIC_CLAUDE_STANDARD_MODEL,
-              ),
             });
             expect(generated).toEqual({ stops: [] });
           }),

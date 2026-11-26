@@ -191,6 +191,7 @@ const layerDesktopPreview = Layer.unwrap(
       }),
     );
     return Layer.mergeAll(PreviewManager.layer, CompanionUplink.layer).pipe(
+      Layer.provideMerge(LoopbackTunnel.layer),
       Layer.provideMerge(CompanionConfig.layer),
       Layer.provideMerge(DesktopBrowserHost.layer),
       Layer.provideMerge(DesktopAppIdentity.layer),

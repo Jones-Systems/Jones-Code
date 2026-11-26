@@ -29,7 +29,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 
-import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
 import { resolveServerParallelismProfile } from "./jones/serverParallelism/config.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";

@@ -1,7 +1,6 @@
 import { claimThreadOpen } from "@t3tools/client-runtime/state/thread-search";
 import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
 import { act, fakeTimers, render } from "../../../test/render";
@@ -141,8 +140,8 @@ it("retries a rejected dwell visit, with its open, once after the session reconn
       appAtomRegistry.update(sessionGeneration(ENVIRONMENT), (generation) => generation + 1),
     );
   mocks.visitRun.mockReset();
-  mocks.visitRun.mockResolvedValueOnce(AsyncResult.failure(Cause.fail("disconnected")));
-  mocks.visitRun.mockResolvedValue(AsyncResult.success(undefined));
+  mocks.visitRun.mockReturnValueOnce(Effect.fail("disconnected"));
+  mocks.visitRun.mockReturnValue(Effect.void);
   setShell(threadC, "2026-01-02T00:00:00.000Z");
   using _timers = fakeTimers();
   vi.setSystemTime(NOW);
@@ -171,8 +170,8 @@ it("retries a rejected dwell visit, with its open, once after the session reconn
 it("does not mark a run that finishes in a background window as seen", async () => {
   mocks.visitRun.mockReset();
   mocks.visitRun.mockReturnValue(Effect.void);
-  const threadC: ScopedThreadRef = { environmentId: ENVIRONMENT, threadId: ThreadId.make("c") };
-  setShell(threadC, "2026-01-02T00:00:00.000Z");
+  const threadD: ScopedThreadRef = { environmentId: ENVIRONMENT, threadId: ThreadId.make("d") };
+  setShell(threadD, "2026-01-02T00:00:00.000Z");
   let focused = true;
   let visibility: DocumentVisibilityState = "visible";
   using _focus = vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
@@ -184,10 +183,12 @@ it("does not mark a run that finishes in a background window as seen", async () 
 
   await using _screen = await render(
     <AppAtomRegistryProvider>
-      <ThreadVisitWatermark threadRef={threadC} />
+      <ThreadVisitWatermark threadRef={threadD} />
     </AppAtomRegistryProvider>,
   );
-  expect(visitedThreadIds()).toEqual(["c"]);
+  expect(visitedThreadIds()).toEqual([]);
+  await act(async () => vi.advanceTimersByTime(3000));
+  expect(visitedThreadIds()).toEqual(["d"]);
 
   // The user switches to another app while the run is still working.
   focused = false;
@@ -196,21 +197,22 @@ it("does not mark a run that finishes in a background window as seen", async () 
   document.dispatchEvent(new Event("visibilitychange"));
 
   const completedAt = "2026-01-03T00:00:00.000Z";
-  appAtomRegistry.set(shellAtom(shellKey(threadC)), {
-    environmentId: threadC.environmentId,
-    id: threadC.threadId,
+  appAtomRegistry.set(shellAtom(shellKey(threadD)), {
+    environmentId: threadD.environmentId,
+    id: threadD.threadId,
     updatedAt: completedAt,
     lastVisitedAt: "2026-01-02T00:00:00.000Z",
     latestRun: { completedAt },
   });
-  vi.advanceTimersByTime(60_000);
-
-  expect(visitedThreadIds()).toEqual(["c"]);
+  await act(async () => vi.advanceTimersByTime(60_000));
+  expect(visitedThreadIds()).toEqual(["d"]);
 
   focused = true;
   visibility = "visible";
   document.dispatchEvent(new Event("visibilitychange"));
   window.dispatchEvent(new Event("focus"));
 
-  expect(visitedThreadIds()).toEqual(["c", "c"]);
+  expect(visitedThreadIds()).toEqual(["d"]);
+  await act(async () => vi.advanceTimersByTime(3000));
+  expect(visitedThreadIds()).toEqual(["d", "d"]);
 });

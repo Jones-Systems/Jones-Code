@@ -432,7 +432,10 @@ export const make = Effect.gen(function* () {
     // Discovery already has its own pool, so it holds no git slot and no forge-call slot.
     const shared =
       input.command === "git" || discovery ? bounded : nonGitProcesses.withPermits(1)(bounded);
-    return yield* input.concurrency === undefined ? shared : keyedPermit(input.concurrency)(shared);
+    const keyed = input.concurrency === undefined ? shared : keyedPermit(input.concurrency)(shared);
+    return yield* input.command !== "git" && !discovery && (yield* Background)
+      ? backgroundProcesses.withPermits(1)(keyed)
+      : keyed;
   });
 
   return VcsProcess.of({ run });

@@ -846,9 +846,15 @@ const layerEnvironmentOwnedDataCleanup = Layer.succeed(
         const plansRetired = planCreation.clearEnvironment(environmentId);
         clearComposerDraftsEnvironment(environmentId);
         const retired = clearMonitorEnvironment(environmentId);
-        return Effect.promise(async () => {
-          await Promise.all([retired, plansRetired]);
-        });
+        return Effect.all(
+          [
+            Effect.promise(async () => {
+              await Promise.all([retired, plansRetired]);
+            }),
+            Effect.ignore(browserThreadTriageOutboxStore.clearEnvironment(environmentId)),
+          ],
+          { concurrency: "unbounded", discard: true },
+        );
       });
     }),
   }),

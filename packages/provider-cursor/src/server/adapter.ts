@@ -1356,15 +1356,14 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             }
           });
 
-        const stopCapturedRunShells = (
+        const stopCapturedRunShells = Effect.fn("CursorAdapterV2.stopCapturedRunShells")(function* (
           agent: CursorLiveAgent,
           providerThreadId: OrchestrationV2ProviderThread["id"],
-        ) =>
-          Effect.gen(function* () {
-            const run = agent.lastTurn?.input;
-            if (run?.providerThread.id === providerThreadId) stoppedRuns.add(run.runId);
-            yield* stopBackgroundShells(providerThreadId);
-          });
+        ) {
+          const run = agent.lastTurn?.input;
+          if (run?.providerThread.id === providerThreadId) stoppedRuns.add(run.runId);
+          yield* stopBackgroundShells(providerThreadId);
+        });
 
         const resolveItemOrdinal = (context: ActiveCursorTurn, nativeItemId: string) =>
           Effect.sync(() => {

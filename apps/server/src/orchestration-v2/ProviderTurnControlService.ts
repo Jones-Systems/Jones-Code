@@ -492,16 +492,7 @@ export const layer: Layer.Layer<
                 cause: "The persisted batch membership changed.",
               });
             const plan = planQueuedSteerBatch(
-              messages.map((row) => ({
-                message: {
-                  ...row!,
-                  text: projectComposerContextForProvider({
-                    text: row!.text,
-                    records: row!.context?.records ?? [],
-                  }),
-                },
-                eligible: true,
-              })),
+              messages.map((row) => ({ message: row!, eligible: true })),
             );
             if (plan.count !== messages.length)
               return yield* new ProviderTurnControlError({
@@ -590,10 +581,13 @@ export const layer: Layer.Layer<
                 messageId: message.id,
                 text:
                   batchPayload?.text ??
-                  projectComposerContextForProvider({
-                    text: message.text,
-                    records: message.context?.records ?? [],
-                  }),
+                  withMessageSenderNote(
+                    message,
+                    projectComposerContextForProvider({
+                      text: message.text,
+                      records: message.context?.records ?? [],
+                    }),
+                  ),
                 attachments: batchPayload?.attachments ?? message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,

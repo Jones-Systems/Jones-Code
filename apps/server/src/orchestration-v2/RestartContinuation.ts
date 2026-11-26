@@ -23,7 +23,6 @@ import * as ServerSettings from "../serverSettings.ts";
 import { isNativeMaintenanceCommand } from "./CommandPolicy.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import {
-  type BackgroundWorkLossCause,
   awaitingProviderThreadId,
   cancelledRosterTaskWork,
   cancelledTurnItemWork,

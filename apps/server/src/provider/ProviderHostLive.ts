@@ -41,6 +41,9 @@ export const layer = Layer.effect(
     });
     return ProviderHost.ProviderHost.of({
       appIdentity: APP_IDENTITY,
+      compatibility: Effect.fn("ProviderHost.compatibility")(function* (driver, version) {
+        return ModelManifest.providerCompatibility(yield* currentManifest, driver, version);
+      }),
       paths: {
         cwd: config.cwd,
         baseDir: config.baseDir,

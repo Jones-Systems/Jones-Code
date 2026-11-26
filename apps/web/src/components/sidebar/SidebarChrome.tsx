@@ -29,7 +29,6 @@ import {
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { SidebarFooter, SidebarTrigger } from "../ui/sidebar";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 export { JonesSidebarUtilityMenu as SidebarUtilityMenu } from "../../jones/navigation/JonesSidebarUtilityMenu";
 import { SidebarUpdateArchitectureWarning } from "./SidebarUpdatePill";

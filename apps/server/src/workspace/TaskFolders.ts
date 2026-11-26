@@ -227,6 +227,7 @@ export class TaskFolders extends Context.Service<
 >()("t3/workspace/TaskFolders") {}
 
 const isTaskFolderError = Schema.is(TaskFolderError);
+const isGitCommandError = Schema.is(GitCommandError);
 
 /**
  * A caller's answer for who asked. Whether a person approved the command's text and whether
@@ -1942,7 +1943,7 @@ const make = Effect.gen(function* () {
         yield* removeCheckout(checkout);
       }).pipe(
         Effect.mapError((cause) =>
-          isTaskFolderError(cause) || Schema.is(GitCommandError)(cause)
+          isTaskFolderError(cause) || isGitCommandError(cause)
             ? cause
             : fail("remove", "Could not verify the checkout")(cause),
         ),

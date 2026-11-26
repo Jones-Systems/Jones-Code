@@ -45,7 +45,6 @@ import {
   boundAttachmentIds,
   optimisticMessageAttachments,
   type ComposerSendSnapshot,
-  deriveComposerSendTitle,
   type makeThreadErrorSetter,
 } from "../ChatView.logic";
 import {
@@ -281,6 +280,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                         ),
                       }),
                       requireWorktree: true,
+                      ...(worktreeRepositories ? { repositories: worktreeRepositories } : {}),
                     },
                     runSetupScript: true,
                   },

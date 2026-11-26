@@ -1018,7 +1018,6 @@ function CheckoutGitActionsControl({
   const panelAnchorRef = useRef<HTMLDivElement | null>(null);
   const activeEnvironmentId = activeThreadRef?.environmentId ?? null;
   const openResultPullRequest = useOpenLink(activeThreadRef);
-  const successScopeKey = `${activeEnvironmentId ?? ""}\u0000${gitCwd ?? ""}`;
   const canWriteSourceControl = useEnvironmentScope(
     activeEnvironmentId,
     AuthSourceControlWriteScope,

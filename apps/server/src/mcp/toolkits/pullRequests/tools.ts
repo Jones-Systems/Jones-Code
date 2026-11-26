@@ -406,7 +406,7 @@ const WatchPullRequestInput = Schema.Struct({
 const WatchPullRequestTool = Tool.make("watch_pull_request", {
   description:
     "Watch an open PR, linking it if needed. Jones Code wakes you on actionable CI results, new comments or reviews, and conflicts. Handle existing comments first. When only CI is pending, end your turn quietly. Keep the same watch across wakes. Verify readiness before merging.",
-  parameters: PullRequestTargetInput,
+  parameters: WatchPullRequestInput,
   success: WatchPullRequestResult,
   failure: PullRequestToolError,
   dependencies: watchDependencies,

@@ -313,43 +313,42 @@ export const layerBrowserApiCors = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
     const devOrigin = config.devUrl?.origin;
-    // Credentialed dev requests need explicit Vite/Electron origins; packaged desktop uses the default wildcard.
     const options = {
-      ...(devOrigin
-        ? {
-            allowedOrigins: [devOrigin, ...DESKTOP_RENDERER_ORIGINS, ...config.devAllowedOrigins],
-            credentials: true,
-          }
-        : {}),
-      allowedMethods: browserApiCorsAllowedMethods,
       allowedHeaders: browserApiCorsAllowedHeaders,
       exposedHeaders: [],
       maxAge: 600,
     };
-    const cors = HttpMiddleware.cors(options);
-    const admissionPolicyCors = HttpMiddleware.cors({
-      ...options,
-      allowedMethods: [...browserApiCorsAllowedMethods, "PUT"],
+    const corsFor = (
+      allowedMethods: ReadonlyArray<(typeof browserApiCorsAllowedMethods)[number] | "PUT">,
+    ) => ({
+      wildcard: HttpMiddleware.cors({ ...options, allowedMethods }),
+      // Credentialed dev requests need explicit Vite/Electron origins.
+      dev: devOrigin
+        ? HttpMiddleware.cors({
+            ...options,
+            allowedMethods,
+            allowedOrigins: [devOrigin, ...DESKTOP_RENDERER_ORIGINS, ...config.devAllowedOrigins],
+            credentials: true,
+          })
+        : undefined,
     });
-    const devCors = devOrigin
-      ? HttpMiddleware.cors({
-          allowedOrigins: [devOrigin, ...DESKTOP_RENDERER_ORIGINS, ...config.devAllowedOrigins],
-          credentials: true,
-          allowedMethods: browserApiCorsAllowedMethods,
-          allowedHeaders: browserApiCorsAllowedHeaders,
-          maxAge: 600,
-        })
-      : undefined;
+    const cors = corsFor(browserApiCorsAllowedMethods);
+    const admissionPolicyCors = corsFor([...browserApiCorsAllowedMethods, "PUT"]);
     return HttpRouter.middleware(
-      (httpEffect) => {
-        const withCors = cors(httpEffect);
-        const withAdmissionPolicyCors = admissionPolicyCors(httpEffect);
-        return Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
+      (httpEffect) =>
+        Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
           const path = request.url.split("?", 1)[0];
           if (path === MCP_HTTP_PATH) return httpEffect;
-          return path === REMOTE_ADMISSION_POLICY_PATH ? withAdmissionPolicyCors : withCors;
-        });
-      },
+          const { wildcard, dev } =
+            path === REMOTE_ADMISSION_POLICY_PATH ? admissionPolicyCors : cors;
+          const withWildcardCors = wildcard(httpEffect);
+          if (dev === undefined) return withWildcardCors;
+          if (request.headers.origin !== undefined) return dev(httpEffect);
+          if (request.method === "OPTIONS") return Effect.map(withWildcardCors, withVaryOrigin);
+          return HttpEffect.appendPreResponseHandler((_request, response) =>
+            Effect.succeed(withVaryOrigin(response)),
+          ).pipe(Effect.andThen(withWildcardCors));
+        }),
       { global: true },
     );
   }),

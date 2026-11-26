@@ -257,7 +257,7 @@ export function ComposerControlsBar(props: {
     <>
       <ComposerControl
         type="button"
-        aria-label={providerSetupInstanceId ? "Open provider settings" : undefined}
+        aria-label={providerSetupInstanceId ? gt("Open provider settings") : undefined}
         disabled={!providerSetupInstanceId}
         onClick={() => {
           if (providerSetupInstanceId) {
@@ -268,7 +268,7 @@ export function ComposerControlsBar(props: {
         className="shrink-0"
       >
         <CircleAlertIcon className="size-4" />
-        {providerSetupInstanceId ? "Provider unavailable" : "No provider available"}
+        {providerSetupInstanceId ? gt("Provider unavailable") : gt("No provider available")}
       </ComposerControl>
       {composerModelPicker}
     </>

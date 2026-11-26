@@ -1929,7 +1929,10 @@ it.effect("offers agent feedback tools only while the setting is on, to every cl
         Layer.provide(Layer.mock(Feedback.FeedbackService)({})),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-            resolve: (token) => Effect.succeed(token === "agentToken" ? agentScope : undefined),
+            resolve: (token) =>
+              Effect.succeed(
+                token === "agentToken" ? agentScope : token === "cliToken" ? cliScope : undefined,
+              ),
           }),
         ),
         Layer.provide(

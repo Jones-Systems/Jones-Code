@@ -1588,24 +1588,31 @@ export const make = Effect.gen(function* () {
         localBranchExists: branchExists !== "0",
         ...(remoteName.length > 0 ? { remoteName } : {}),
       };
-      return Effect.gen(function* () {
-        const { headContext, lookup } = yield* resolveLookupHeadContext(cwd, details, (cwd, key) =>
-          readPrLookupConfig(cwd, key).pipe(Effect.orElseSucceed(() => null)),
-        );
-        if (!lookup) {
-          return { latest: null, headContext };
-        }
-        if (
-          details.localBranchExists &&
-          (details.upstreamRef === null || headContext.remoteName === null) &&
-          (yield* isUnpublishedBranch(cwd, headContext, readPrLookupConfig))
-        ) {
-          return { latest: null, headContext };
-        }
-        const latest = yield* findLatestPrForHeadContext(cwd, headContext, details.defaultBranch);
-        if (latest !== null) yield* noteLookupState(latest);
-        return { latest, headContext };
-      });
+      return withActivePrLookupGitReads(
+        cwd,
+        Effect.gen(function* () {
+          const { headContext, lookup } = yield* resolveLookupHeadContext(
+            cwd,
+            details,
+            (cwd, key) => readPrLookupConfig(cwd, key).pipe(Effect.orElseSucceed(() => null)),
+          );
+          if (!lookup) {
+            return { latest: null, headContext };
+          }
+          if (
+            details.localBranchExists &&
+            (details.upstreamRef === null || headContext.remoteName === null) &&
+            (yield* isUnpublishedBranch(cwd, headContext, readPrLookupConfig))
+          ) {
+            return { latest: null, headContext };
+          }
+          const shared = yield* prLookupGitReads;
+          if (isActivePrLookupGitReads(shared, cwd)) shared.queriedProvider = true;
+          const latest = yield* findLatestPrForHeadContext(cwd, headContext, details.defaultBranch);
+          if (latest !== null) yield* noteLookupState(latest);
+          return { latest, headContext };
+        }),
+      );
     },
     {
       capacity: PR_LOOKUP_CACHE_CAPACITY,
@@ -3306,7 +3313,17 @@ export const make = Effect.gen(function* () {
     read: Effect.Effect<string | null, E>,
     memoized?: RememberedPrLookupValue,
   ) {
-    return yield* prLookupGitState.remember(cwd, key, fresh, read);
+    const epoch = prLookupEpoch(cwd);
+    const readState =
+      fresh || memoized === undefined
+        ? read
+        : Effect.flatMap(Clock.currentTimeMillis, (now) =>
+            prLookupEpoch(cwd) === epoch &&
+            now - memoized.readAtMs < Duration.toMillis(LOCAL_STATUS_GIT_READS_HANDOFF_TTL)
+              ? Effect.succeed(memoized.value)
+              : read,
+          );
+    return yield* prLookupGitState.remember(cwd, key, fresh, readState);
   });
   const branchPrLookups = yield* Semaphore.make(BRANCH_PR_LOOKUP_CONCURRENCY);
   const settledPrLookupByBranchKey = new Map<

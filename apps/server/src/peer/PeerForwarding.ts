@@ -207,7 +207,15 @@ const make = Effect.gen(function* () {
     const forwardTool = (
       args: unknown,
     ): Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure> =>
-      forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, args);
+      forward(
+        scope,
+        tool.name,
+        tool.parametersSchema,
+        tool.successSchema,
+        environmentId,
+        args,
+        Context.get(tool.annotations, Tool.Readonly),
+      );
     const newest = newestPage(tool.name, params);
     const forwarded: Effect.Effect<
       Tool.Success<typeof tool>,
@@ -218,15 +226,9 @@ const make = Effect.gen(function* () {
           environmentId,
           params as OrchestratorMcpThreadWaitInput,
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : forward(
-          scope,
-          tool.name,
-          tool.parametersSchema,
-          tool.successSchema,
-          environmentId,
-          params,
-          Context.get(tool.annotations, Tool.Readonly),
-        );
+      : newest === undefined
+        ? forwardTool(params)
+        : readNewestOrRetry(forwardTool, newest, params);
     return Effect.andThen(requireEnabled, forwarded);
   };
 

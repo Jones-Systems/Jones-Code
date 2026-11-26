@@ -1481,7 +1481,7 @@ function TerminalSplitPanes({
                 threadId={threadId}
                 terminalId={terminalId}
                 contentsRef={terminalId === activeTerminalId ? activeContentsRef : undefined}
-                terminalLabel={terminalLabelById.get(terminalId) ?? "Terminal"}
+                terminalLabel={terminalLabelById.get(terminalId) ?? gt("Terminal")}
                 cwd={terminalLaunchLocation.cwd}
                 {...(terminalLaunchLocation.worktreePath !== undefined
                   ? { worktreePath: terminalLaunchLocation.worktreePath }
