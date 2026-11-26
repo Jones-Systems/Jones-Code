@@ -353,13 +353,14 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
       expect(yield* queuedOccurrences).toHaveLength(1);
 
       // A one-shot timer coalesces into the same task's queued manual wake.
+      const oneShotAt = "2026-07-01T09:07:00.000Z";
       const { task: once } = yield* service.upsert(
         yield* decodeUpsertInput({
           id: "scheduled-task:busy-thread-once",
           title: "Check once",
           prompt: "Check once",
           enabled: true,
-          schedule: { type: "once", runAt: "2026-07-01T09:07:00.000Z" },
+          schedule: { type: "once", runAt: oneShotAt },
           projectId: "project-busy-thread",
           threadId: "thread:busy",
           workspaceStrategy: { type: "root" },
@@ -371,7 +372,7 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
       const manual = yield* service.runNow({ id: once.id });
       const manualQueue = yield* queuedOccurrencesOf(once.id);
       expect(manualQueue).toHaveLength(1);
-      expect(manual.task.nextRunAt).toBe("2026-07-01T09:05:00.000Z");
+      expect(manual.task.nextRunAt).toBe(oneShotAt);
 
       yield* TestClock.adjust("61 seconds");
       yield* Effect.flatten(Ref.get(runDueWork));

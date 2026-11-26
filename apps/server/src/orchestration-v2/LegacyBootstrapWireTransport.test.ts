@@ -111,6 +111,7 @@ import * as WorkflowRuntime from "../workflows/WorkflowRuntime.ts";
 import * as Workflows from "../workflows/Workflows.ts";
 import * as TaskFolders from "../workspace/TaskFolders.ts";
 import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
+// oxlint-disable-next-line t3code/no-layout-command-approval-writes -- The WebSocket harness supplies a fail-on-use mock for the client RPC writer.
 import * as LayoutCommandApprovalWrites from "../workspace/LayoutCommandApprovalWrites.ts";
 import * as WsPullRequestSyncReactor from "../orchestration-v2/PullRequestSyncReactor.ts";
 import * as WsDeviceService from "../device/DeviceService.ts";

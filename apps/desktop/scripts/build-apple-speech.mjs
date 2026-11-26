@@ -10,7 +10,6 @@ const hostArch = process.arch;
 const hostPlatform = process.platform;
 
 function resolveCompilerEnvironment() {
-  // oxlint-disable-next-line t3code/no-global-process-runtime -- Keep the compiler override local to these subprocesses.
   const environment = process.env;
   const hasSpeechSdk = (env) => {
     const probe = NodeChildProcess.spawnSync("xcrun", ["--sdk", "macosx", "--show-sdk-version"], {
@@ -71,7 +70,6 @@ if (hostPlatform !== "darwin") {
         "Building the Apple Speech helper requires the macOS 26 SDK (Xcode 26 or later).";
       if (required) throw new Error(message);
       console.warn(`${message} On-device Mac dictation is unavailable in this build.`);
-      // oxlint-disable-next-line t3code/no-global-process-runtime -- This optional build step has no Effect runtime.
       process.exit(0);
     }
     NodeFS.mkdirSync(NodePath.dirname(output), { recursive: true });

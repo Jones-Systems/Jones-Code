@@ -10479,9 +10479,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 : selections.length === 1 && first.tail !== true
                   ? yield* readSnapshotTimelineIndex(threadId, false)
                   : yield* readTimelineIndex(threadId, new Set());
-            const records = local?.records ?? index!.records;
+            const thread = local?.records.thread ?? index!.records.thread;
             const hasTail = selections.some((options) => options.tail === true);
-            if (hasTail && records.thread.deletedAt !== null) {
+            if (hasTail && thread.deletedAt !== null) {
               return yield* new ProjectionStoreThreadNotFoundError({ threadId });
             }
             const pages = yield* Effect.forEach(selections, (options) => {
@@ -10500,13 +10500,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : [];
             const inProgress =
               hasTail &&
-              records.runs.some(
-                ({ status }) =>
-                  status === "preparing" ||
-                  status === "starting" ||
-                  status === "running" ||
-                  status === "waiting",
-              );
+              (yield* sql`
+                  SELECT 1 FROM orchestration_v2_projection_runs
+                  WHERE thread_id = ${threadId}
+                    AND status IN ('preparing', 'starting', 'running', 'waiting')
+                  LIMIT 1`).length > 0;
             const byIdentity = yield* readTimelinePagePayloads(pages.map(({ page }) => page));
             return yield* Effect.forEach(pages, ({ page, ...result }, selectionIndex) =>
               hydrateTimelinePage(threadId, page, byIdentity).pipe(

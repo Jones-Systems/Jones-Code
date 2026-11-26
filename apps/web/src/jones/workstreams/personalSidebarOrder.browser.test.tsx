@@ -280,8 +280,8 @@ async function withSidebar(
   });
 }
 
-it("traverses Unassigned before named Workstreams and skips collapsed groups", async () => {
-  await withSidebar(async ({ router, rows, visit, step }) => {
+it("traverses Unassigned before named Workstreams", async () => {
+  await withSidebar(async ({ rows, visit, step }) => {
     const header = page.getByRole("button", { name: "Hide all Workstreams", exact: true });
     const unassigned = page.getByRole("button", { name: "Collapse Unassigned", exact: true });
     const firstNamed = page.getByRole("button", { name: "Collapse alpha", exact: true });
@@ -297,7 +297,21 @@ it("traverses Unassigned before named Workstreams and skips collapsed groups", a
     expect(order[7]).toBe("b1");
     await visit(order[0]!);
     for (const id of order.slice(1)) await step("next", id);
+  });
+});
+
+it("traverses the visible Workstream order in reverse", async () => {
+  await withSidebar(async ({ rows, visit, step }) => {
+    const order = rows();
+    await visit(order[order.length - 1]!);
     for (const id of order.slice(0, -1).reverse()) await step("previous", id);
+  });
+});
+
+it("skips collapsed groups in traversal and numeric jumps", async () => {
+  await withSidebar(async ({ router, rows, visit, step }) => {
+    const order = rows();
+    await visit(order[0]!);
     // Click the title's gesture layer rather than the background toggle beneath it.
     await userEvent.click(page.getByText("beta", { exact: true }));
     expect(rows()).toEqual(order.slice(0, -1));
@@ -320,7 +334,7 @@ it("traverses Unassigned before named Workstreams and skips collapsed groups", a
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[0]}`),
     );
   });
-}, 30_000);
+});
 
 it("leaves hidden Workstream rows out of traversal and numeric jumps, keeping only the routed row as an anchor", async () => {
   await withSidebar(async ({ router, rows, visit, step }) => {

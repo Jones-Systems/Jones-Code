@@ -1,7 +1,7 @@
 import DOMPurify from "dompurify";
 import type { DiagramType, MathResolver } from "pele/lazy";
 import { T, useGT, Var } from "gt-react";
-import { use, useCallback, useState } from "react";
+import { use, useState } from "react";
 
 import { serializeCodeBlockToMarkdown } from "../../markdown-clipboard";
 import { Button } from "../ui/button";
@@ -238,24 +238,21 @@ export function MermaidDiagram({
   const fallbackRenderError = gt("The diagram could not be rendered.");
 
   // Re-created, and so remounted, whenever the renderer, math support or source changes.
-  const mountDiagram = useCallback(
-    (container: HTMLSpanElement) => {
-      if (load.status !== "loaded") return;
-      const mounted = load.pele.mount(container, trimmedSource, {
-        links: false,
-        images: false,
-        zoom: false,
-        // A wide diagram scales down to fit while keeping the author's direction.
-        autoDirection: false,
-        ...(math ? { math, sanitize: sanitizeMathDiagramSvg } : { sanitize: sanitizeDiagramSvg }),
-        onRender: () => setRenderError(null),
-        onError: (error) =>
-          setRenderError(error instanceof Error ? error.message : fallbackRenderError),
-      });
-      return () => mounted.destroy();
-    },
-    [fallbackRenderError, load, math, trimmedSource],
-  );
+  const mountDiagram = (container: HTMLSpanElement) => {
+    if (load.status !== "loaded") return;
+    const mounted = load.pele.mount(container, trimmedSource, {
+      links: false,
+      images: false,
+      zoom: false,
+      // A wide diagram scales down to fit while keeping the author's direction.
+      autoDirection: false,
+      ...(math ? { math, sanitize: sanitizeMathDiagramSvg } : { sanitize: sanitizeDiagramSvg }),
+      onRender: () => setRenderError(null),
+      onError: (error) =>
+        setRenderError(error instanceof Error ? error.message : fallbackRenderError),
+    });
+    return () => mounted.destroy();
+  };
 
   if (load.status === "failed") {
     return (

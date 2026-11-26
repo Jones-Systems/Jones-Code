@@ -403,6 +403,7 @@ it.live(
         const probe = yield* SearchGitProbe.make;
         yield* probe.bind({ bootstrap, token, key: { cwd, variant: "content" } });
         yield* probe.opened(token);
+        const clock = yield* SearchGitProbe.SearchProbeClock;
 
         const grep = Effect.fn(function* (requestId: number, wholeWord: boolean) {
           const owner = { kind: "foreground" as const, requestId };
@@ -411,7 +412,7 @@ it.live(
             requestId,
             operation: "searchContents",
             input: { query: "needle", caseSensitive: false, useRegex: false, wholeWord, limit: 10 },
-            deadlineMonotonicMs: performance.now() + 30_000,
+            deadlineMonotonicMs: clock.now() + 30_000,
           });
           const result = yield* probe.run(token, owner, requestId, {
             kind: "grep",

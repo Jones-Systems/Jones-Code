@@ -247,6 +247,27 @@ it.effect.each([0, 1, 2, 64, 100])(
     }).pipe(Effect.provide(testLayer)),
 );
 
+it.effect("reports live activity in an empty local tail without loading history", () =>
+  Effect.gen(function* () {
+    const { store, apply } = yield* seedItems(0);
+    const run = yield* store.getRun(source, runId);
+    assert.isDefined(run);
+    const readTail = () => store.getTimelinePage(source, { tail: true, limit: 10 });
+    assert.isFalse((yield* readTail()).inProgress);
+    yield* apply({
+      id: EventId.make("tail-run-live"),
+      type: "run.updated",
+      threadId: source,
+      runId,
+      occurredAt: now,
+      payload: { ...run, status: "running", completedAt: null },
+    });
+    const tail = yield* readTail();
+    assert.isTrue(tail.inProgress);
+    assert.deepEqual(tail.items, []);
+  }).pipe(Effect.provide(testLayer)),
+);
+
 it.effect("history batch keeps wire projection and skips empty payload selections", () =>
   Effect.gen(function* () {
     const { store } = yield* seed;

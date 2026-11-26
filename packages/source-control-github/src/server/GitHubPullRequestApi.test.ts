@@ -5059,7 +5059,13 @@ layer("GitHubPullRequestApi.layer", (it) => {
           conclusion: null,
         };
         mockedExecute.mockImplementation((call) => {
-          if (call.kind === "graphql") return Effect.succeed(output(encodeJson(coreResponse())));
+          if (call.kind === "graphql") {
+            const body =
+              call.operationName === "PullRequestHeads"
+                ? heads([7], false)
+                : coreResponse({ headRepositoryOwner: { __typename: "User", login: "acme" } });
+            return Effect.succeed(output(encodeJson(body)));
+          }
           const body = call.path.includes("/pulls/")
             ? {
                 head: { sha: "abc123", ref: "feature" },
@@ -5083,20 +5089,22 @@ layer("GitHubPullRequestApi.layer", (it) => {
                 }
               : call.path.includes("/statuses")
                 ? []
-                : {
-                    total_count: 2,
-                    workflow_runs: [
-                      queuedRun,
-                      {
-                        ...queuedRun,
-                        id: 2,
-                        run_number: 2,
-                        check_suite_id: 3,
-                        status: "completed",
-                        conclusion: "success",
-                      },
-                    ],
-                  };
+                : call.path.includes("status=action_required")
+                  ? { total_count: 0, workflow_runs: [] }
+                  : {
+                      total_count: 2,
+                      workflow_runs: [
+                        queuedRun,
+                        {
+                          ...queuedRun,
+                          id: 2,
+                          run_number: 2,
+                          check_suite_id: 3,
+                          status: "completed",
+                          conclusion: "success",
+                        },
+                      ],
+                    };
           return Effect.succeed(output(encodeJson(body)));
         });
         const provider = yield* GitHubPullRequestProvider.make;
@@ -5111,8 +5119,15 @@ layer("GitHubPullRequestApi.layer", (it) => {
           workflowState: "complete",
           requiredSetKnown: false,
         });
+        expect(detail.workflowApprovalsRequired).toBe(0);
         expect(restCallsTo("/check-runs")).toHaveLength(1);
-        expect(restCallsTo("/actions/runs")).toHaveLength(1);
+        const workflowReads = restCallsTo("/actions/runs");
+        expect(
+          workflowReads.filter(({ path }) => path.includes("status=action_required")),
+        ).toHaveLength(1);
+        expect(
+          workflowReads.filter(({ path }) => !path.includes("status=action_required")),
+        ).toHaveLength(1);
       }),
   );
 });

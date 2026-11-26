@@ -1,4 +1,6 @@
 import type { EnvironmentId } from "@t3tools/contracts";
+import { msg } from "gt-react";
+import { m } from "../../i18n/messages";
 import {
   executeJonesAction,
   type JonesExecutionResult,
@@ -142,7 +144,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
     if (input.matchRunningGeneration !== undefined && !hasNativePlan)
       return {
         kind: "refused",
-        message: "The Laptop's native verification is unavailable. Check again.",
+        message: m(msg("The Laptop's native verification is unavailable. Check again.")),
       };
     let connections: ReturnType<typeof connectionsPlanDispatch> | undefined;
     try {
@@ -159,7 +161,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
         )
           return {
             kind: "refused",
-            message: "The verified Laptop target or host status changed. Check again.",
+            message: m(msg("The verified Laptop target or host status changed. Check again.")),
           };
         const { planGate } = connectionsPlanDispatch(
           binding,
@@ -190,7 +192,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
         if (local !== undefined)
           return {
             kind: local.kind === "handled" ? "accepted" : "refused",
-            message: local.kind === "grant" ? "Open Install status." : local.message,
+            message: local.kind === "grant" ? m(msg("Open Install status.")) : local.message,
           };
         if (observation.state?.capability.operations === 1) {
           connections = connectionsPlanDispatch(
