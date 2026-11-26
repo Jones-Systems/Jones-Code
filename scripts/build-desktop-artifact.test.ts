@@ -870,8 +870,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }
       assert.notProperty(planned.dependencies, "effect");
       assert.equal(
-        input.workspace.patchedDependencies?.["effect@4.1.3"],
-        "patches/effect@4.1.3.patch",
+        input.workspace.patchedDependencies?.["effect@4.1.5"],
+        "patches/effect@4.1.5.patch",
       );
       const overrides = resolveCatalogDependencies(
         input.workspace.overrides ?? {},

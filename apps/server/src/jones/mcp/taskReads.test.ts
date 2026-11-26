@@ -542,7 +542,7 @@ describe("MCP task read selection", () => {
           return yield* service.taskStatus(scope, taskId);
         }).pipe(Effect.provide(layer));
         assert.deepEqual(calls, [expectedTaskRead]);
-        const resultRunIds = followupStatus === "running" ? [followupId, originalId] : [followupId];
+        const resultRunIds = [followupId, originalId];
         assert.deepEqual(childCalls, [
           {
             threadId: childId,

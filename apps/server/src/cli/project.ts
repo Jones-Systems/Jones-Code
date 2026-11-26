@@ -195,7 +195,6 @@ function projectCommandErrorFromServerAnswer<E>(cause: E) {
   return cause;
 }
 
-const PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT = Duration.seconds(1);
 const PROJECT_CLI_LIVE_SERVER_REQUEST_TIMEOUT = Duration.seconds(10);
 const isLiveServerUnanswered = (cause: unknown) =>
   Cause.isTimeoutError(cause) ||
@@ -338,19 +337,27 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
 
   return yield* Effect.gen(function* () {
     const runtimeState = yield* readLiveServerRuntimeState(config.serverRuntimeStatePath);
-    let unreachable: RunningServer.RunningServerUnreachableError | undefined;
+    let liveSnapshotError:
+      | RunningServer.RunningServerUnreachableError
+      | ProjectLiveServerUndeclaredStatusError
+      | undefined;
     if (Option.isSome(runtimeState)) {
       const { origin } = runtimeState.value;
-      // Auth storage can hold the ownership lock while applying pending migrations.
-      // This layer's scope ends before the offline path attempts to acquire ownership.
+      // Revoke the CLI session before closing auth storage. Auth storage can hold the
+      // ownership lock during migrations, so close it before attempting offline ownership.
       const live = yield* Effect.gen(function* () {
         const client = yield* RunningServer.serverClient(origin, AuthStandardClientScopes);
         const snapshot = yield* client.projects
           .snapshot({ headers: {} })
-          .pipe(Effect.timeout(PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT), Effect.result);
+          .pipe(Effect.timeout(PROJECT_CLI_LIVE_SERVER_REQUEST_TIMEOUT), Effect.result);
         if (snapshot._tag === "Failure") {
+          const error = projectCommandErrorFromServerAnswer(snapshot.failure);
+          // This GET sends no mutation, so a 503 can safely reach the offline ownership check.
+          if (error instanceof ProjectLiveServerUndeclaredStatusError && error.status === 503) {
+            return { error } as const;
+          }
           if (!isLiveServerUnanswered(snapshot.failure)) {
-            return yield* Effect.fail(projectCommandErrorFromServerAnswer(snapshot.failure));
+            return yield* Effect.fail(error);
           }
           return {
             error: new RunningServer.RunningServerUnreachableError({
@@ -377,9 +384,9 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
               ),
         });
         return { output } as const;
-      }).pipe(Effect.provide(EnvironmentAuth.layerRuntime), Effect.scoped);
+      }).pipe(Effect.scoped, Effect.provide(EnvironmentAuth.layerRuntime));
       if (live.error === undefined) return yield* Console.log(live.output);
-      unreachable = live.error;
+      liveSnapshotError = live.error;
     }
 
     // Before ownership and clearing, so a failed import leaves server state alone.
@@ -389,7 +396,9 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
     // An unreachable server may still be running; never write behind it.
     yield* ServerOwnership.acquireServerOwnership(config.serverRuntimeStatePath).pipe(
       Effect.provide(ProcessRunner.layer),
-      Effect.catchTags({ ServerAlreadyRunningError: (cause) => Effect.fail(unreachable ?? cause) }),
+      Effect.catchTags({
+        ServerAlreadyRunningError: (cause) => Effect.fail(liveSnapshotError ?? cause),
+      }),
     );
     const output = yield* Effect.gen(function* () {
       const projects = yield* ProjectService.ProjectService;

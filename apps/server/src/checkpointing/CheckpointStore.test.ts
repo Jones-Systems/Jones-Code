@@ -720,9 +720,8 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
   describe("captureCheckpoint", () => {
     it.effect("leaves nested checkouts that have their own checkpoints out of a capture", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
+        const tmp = yield* makeCheckpointWorktree();
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
-        yield* initRepoWithCommit(tmp);
         yield* writeTextFile(NodePath.join(tmp, ".gitignore"), "ignored-clone/\n");
         yield* git(tmp, ["add", "."]);
         yield* git(tmp, ["commit", "-m", "ignore a clone"]);
@@ -769,9 +768,8 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
 
     it.effect("reads a folder as clean only when nothing in it differs from HEAD", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
+        const tmp = yield* makeCheckpointWorktree();
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
-        yield* initRepoWithCommit(tmp);
         yield* writeTextFile(NodePath.join(tmp, "pinned.txt"), "committed\n");
         yield* git(tmp, ["add", "."]);
         yield* git(tmp, ["commit", "-m", "pinned"]);

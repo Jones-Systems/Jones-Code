@@ -51,6 +51,7 @@ import {
 import * as ServerSettings from "../serverSettings.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { ProjectLiveServerUndeclaredStatusError } from "./project.ts";
 
 const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer);
 const runCli = (args: ReadonlyArray<string>) =>
@@ -271,7 +272,16 @@ it.effect("does not send a token to whatever took over a dead server's port", ()
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect("releases fresh auth storage before falling back from an unavailable server", () =>
+it.effect.each([
+  {
+    label: "releases fresh auth storage before falling back from an unavailable server",
+    unavailableMethod: "GET",
+  },
+  {
+    label: "does not fall back after a live project mutation returns 503",
+    unavailableMethod: "POST",
+  },
+] as const)("$label", ({ unavailableMethod }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-unreachable-project-cli-" });
@@ -288,19 +298,32 @@ it.effect("releases fresh auth storage before falling back from an unavailable s
       path: statePath,
       state: { ...state, ownerId: "former-owner" },
     });
-    let requests = 0;
-    const fetch: typeof globalThis.fetch = async () => {
-      requests++;
-      return new Response(null, { status: 503 });
+    const requests: string[] = [];
+    const fetch: typeof globalThis.fetch = async (_input, init) => {
+      const method = init?.method ?? "GET";
+      requests.push(method);
+      return method === unavailableMethod
+        ? new Response(null, { status: 503 })
+        : Response.json({ projects: [], updatedAt: "2026-01-01T00:00:00.000Z" });
     };
 
-    yield* runCli(["project", "add", workspaceRoot, "--base-dir", baseDir]).pipe(
+    const add = runCli(["project", "add", workspaceRoot, "--base-dir", baseDir]).pipe(
       Effect.provideService(FetchHttpClient.Fetch, fetch),
     );
 
-    assert.equal(requests, 1);
-    assert.isFalse(yield* fs.exists(statePath));
-    assert.equal((yield* readProjects(baseDir)).projects[0]?.workspaceRoot, workspaceRoot);
+    if (unavailableMethod === "GET") {
+      yield* add;
+      assert.deepEqual(requests, ["GET"]);
+      assert.isFalse(yield* fs.exists(statePath));
+      assert.equal((yield* readProjects(baseDir)).projects[0]?.workspaceRoot, workspaceRoot);
+    } else {
+      const error = yield* add.pipe(Effect.flip);
+      assert.instanceOf(error, ProjectLiveServerUndeclaredStatusError);
+      assert.propertyVal(error, "status", 503);
+      assert.deepEqual(requests, ["GET", "POST"]);
+      assert.isTrue(yield* fs.exists(statePath));
+      assert.deepEqual((yield* readProjects(baseDir)).projects, []);
+    }
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 

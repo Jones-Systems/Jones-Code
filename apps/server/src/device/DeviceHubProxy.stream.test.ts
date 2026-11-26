@@ -15,6 +15,7 @@ import {
   LOCAL_DEVICE_HOST_ID,
 } from "@t3tools/contracts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as SessionStore from "../auth/SessionStore.ts";
 import { DeviceDirectGrants } from "../jones/device/DeviceDirectGrants.ts";
 import * as DeviceService from "./DeviceService.ts";
 import * as DeviceHubProxy from "./DeviceHubProxy.ts";
@@ -22,7 +23,7 @@ import * as DeviceHubProxy from "./DeviceHubProxy.ts";
 it.effect("preserves binary input and admission frames through the real socket proxy", () =>
   Effect.gen(function* () {
     const hub = yield* Effect.acquireRelease(
-      Effect.sync(() => new NodeWS.WebSocketServer({ port: 0 })),
+      Effect.sync(() => new NodeWS.WebSocketServer({ host: "127.0.0.1", port: 0 })),
       (server) =>
         Effect.promise(
           () =>
@@ -37,12 +38,20 @@ it.effect("preserves binary input and admission frames through the real socket p
     const address = hub.address();
     if (typeof address !== "object" || !address) throw new Error("Missing hub port");
     const upstreamClosed = Promise.withResolvers<void>();
-    hub.on("connection", (socket) => {
+    const upstreamUrls: Array<string | undefined> = [];
+    const upstreamInputWasBinary: boolean[] = [];
+    hub.on("connection", (socket, request) => {
+      upstreamUrls.push(request.url);
       socket.once("close", upstreamClosed.resolve);
       socket.send(Uint8Array.of(0x83));
-      socket.on("message", (data, binary) => socket.send(data, { binary }));
+      socket.on("message", (data, binary) => {
+        upstreamInputWasBinary.push(binary);
+        socket.send(data, { binary });
+      });
     });
+    const sessionId = AuthSessionId.make("test");
     const invalidated = yield* Deferred.make<void>();
+    const watchedSessions: AuthSessionId[] = [];
     const services = yield* Layer.build(
       HttpRouter.serve(DeviceHubProxy.layer, { disableListenLog: true }).pipe(
         Layer.provideMerge(NodeHttpServer.layerTest),
@@ -53,15 +62,25 @@ it.effect("preserves binary input and admission frames through the real socket p
           }),
         ),
         Layer.provide(
-          Layer.succeed(EnvironmentAuth.EnvironmentAuth, {
+          Layer.mock(EnvironmentAuth.EnvironmentAuth, {
             authenticateWebSocketUpgrade: () =>
               Effect.succeed({
-                sessionId: AuthSessionId.make("test"),
+                sessionId,
                 subject: "test",
                 method: "bearer-access-token",
                 scopes: [AuthOrchestrationOperateScope],
               }),
-          } as unknown as EnvironmentAuth.EnvironmentAuth["Service"]),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(SessionStore.SessionStore, {
+            cookieName: "test",
+            legacyCookieName: undefined,
+            awaitInvalidation: (id) => {
+              watchedSessions.push(id);
+              return Deferred.await(invalidated);
+            },
+          }),
         ),
         Layer.provide(
           Layer.succeed(DeviceService.DeviceService, {
@@ -99,6 +118,9 @@ it.effect("preserves binary input and admission frames through the real socket p
     });
     yield* Effect.promise(() => received.promise);
     expect(frames).toEqual([[0x83], [0x03, 1], [0x03, 2]]);
+    expect(upstreamUrls).toEqual(["/vendor/serve-sim/helper/ws?device=test"]);
+    expect(upstreamInputWasBinary).toEqual([true, true]);
+    expect(watchedSessions).toEqual([sessionId]);
 
     const closed = new Promise<void>((resolve) =>
       client.addEventListener("close", () => resolve(), { once: true }),

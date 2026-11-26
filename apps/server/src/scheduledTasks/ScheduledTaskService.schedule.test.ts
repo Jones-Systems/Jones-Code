@@ -322,7 +322,7 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
       expect(blocked?.lastRunError).toBe(
         "A previous occurrence is held in the thread queue. Resume or remove it to run this task again.",
       );
-      expect(yield* queuedOccurrences).toBe(1);
+      expect(yield* queuedOccurrences).toHaveLength(1);
 
       // The prior run can finish while the poll is looking up its held occurrence.
       yield* sql`UPDATE scheduled_tasks SET last_run_status = 'succeeded', last_run_error = NULL

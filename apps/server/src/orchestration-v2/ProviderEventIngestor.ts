@@ -540,13 +540,7 @@ export const layer: Layer.Layer<
 
             case "app_thread.created": {
               const offered = input.event.appThread;
-              const existing = yield* retryAdmissionUnavailable(
-                projections.getThread(offered.id),
-              ).pipe(
-                Effect.catchTags({
-                  ProjectionStoreThreadNotFoundError: () => Effect.succeed(null),
-                }),
-              );
+              const existing = yield* retryAdmissionUnavailable(projections.findThread(offered.id));
               if (
                 existing !== null &&
                 (input.event.createOnly === true ||

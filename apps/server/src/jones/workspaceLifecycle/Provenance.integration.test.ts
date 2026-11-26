@@ -33,6 +33,7 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
+import { layerNoTaskFolders } from "../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -437,7 +438,9 @@ it.effect(
             }),
           );
           const service = yield* WorktreeMcp.WorktreeMcpService.pipe(
-            Effect.provide(WorktreeMcp.layer.pipe(Layer.provide(external))),
+            Effect.provide(
+              WorktreeMcp.layer.pipe(Layer.provide(Layer.merge(external, layerNoTaskFolders))),
+            ),
           );
           yield* p.capture({ threadId: rootThreadId, reason: "reference", createdBy: "agent" });
           yield* service.handoff(scope, {
