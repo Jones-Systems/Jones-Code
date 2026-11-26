@@ -37,6 +37,9 @@ vi.mock(import("../ProjectFavicon"), () => ({
 vi.mock(import("../contextChipParts"), () => ({
   UnresolvedChip: ({ label }: { label: string }) => <span>{label}</span>,
 }));
+vi.mock(import("../../jones/workstreams/useLinkedThreadWorkstreamMenu"), () => ({
+  useLinkedThreadWorkstreamMenu: () => ({ onContextMenu: () => {}, picker: null }),
+}));
 vi.mock(import("../../state/orchestration"), () => ({
   orchestrationEnvironment: { threadLinkMetadata: () => state.reply } as never,
 }));

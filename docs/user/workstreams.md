@@ -2,6 +2,8 @@
 
 Workstreams group related threads across your connected environments. Create a Workstream from the sidebar. In the web or desktop new-thread composer, open the Workstream picker beside the workspace controls to assign the conversation when you send your first message. You can also use an existing thread’s menu or drag it into the group. A thread has one Workstream; move it to another group or remove it to leave it Unassigned. Dragging a pinned thread into a group unpins it after its move is confirmed. Assigning through the thread menu preserves its pin. Removing a Workstream assignment does not restore an earlier pin or pinned position. If unpinning fails, the thread can remain both pinned and grouped.
 
+On web and desktop, right-click a thread link in a conversation and choose **Assign thread** to move the linked thread without opening it.
+
 On web and desktop, **New Workstream** opens a name field below the sidebar toolbar with an optional **Icon** picker. For an existing Workstream, right-click its header and open **Change icon** under **Workstream state**. The submenu follows the sidebar’s **Filter threads by project** order. Pick a project to apply its icon immediately or choose **None** to clear it. The selected project also becomes the default for threads started from the Workstream. Saving the icon requires a connected environment with write access and Workstream icon support.
 
 Right-click a Workstream or open its options and choose **New thread**. The composer preselects that Workstream and its project. If the group has no project selected, the composer opens with **No project**. The thread joins the Workstream when you send your first message.

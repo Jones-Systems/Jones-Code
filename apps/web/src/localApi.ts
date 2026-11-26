@@ -51,9 +51,12 @@ export function createLocalApi(): LocalApi {
         items: readonly ContextMenuItem<T>[],
         position?: { x: number; y: number },
         source?: ContextMenuSource,
+        textSelection?: boolean,
       ): Promise<T | null> => {
         if (window.desktopBridge) {
-          return window.desktopBridge.showContextMenu(items, position, source) as Promise<T | null>;
+          return textSelection === undefined
+            ? window.desktopBridge.showContextMenu(items, position, source)
+            : window.desktopBridge.showContextMenu(items, position, source, textSelection);
         }
         return showContextMenuFallback(items, position);
       },

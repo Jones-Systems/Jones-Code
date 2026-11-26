@@ -3,6 +3,7 @@ import type { ThreadContextRecord, ProjectId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { MessagesSquareIcon } from "lucide-react";
 
+import { useLinkedThreadWorkstreamMenu } from "~/jones/workstreams/useLinkedThreadWorkstreamMenu";
 import { useProject, useThreadShell } from "~/state/entities";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { useEnvironmentQuery } from "~/state/query";
@@ -15,6 +16,7 @@ export function ThreadContextChip(props: {
   projectId?: ProjectId | null;
   copyMarkdown?: string;
   unreadable?: boolean;
+  resolved?: boolean;
 }) {
   const { environmentId, threadId } = props.record;
   const shell = useThreadShell({ environmentId, threadId });
@@ -30,6 +32,10 @@ export function ThreadContextChip(props: {
   const projectId = shell?.projectId ?? props.projectId ?? metadata?.projectId;
   const project = useProject(projectId ? scopeProjectRef(environmentId, projectId) : null);
   const title = shell?.title?.trim() || metadata?.title.trim() || props.record.title;
+  const resolved = props.resolved ?? (shell !== null || metadata !== undefined);
+  const workstream = useLinkedThreadWorkstreamMenu(
+    resolved && !props.unreadable ? { environmentId, id: threadId } : null,
+  );
   return (
     <Tooltip>
       <TooltipTrigger
@@ -42,6 +48,7 @@ export function ThreadContextChip(props: {
                 to="/$environmentId/$threadId"
                 params={{ environmentId, threadId }}
                 draggable={false}
+                onContextMenu={workstream.onContextMenu}
               />
             }
             aria-label={`Thread, ${title}`}
@@ -58,13 +65,14 @@ export function ThreadContextChip(props: {
         }
       />
       <TooltipPopup side="top">
-        {shell || metadata ? "Open thread" : "Thread no longer available"}
+        {resolved ? "Open thread" : "Thread no longer available"}
         {props.record.excerpt?.status === "captured"
           ? ". bounded point-in-time context attached"
           : props.record.excerpt?.status === "unavailable"
             ? `. context unavailable: ${props.record.excerpt.reason.replaceAll("_", " ")}; thread identity retained`
             : ""}
       </TooltipPopup>
+      {workstream.picker}
     </Tooltip>
   );
 }

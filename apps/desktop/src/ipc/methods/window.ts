@@ -65,6 +65,7 @@ const ContextMenuInput = Schema.Struct({
   items: Schema.Array(ContextMenuItemSchema),
   position: Schema.optionalKey(ContextMenuPosition),
   source: Schema.optionalKey(ContextMenuSource),
+  textSelection: Schema.optionalKey(Schema.Boolean),
 });
 
 function toWebSocketBaseUrl(httpBaseUrl: URL): string {
@@ -344,7 +345,7 @@ export const showContextMenu = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.CONTEXT_MENU_CHANNEL,
   payload: ContextMenuInput,
   result: Schema.NullOr(Schema.String),
-  handler: Effect.fn("desktop.ipc.window.showContextMenu")(function* (input) {
+  handler: Effect.fn("desktop.ipc.window.showContextMenu")(function* (input, event) {
     const electronMenu = yield* ElectronMenu.ElectronMenu;
     const electronWindow = yield* ElectronWindow.ElectronWindow;
     const window = yield* electronWindow.focusedMainOrFirst;
@@ -352,11 +353,19 @@ export const showContextMenu = DesktopIpc.makeIpcMethod({
       return null;
     }
 
+    const { webContents } = window.value;
+    const frame =
+      input.textSelection !== undefined && event?.sender.id === webContents.id
+        ? webContents.mainFrame
+        : undefined;
     const selectedItemId = yield* electronMenu.showContextMenu({
       window: window.value,
       items: input.items,
       position: Option.fromNullishOr(input.position),
       source: Option.fromNullishOr(input.source),
+      ...(frame && frame === event?.senderFrame
+        ? { textSelection: { frame, canCopy: input.textSelection === true } }
+        : {}),
     });
     return Option.getOrNull(selectedItemId);
   }),

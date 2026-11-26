@@ -4,15 +4,18 @@ import {
   openPersonalWorkstreams,
   personalThreadKey,
   visiblePersonalWorkstreamId,
+  type PersonalThreadRef,
   type PersonalWorkstreamsController,
   type PersonalWorkstreamsState,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import type { ThreadActionMenuId } from "../../components/threadActionMenu.logic";
 import { showPersonalAssignment, showPersonalFailure } from "./personalNotifications";
 
+type AssignableThread = PersonalThreadRef & Partial<Pick<EnvironmentThreadShell, "pinnedAt">>;
+
 export async function assignPersonalThread(
   controller: PersonalWorkstreamsController,
-  thread: EnvironmentThreadShell,
+  thread: AssignableThread,
   id: string | null,
   name: string | null,
 ): Promise<boolean> {
@@ -35,7 +38,7 @@ export async function assignPersonalThread(
 export function personalThreadAssignmentMenu(input: {
   controller: PersonalWorkstreamsController;
   state: PersonalWorkstreamsState;
-  thread: EnvironmentThreadShell;
+  thread: AssignableThread;
   canOperate: () => boolean;
   openPicker: () => void;
 }) {
