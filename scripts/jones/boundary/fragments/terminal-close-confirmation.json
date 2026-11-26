@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "terminal-close-confirmation",
+  "jonesOwnedPaths": ["apps/web/src/lib/terminalCloseConfirm.browser.test.tsx"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}
