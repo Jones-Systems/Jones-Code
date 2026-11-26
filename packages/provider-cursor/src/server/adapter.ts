@@ -1145,6 +1145,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         // Cursor drops a run cancelled before its first checkpoint, so the next message carries its prompt.
         const interruptedPrompt = yield* Ref.make<{
           readonly agent: string;
+          readonly providerThreadId: OrchestrationV2ProviderThread["id"];
           readonly runId: string;
           readonly text: string;
           readonly message: string | SDKUserMessage;
@@ -2675,7 +2676,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           readonly failure?: OrchestrationV2ProviderFailure;
           readonly threadDisposition?: "reusable" | "broken";
           readonly evidenceKind?: "provider_result" | "attributed_abort" | "local_failure";
-        }) {
+        }): Effect.fn.Return<void> {
           if (input.context.finalized) {
             return;
           }
@@ -2714,13 +2715,15 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             ),
           );
           // An unreadable checkpoint cannot establish that the prompt was dropped.
+          const runCheckpointed = input.context.session.runCheckpointed;
           const promptDropped =
             (input.status === "failed" || input.status === "cancelled") &&
             !input.context.compacted &&
             input.context.prompt !== undefined &&
-            (yield* (
-              input.context.session.runCheckpointed?.(input.context.run.runId) ?? Effect.undefined
-            ).pipe(Effect.orElseSucceed(() => undefined))) === false;
+            runCheckpointed !== undefined &&
+            (yield* runCheckpointed(input.context.run.runId).pipe(
+              Effect.orElseSucceed(() => undefined),
+            )) === false;
           const terminalTurnEvent: Extract<
             ProviderAdapter.ProviderAdapterV2Event,
             { readonly type: "provider_turn.updated" }
@@ -2812,6 +2815,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           if (input.status === "interrupted" && input.context.prompt !== undefined) {
             yield* Ref.set(interruptedPrompt, {
               agent: input.context.run.agentId,
+              providerThreadId: input.context.input.providerThread.id,
               runId: input.context.run.runId,
               text: input.context.prompt,
               message: input.context.message,
@@ -3056,7 +3060,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               existing !== null &&
               openInput.operation === "resume" &&
               existing.nativeThreadId === openInput.agentId &&
-              existing.retirement === undefined
+              existing.retirement === undefined &&
+              existing.session.isAlive?.() !== false
             ) {
               const providerThread = openInput.providerThread!;
               if (
@@ -3381,14 +3386,18 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                     backgroundWait: false,
                     runtime: undefined,
                   };
-            const interrupted = yield* Ref.get(interruptedPrompt);
+            const previousStop = yield* Ref.get(interruptedPrompt);
+            const interrupted =
+              previousStop?.agent === agent.nativeThreadId &&
+              previousStop.providerThreadId === providerThread.id
+                ? previousStop
+                : null;
             const runCheckpointed = (runId?: string) =>
-              agent.session.runCheckpointed?.(runId) ?? Effect.succeed(false);
+              agent.session.runCheckpointed?.(runId) ?? Effect.undefined;
+            const stoppedRunCheckpointed =
+              interrupted === null ? undefined : yield* runCheckpointed(interrupted.runId);
             const dropped =
-              interrupted?.agent === agent.nativeThreadId &&
-              !(yield* runCheckpointed(interrupted.runId))
-                ? interrupted
-                : undefined;
+              interrupted !== null && stoppedRunCheckpointed === false ? interrupted : undefined;
             // Cursor's ResumeAction continues from the latest checkpoint, which only holds a stopped
             // request once that run checkpointed; an earlier stop replays the request it dropped.
             const resume =
@@ -3396,9 +3405,12 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 ? undefined
                 : dropped !== undefined
                   ? ("replay" as const)
-                  : interrupted?.agent === agent.nativeThreadId ||
-                      (yield* Ref.get(resumedAgent)) === agent.nativeThreadId ||
-                      (yield* runCheckpointed())
+                  : (
+                        interrupted === null
+                          ? (yield* Ref.get(resumedAgent)) === agent.nativeThreadId ||
+                            (yield* runCheckpointed()) === true
+                          : stoppedRunCheckpointed === true
+                      )
                     ? ("native" as const)
                     : undefined;
             if (turnInput.resume === true && resume === undefined) {
@@ -3412,10 +3424,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 ? {
                     message: "",
                     prompt: undefined,
-                    runtimeInstructions:
-                      interrupted?.agent === agent.nativeThreadId
-                        ? interrupted.runtimeInstructions
-                        : undefined,
+                    runtimeInstructions: interrupted?.runtimeInstructions,
                   }
                 : resume === "replay"
                   ? {
@@ -3801,36 +3810,45 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               readonly providerThread: OrchestrationV2ProviderThread;
               readonly nativeTurnId: string;
             }) {
-              // This session still holds the stopped request and replays it on the next turn itself.
+              if (retirementUnknown !== undefined) return yield* retirementUnknown;
+              if (openUnknown !== undefined) return yield* openUnknown;
+              const { providerThread, nativeTurnId } = keptInput;
+              const requestedAgentId = providerThread.nativeThreadRef?.nativeId;
+              const matchesSession =
+                providerThread.providerSessionId === input.providerSessionId &&
+                providerThread.providerInstanceId === adapterOptions.instanceId;
               const interrupted = yield* Ref.get(interruptedPrompt);
-              if (
-                interrupted?.runId === keptInput.nativeTurnId &&
-                interrupted.agent === nativeThreadId(keptInput.providerThread)
-              )
-                return true;
+              const hasCapturedPrompt =
+                matchesSession &&
+                interrupted?.runId === nativeTurnId &&
+                interrupted.agent === requestedAgentId &&
+                interrupted.providerThreadId === providerThread.id;
               const agent = yield* Ref.get(liveAgent);
+              // The adapter retains this exact stopped request even after closing its SDK agent.
+              if (agent === null && hasCapturedPrompt) return true;
               if (
                 agent === null ||
                 agent.retirement !== undefined ||
                 agent.pendingSend ||
-                keptInput.providerThread.providerSessionId !== input.providerSessionId ||
-                keptInput.providerThread.providerInstanceId !== adapterOptions.instanceId ||
-                agent.nativeThreadId !== nativeThreadId(keptInput.providerThread) ||
-                keptInput.providerThread.runtimeIdentity?.runtimeGeneration !==
-                  agent.runtimeGeneration
+                agent.session.isAlive?.() === false ||
+                !matchesSession ||
+                agent.nativeThreadId !== requestedAgentId ||
+                providerThread.runtimeIdentity?.runtimeGeneration !== agent.runtimeGeneration
               ) {
                 return yield* new ProviderAdapter.ProviderRuntimeBindingError({
                   driver: CursorAgentSdk.CURSOR_PROVIDER,
                   detail: "Cursor checkpoint lookup has no matching loaded conversation.",
                 });
               }
+              if (hasCapturedPrompt) return true;
               // An SDK without checkpoint inspection cannot prove that a prompt is gone.
               if (agent.session.runCheckpointed === undefined) return true;
-              const kept = yield* agent.session.runCheckpointed(keptInput.nativeTurnId);
+              const kept = yield* agent.session.runCheckpointed(nativeTurnId);
               if (
                 (yield* Ref.get(liveAgent)) !== agent ||
                 agent.retirement !== undefined ||
-                agent.pendingSend
+                agent.pendingSend ||
+                agent.session.isAlive?.() === false
               ) {
                 return yield* new ProviderAdapter.ProviderRuntimeBindingError({
                   driver: CursorAgentSdk.CURSOR_PROVIDER,

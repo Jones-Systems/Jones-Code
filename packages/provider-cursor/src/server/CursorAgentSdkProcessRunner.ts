@@ -54,6 +54,10 @@ type RunQueueItem =
 interface ActiveWorkerRun {
   readonly sessionId: number;
   readonly queue: Queue.Queue<RunQueueItem>;
+  readonly nativeWaitDeferred: Deferred.Deferred<
+    RunResult,
+    CursorAgentSdk.CursorAgentSdkRunnerError
+  >;
   readonly waitDeferred: Deferred.Deferred<RunResult, CursorAgentSdk.CursorAgentSdkRunnerError>;
   readonly onStartupPhase: ((phase: string) => Effect.Effect<void>) | undefined;
   doneEnqueued: boolean;
@@ -290,6 +294,7 @@ export const makeCursorAgentSdkProcessRunner = Effect.fn("makeCursorAgentSdkProc
           }
           for (const run of activeRuns.values()) {
             const error = workerExitError("run.wait", exitCode, stderrTail);
+            yield* Deferred.fail(run.nativeWaitDeferred, error);
             if (!run.doneEnqueued) {
               run.doneEnqueued = true;
               Queue.offerUnsafe(run.queue, { _tag: "done", ok: false, error });
@@ -365,10 +370,30 @@ export const makeCursorAgentSdkProcessRunner = Effect.fn("makeCursorAgentSdkProc
             }
             case "startupPhase":
               return activeRuns.get(parsed.sendId)?.onStartupPhase?.(parsed.phase) ?? Effect.void;
+            case "runNativeDone": {
+              const run = activeRuns.get(parsed.sendId);
+              if (run === undefined || run.doneEnqueued) return Effect.void;
+              return (
+                parsed.ok
+                  ? Deferred.succeed(run.nativeWaitDeferred, deserializeRunResult(parsed.result))
+                  : Deferred.fail(run.nativeWaitDeferred, fromSerializedFailure(parsed.error))
+              ).pipe(Effect.asVoid);
+            }
             case "runDone": {
               const run = activeRuns.get(parsed.sendId);
               if (run !== undefined && !run.doneEnqueued) {
                 run.doneEnqueued = true;
+                if (!Deferred.isDoneUnsafe(run.nativeWaitDeferred)) {
+                  Deferred.doneUnsafe(
+                    run.nativeWaitDeferred,
+                    Effect.fail(
+                      toRunnerError(
+                        "run.wait",
+                        new Error("Cursor SDK native run result is missing."),
+                      ),
+                    ),
+                  );
+                }
                 Queue.offerUnsafe(
                   run.queue,
                   parsed.ok
@@ -612,6 +637,10 @@ export const makeCursorAgentSdkProcessRunner = Effect.fn("makeCursorAgentSdkProc
           onStartupPhase: ActiveWorkerRun["onStartupPhase"],
         ) {
           const queue = yield* Queue.unbounded<RunQueueItem>();
+          const nativeWaitDeferred = yield* Deferred.make<
+            RunResult,
+            CursorAgentSdk.CursorAgentSdkRunnerError
+          >();
           const waitDeferred = yield* Deferred.make<
             RunResult,
             CursorAgentSdk.CursorAgentSdkRunnerError
@@ -619,6 +648,7 @@ export const makeCursorAgentSdkProcessRunner = Effect.fn("makeCursorAgentSdkProc
           const state: ActiveWorkerRun = {
             sessionId,
             queue,
+            nativeWaitDeferred,
             waitDeferred,
             onStartupPhase,
             doneEnqueued: false,
@@ -635,6 +665,7 @@ export const makeCursorAgentSdkProcessRunner = Effect.fn("makeCursorAgentSdkProc
           });
           for (const run of activeRuns.values()) {
             if (run.sessionId !== sessionId) continue;
+            yield* Deferred.fail(run.nativeWaitDeferred, error);
             if (!run.doneEnqueued) {
               run.doneEnqueued = true;
               Queue.offerUnsafe(run.queue, { _tag: "done", ok: false, error });
@@ -977,10 +1008,19 @@ export const makeCursorAgentSdkProcessRunner = Effect.fn("makeCursorAgentSdkProc
                   }
                 }).pipe(Effect.ensuring(worker.unregisterRun(sendId)), Effect.forkIn(worker.scope));
 
+                const matchRunResult = Effect.filterOrFail(
+                  (result: RunResult) => result.id === runId,
+                  () =>
+                    toRunnerError(
+                      "run.wait",
+                      new Error("Cursor SDK worker returned a different run."),
+                    ),
+                );
                 const run = {
                   runId,
                   agentId: started.agentId,
-                  wait: Deferred.await(runState.waitDeferred),
+                  nativeWait: Deferred.await(runState.nativeWaitDeferred).pipe(matchRunResult),
+                  wait: Deferred.await(runState.waitDeferred).pipe(matchRunResult),
                   steer: Effect.fn("CursorAgentSdkRun.steer")((text: string) =>
                     log({
                       direction: "outgoing",
@@ -1095,18 +1135,30 @@ export const makeCursorAgentSdkProcessRunner = Effect.fn("makeCursorAgentSdkProc
                   result === null ? undefined : (result as CursorAgentSdk.CursorContextUsage),
                 ),
               ),
-            runCheckpointed: (runId) =>
-              worker
-                .request(
-                  (id) => ({
-                    id,
-                    type: "runCheckpointed",
-                    sessionId,
-                    ...(runId === undefined ? {} : { runId }),
-                  }),
+            runCheckpointed: Effect.fn("CursorAgentSdkSession.runCheckpointed")(function* (
+              runId?: string,
+            ) {
+              const sessionClosedError = () =>
+                toRunnerError("agent.run.get", new Error("Cursor SDK session was closed."));
+              if (sessionClosed) return yield* sessionClosedError();
+              const result = yield* worker.request(
+                (id) => ({
+                  id,
+                  type: "runCheckpointed",
+                  sessionId,
+                  ...(runId === undefined ? {} : { runId }),
+                }),
+                "agent.run.get",
+              );
+              if (sessionClosed) return yield* sessionClosedError();
+              if (typeof result !== "boolean") {
+                return yield* toRunnerError(
                   "agent.run.get",
-                )
-                .pipe(Effect.map((result) => result === true)),
+                  new Error("Cursor SDK worker did not return a checkpoint-presence result."),
+                );
+              }
+              return result;
+            }),
             rewindAfterRun: (runId) =>
               log({
                 direction: "outgoing",

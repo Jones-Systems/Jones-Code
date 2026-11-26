@@ -1216,23 +1216,32 @@ describe("CursorAdapterV2", () => {
               listMessages: Effect.succeed([]),
               close: Effect.void,
               runCheckpointed: (runId) =>
-                Effect.succeed(runId !== undefined && checkpointedRuns.has(runId)),
+                runId === "native-cursor-run-3"
+                  ? Effect.fail(
+                      new CursorAgentSdk.CursorAgentSdkRunnerError({
+                        method: "agent.run.get",
+                        cause: "Synthetic checkpoint read failure",
+                      }),
+                    )
+                  : Effect.succeed(runId !== undefined && checkpointedRuns.has(runId)),
               send: () =>
                 Effect.sync(() => {
                   sendCalls += 1;
                   const runId = `native-cursor-run-${sendCalls}`;
+                  const nativeResult = Effect.succeed({
+                    id: runId,
+                    status: "error" as const,
+                    error: {
+                      message:
+                        'AI Model Not Found Invalid parameters for registry model: "gemini-4-neon"',
+                    },
+                  });
                   return {
                     agentId: "native-cursor-dropped",
                     runId,
                     cancel: Effect.void,
-                    wait: Effect.succeed({
-                      id: runId,
-                      status: "error" as const,
-                      error: {
-                        message:
-                          'AI Model Not Found Invalid parameters for registry model: "gemini-4-neon"',
-                      },
-                    }),
+                    nativeWait: nativeResult,
+                    wait: nativeResult,
                   };
                 }),
             }),
@@ -1240,12 +1249,16 @@ describe("CursorAdapterV2", () => {
         }),
         Effect.provide(TestProviderHost.layer({ cwd: workspace })),
       );
-      const runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("cursor-dropped-session"),
-        modelSelection,
-        runtimePolicy,
-      });
+      const initialScope = yield* Scope.make();
+      yield* Effect.addFinalizer((exit) => Scope.close(initialScope, exit));
+      const runtime = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("cursor-dropped-session"),
+          modelSelection,
+          runtimePolicy,
+        })
+        .pipe(Effect.provideService(Scope.Scope, initialScope));
       const providerThread = yield* runtime.ensureThread({
         threadId,
         modelSelection,
@@ -1275,11 +1288,11 @@ describe("CursorAdapterV2", () => {
         lastVisitedAt: null,
         deletedAt: null,
       };
-      const runFailed = (ordinal: number) =>
+      const runFailed = (ordinal: number, activeRuntime = runtime, loadedThread = providerThread) =>
         Effect.gen(function* () {
-          yield* runtime.startTurn({
+          yield* activeRuntime.startTurn({
             threadId,
-            providerThread,
+            providerThread: loadedThread,
             modelSelection,
             runtimePolicy,
             runId: RunId.make(`cursor-dropped-run-${ordinal}`),
@@ -1296,7 +1309,7 @@ describe("CursorAdapterV2", () => {
               attachments: [],
             },
           });
-          const events = yield* runtime.events.pipe(
+          const events = yield* activeRuntime.events.pipe(
             Stream.takeUntil((event) => event.type === "turn.terminal"),
             Stream.runCollect,
           );
@@ -1324,11 +1337,34 @@ describe("CursorAdapterV2", () => {
       assert.isUndefined(checkpointed.terminal?.promptDropped);
       assert.isUndefined(checkpointed.turn?.promptDropped);
 
-      // After a restart no turn ends to report it, so the next turn start asks instead.
+      const unreadable = yield* runFailed(3);
+      assert.equal(unreadable.terminal?.status, "failed");
+      assert.isUndefined(unreadable.terminal?.promptDropped);
+      assert.isUndefined(unreadable.turn?.promptDropped);
+
+      // The replacement adapter can inspect the store only after loading the original conversation.
+      yield* Scope.close(initialScope, Exit.void);
+      const recovered = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("cursor-dropped-restarted-session"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const beforeLoad = yield* Effect.flip(
+        recovered.nativeTurnKept!({ providerThread, nativeTurnId: "native-cursor-run-1" }),
+      );
+      assert.instanceOf(beforeLoad, ProviderAdapter.ProviderAdapterReadThreadSnapshotError);
+      const loadedThread = yield* recovered.resumeThread({ providerThread });
       const kept = (nativeTurnId: string) =>
-        runtime.nativeTurnKept!({ providerThread, nativeTurnId });
+        recovered.nativeTurnKept!({ providerThread: loadedThread, nativeTurnId });
       assert.isFalse(yield* kept("native-cursor-run-1"));
       assert.isTrue(yield* kept("native-cursor-run-2"));
+      assert.instanceOf(
+        yield* Effect.flip(kept("native-cursor-run-3")),
+        ProviderAdapter.ProviderAdapterReadThreadSnapshotError,
+      );
+      const afterLoad = yield* runFailed(4, recovered, loadedThread);
+      assert.equal(afterLoad.turn?.nativeTurnRef?.nativeId, "native-cursor-run-4");
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -1815,13 +1851,34 @@ describe("CursorAdapterV2", () => {
         ),
       );
       assert(started.type === "provider_turn.updated");
-      yield* runtime.interruptTurn({ providerThread, providerTurnId: started.providerTurn.id });
+      yield* runtime.interruptTurn({
+        providerThread,
+        providerTurnId: started.providerTurn.id,
+        requestRuntimeRestart: true,
+      });
+      const stopped = Option.getOrThrow(
+        yield* runtime.events.pipe(
+          Stream.filter((event) => event.type === "turn.terminal"),
+          Stream.runHead,
+        ),
+      );
+      assert(stopped.type === "turn.terminal");
+      assert.equal(stopped.status, "interrupted");
+      assert.equal(stopped.evidenceKind, "provider_result");
+      assert.isUndefined(stopped.promptDropped);
+      const nativeTurnId = started.providerTurn.nativeTurnRef!.nativeId!;
       assert.isTrue(
-        yield* runtime.nativeTurnKept!({
-          providerThread,
-          nativeTurnId: started.providerTurn.nativeTurnRef!.nativeId!,
-        }),
-        "a live session replays the stopped request itself, so the server must not resend it too",
+        yield* runtime.nativeTurnKept!({ providerThread, nativeTurnId }),
+        "the adapter still holds the exact stopped request after closing the SDK agent",
+      );
+      assert.instanceOf(
+        yield* Effect.flip(
+          runtime.nativeTurnKept!({
+            providerThread: { ...providerThread, id: ProviderThreadId.make("unrelated-row") },
+            nativeTurnId,
+          }),
+        ),
+        ProviderAdapter.ProviderAdapterReadThreadSnapshotError,
       );
       yield* runtime.startTurn(turnInput(2, steerText));
 
@@ -2990,9 +3047,16 @@ describe("CursorAdapterV2", () => {
                         stop: () => stopped.push(id),
                       });
                     }
+                    const nativeResult = Effect.succeed({
+                      id: "native-cursor-run",
+                      requestId: "native-request",
+                      status: "finished" as const,
+                      durationMs: 1,
+                    });
                     return {
                       agentId: "native-cursor-background",
                       runId: "native-cursor-run",
+                      nativeWait: nativeResult,
                       // Shell 6 exits after the agent's turn ended, before the run settles.
                       wait: Effect.gen(function* () {
                         yield* input.onDelta!({ type: "turn-ended" }).pipe(Effect.orDie);
@@ -3003,12 +3067,7 @@ describe("CursorAdapterV2", () => {
                           exitCode: 0,
                           outputPath: undefined,
                         });
-                        return {
-                          id: "native-cursor-run",
-                          requestId: "native-request",
-                          status: "finished" as const,
-                          durationMs: 1,
-                        };
+                        return yield* nativeResult;
                       }),
                       cancel: Effect.void,
                     };
@@ -4355,17 +4414,19 @@ describe("CursorAdapterV2", () => {
               }),
               send: () => {
                 sends.push(sessionNumber);
+                const nativeResult = Effect.succeed({
+                  id: `run-${sessionNumber}`,
+                  requestId: `req-${sessionNumber}`,
+                  status: "finished" as const,
+                  result: "ok",
+                  model: { id: "composer-2.5" },
+                  durationMs: 1,
+                });
                 return Effect.succeed({
                   agentId: "native-cursor-reopen",
                   runId: `run-${sessionNumber}`,
-                  wait: Effect.succeed({
-                    id: `run-${sessionNumber}`,
-                    requestId: `req-${sessionNumber}`,
-                    status: "finished" as const,
-                    result: "ok",
-                    model: { id: "composer-2.5" },
-                    durationMs: 1,
-                  }),
+                  nativeWait: nativeResult,
+                  wait: nativeResult,
                   cancel: Effect.void,
                 });
               },

@@ -1,3 +1,4 @@
+import type { RunResult } from "@cursor/sdk";
 import { stripAppImageRuntimeEnv } from "@t3tools/shared/appImageRuntimeEnv";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -78,7 +79,11 @@ const runCursorSdkWorkerWithStdio = Effect.fn("CursorAgentSdkWorker.run")(functi
   const textGenerations = new Map<number, Fiber.Fiber<unknown, unknown>>();
   const activeRuns = new Map<
     number,
-    { readonly sessionId: number; readonly run: CursorAgentSdk.CursorAgentSdkRun }
+    {
+      readonly sessionId: number;
+      readonly run: CursorAgentSdk.CursorAgentSdkRun;
+      readonly drained: Deferred.Deferred<void>;
+    }
   >();
   const backgroundShellStops = new Map<string, () => void>();
   const startingSendIds = new Set<number>();
@@ -114,15 +119,23 @@ const runCursorSdkWorkerWithStdio = Effect.fn("CursorAgentSdkWorker.run")(functi
     }
     const current = sessions.get(sessionId);
     sessions.delete(sessionId);
+    const drains: Array<Deferred.Deferred<void>> = [];
     for (const [sendId, entry] of activeRuns.entries()) {
       if (entry.sessionId === sessionId) {
         activeRuns.delete(sendId);
+        drains.push(entry.drained);
       }
     }
     if (current === undefined) {
       return Exit.void;
     }
-    const closeExit = yield* Effect.exit(current.close.pipe(Effect.timeoutOption(CLOSE_GRACE)));
+    // Give a run stopped by close time to forward its native exit and drain before replying.
+    const closeExit = yield* Effect.exit(
+      current.close.pipe(
+        Effect.andThen(Effect.forEach(drains, Deferred.await, { discard: true })),
+        Effect.timeoutOption(CLOSE_GRACE),
+      ),
+    );
     return Exit.isFailure(closeExit) ? closeExit : Exit.void;
   });
 
@@ -294,36 +307,34 @@ const runCursorSdkWorkerWithStdio = Effect.fn("CursorAgentSdkWorker.run")(functi
           });
           return;
         }
-        activeRuns.set(req.id, { sessionId: req.sessionId, run });
+        const drained = yield* Deferred.make<void>();
+        activeRuns.set(req.id, { sessionId: req.sessionId, run, drained });
         writeMessage({
           type: "response",
           id: req.id,
           ok: true,
           result: { runId: run.runId, agentId: run.agentId },
         });
-        yield* Effect.exit(run.wait).pipe(
-          Effect.tap((waitExit) =>
+        const writeRunExit = (
+          type: "runNativeDone" | "runDone",
+          exit: Exit.Exit<RunResult, CursorAgentSdk.CursorAgentSdkRunnerError>,
+        ) =>
+          writeMessage(
+            Exit.isFailure(exit)
+              ? { type, sendId: req.id, ok: false, error: exitFailure("run.wait", exit) }
+              : { type, sendId: req.id, ok: true, result: serializeRunResult(exit.value) },
+          );
+        yield* Effect.gen(function* () {
+          writeRunExit("runNativeDone", yield* Effect.exit(run.nativeWait));
+          writeRunExit("runDone", yield* Effect.exit(run.wait));
+        }).pipe(
+          Effect.ensuring(
             Effect.sync(() => {
               activeRuns.delete(req.id);
-              if (Exit.isFailure(waitExit)) {
-                writeMessage({
-                  type: "runDone",
-                  sendId: req.id,
-                  ok: false,
-                  error: exitFailure("run.wait", waitExit),
-                });
-                return;
-              }
-              writeMessage({
-                type: "runDone",
-                sendId: req.id,
-                ok: true,
-                result: serializeRunResult(waitExit.value),
-              });
+              Deferred.doneUnsafe(drained, Exit.void);
             }),
           ),
-          Effect.asVoid,
-          Effect.forkIn(workerScope),
+          Effect.forkIn(workerScope, { startImmediately: true }),
         );
         return;
       }
@@ -436,7 +447,15 @@ const runCursorSdkWorkerWithStdio = Effect.fn("CursorAgentSdkWorker.run")(functi
       case "runCheckpointed": {
         const session = sessions.get(req.sessionId);
         if (session?.runCheckpointed === undefined) {
-          writeMessage({ type: "response", id: req.id, ok: true, result: false });
+          writeMessage({
+            type: "response",
+            id: req.id,
+            ok: false,
+            error: toRunnerFailure(
+              "agent.run.get",
+              new Error("Cursor SDK session cannot inspect run checkpoints."),
+            ),
+          });
           return;
         }
         const exit = yield* Effect.exit(session.runCheckpointed(req.runId));

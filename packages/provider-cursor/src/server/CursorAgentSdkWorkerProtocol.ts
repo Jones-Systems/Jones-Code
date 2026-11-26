@@ -167,13 +167,13 @@ export type CursorWorkerMessage =
       readonly phase: string;
     }
   | {
-      readonly type: "runDone";
+      readonly type: "runNativeDone" | "runDone";
       readonly sendId: number;
       readonly ok: true;
       readonly result: SerializedRunResult;
     }
   | {
-      readonly type: "runDone";
+      readonly type: "runNativeDone" | "runDone";
       readonly sendId: number;
       readonly ok: false;
       readonly error: SerializedRunnerFailure;

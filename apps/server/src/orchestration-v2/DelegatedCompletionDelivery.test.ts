@@ -3318,7 +3318,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
               strength: "strong" as const,
             },
           };
-          const pendingTask = { taskId: "sleep-90", kind: "command" as const, awaited: true };
+          const pendingTask = { taskId: "sleep-90", kind: "command", awaited: true } as const;
 
           // The child awaits a background command, replies with an interim note and ends its turn.
           yield* eventSink.write({

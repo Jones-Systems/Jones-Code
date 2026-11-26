@@ -27,6 +27,13 @@ const readline = require("node:readline");
 const rawWrite = process.stdout.write.bind(process.stdout);
 const send = (msg) => rawWrite(JSON.stringify(msg) + "\\n");
 const mode = process.env.FAKE_WORKER_MODE || "ok";
+const sendRunCompletion = (sendId, result) => {
+  if (mode !== "missing-native-result") {
+    const nativeResult = mode === "different-native-run" ? { ...result, id: "another-run" } : result;
+    send({ type: "runNativeDone", sendId, ok: true, result: nativeResult });
+  }
+  send({ type: "runDone", sendId, ok: true, result });
+};
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
@@ -72,18 +79,13 @@ rl.on("line", (line) => {
       return;
     }
     send({ type: "delta", sendId: req.id, update: { type: "text-delta", text: "late" } });
-    send({
-      type: "runDone",
-      sendId: req.id,
-      ok: true,
-      result: {
-        id: "run-worker-1",
-        requestId: "req-1",
-        status: "finished",
-        result: "early-late",
-        model: { id: "default" },
-        durationMs: 5,
-      },
+    sendRunCompletion(req.id, {
+      id: "run-worker-1",
+      requestId: "req-1",
+      status: "finished",
+      result: "early-late",
+      model: { id: "default" },
+      durationMs: 5,
     });
     if (mode === "exit-after-done") {
       rawWrite("", () => process.exit(0));
@@ -109,17 +111,12 @@ rl.on("line", (line) => {
   if (req.type === "cancel") {
     send({ type: "protocolLog", providerSessionId: "provider-session-worker-test", event: { direction: "incoming", stage: "decoded", payload: { type: "run.cancel", runId: "run-worker-1" } } });
     send({ type: "response", id: req.id, ok: true, result: null });
-    send({
-      type: "runDone",
-      sendId: req.sendId,
-      ok: true,
-      result: {
-        id: "run-worker-1",
-        requestId: "req-1",
-        status: "cancelled",
-        model: { id: "default" },
-        durationMs: 2,
-      },
+    sendRunCompletion(req.sendId, {
+      id: "run-worker-1",
+      requestId: "req-1",
+      status: "cancelled",
+      model: { id: "default" },
+      durationMs: 2,
     });
     return;
   }
@@ -132,7 +129,8 @@ rl.on("line", (line) => {
     return;
   }
   if (req.type === "runCheckpointed") {
-    send({ type: "response", id: req.id, ok: true, result: req.runId === "run-worker-1" });
+    const result = req.runId === "invalid-checkpoint-reply" ? null : req.runId === "run-worker-1";
+    send({ type: "response", id: req.id, ok: true, result });
     return;
   }
   if (req.type === "rewindAfterRun") {
@@ -362,9 +360,17 @@ describe("CursorAgentSdkProcessRunner", () => {
           assert.deepEqual(usage, { usedTokens: 120, maxTokens: 1000 });
           assert.isTrue(yield* session.runCheckpointed!("run-worker-1"));
           assert.isFalse(yield* session.runCheckpointed!("other"));
+          const invalidCheckpoint = yield* Effect.flip(
+            session.runCheckpointed!("invalid-checkpoint-reply"),
+          );
+          assert.equal(invalidCheckpoint.method, "agent.run.get");
           yield* session.rewindAfterRun!("run-worker-1");
           yield* session.close;
           assert.isFalse(session.isAlive?.());
+          assert.equal(
+            (yield* Effect.flip(session.runCheckpointed!("run-worker-1"))).method,
+            "agent.run.get",
+          );
 
           assert.deepEqual(unregisteredPids, registeredPids);
           assert.deepEqual(stoppedUnits, ["unit-cursor-sdk"]);
@@ -431,6 +437,8 @@ describe("CursorAgentSdkProcessRunner", () => {
 
         const session = yield* runner.open(openInput);
         const run = yield* session.send({ message: "hi" });
+        const nativeError = yield* Effect.flip(run.nativeWait);
+        assert.include(CursorAgentSdk.cursorSdkFailureMessage(nativeError), "code 17");
         const error = yield* Effect.flip(run.wait);
         const msg = CursorAgentSdk.cursorSdkFailureMessage(error);
         assert.include(msg, "code 17");
@@ -483,13 +491,46 @@ describe("CursorAgentSdkProcessRunner", () => {
           });
           yield* Deferred.await(deltaStarted);
           yield* Deferred.await(workerTerminated);
+          // The callback is still blocked, but the exact run's native result has already arrived.
+          const nativeResult = yield* run.nativeWait;
+          assert.equal(nativeResult.id, run.runId);
+          assert.equal(nativeResult.status, "finished");
+          const waiting = yield* Effect.forkChild(run.wait);
+          assert.isUndefined(waiting.pollUnsafe());
           yield* Deferred.succeed(releaseDelta, undefined);
-          const result = yield* run.wait;
+          const result = yield* Fiber.join(waiting);
           assert.equal(result.status, "finished");
           assert.equal(result.result, "early-late");
+          assert.deepEqual(result, nativeResult);
           yield* session.close;
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.live.each([
+    ["missing-native-result", "native run result is missing"],
+    ["different-native-run", "returned a different run"],
+  ] as const)("rejects %s after draining the completed run", (mode, reason) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scriptPath = yield* writeFakeWorker;
+        const executable = yield* HostProcess.ExecutablePath;
+        const runner = yield* CursorAgentSdkProcessRunner.makeCursorAgentSdkProcessRunner({
+          resolveLaunch: Effect.succeed({
+            command: executable,
+            args: [scriptPath],
+            env: { FAKE_WORKER_MODE: mode },
+          }),
+          protocolLoggerFor: () => undefined,
+        });
+        const session = yield* runner.open(openInput);
+        const run = yield* session.send({ message: "hi" });
+        assert.equal((yield* run.wait).status, "finished");
+        const error = yield* Effect.flip(run.nativeWait);
+        assert.include(CursorAgentSdk.cursorSdkFailureMessage(error), reason);
+        yield* session.close;
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.live("cancels a started run when send is interrupted before handing it off", () =>
