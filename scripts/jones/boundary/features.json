@@ -3656,6 +3656,14 @@
       "scope": "Device-local sidebar appearance preferences with Selected/Original presets and a Jones Code Appearance settings page. Board-only controls adjust card and section outlines, tint, backgrounds, typography, sizing, and adaptive or fixed filter spacing. Shared sidebar hooks mount the host and launcher and expose semantic card slots. Lifted cards copy allowlisted attributes and variables. The renderer uses existing sidebar context, Workstream color persistence, and theme tokens."
     },
     {
+      "id": "linked-thread-workstream-menu",
+      "tests": [
+        "apps/web/src/jones/workstreams/linkedThreadWorkstreamMenu.browser.test.tsx",
+        "apps/desktop/src/ipc/methods/window.test.ts"
+      ],
+      "scope": "A resolved thread link uses the sidebar assignment choices for its own environment and thread ID. The browser fixture exercises assignment, picker removal and read-only access. The desktop window IPC fixture checks the editing roles, assignment placement and sender frame for macOS native text services."
+    },
+    {
       "id": "workstream-auto-route",
       "tests": [
         "apps/server/src/jones/workstreams/autoRoute/policy.test.ts",
