@@ -34,9 +34,11 @@ import {
   type ProviderAdapterV2Event,
   type ProviderAdapterV2Shape,
 } from "@t3tools/provider-core/server/ProviderAdapter";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
+import * as CommandReceipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
@@ -48,6 +50,7 @@ import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager
 import * as ProviderReplay from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import { makeQueueHoldStore } from "../orchestration/QueueHoldStore.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
+import * as RecoveryStartDenial from "../provider/RecoveryStartDenial.ts";
 import * as RuntimeStop from "./RuntimeStop.ts";
 import * as StopStore from "./RuntimeStopSqlite.ts";
 const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, AuthSessions.layer).pipe(
@@ -612,6 +615,11 @@ it.effect.each(startCases)(
                 const gated = yield* Layer.build(
                   EffectWorker.layerWithOptions({ workerId: "gated-worker" }).pipe(
                     Layer.provide(
+                      RecoveryStartDenial.layer.pipe(
+                        Layer.provide(Layer.merge(CommandReceipts.layer, IdAllocator.layer)),
+                      ),
+                    ),
+                    Layer.provide(
                       Layer.succeed(Outbox.EffectOutboxV2, {
                         ...outbox,
                         claimNext: (input) =>
@@ -634,11 +642,13 @@ it.effect.each(startCases)(
                   worker.runOnce(),
                 ).pipe(Effect.provide(gated), Effect.forkChild);
                 yield* Deferred.await(claimCommitted);
-                assert.include(Option.getOrThrow(yield* outbox.get(firstStart.id)), {
+                const leased = Option.getOrThrow(yield* outbox.get(firstStart.id));
+                assert.include(leased, {
                   status: "running",
                   attemptCount: 1,
                   leaseOwner: "gated-worker",
                 });
+                assert.isTrue(outbox.startDispatch?.hasWitness(leased));
                 return fiber;
               })
             : start === "after executor entry"

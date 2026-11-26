@@ -91,6 +91,7 @@ import * as RetirementEvents from "../jones/workspaceRetirement/EventIntegration
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as WorkspaceProvenanceStore from "../jones/workspaceLifecycle/TransitionStore.ts";
+import { PreparedStartCheckout } from "../jones/workspaceLifecycle/PreparedStartCheckout.ts";
 import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import * as NativeCreationRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
 import { identityForRequest } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -297,10 +298,14 @@ export interface EventSinkV2Shape {
     R | R2
   >;
 
-  /** Normalize and persist an ordered group against one transaction; publish after its commit. */
-  readonly withProviderBatch: <A, E, R>(
+  /**
+   * Publish a provider batch after its transaction commits. With a follow-up,
+   * run the first effect as SQL-only work and defer publications from the follow-up.
+   */
+  readonly withProviderBatch: <A, E, R, E2 = never, R2 = never>(
     effect: Effect.Effect<A, E, R>,
-  ) => Effect.Effect<A, E | EventSinkV2Error, R>;
+    writeAfter?: (result: A) => Effect.Effect<void, E2, R2> | undefined,
+  ) => Effect.Effect<A, E | E2 | EventSinkV2Error, R | R2>;
 
   readonly write: (
     input: RuntimeWriteContext & {
@@ -580,6 +585,7 @@ const layerBase: Layer.Layer<
     const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
     const captureCommittedProvenance = yield* WorkspaceProvenance.optionalCommittedCapture;
     const provenance = yield* Effect.serviceOption(WorkspaceProvenanceStore.ProvenanceStore);
+    const preparedCheckout = yield* Effect.serviceOption(PreparedStartCheckout);
     const admission = yield* Effect.serviceOption(UpdateAdmissionFence.UpdateAdmissionFence);
     if (Option.isSome(admission)) yield* admission.value.attach;
     const nativeCreation = yield* Effect.serviceOption(
@@ -695,6 +701,7 @@ const layerBase: Layer.Layer<
         readonly commandId: CommandId;
         readonly authorityRevision: string;
       },
+      hasDeferredPublication?: () => boolean,
     ) =>
       Effect.uninterruptibleMask((restore) => {
         const changedThreadIds = new Set<ThreadId>();
@@ -725,7 +732,13 @@ const layerBase: Layer.Layer<
                   ),
                 ),
           ),
-          Effect.tap(() => takeLane),
+          Effect.tap(() =>
+            hasDeferredPublication === undefined ||
+            hasDeferredPublication() ||
+            changedThreadIds.size > 0
+              ? takeLane
+              : Effect.void,
+          ),
         );
         // Shared acceptance owns the outer local transaction, including sidecars.
         // Journal acknowledgement and every publication occur after its commit.
@@ -1616,6 +1629,12 @@ const layerBase: Layer.Layer<
         }
       }
 
+      // Capture filesystem identity before the writer; only the accepted release
+      // can record it in the same transaction as the original start effect.
+      const recordPreparedCheckout =
+        input.commandType === "prepared-run.release" && Option.isSome(preparedCheckout)
+          ? yield* preparedCheckout.value.captureRelease(input)
+          : undefined;
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
           const legacy = input.legacyBootstrap;
@@ -2035,6 +2054,8 @@ const layerBase: Layer.Layer<
           if (!privateDelete) {
             yield* commandReceipts.upsert(receipt);
             yield* captureSettlementProof(receipt, storedEvents);
+            if (recordPreparedCheckout !== undefined)
+              yield* recordPreparedCheckout({ receipt, storedEvents });
           }
           if (legacy !== undefined)
             yield* LegacyTransaction.record(legacyStorage, legacy, receipt, storedEvents);
@@ -2576,22 +2597,42 @@ const layerBase: Layer.Layer<
 
     const withProviderBatch: EventSinkV2Shape["withProviderBatch"] = Effect.fn(
       "orchestrationV2.EventSink.providerBatch",
-    )(function* <A, E, R>(effect: Effect.Effect<A, E, R>) {
-      if ((yield* CurrentProviderBatch) !== undefined) return yield* effect;
+    )(function* <A, E, R, E2, R2>(
+      effect: Effect.Effect<A, E, R>,
+      writeAfter?: (result: A) => Effect.Effect<void, E2, R2> | undefined,
+    ) {
+      if (writeAfter === undefined && (yield* CurrentProviderBatch) !== undefined)
+        return yield* effect;
       if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
         return yield* new EventSinkWriteError({
           eventCount: 0,
           cause: new CheckoutError({ reason: "unavailable" }),
         });
-      const batch: ProviderBatchPublication = { publish: [], eventCount: 0 };
+      let batch: ProviderBatchPublication | undefined;
+      const deferPublication = <B, F, Q>(work: Effect.Effect<B, F, Q>) => {
+        batch = { publish: [], eventCount: 0 };
+        return Effect.provideService(work, CurrentProviderBatch, batch);
+      };
+      const transaction =
+        writeAfter === undefined
+          ? deferPublication(effect)
+          : Effect.tap(effect, (result) => {
+              const followUp = writeAfter(result);
+              return followUp === undefined ? Effect.void : deferPublication(followUp);
+            });
       let started = false;
       const result = yield* commitThenPublishNow(
         Effect.sync(() => {
           started = true;
-        }).pipe(Effect.andThen(Effect.provideService(effect, CurrentProviderBatch, batch))),
-        () => Effect.forEach(batch.publish, (publish) => publish, { discard: true }),
+        }).pipe(Effect.andThen(transaction)),
+        () =>
+          batch === undefined || batch.publish.length === 0
+            ? Effect.void
+            : Effect.forEach(batch.publish, (publish) => publish, { discard: true }),
+        undefined,
+        writeAfter === undefined ? undefined : () => (batch?.publish.length ?? 0) > 0,
       ).pipe(
-        // Normalization mutates run-local state, so only retry before its transaction body starts.
+        // The transaction body may mutate run-local state. Retry only before it starts.
         Effect.retry({
           while: (cause) =>
             !started && SqlError.isSqlError(cause) && cause.reason._tag === "LockTimeoutError",
@@ -2599,14 +2640,15 @@ const layerBase: Layer.Layer<
         }),
         Effect.mapError((cause) =>
           SqlError.isSqlError(cause) || isSharedAdmissionError(cause)
-            ? new EventSinkWriteError({ eventCount: batch.eventCount, cause })
+            ? new EventSinkWriteError({ eventCount: batch?.eventCount ?? 0, cause })
             : cause,
         ),
       );
-      yield* Effect.annotateCurrentSpan({
-        "orchestration_v2.event_count": batch.eventCount,
-        "orchestration_v2.batch_writes": batch.publish.length,
-      });
+      if (batch !== undefined)
+        yield* Effect.annotateCurrentSpan({
+          "orchestration_v2.event_count": batch.eventCount,
+          "orchestration_v2.batch_writes": batch.publish.length,
+        });
       return result;
     });
 

@@ -230,6 +230,7 @@ function fixture(
   );
   const dependencies = Layer.mergeAll(
     Layer.mock(Outbox.EffectOutboxV2)({
+      allowsClaimedRecoveryStart: () => Effect.succeed(true),
       listByThreadId: () => Effect.succeed(options.unclaimed === undefined ? [] : [sourceEffect]),
       get: () => Effect.succeedSome(sourceEffect),
     }),

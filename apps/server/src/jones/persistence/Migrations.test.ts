@@ -498,6 +498,7 @@ it.effect(
           [163, "RemoteSendReceipts"],
           [164, "LegacyBootstrap"],
           [165, "RequestManagement"],
+          [166, "PreparedStartCheckouts"],
         ],
       );
       assert.deepStrictEqual(
@@ -745,6 +746,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [163, "RemoteSendReceipts"],
       [164, "LegacyBootstrap"],
       [165, "RequestManagement"],
+      [166, "PreparedStartCheckouts"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

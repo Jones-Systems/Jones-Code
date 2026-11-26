@@ -5,8 +5,13 @@ import { URGENT_ACTION_EFFECT_TYPES } from "../jones/orchestration/actionWorkerA
 import type { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { confirmedNativeCompletion } from "../jones/nativeCreation/NativeEffectCompletion.ts";
 import { sameOperationRequest } from "../jones/workspaceLifecycle/NativeOperation.ts";
+import {
+  admitsRecoveryStartClaim,
+  recoveryStartParentAllowed,
+} from "../jones/provider/RecoveryStartParentStop.ts";
+import type { RecoveryStartDenial } from "../jones/provider/RecoveryStartDenial.ts";
 import { makeRuntimeStartDispatch } from "../jones/runtime/RuntimeStartDispatch.ts";
-import { CommandId, ThreadId } from "@t3tools/contracts";
+import { CommandId, ThreadId, type OrchestrationV2Run } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
@@ -137,7 +142,12 @@ export interface EffectOutboxV2Shape {
     readonly maxRunningTitleGenerations?: number;
     readonly excludeTitleGeneration?: boolean;
     readonly urgentOnly?: boolean;
+    readonly recoveryStartDenial?: RecoveryStartDenial["Service"];
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
+  readonly allowsClaimedRecoveryStart: (
+    claim: OrchestrationEffectV2,
+    run: Pick<OrchestrationV2Run, "activeAttemptId" | "delegatedTaskId">,
+  ) => Effect.Effect<boolean, EffectOutboxError>;
   readonly startDispatch?: {
     readonly hasWitness: (claim: OrchestrationEffectV2) => boolean;
     readonly begin: (claim: OrchestrationEffectV2) => Effect.Effect<boolean, EffectOutboxError>;
@@ -187,6 +197,7 @@ type EffectRow = {
   readonly completed_at: string | null;
   readonly last_error: string | null;
 };
+type ClaimRow = EffectRow & { readonly rejected_unclaimed: number };
 
 const decodeRequest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationEffectRequestV2),
@@ -238,19 +249,17 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const deletionWriterFence = yield* DeletionWriterFence.make;
-    // Only the SQL statement runs under this transaction; existing publication,
-    // cancellation and wake effects remain after its commit.
-    const guardedRows = Effect.fn("EffectOutbox.withDeletionWriterFence")(function* <A>(
+    const withDeletionWriterFence = Effect.fn("EffectOutbox.withDeletionWriterFence")(function* <A>(
       column: Statement.Fragment,
       execute: (allowed: Statement.Fragment) => Effect.Effect<A, SqlError>,
     ) {
-      return yield* sql.withTransaction(
-        Effect.gen(function* () {
-          const allowed = yield* deletionWriterFence.excludeReservedThreads(column);
-          return yield* execute(allowed);
-        }),
-      );
+      const allowed = yield* deletionWriterFence.excludeReservedThreads(column);
+      return yield* execute(allowed);
     });
+    const guardedRows = <A>(
+      column: Statement.Fragment,
+      execute: (allowed: Statement.Fragment) => Effect.Effect<A, SqlError>,
+    ) => sql.withTransaction(withDeletionWriterFence(column, execute));
     const available = yield* Queue.dropping<void>(64);
     const completionChanges = yield* PubSub.sliding<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
@@ -300,6 +309,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         AND lease_owner = ${claim.leaseOwner} AND updated_at = ${claim.updatedAt}
         AND payload_json = ${claim.payloadIdentity}`;
     };
+    const recoveryStartAdmissionError =
+      "The recovered provider start no longer has durable execution authority.";
+    const recoveryClaimAdmission = admitsRecoveryStartClaim(sql);
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
@@ -624,41 +636,80 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           maxRunningTitleGenerations,
           excludeTitleGeneration = false,
           urgentOnly = false,
+          recoveryStartDenial,
         }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           // Idle claims return empty; tracing their full SQL on every poll overwhelms useful traces.
-          const claimStatement = guardedRows(sql`candidate.thread_id`, (allowed) =>
-            sql<EffectRow>`
-            UPDATE orchestration_v2_effect_outbox
-            SET
-              status = 'running',
-              attempt_count = attempt_count + 1,
-              lease_owner = ${workerId},
-              updated_at = ${nowIso},
-              last_error = NULL
-            WHERE effect_id = (
-              SELECT candidate.effect_id
+          const claimStatement = withDeletionWriterFence(
+            sql`candidate.thread_id`,
+            (allowed) => sql<ClaimRow>`
+            WITH candidate AS MATERIALIZED (
+              SELECT candidate.effect_id, candidate.command_id, candidate.thread_id,
+                candidate.effect_type, candidate.attempt_count, candidate.payload_json,
+                candidate.lease_owner, candidate.completed_at
               FROM orchestration_v2_effect_outbox AS candidate
               WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations, maxRunningTitleGenerations, excludeTitleGeneration, urgentOnly)}
                 AND ${allowed}
                 AND ${excludeRestartContinuations ? sql`candidate.effect_type != 'provider-runtime.continue'` : sql`1 = 1`}
               ORDER BY candidate.available_at ASC, candidate.created_at ASC, candidate.effect_id ASC
               LIMIT 1
+            ), selected AS MATERIALIZED (
+              SELECT candidate.effect_id, ${recoveryClaimAdmission} AS admitted FROM candidate
             )
-            RETURNING *
-          `.pipe(
-              Effect.tap((rows) =>
-                Effect.sync(() => {
-                  if (rows[0] !== undefined) startDispatch.claim(rows[0], trackStartDispatch);
-                }),
-              ),
+            UPDATE orchestration_v2_effect_outbox AS effect
+            SET
+              status = CASE WHEN selected.admitted THEN 'running' ELSE 'failed' END,
+              attempt_count = attempt_count + CASE WHEN selected.admitted THEN 1 ELSE 0 END,
+              lease_owner = CASE WHEN selected.admitted THEN ${workerId} ELSE NULL END,
+              updated_at = ${nowIso},
+              completed_at = CASE WHEN selected.admitted THEN completed_at ELSE ${nowIso} END,
+              last_error = CASE WHEN selected.admitted THEN NULL ELSE ${recoveryStartAdmissionError} END
+            FROM selected WHERE effect.effect_id = selected.effect_id
+            RETURNING *, CASE WHEN status = 'failed' THEN (
+              SELECT attempt_count = 0 AND lease_owner IS NULL AND completed_at IS NULL
+              FROM candidate
+            ) ELSE 0 END AS rejected_unclaimed
+          `,
+          );
+          const claim = claimStatement.pipe(
+            Effect.map(([row]) => row),
+            Effect.tap((row) =>
+              row?.status === "running"
+                ? Effect.sync(() => startDispatch.claim(row, trackStartDispatch))
+                : Effect.void,
             ),
           );
+          const settleDenied = (row: ClaimRow | undefined) => {
+            if (row?.rejected_unclaimed !== 1) return undefined;
+            return Effect.gen(function* () {
+              const decoded = yield* Effect.option(rowToEffect(row));
+              if (Option.isSome(decoded)) {
+                if (recoveryStartDenial === undefined)
+                  return yield* new EffectOutboxError({
+                    operation: "claim",
+                    effectId: row.effect_id,
+                    cause: "Recovered start denial requires a run settlement owner.",
+                  });
+                yield* recoveryStartDenial.settle(decoded.value, now);
+              }
+            });
+          };
+          // A zero-claim denial can append run events before releasing this writer.
+          // Ordinary claims commit without waiting for the event publication lane.
+          const commitClaim = (
+            recoveryStartDenial === undefined || urgentOnly
+              ? sql.withTransaction(Effect.tap(claim, (row) => settleDenied(row) ?? Effect.void))
+              : recoveryStartDenial.withClaimTransaction(claim, settleDenied)
+          ).pipe(Effect.withTracerEnabled(false));
           while (true) {
-            const rows = yield* claimStatement.pipe(Effect.withTracerEnabled(false));
-            const row = rows[0];
+            const row = yield* commitClaim;
             if (row === undefined) return Option.none();
+            if (row.status === "failed") {
+              yield* signalSettled([row.effect_id]);
+              yield* PubSub.publish(completionChanges, undefined);
+              continue;
+            }
             const decoded = yield* Effect.result(rowToEffect(row));
             if (Result.isSuccess(decoded)) {
               cancellationSignals.set(row.effect_id, Deferred.makeUnsafe<void>());
@@ -681,6 +732,23 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           isEffectOutboxError(cause) ? cause : new EffectOutboxError({ operation: "claim", cause }),
         ),
       ),
+      allowsClaimedRecoveryStart: (claim, run) =>
+        sql<{ readonly allowed: number }>`
+          SELECT 1 AS allowed FROM orchestration_v2_effect_outbox AS effect
+          WHERE ${capturedClaim(claim)} AND status = 'running' AND attempt_count = 1
+            AND ${recoveryStartParentAllowed(sql, sql`effect.thread_id`, sql`json_extract(effect.payload_json, '$.runId')`, run)}
+        `.pipe(
+          NodeSqliteClient.readOnly,
+          Effect.map((rows) => rows.length === 1),
+          Effect.mapError(
+            (cause) =>
+              new EffectOutboxError({
+                operation: "recovery-start-admission",
+                effectId: claim.id,
+                cause,
+              }),
+          ),
+        ),
       startDispatch: {
         hasWitness: startDispatch.hasWitness,
         begin: Effect.fn("EffectOutbox.beginStartDispatch")(

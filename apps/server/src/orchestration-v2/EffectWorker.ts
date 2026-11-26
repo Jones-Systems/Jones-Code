@@ -1,6 +1,8 @@
 import { interactiveRead } from "../jones/serverParallelism/readClassification.ts";
 import { withRuntimeUseClaim } from "../jones/cleanup/RuntimeUseClaim.ts";
 import { isAccountTransferDetach } from "../jones/providerRetirement/accountTransferRetirement.ts";
+import { isRecoveryStartReplacement } from "../jones/provider/RecoveryStartParentStop.ts";
+import { RecoveryStartDenial } from "../jones/provider/RecoveryStartDenial.ts";
 import {
   GoalNotificationDeliveryUnknown,
   isGoalNotificationDeliveryUnknown,
@@ -1122,7 +1124,7 @@ const retryWhileLocked = <A, E, R>(settlement: Effect.Effect<A, E, R>) =>
 
 type ClaimFilter = Omit<
   Parameters<EffectOutbox.EffectOutboxV2Shape["claimNext"]>[0],
-  "workerId" | "trackStartDispatch"
+  "workerId" | "trackStartDispatch" | "recoveryStartDenial"
 >;
 
 export interface OrchestrationEffectWorkerV2Shape {
@@ -1171,6 +1173,9 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const executor = yield* OrchestrationEffectExecutorV2;
+      const recoveryStartDenial = Option.getOrUndefined(
+        yield* Effect.serviceOption(RecoveryStartDenial),
+      );
       const beginStartDispatch = outbox.startDispatch?.begin;
       const managedClaims = Option.isSome(yield* Effect.serviceOption(LifecycleConfiguration));
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
@@ -1286,6 +1291,7 @@ export const layerWithOptions = (
             outbox.claimNext({
               workerId,
               ...filter,
+              ...(recoveryStartDenial === undefined ? {} : { recoveryStartDenial }),
               ...(beginStartDispatch === undefined ? {} : { trackStartDispatch: true }),
             }),
           );
@@ -1302,6 +1308,7 @@ export const layerWithOptions = (
             return false;
           }
           const effect = claimed.value;
+          const singleAttempt = isRecoveryStartReplacement(effect);
           const observeCustody =
             effect.nativeCreationExecutionReference !== undefined ||
             (managedClaims &&
@@ -1348,11 +1355,15 @@ export const layerWithOptions = (
                   return true;
                 }
                 return false;
-              }).pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
+              }).pipe(
+                Effect.onError((cause) =>
+                  singleAttempt ? terminalizeClaim(effect, cause) : requeueClaim(effect, cause),
+                ),
+              );
               if (cancelledBeforeExecution) return true;
 
               const execution = executor
-                .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+                .execute(effect, { willRetry: !singleAttempt && effect.attemptCount < maxAttempts })
                 .pipe(
                   (execution) =>
                     withOriginalTransition(
@@ -1423,6 +1434,7 @@ export const layerWithOptions = (
               const controlOutcomeUnknown =
                 findProviderControlOutcomeUnknown(exit.cause) !== undefined;
               const terminalFailure =
+                singleAttempt ||
                 custodyLost ||
                 controlOutcomeUnknown ||
                 effect.nativeCreationExecutionReference !== undefined ||
