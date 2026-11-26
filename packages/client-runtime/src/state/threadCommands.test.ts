@@ -217,7 +217,7 @@ describe("prepared turn commands", () => {
     () =>
       Effect.gen(function* () {
         const h = yield* makeHarness();
-        const preparation = yield* Effect.promise(() =>
+        const preparation = yield* Effect.exit(
           h.commands.prepareTurn.run(h.registry, {
             environmentId: ENVIRONMENT_ID,
             input: {
@@ -238,34 +238,40 @@ describe("prepared turn commands", () => {
         if (preparation._tag !== "Success") throw new Error("Expected successful preparation");
         expect(yield* Queue.poll(h.requests)).toEqual(Option.none());
         const prepared = preparation.value;
-        const send = h.commands.dispatchPreparedTurn.run(h.registry, {
-          environmentId: ENVIRONMENT_ID,
-          input: prepared,
-        });
+        const send = yield* h.commands.dispatchPreparedTurn
+          .run(h.registry, {
+            environmentId: ENVIRONMENT_ID,
+            input: prepared,
+          })
+          .pipe(Effect.forkChild);
         const first = yield* Queue.take(h.requests);
-        const stop = h.commands.interruptTurn.run(h.registry, {
-          environmentId: ENVIRONMENT_ID,
-          input: {
-            threadId: THREAD_ID,
-            commandId: CommandId.make("stop-after-prepared"),
-            runId: RunId.make("run"),
-          },
-        });
+        const stop = yield* h.commands.interruptTurn
+          .run(h.registry, {
+            environmentId: ENVIRONMENT_ID,
+            input: {
+              threadId: THREAD_ID,
+              commandId: CommandId.make("stop-after-prepared"),
+              runId: RunId.make("run"),
+            },
+          })
+          .pipe(Effect.forkChild);
         expect(yield* Queue.poll(h.requests)).toEqual(Option.none());
         yield* Deferred.fail(first.reply, new Error("Response lost"));
-        expect((yield* Effect.promise(() => send))._tag).toBe("Failure");
+        expect((yield* Fiber.await(send))._tag).toBe("Failure");
         const stopRequest = yield* Queue.take(h.requests);
         expect(stopRequest.command.type).toBe("run.interrupt");
         yield* Deferred.succeed(stopRequest.reply, { sequence: 2 });
-        expect((yield* Effect.promise(() => stop))._tag).toBe("Success");
-        const retry = h.commands.dispatchPreparedTurn.run(h.registry, {
-          environmentId: ENVIRONMENT_ID,
-          input: prepared,
-        });
+        expect((yield* Fiber.await(stop))._tag).toBe("Success");
+        const retry = yield* h.commands.dispatchPreparedTurn
+          .run(h.registry, {
+            environmentId: ENVIRONMENT_ID,
+            input: prepared,
+          })
+          .pipe(Effect.forkChild);
         const second = yield* Queue.take(h.requests);
         expect(JSON.stringify(second.command)).toBe(JSON.stringify(first.command));
         yield* Deferred.succeed(second.reply, { sequence: 3 });
-        expect((yield* Effect.promise(() => retry))._tag).toBe("Success");
+        expect((yield* Fiber.await(retry))._tag).toBe("Success");
       }),
   );
 });
@@ -1069,57 +1075,69 @@ describe("earlier thread history loads", () => {
           }),
       });
 
-      const firstLoad = h.commands.loadEarlierHistory.run(h.registry, {
-        environmentId: ENVIRONMENT_ID,
-        input: { threadId: THREAD_ID },
-      });
+      const firstLoad = yield* h.commands.loadEarlierHistory
+        .run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: { threadId: THREAD_ID },
+        })
+        .pipe(Effect.forkChild);
       const first = yield* Queue.take(historyLoads);
-      const secondLoad = h.commands.loadEarlierHistory.run(h.registry, {
-        environmentId: ENVIRONMENT_ID,
-        input: { threadId: THREAD_ID, throughEntryId: "entry" },
-      });
+      const secondLoad = yield* h.commands.loadEarlierHistory
+        .run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: { threadId: THREAD_ID, throughEntryId: "entry" },
+        })
+        .pipe(Effect.forkChild);
 
-      const send = h.commands.startTurn.run(h.registry, {
-        environmentId: ENVIRONMENT_ID,
-        input: {
-          threadId: THREAD_ID,
-          commandId: CommandId.make("send"),
-          message: {
-            messageId: MessageId.make("message"),
-            role: "user",
-            text: "Continue",
-            attachments: [],
+      const send = yield* h.commands.startTurn
+        .run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: {
+            threadId: THREAD_ID,
+            commandId: CommandId.make("send"),
+            message: {
+              messageId: MessageId.make("message"),
+              role: "user",
+              text: "Continue",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: "start",
           },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          dispatchMode: "start",
-        },
-      });
+        })
+        .pipe(Effect.forkChild);
       const sendRequest = yield* Queue.take(h.requests);
       expect(sendRequest.command.type).toBe("message.dispatch");
       yield* Deferred.succeed(sendRequest.reply, { sequence: 2 });
-      expect((yield* Effect.promise(() => send))._tag).toBe("Success");
+      expect((yield* Fiber.await(send))._tag).toBe("Success");
 
-      const stop = h.commands.interruptTurn.run(h.registry, {
-        environmentId: ENVIRONMENT_ID,
-        input: { threadId: THREAD_ID, commandId: CommandId.make("stop"), runId: RunId.make("run") },
-      });
+      const stop = yield* h.commands.interruptTurn
+        .run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: {
+            threadId: THREAD_ID,
+            commandId: CommandId.make("stop"),
+            runId: RunId.make("run"),
+          },
+        })
+        .pipe(Effect.forkChild);
       const stopRequest = yield* Queue.take(h.requests);
       expect(stopRequest.command.type).toBe("run.interrupt");
       yield* Deferred.succeed(stopRequest.reply, { sequence: 3 });
-      expect((yield* Effect.promise(() => stop))._tag).toBe("Success");
+      expect((yield* Fiber.await(stop))._tag).toBe("Success");
 
       // The second page has not started: it waits for the first, not for Send or Stop.
       expect(yield* Queue.poll(historyLoads)).toEqual(Option.none());
       yield* Deferred.succeed(first.reply, { _tag: "loaded" });
-      expect(yield* Effect.promise(() => firstLoad)).toMatchObject({
+      expect(yield* Fiber.await(firstLoad)).toMatchObject({
         _tag: "Success",
         value: { _tag: "loaded" },
       });
       const second = yield* Queue.take(historyLoads);
       expect(second.throughEntryId).toBe("entry");
       yield* Deferred.succeed(second.reply, { _tag: "loaded" });
-      expect(yield* Effect.promise(() => secondLoad)).toMatchObject({
+      expect(yield* Fiber.await(secondLoad)).toMatchObject({
         _tag: "Success",
         value: { _tag: "loaded" },
       });

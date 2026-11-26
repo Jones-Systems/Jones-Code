@@ -93,7 +93,7 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
     route: ConnectionRoute,
     hasFallback: boolean,
     hasFallbackOnTimeout: Effect.Effect<boolean>,
-  ) => Effect.Effect<EnvironmentConnectionLease, ConnectionAttemptError, R | Scope.Scope>,
+  ) => Effect.Effect<RouteConnection, ConnectionAttemptError, R | Scope.Scope>,
 ) {
   const routes = usableRoutes(entry);
   const checked = new Map<number, RouteCheck>();
@@ -162,7 +162,7 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
       remaining.some((index) => transient === undefined || checked.get(index) !== "silent"),
       hasFallbackOnTimeout(remaining),
     );
-    if (result._tag === "Success") return result.success;
+    if (result._tag === "Success") return { ...result.success, refusedRouteIds };
     // An incompatible server is the same server on every route.
     if (result.failure.reason === "unsupported") return yield* result.failure;
   }
@@ -182,7 +182,7 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
       index < (transient === undefined ? retry.length : answeredLate.length) - 1,
       Effect.succeed(index < answeredLate.length - 1),
     );
-    if (result._tag === "Success") return result.success;
+    if (result._tag === "Success") return { ...result.success, refusedRouteIds };
     if (result.failure.reason === "unsupported") return yield* result.failure;
   }
   return yield* (
@@ -289,7 +289,7 @@ export const make = Effect.gen(function* () {
             const prepared = yield* resolver.prepare(routeEntry(entry, route));
             yield* reportProgress({ stage: "opening", prepared });
             const session = yield* sessions.connect(prepared);
-            return { prepared, session } satisfies EnvironmentConnectionLease;
+            return { prepared, session } satisfies RouteConnection;
           }),
           (lease) =>
             Effect.gen(function* () {
@@ -297,11 +297,15 @@ export const make = Effect.gen(function* () {
               yield* reportProgress({ stage: "synchronizing", prepared });
               yield* session.ready;
               // The server closes a socket when its session expires, unless the same key renewed it.
-              if (prepared.httpAuthorization?._tag === "Dpop") {
+              const authorization = prepared.httpAuthorization;
+              if (authorization?._tag === "Dpop") {
                 yield* remote
                   .renewDpopBeforeExpiry({
                     expectedEnvironmentId: prepared.environmentId,
-                    expiresAtEpochMs: prepared.httpAuthorization.expiresAtEpochMs,
+                    expiresAtEpochMs: authorization.expiresAtEpochMs,
+                    ...(authorization.directConnection === undefined
+                      ? {}
+                      : { directConnection: authorization.directConnection }),
                   })
                   .pipe(
                     Effect.catch((error) =>

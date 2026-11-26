@@ -338,7 +338,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   const currentEntry = yield* Ref.make(entry);
   const currentRoutes = Ref.get(currentEntry).pipe(Effect.map(connectionRoutes));
   let preferredRouteId = Option.none<string>();
-  let currentLease: ConnectionDriver.EnvironmentConnectionLease | undefined;
+  let currentLease: ConnectedLease | undefined;
   const routeCooldowns = yield* Ref.make<ReadonlyMap<string, bigint>>(new Map());
   // Outlives sessions so a reconnect shows a refusal seen earlier; a route leaves once it connects.
   const refusedRoutes = yield* Ref.make(NO_REFUSED_ROUTES);
@@ -353,47 +353,81 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     routes: new Map(),
   }));
 
-  const recovery = makeBetterRouteRecovery({
-    owner: options?.betterRouteEntryOwner ?? {
-      withCurrentEntry: (use) => use(() => Ref.getUnsafe(currentEntry)),
-    },
-    identity: Option.isSome(cloudSession) ? cloudSession.value.identity : Effect.succeedNone,
-    readState: () => ({
-      lease: currentLease,
-      desired: Ref.getUnsafe(intent).desired,
-      cooldowns: new Map([
-        ...Ref.getUnsafe(routeCooldowns),
-        ...[...Ref.getUnsafe(silentRoutes).routes].map(([id, state]) => [id, state.until] as const),
-      ]),
-    }),
-    preflight: Effect.fn("EnvironmentSupervisor.preflightRecovery")(function* (entry, route) {
-      const generation = Ref.getUnsafe(silentRoutes).generation;
-      const result = yield* driver.preflight(entry, route);
-      const now = yield* Clock.monotonicTimeNanos;
-      yield* Ref.update(silentRoutes, (previous) => {
-        if (previous.generation !== generation) return previous;
-        const routes = new Map(previous.routes);
-        const id = connectionRouteId(route.target);
-        if (result === "silent") routes.set(id, backOffSilentRoute(previous.routes.get(id), now));
-        else routes.delete(id);
-        return { generation, routes };
-      });
-      if (
-        result === "unchecked" &&
-        route.target._tag === "RelayConnectionTarget" &&
-        driver.preflightForRecovery !== undefined
-      ) {
-        return yield* driver.preflightForRecovery(entry, route);
-      }
-      return result === "ready";
-    }),
-    offer: (observation) => {
-      Queue.offerUnsafe(signals, { _tag: "BetterRouteAvailable", observation });
-    },
-    select: (routeId) => {
-      preferredRouteId = Option.some(routeId);
-    },
-  });
+  const betterRouteEntryOwner: BetterRouteEntryOwner = options?.betterRouteEntryOwner ?? {
+    withCurrentEntry: (use) => use(() => Ref.getUnsafe(currentEntry)),
+  };
+  const cloudIdentity = Option.isSome(cloudSession)
+    ? cloudSession.value.identity
+    : Effect.succeedNone;
+  const recoveryFor = (lease: ConnectedLease) =>
+    makeBetterRouteRecovery({
+      owner: betterRouteEntryOwner,
+      identity: cloudIdentity,
+      readState: () => ({
+        lease: currentLease,
+        desired: Ref.getUnsafe(intent).desired,
+        cooldowns: new Map([
+          ...Ref.getUnsafe(routeCooldowns),
+          ...[...Ref.getUnsafe(silentRoutes).routes].map(
+            ([id, state]) => [id, state.until] as const,
+          ),
+        ]),
+      }),
+      preflight: Effect.fn("EnvironmentSupervisor.preflightRecovery")(function* (entry, route) {
+        const networkGeneration = Ref.getUnsafe(silentRoutes).generation;
+        const identity = yield* cloudIdentity;
+        const result = yield* driver.preflight(entry, route);
+        const now = yield* Clock.monotonicTimeNanos;
+        const routeId = connectionRouteId(route.target);
+        yield* Ref.update(silentRoutes, (previous) => {
+          if (previous.generation !== networkGeneration || currentLease !== lease) return previous;
+          const routes = new Map(previous.routes);
+          if (result === "silent")
+            routes.set(routeId, backOffSilentRoute(routes.get(routeId), now));
+          else routes.delete(routeId);
+          return { generation: networkGeneration, routes };
+        });
+        if (result === "refused") {
+          yield* betterRouteEntryOwner.withCurrentEntry((read) =>
+            Effect.gen(function* () {
+              const currentIdentity = yield* cloudIdentity;
+              if (
+                currentLease !== lease ||
+                !Ref.getUnsafe(intent).desired ||
+                read() !== entry ||
+                Ref.getUnsafe(silentRoutes).generation !== networkGeneration ||
+                Option.getOrUndefined(currentIdentity) !== Option.getOrUndefined(identity)
+              )
+                return;
+              const known = yield* Ref.updateAndGet(refusedRoutes, (current) =>
+                mergeRefusedRoutes(current, [routeId], () => true),
+              );
+              yield* SubscriptionRef.updateSome(state, (current) =>
+                current.phase === "connected" &&
+                current.generation === lease.generation &&
+                current.refusedRouteIds !== known
+                  ? Option.some({ ...current, refusedRouteIds: known })
+                  : Option.none(),
+              );
+            }),
+          );
+        }
+        if (
+          result === "unchecked" &&
+          route.target._tag === "RelayConnectionTarget" &&
+          driver.preflightForRecovery !== undefined
+        ) {
+          return yield* driver.preflightForRecovery(entry, route);
+        }
+        return result === "ready";
+      }),
+      offer: (observation) => {
+        Queue.offerUnsafe(signals, { _tag: "BetterRouteAvailable", observation });
+      },
+      select: (routeId) => {
+        preferredRouteId = Option.some(routeId);
+      },
+    });
 
   const attemptEntry = Effect.gen(function* () {
     const latest = yield* Ref.get(currentEntry);
@@ -684,13 +718,15 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
 
   const connectedLeaseEnd = Effect.fnUntraced(function* (
     next: SupervisorSignal,
-    lease: ConnectionDriver.EnvironmentConnectionLease,
+    lease: ConnectedLease,
   ) {
     if (next._tag === "DisconnectRequested") {
       return "end" as const;
     }
     if (next._tag === "BetterRouteAvailable") {
-      return (yield* recovery.consume(next.observation, lease)) ? ("reset" as const) : undefined;
+      return (yield* recoveryFor(lease).consume(next.observation, lease))
+        ? ("reset" as const)
+        : undefined;
     }
     // Only a session over T3 Connect holds the old account's credential.
     if (next._tag === "Wakeup" && next.reason === "credentials-changed" && isRelayLease(lease)) {
@@ -1075,6 +1111,14 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       activeRoute: routes.find((route) => connectionRouteId(route.target) === activeRouteId),
       generation: nextGeneration,
     };
+    const refusedRouteIds = yield* Ref.updateAndGet(refusedRoutes, (known) =>
+      mergeRefusedRoutes(
+        known,
+        active.lease.refusedRouteIds,
+        (id) =>
+          id !== activeRouteId && routes.some((route) => connectionRouteId(route.target) === id),
+      ),
+    );
     currentLease = connectedLease;
     const connectedAt = yield* Clock.currentTimeMillis;
     generation = nextGeneration;
@@ -1389,8 +1433,41 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       ),
     ),
   );
-  yield* Queue.take(betterRouteChecks).pipe(
-    Effect.flatMap(recovery.check),
+  yield* keepRunning(
+    "better-route-checker",
+    Queue.take(betterRouteChecks).pipe(
+      Effect.flatMap((lease) => recoveryFor(lease).check(lease)),
+      Effect.forever,
+    ),
+  );
+  // A restarted loop has forgotten its retry ladder, so it waits out the
+  // ladder's ceiling unless a signal cuts the wait short.
+  yield* run().pipe(
+    Effect.catchCause((cause) =>
+      Effect.gen(function* () {
+        yield* logUnexpectedFailure("loop", cause);
+        const currentIntent = yield* Ref.get(intent);
+        const lastFailure = unexpectedFailure(target).error;
+        yield* setState(
+          !currentIntent.desired
+            ? availableState(currentIntent, generation)
+            : currentIntent.network === "offline"
+              ? offlineState(currentIntent, generation, 1, lastFailure)
+              : {
+                  desired: true,
+                  network: currentIntent.network,
+                  phase: "backoff",
+                  stage: null,
+                  attempt: 1,
+                  generation,
+                  lastFailure,
+                  retryAt: (yield* Clock.currentTimeMillis) + RETRY_MAX_DELAY_MS,
+                  refusedRouteIds: NO_REFUSED_ROUTES,
+                },
+        );
+        yield* waitForRetrySignal(RETRY_MAX_DELAY_MS);
+      }),
+    ),
     Effect.forever,
     Effect.forkScoped,
   );

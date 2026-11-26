@@ -1205,7 +1205,7 @@ export function createDeviceStreamClient(
       duoControl.clear();
       rotationCursor = null;
       if (stopped) return;
-      if (event.code === 4001) return fail(leaseEnded(event.reason || "ended"));
+      if (event.code === 4001) return fail(leaseEnded(event.reason || "ended", resolve));
       // A rejected HTTP upgrade surfaces as 1006, including an expired stream ticket.
       if (
         event.code === 1008 ||

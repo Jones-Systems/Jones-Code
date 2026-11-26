@@ -640,7 +640,8 @@ export function subscribeDynamicWithProducer<TTag extends EnvironmentSubscriptio
   return subscribeDynamicMapped(
     tag,
     (_session, producer) => makeInput(producer),
-    (_session, stream, producer) => stream.pipe(Stream.map((value) => [producer, value] as const)),
+    (_session, _input, stream, producer) =>
+      stream.pipe(Stream.map((value) => [producer, value] as const)),
     options,
   ).pipe(Stream.bufferArray({ capacity: 16 }));
 }

@@ -75,22 +75,24 @@ export function deriveQueuedSteerBatch(input: {
           ? "Resolve the pending approval or question first."
           : projection.thread.archivedAt !== null || projection.thread.deletedAt !== null
             ? "This thread is no longer active."
-            : !workflow.canPromoteToSteer || active?.status !== "running"
+            : active?.status !== "running"
               ? "There is no active provider turn to steer."
               : !supportsActiveBatch || !session || !["ready", "running"].includes(session.status)
                 ? "Batch steering requires an active Codex or Claude steering session."
-                : active.rootNodeId === null ||
-                    projection.thread.activeProviderThreadId !== providerThread?.id ||
-                    projection.thread.providerInstanceId !== active.providerInstanceId ||
-                    !modelSelectionsEqual(projection.thread.modelSelection, active.modelSelection)
-                  ? "The active provider changed. Wait for the thread to synchronize."
-                  : activeMessage && specialCommand(activeMessage.text)
-                    ? "Wait for the current maintenance command to finish."
-                    : plan.count === 0
-                      ? plan.reason === "first_member_over_budget"
-                        ? "The first message exceeds the batch limit. Edit it or use its individual Steer action."
-                        : "The first queued message needs its own turn. Use its individual action."
-                      : null;
+                : !workflow.canPromoteToSteer
+                  ? "There is no active provider turn to steer."
+                  : active.rootNodeId === null ||
+                      projection.thread.activeProviderThreadId !== providerThread?.id ||
+                      projection.thread.providerInstanceId !== active.providerInstanceId ||
+                      !modelSelectionsEqual(projection.thread.modelSelection, active.modelSelection)
+                    ? "The active provider changed. Wait for the thread to synchronize."
+                    : activeMessage && specialCommand(activeMessage.text)
+                      ? "Wait for the current maintenance command to finish."
+                      : plan.count === 0
+                        ? plan.reason === "first_member_over_budget"
+                          ? "The first message exceeds the batch limit. Edit it or use its individual Steer action."
+                          : "The first queued message needs its own turn. Use its individual action."
+                        : null;
   const detail =
     plan.remainingCount > 0
       ? `${plan.remainingCount} still queued. ${plan.reason === "ineligible" ? "The next message needs its own turn" : "Batch size limit"}.`

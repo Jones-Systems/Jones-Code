@@ -572,11 +572,18 @@ describe("connection onboarding", () => {
   );
 
   it.effect.each([
-    { name: "a host that renews, with a device key", renews: true, signer: true, dpop: true },
-    { name: "a host that renews, without a device key", renews: true, signer: false, dpop: false },
-    { name: "an older host, with a device key", renews: false, signer: true, dpop: false },
-  ])("pairs with $name as DPoP: $dpop", ({ renews, signer, dpop }) =>
-    Effect.gen(function* () {
+    { name: "a host that renews, with a device key", renews: true, signer: "ready", dpop: true },
+    { name: "a host that renews, without a device key", renews: true, signer: null, dpop: false },
+    {
+      name: "a host that renews, with a signing error",
+      renews: true,
+      signer: "unavailable",
+      dpop: false,
+    },
+    { name: "an older host, with a device key", renews: false, signer: "ready", dpop: false },
+  ])("pairs with $name as DPoP: $dpop", ({ renews, signer, dpop }) => {
+    const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+    return Effect.gen(function* () {
       const registration = yield* preparePairingRegistration({
         host: "remote.example.test",
         pairingCode: "pairing-token",
@@ -586,23 +593,37 @@ describe("connection onboarding", () => {
           ? { _tag: "DpopConnectionCredential", accessToken: "dpop-token" }
           : { _tag: "BearerConnectionCredential", token: "bearer-token" },
       );
+      expect(
+        calls
+          .filter((call) => call.url.endsWith("/oauth/token"))
+          .map((call) => new Headers(call.init.headers).get("dpop")),
+      ).toEqual([dpop ? "proof:https://remote.example.test/oauth/token" : null]);
     }).pipe(
       Effect.provide(
         Layer.merge(
-          layerPairingOnboarding({ accessTokenRenewal: renews }),
-          signer
+          layerPairingOnboarding({ accessTokenRenewal: renews }, calls),
+          signer !== null
             ? Layer.succeed(
                 ManagedRelay.ManagedRelayDpopSigner,
                 ManagedRelay.ManagedRelayDpopSigner.of({
                   thumbprint: Effect.succeed("device-key"),
-                  createProof: (proof) => Effect.succeed(`proof:${proof.url}`),
+                  createProof: (proof) =>
+                    signer === "unavailable"
+                      ? Effect.fail(
+                          new ManagedRelay.ManagedRelayDpopProofCreationError({
+                            method: proof.method,
+                            url: proof.url,
+                            cause: new Error("Test signing failure"),
+                          }),
+                        )
+                      : Effect.succeed(`proof:${proof.url}`),
                 }),
               )
             : Layer.empty,
         ),
       ),
-    ),
-  );
+    );
+  });
 
   it.effect("refuses to add a route that reaches a different machine, keeping the code", () =>
     Effect.gen(function* () {

@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -22,6 +23,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 
+import { recordServerClock, toServerClock } from "../clock.ts";
 import {
   AVAILABLE_CONNECTION_STATE,
   PrimaryConnectionTarget,
@@ -147,6 +149,47 @@ const makePersistenceHarness = Effect.fn("test.makeShellPersistenceHarness")(fun
 });
 
 describe("environment shell synchronization", () => {
+  it.effect(
+    "corrects the server clock from live shell updates after replay and refresh fencing",
+    () =>
+      Effect.gen(function* () {
+        const environmentId = TARGET.environmentId;
+        const record = (serverTimeMs: number | undefined) =>
+          recordServerClock(environmentId, { serverTimeMs, requestedAtMs: 0, receivedAtMs: 0 });
+        yield* Effect.acquireRelease(
+          Effect.sync(() => record(0)),
+          () => Effect.sync(() => record(undefined)),
+        );
+        const h = yield* makePersistenceHarness(() => Effect.void, { shellThreadRefresh: true });
+        const replay = { ...v2ThreadShell, updatedAt: DateTime.makeUnsafe(5_000) };
+        yield* h.send(
+          { kind: "thread.updated", sequence: 2, thread: replay, location: "active" },
+          (snapshot) => snapshot.snapshotSequence === 2,
+        );
+        expect(toServerClock(environmentId, 0)).toBe(0);
+
+        yield* h.send({ kind: "synchronized" }, () => true);
+        const refreshed = { ...v2ThreadShell, title: "Dependency refresh" };
+        yield* h.send(
+          { kind: "thread.refreshed", sequence: 5, thread: refreshed, location: "active" },
+          (snapshot) => snapshot.threads[0]?.title === refreshed.title,
+        );
+        const stale = yield* h.send(
+          { kind: "thread.updated", sequence: 3, thread: replay, location: "active" },
+          (snapshot) => snapshot.snapshotSequence === 3,
+        );
+        expect(stale.threads[0]?.title).toBe(refreshed.title);
+        expect(toServerClock(environmentId, 0)).toBe(0);
+
+        const live = { ...v2ThreadShell, updatedAt: DateTime.makeUnsafe(1_000) };
+        yield* h.send(
+          { kind: "thread.updated", sequence: 6, thread: live, location: "active" },
+          (snapshot) => snapshot.snapshotSequence === 6,
+        );
+        expect(toServerClock(environmentId, 0)).toBe(1_000);
+      }),
+  );
+
   it.effect.each([
     { bufferSize: Infinity, expectedSequences: [51], existingRows: false },
     { bufferSize: Infinity, expectedSequences: [51], existingRows: true },

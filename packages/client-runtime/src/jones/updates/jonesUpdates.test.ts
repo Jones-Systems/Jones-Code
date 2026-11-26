@@ -313,7 +313,7 @@ it.effect(
         operationId: "11111111-1111-4111-8111-111111111111",
         requestId: "22222222-2222-4222-8222-222222222222",
       };
-      const result = yield* Effect.promise(() =>
+      const result = yield* Effect.exit(
         updates.action.run(registry, {
           environmentId: target.environmentId,
           input: { action: "reconcile", input },
@@ -326,7 +326,7 @@ it.effect(
       expect(posts).toEqual([{ url: `${origin}/api/jones-updates/reconcile`, input }]);
       loseReply = true;
       expect(
-        yield* Effect.promise(() =>
+        yield* Effect.exit(
           updates.action.run(registry, {
             environmentId: target.environmentId,
             input: { action: "reconcile", input },
@@ -341,15 +341,13 @@ it.effect("starts observation after an initially disconnected mount prepares its
     const connections = yield* SubscriptionRef.make(Option.none<string>());
     const disconnected = yield* Deferred.make<void>();
     let reads = 0;
-    const observed = yield* observeJonesUpdateState(
-      SubscriptionRef.changes(connections),
-      (after) =>
-        after === undefined
-          ? Effect.sync(() => {
-              reads++;
-              return staged;
-            })
-          : Effect.never,
+    const observed = yield* observeJonesUpdateState(SubscriptionRef.changes(connections), (after) =>
+      after === undefined
+        ? Effect.sync(() => {
+            reads++;
+            return staged;
+          })
+        : Effect.never,
     ).pipe(
       Stream.tap((state) =>
         state === null ? Deferred.succeed(disconnected, undefined) : Effect.void,
@@ -1396,10 +1394,12 @@ it.effect(
         }),
       );
       const updates = createJonesUpdateAtoms(runtime);
-      const started = updates.operation.run(registry, {
-        environmentId,
-        input: { action: "operationStart", input },
-      });
+      const started = Effect.runPromiseExit(
+        updates.operation.run(registry, {
+          environmentId,
+          input: { action: "operationStart", input },
+        }),
+      );
       pending.push(started);
       yield* Effect.raceFirst(
         Deferred.await(entered),
@@ -1411,15 +1411,19 @@ it.effect(
           ),
         ),
       );
-      const read = updates.operation.run(registry, {
-        environmentId,
-        input: { action: "operationRead", input: readInput },
-      });
+      const read = Effect.runPromiseExit(
+        updates.operation.run(registry, {
+          environmentId,
+          input: { action: "operationRead", input: readInput },
+        }),
+      );
       pending.push(read);
-      const stopped = updates.stop.run(registry, {
-        environmentId,
-        input: { action: "operationStop", input: stopInput },
-      });
+      const stopped = Effect.runPromiseExit(
+        updates.stop.run(registry, {
+          environmentId,
+          input: { action: "operationStop", input: stopInput },
+        }),
+      );
       pending.push(stopped);
       expect(yield* Effect.promise(() => stopped)).toMatchObject({
         _tag: "Success",
@@ -1429,7 +1433,9 @@ it.effect(
         "/api/jones-updates/operations/start",
         "/api/jones-updates/operations/stop",
       ]);
-      const checked = updates.action.run(registry, { environmentId, input: { action: "check" } });
+      const checked = Effect.runPromiseExit(
+        updates.action.run(registry, { environmentId, input: { action: "check" } }),
+      );
       pending.push(checked);
       expect(yield* Effect.promise(() => checked)).toMatchObject({
         _tag: "Success",

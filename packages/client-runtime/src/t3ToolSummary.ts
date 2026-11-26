@@ -23,6 +23,17 @@ interface ToolResult {
   readonly failed: boolean;
 }
 
+const reportedThreadOutcomes: Partial<
+  Record<T3McpToolSummaryAction, (output: ToolResult["data"]) => boolean>
+> = {
+  "thread-interrupt": (output) => output?.status === "interrupt_requested",
+  "thread-settle": (output) => output?.status === "accepted" && id(output.threadId) !== undefined,
+  "thread-self-configure": (output) =>
+    asRecord(output?.acceptance)?.application === "subsequently_admitted_inheriting_runs",
+  "thread-launch-resolve": (output) =>
+    output?.state === "launched" || output?.state === "no_effect",
+};
+
 function readResult(value: unknown, depth = 0): ToolResult {
   if (depth > 4) return { failed: false };
   if (typeof value === "string") {
@@ -76,7 +87,9 @@ export function t3ToolOutcomeLabel(
   call: T3ToolSummaryCall,
   resolve: MFunctionType = mFallback,
 ): string | undefined {
+  const confirmsOutcome = reportedThreadOutcomes[action];
   if (
+    confirmsOutcome === undefined &&
     action !== "create-pr" &&
     action !== "merge-pr" &&
     action !== "write-pr-guides" &&
@@ -85,8 +98,9 @@ export function t3ToolOutcomeLabel(
     return undefined;
   }
   const output = readResult(call.output).data;
-  const contradicted =
-    action === "create-pr"
+  const contradicted = confirmsOutcome
+    ? !confirmsOutcome(output)
+    : action === "create-pr"
       ? output?.created === false
       : action === "merge-pr"
         ? output?.state === undefined
@@ -140,7 +154,10 @@ export function summarizeT3ToolCalls(
       outcome: result.failed ? ("failed" as const) : call.outcome,
     };
   });
-  const completed = results.filter((call) => call.outcome === "completed");
+  const confirmsOutcome = reportedThreadOutcomes[action];
+  const completed = results.filter(
+    (call) => call.outcome === "completed" && (confirmsOutcome?.(call.output) ?? true),
+  );
   let failedCount = results.filter((call) => call.outcome === "failed").length;
   const done = completed.length > 0;
   const selected = done ? completed : results;
@@ -190,31 +207,35 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
-    case "thread-create": {
-      const createdIds: string[] = [];
-      const resultsKnown =
-        completed.length > 0 &&
-        completed.every((call) => {
-          const threads = Array.isArray(call.output?.threads) ? call.output.threads : [call.output];
-          return threads.every((thread) => {
-            const record = asRecord(thread);
-            if (record?.status === "rolled_back") return true;
-            const threadId = id(record?.threadId);
-            if (!threadId) return false;
-            createdIds.push(threadId);
-            return true;
-          });
-        });
-      const count = resultsKnown ? new Set(createdIds).size : selected.length;
-      label = resultsKnown
+    case "thread-interrupt": {
+      const count = countEntities(threadIds);
+      label = done
         ? resolve(
-            msg("{count, plural, one {Created {count} thread} other {Created {count} threads}}", {
-              count,
-            }),
+            msg(
+              "{count, plural, one {Requested interrupts for {count} thread} other {Requested interrupts for {count} threads}}",
+              { count },
+            ),
           )
         : resolve(
             msg(
-              "{count, plural, one {Requested thread creation {count} time} other {Requested thread creation {count} times}}",
+              "{count, plural, one {Tried to interrupt {count} thread} other {Tried to interrupt {count} threads}}",
+              { count },
+            ),
+          );
+      break;
+    }
+    case "thread-settle": {
+      const count = countEntities(threadIds);
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Requested settlement for {count} thread} other {Requested settlement for {count} threads}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to request settlement for {count} thread} other {Tried to request settlement for {count} threads}}",
               { count },
             ),
           );
@@ -991,6 +1012,23 @@ export function summarizeT3ToolCalls(
         : resolve(
             msg(
               "{count, plural, one {Tried to check thread configuration {count} time} other {Tried to check thread configuration {count} times}}",
+              { count },
+            ),
+          );
+      break;
+    }
+    case "thread-self-configure": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Saved thread defaults for future runs {count} time} other {Saved thread defaults for future runs {count} times}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to save thread defaults for future runs {count} time} other {Tried to save thread defaults for future runs {count} times}}",
               { count },
             ),
           );

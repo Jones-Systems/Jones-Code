@@ -1,7 +1,11 @@
 import { compactT3McpToolOutput } from "@t3tools/shared/toolOutput";
 import { describe, expect, it } from "vite-plus/test";
 
-import { summarizeT3ToolCalls, type T3ToolSummaryCall } from "./t3ToolSummary.ts";
+import {
+  summarizeT3ToolCalls,
+  t3ToolOutcomeLabel,
+  type T3ToolSummaryCall,
+} from "./t3ToolSummary.ts";
 
 function completed(input: unknown, output?: unknown): T3ToolSummaryCall {
   return { input, output, outcome: "completed" };
@@ -36,6 +40,29 @@ describe("summarizeT3ToolCalls", () => {
         ),
       ]),
     ).toEqual({ label: "Tried to save thread defaults for future runs 1 time", failedCount: 1 });
+  });
+
+  it.each([
+    ["thread-self-configure", {}, "Tried to save thread defaults for future runs 1 time"],
+    ["thread-settle", { threadId: "thread-1" }, "Tried to request settlement for 1 thread"],
+    ["thread-interrupt", { status: "no_active_run" }, "Tried to interrupt 1 thread"],
+    ["thread-launch-resolve", { state: "absent" }, "Tried to resolve 1 unknown thread launch"],
+  ] as const)(
+    "reports only the attempt when %s has no confirming result",
+    (action, output, label) => {
+      const call = completed({ threadId: "thread-1" }, output);
+      expect(summarizeT3ToolCalls(action, [call])).toEqual({ label, failedCount: 0 });
+      expect(t3ToolOutcomeLabel(action, call)).toBe(label);
+    },
+  );
+
+  it("counts only threads for which an interrupt was requested", () => {
+    expect(
+      summarizeT3ToolCalls("thread-interrupt", [
+        completed({}, { threadId: "thread-1", status: "interrupt_requested" }),
+        completed({}, { threadId: "thread-2", status: "no_active_run" }),
+      ]),
+    ).toEqual({ label: "Requested interrupts for 1 thread", failedCount: 0 });
   });
 
   it("reads provider result envelopes without treating JSON in the message as result data", () => {

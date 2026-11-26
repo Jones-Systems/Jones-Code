@@ -37,6 +37,14 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/mobile/src/state/thread-outbox.test.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/thread-outbox.test.ts",
+      "to": "packages/client-runtime/src/jones/preparedThreadTurn.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/jones/provider/StartAdmission.ts"
     },

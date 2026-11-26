@@ -1307,13 +1307,15 @@ export const resumeThreadQueue = Effect.fn("EnvironmentCommands.resumeThreadQueu
   input: ResumeThreadQueueInput,
 ) {
   if (input.runId !== undefined) yield* requireQueuedRunStart();
-  return yield* dispatch({
-    ...(input.runId === undefined
-      ? { type: "queue.resume" as const }
-      : { type: "queued-run.start" as const, runId: input.runId }),
-    commandId: yield* allocateCommandId(input),
-    threadId: input.threadId,
-  });
+  return yield* resendAfterSocketLoss(
+    dispatch({
+      ...(input.runId === undefined
+        ? { type: "queue.resume" as const }
+        : { type: "queued-run.start" as const, runId: input.runId }),
+      commandId: yield* allocateCommandId(input),
+      threadId: input.threadId,
+    }),
+  );
 });
 
 export const promoteQueuedRun = Effect.fn("EnvironmentCommands.promoteQueuedRun")(function* (

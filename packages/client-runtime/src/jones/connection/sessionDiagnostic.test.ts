@@ -24,6 +24,7 @@ import { HttpClient } from "effect/http";
 import * as Authorization from "../../authorization/service.ts";
 import * as TokenStore from "../../authorization/tokenStore.ts";
 import * as Connectivity from "../../connection/connectivity.ts";
+import * as ConnectionCredentialStore from "../../connection/credentialStore.ts";
 import { connectionDiagnosisText, presentConnectionDiagnosis } from "../../connection/diagnosis.ts";
 import * as Driver from "../../connection/driver.ts";
 import {
@@ -305,6 +306,7 @@ const harness = Effect.fn("ConnectDiagnosticTest.harness")(function* (scenario: 
             Layer.succeed(HttpClient.HttpClient, http),
             Layer.succeed(RpcSession.RpcSessionFactory, sessions),
             Layer.succeed(Authorization.RemoteEnvironmentAuthorization, authorization),
+            ConnectionCredentialStore.layerMemory(),
             Layer.mock(Resolver.ConnectionResolver)({
               prepare: (entry) =>
                 authorization

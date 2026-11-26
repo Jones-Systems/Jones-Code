@@ -142,6 +142,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   ),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
+  /** DPoP pairing links can renew at /oauth/token. Older hosts pair with a bearer. */
+  accessTokenRenewal: Schema.optionalKey(Schema.Boolean),
   conversationWorkspace: Schema.optionalKey(Schema.Boolean),
   worktreeDefaultBase: Schema.optionalKey(Schema.Boolean),
   attachmentUploads: Schema.optionalKey(Schema.Boolean),

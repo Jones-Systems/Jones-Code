@@ -345,6 +345,12 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     yield* SubscriptionRef.modify(state, (initial) => {
       if (!canCommit()) return [undefined, initial] as const;
       let waiting = Ref.getUnsafe(awaitingCompletion);
+      const observeLiveThreadTime = (thread: OrchestrationV2ThreadShell) => {
+        // Replayed rows can predate a backward host clock correction.
+        if (!waiting && !fromHttp) {
+          observeServerTime(environmentId, DateTime.toEpochMillis(thread.updatedAt), now);
+        }
+      };
       let snapshotRequired = false;
       let changed: OrchestrationV2ShellSnapshot | undefined;
       let nextOrigin = Ref.getUnsafe(origin);
@@ -386,6 +392,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
                 delta.kind === "project.updated" ||
                 delta.kind === "project.removed")
             ) {
+              if (delta.kind === "thread.updated") observeLiveThreadTime(delta.thread);
               if (
                 delta.kind === "thread.removed" ||
                 (delta.kind === "thread.updated" && delta.location === "archive")
@@ -440,6 +447,14 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
               });
         if (nextSnapshot === null) continue;
         receivedAuthoritativeSnapshot ||= authoritative;
+        const replayBehindRefresh =
+          item.kind !== "snapshot" && isThreadReplayBehindRefresh(item, refreshedAt);
+        const advancesCursor =
+          item.kind !== "snapshot" &&
+          Option.exists(next.snapshot, (snapshot) => item.sequence > snapshot.snapshotSequence);
+        if (item.kind === "thread.updated" && advancesCursor && !replayBehindRefresh) {
+          observeLiveThreadTime(item.thread);
+        }
         const omission =
           item.kind !== "snapshot" && Option.isSome(next.snapshot)
             ? threadOmissionRemoval(next.snapshot.value, item, next.removedAt, refreshedAt)
@@ -448,8 +463,8 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           omission ??
           ((item.kind === "thread.removed" ||
             (item.kind === "thread.updated" && item.location === "archive")) &&
-          !isThreadReplayBehindRefresh(item, refreshedAt) &&
-          Option.exists(next.snapshot, (snapshot) => item.sequence > snapshot.snapshotSequence)
+          !replayBehindRefresh &&
+          advancesCursor
             ? {
                 threadId: item.kind === "thread.removed" ? item.threadId : item.thread.id,
                 sequence: item.sequence,

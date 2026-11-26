@@ -119,9 +119,9 @@ export function runStopRequested(
   if (projection == null || runId == null) return false;
   return (
     projection.capturedRuntimeStopRunId === runId ||
-    projection.turnItems.some(
+    projection.turnItems?.some(
       (item) => item.runId === runId && item.type === "run_interrupt_request",
-    )
+    ) === true
   );
 }
 
@@ -231,10 +231,11 @@ export function deriveThreadQueueWorkflowState(
       projection.thread.deletedAt == null,
     canReorder: capabilities?.supportsQueuedMessages === true,
     canPromoteToSteer:
-      promoteSkipsCompaction ||
-      ((activeRun?.status === "preparing" || activeRun?.status === "starting") &&
-        (capabilities === undefined || canSteer)) ||
-      (hasSteerableProviderTurn && canSteer),
+      (promoteSkipsCompaction ||
+        ((activeRun?.status === "preparing" || activeRun?.status === "starting") &&
+          (capabilities === undefined || canSteer)) ||
+        (hasSteerableProviderTurn && canSteer)) &&
+      !runStopRequested(projection, activeRun?.id),
     promoteSkipsCompaction,
   };
 }

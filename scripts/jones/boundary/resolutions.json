@@ -373,7 +373,7 @@
     {
       "from": "apps/server/src/workflows/WorkflowRuntime.ts",
       "expression": "url",
-      "sourceSha256": "e7bc3c75e2a89bc1e63a8c619ff5c7f20f78fa55c53b9d9c0382f50bbb4881e8",
+      "sourceSha256": "b6a60793c2f8604c45ebad812a0cd5adfd05801d72fef2a178baff06717d58e1",
       "reason": "The workflow definition loader imports local files from the configured workflows directory with a reload query. Runtime workflow definitions are outside the source tree. The boundary check does not evaluate the definition, permission, or loader behavior.",
       "anchors": [
         {

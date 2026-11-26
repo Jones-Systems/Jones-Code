@@ -39,6 +39,10 @@
       "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
     },
     {
+      "from": "apps/server/src/workflows/Workflows.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
       "from": "apps/server/src/workflows/workflow.ts",
       "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
     },

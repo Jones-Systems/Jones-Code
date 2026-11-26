@@ -823,7 +823,12 @@ describe("V2 environment commands", () => {
 
   const sendFailingFirstAttempt = Effect.fn("TestEnvironmentCommands.sendFailingFirstAttempt")(
     function* (turnSend: (typeof turnSends)[number], failure: Effect.Effect<never, Refused>) {
-      const supervisor = yield* makeSupervisor({ commands: [], projects: [], launches: [] });
+      const supervisor = yield* makeSupervisor({
+        commands: [],
+        projects: [],
+        launches: [],
+        advertiseQueuedRunStart: true,
+      });
       const healthySession = Option.getOrThrow(yield* SubscriptionRef.get(supervisor.session));
       const attempts: string[] = [];
       const firstAttemptFailed = yield* Deferred.make<void>();

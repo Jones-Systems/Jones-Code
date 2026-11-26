@@ -1990,7 +1990,11 @@ it.layer(
           executable: nativePath,
           args: ["update"],
           lockKey: "nativePackageTool-native",
-          env: { PATH: nativeBinDir },
+          env: {
+            PATH: nativeBinDir,
+            MISE_SHIMS_DIR: nativeBinDir,
+            MISE_SYSTEM_SHIMS_DIR: nativeBinDir,
+          },
         },
       });
     }),
