@@ -1,5 +1,10 @@
 import type { OrchestrationV2ExecutionNode } from "@t3tools/contracts";
+import {
+  blocksQueuedSteerIntoRun,
+  isQueuedSteerControlMessage,
+} from "@t3tools/shared/jones/queuedSteerBatch";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { queuedSelectionMatchesActive } from "../jones/orchestration/QueuedSteerBatch.ts";
 import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
 import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 
@@ -90,6 +95,7 @@ export function queuedToolBoundaryTarget(
   const session = projection.providerSessions.find(
     (candidate) => candidate.id === provider?.providerSessionId,
   );
+  const batchDriver = session?.driver === "codex" || session?.driver === "claudeAgent";
   if (
     queuedRun === undefined ||
     queuedRun.queuedToolBoundaryEligible !== true ||
@@ -99,13 +105,15 @@ export function queuedToolBoundaryTarget(
     message.scheduledTaskId !== undefined ||
     queuedRun.sourcePlanRef !== undefined ||
     queuedRun.restartContinuationOfRunId !== undefined ||
-    maintenance(message) ||
-    maintenance(activeMessage) ||
-    queuedRun.providerInstanceId !== activeRun.providerInstanceId ||
-    queuedRun.providerThreadId !== activeRun.providerThreadId ||
+    (batchDriver
+      ? isQueuedSteerControlMessage(message) ||
+        (activeMessage !== undefined && blocksQueuedSteerIntoRun(activeMessage))
+      : maintenance(message) || maintenance(activeMessage)) ||
     projection.thread.providerInstanceId !== activeRun.providerInstanceId ||
-    !modelSelectionsEqual(queuedRun.modelSelection, activeRun.modelSelection) ||
-    !modelSelectionsEqual(projection.thread.modelSelection, activeRun.modelSelection) ||
+    projection.thread.modelSelection.instanceId !== activeRun.modelSelection.instanceId ||
+    !queuedSelectionMatchesActive(queuedRun, activeRun, batchDriver) ||
+    (!batchDriver &&
+      !modelSelectionsEqual(projection.thread.modelSelection, activeRun.modelSelection)) ||
     session?.capabilities.turns.supportsActiveSteering !== true ||
     (session.status !== "ready" && session.status !== "running")
   )

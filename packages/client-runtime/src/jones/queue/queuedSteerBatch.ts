@@ -1,5 +1,9 @@
 import { type CommandId, type ExecutionEnvironmentCapabilities } from "@t3tools/contracts";
-import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
+import {
+  blocksQueuedSteerIntoRun,
+  isQueuedSteerControlMessage,
+  planQueuedSteerBatch,
+} from "@t3tools/shared/jones/queuedSteerBatch";
 import * as DateTime from "effect/DateTime";
 import type { ThreadStructure } from "../../state/models.ts";
 import { deriveThreadQueueWorkflowState } from "../../state/threadWorkflows.ts";
@@ -30,7 +34,6 @@ export function deriveQueuedSteerBatch(input: {
     (session.driver === "codex" || session.driver === "claudeAgent");
 
   const activeMessage = projection.messages.find((message) => message.id === active?.userMessageId);
-  const specialCommand = (text: string) => /^\/(?:compact|logout|goal)(?:\s|$)/iu.test(text.trim());
   const candidates = workflow.queuedRuns.map(({ run }) => {
     const message = projection.messages.find((item) => item.id === run.userMessageId);
     return {
@@ -39,7 +42,8 @@ export function deriveQueuedSteerBatch(input: {
       eligible:
         message !== undefined &&
         active !== null &&
-        !specialCommand(message.text) &&
+        !isQueuedSteerControlMessage(message) &&
+        run.freshContext !== true &&
         run.sourcePlanRef === undefined &&
         run.restartContinuationOfRunId === undefined &&
         projection.nodes.some((node) => node.id === run.rootNodeId) &&
@@ -83,7 +87,7 @@ export function deriveQueuedSteerBatch(input: {
                     projection.thread.providerInstanceId !== active.providerInstanceId ||
                     projection.thread.modelSelection.instanceId !== active.modelSelection.instanceId
                   ? "The active provider changed. Wait for the thread to synchronize."
-                  : activeMessage && specialCommand(activeMessage.text)
+                  : activeMessage && blocksQueuedSteerIntoRun(activeMessage)
                     ? "Wait for the current maintenance command to finish."
                     : plan.count === 0
                       ? plan.reason === "first_member_over_budget"

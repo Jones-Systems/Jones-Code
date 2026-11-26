@@ -30,6 +30,7 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -719,12 +720,24 @@ it.effect.each([
     }).pipe(Effect.scoped),
 );
 
-it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "saved-speed"] as const)(
+const batchScenarios = [
+  "manual",
+  "automatic",
+  "completed",
+  "switched",
+  "bounded",
+  "saved-speed",
+  "automatic-goal-with-saved-speed",
+] as const;
+
+it.effect.each(batchScenarios)(
   "originals use one batch effect and preserve delivery on %s",
   (mode) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const count = mode === "switched" || mode === "saved-speed" ? 4 : 22;
+        const automaticGoal = mode === "automatic-goal-with-saved-speed";
+        const automatic = mode === "automatic" || automaticGoal;
+        const count = automaticGoal ? 19 : mode === "switched" || mode === "saved-speed" ? 4 : 22;
         const promotedCount = mode === "bounded" ? 2 : count;
         const driver = ProviderDriverKind.make("codex");
         const instanceId = ProviderInstanceId.make("codex");
@@ -770,7 +783,7 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "save
             commandId: CommandId.make("first"),
             threadId,
             messageId: MessageId.make("message:first"),
-            text: "first",
+            text: automaticGoal ? "/goal Verify queue delivery" : "first",
             attachments: [],
             dispatchMode: { type: "start_immediately" },
             createdBy: "user",
@@ -792,8 +805,8 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "save
             ...modelSelection,
             options: [{ id: "serviceTier", value: "ultrafast" }],
           };
-          if (mode === "saved-speed") {
-            yield* orchestrator
+          const saveSpeed = () =>
+            orchestrator
               .dispatch({
                 type: "thread.model-selection.set",
                 commandId: CommandId.make("save-speed"),
@@ -801,7 +814,7 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "save
                 modelSelection: savedSelection,
               })
               .pipe(withOwnerSelectionIngress);
-          }
+          if (mode === "saved-speed") yield* saveSpeed();
           const threads = yield* ThreadManagementService.ThreadManagementService.pipe(
             Effect.provide(
               ThreadManagementService.layer.pipe(
@@ -811,6 +824,10 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "save
             ),
           );
           for (let i = 0; i < count; i++) {
+            if (automaticGoal && i === 1) {
+              yield* TestClock.adjust("1 millis");
+              yield* saveSpeed();
+            }
             const input = {
               commandId: CommandId.make(`queue:${i}`),
               projectId: ProjectId.make("project:batch"),
@@ -833,7 +850,7 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "save
               creationSource: "mcp" as const,
               senderThreadId: ThreadId.make(`sender:${i}`),
             };
-            if (mode === "automatic") yield* threads.sendToThread({ ...input, mode: "queue" });
+            if (automatic) yield* threads.sendToThread({ ...input, mode: "queue" });
             else
               yield* orchestrator.dispatch({
                 ...input,
@@ -895,6 +912,15 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "save
             );
             assert.isTrue("error" in validateQueuedSteerBatch(before, command, true));
           }
+          if (automaticGoal) {
+            assert.deepEqual(before.thread.modelSelection, savedSelection);
+            const queued = before.runs.filter((run) => run.status === "queued");
+            for (const [index, run] of queued.entries()) {
+              assert.deepEqual(run.modelSelection, index === 0 ? modelSelection : savedSelection);
+              assert.equal(run.queuedToolBoundaryFollowUpOfRunId, command.targetRunId);
+            }
+            assert.isFalse("error" in validateQueuedSteerBatch(before, command, true));
+          }
           for (const index of [0, 1]) {
             for (const field of ["instance", "thread", "model", "options"] as const) {
               const changed = {
@@ -904,6 +930,7 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "save
                     ? run
                     : {
                         ...run,
+                        queuedToolBoundaryFollowUpOfRunId: undefined,
                         ...(field === "instance"
                           ? { providerInstanceId: ProviderInstanceId.make("old-account") }
                           : {}),
@@ -1059,7 +1086,22 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "save
             count,
           );
           const sink = yield* EventSink.EventSinkV2;
-          if (mode === "automatic") {
+          if (automatic) {
+            if (automaticGoal) {
+              yield* threads.sendToThread({
+                commandId: CommandId.make("explicit-pick"),
+                projectId: ProjectId.make("project:batch"),
+                threadId,
+                messageId: MessageId.make("explicit-pick"),
+                text: "Keep the explicit speed for a separate turn",
+                attachments: [],
+                createdBy: "agent",
+                creationSource: "mcp",
+                senderThreadId: ThreadId.make("peer"),
+                modelSelection: savedSelection,
+                mode: "queue",
+              });
+            }
             yield* threads.sendToThread({
               commandId: CommandId.make("separate"),
               projectId: ProjectId.make("project:batch"),
@@ -1175,21 +1217,28 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "save
           }
           yield* worker.drain();
           assert.equal(steered.length, 1);
-          if (mode === "saved-speed") assert.equal(started.length, 1);
+          assert.equal(started.length, 1);
           assert.deepEqual(steered[0]!.attachments, firstMessage.attachments);
           for (let i = 0; i < promotedCount; i++)
             assert.include(steered[0]!.text, `sender: thread sender:${i}`);
           const after = yield* orchestrator.getThreadProjection(threadId);
-          if (mode === "saved-speed") assert.deepEqual(after.thread.modelSelection, savedSelection);
+          if (mode === "saved-speed" || automaticGoal)
+            assert.deepEqual(after.thread.modelSelection, savedSelection);
           assert.equal(
             after.runs.filter((run) => run.status === "queued").length,
-            count - promotedCount + (mode === "automatic" ? 1 : 0),
+            count - promotedCount + (automatic ? 1 : 0) + (automaticGoal ? 1 : 0),
           );
-          if (mode === "automatic")
+          if (automatic)
             assert.isUndefined(
               after.runs.find((run) => run.userMessageId === "separate")
                 ?.queuedToolBoundaryEligible,
             );
+          if (automaticGoal) {
+            const explicit = after.runs.find((run) => run.userMessageId === "explicit-pick");
+            assert.equal(explicit?.status, "queued");
+            assert.deepEqual(explicit?.modelSelection, savedSelection);
+            assert.isUndefined(explicit?.queuedToolBoundaryFollowUpOfRunId);
+          }
           const promoted = after.turnItems.filter(
             (item) =>
               item.type === "user_message" && item.inputIntent === "promoted_queued_to_steer",

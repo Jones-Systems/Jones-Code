@@ -2,12 +2,17 @@ import type {
   OrchestrationV2Command,
   OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
+  OrchestrationV2Run,
   TurnItemId,
   MessageId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
-import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
+import {
+  blocksQueuedSteerIntoRun,
+  isQueuedSteerControlMessage,
+  planQueuedSteerBatch,
+} from "@t3tools/shared/jones/queuedSteerBatch";
 import { queuedRunsInDeliveryOrder } from "../../orchestration-v2/QueuedRunOrder.ts";
 
 export type QueuedSteerBatchCommand = Extract<
@@ -27,8 +32,23 @@ type Projection = Pick<
   | "runtimeRequests"
 >;
 
-// Manual steering uses the active turn, like individual Steer. Automatic delivery
-// must still match the configuration captured when each message was queued.
+export function queuedSelectionMatchesActive(
+  queued: OrchestrationV2Run,
+  active: OrchestrationV2Run,
+  allowInheritedSelection: boolean,
+) {
+  return (
+    queued.providerThreadId === active.providerThreadId &&
+    queued.providerInstanceId === active.providerInstanceId &&
+    (modelSelectionsEqual(queued.modelSelection, active.modelSelection) ||
+      (allowInheritedSelection &&
+        queued.modelSelection.instanceId === active.modelSelection.instanceId &&
+        queued.queuedToolBoundaryFollowUpOfRunId === active.id))
+  );
+}
+
+// Manual steering uses the active turn. Automatic delivery honors a captured
+// selection unless the message was queued as an inherited follow-up to that run.
 export function queuedSteerBatchCandidates(
   projection: Projection,
   targetRunId: QueuedSteerBatchCommand["targetRunId"],
@@ -56,11 +76,8 @@ export function queuedSteerBatchCandidates(
           run.freshContext !== true &&
           run.sourcePlanRef === undefined &&
           run.restartContinuationOfRunId === undefined &&
-          (!automaticDelivery ||
-            (run.providerThreadId === target.providerThreadId &&
-              run.providerInstanceId === target.providerInstanceId &&
-              modelSelectionsEqual(run.modelSelection, target.modelSelection))) &&
-          !/^\/(?:compact|logout|goal)(?:\s|$)/iu.test(message.text.trim()),
+          (!automaticDelivery || queuedSelectionMatchesActive(run, target, true)) &&
+          !isQueuedSteerControlMessage(message),
       },
     ];
   });
@@ -89,18 +106,13 @@ export function validateQueuedSteerBatch(
     projection.thread.activeProviderThreadId !== provider.id ||
     projection.thread.providerInstanceId !== target.providerInstanceId ||
     projection.thread.modelSelection.instanceId !== target.modelSelection.instanceId ||
-    (automaticDelivery &&
-      !modelSelectionsEqual(projection.thread.modelSelection, target.modelSelection)) ||
     !["codex", "claudeAgent"].includes(session.driver) ||
     session.capabilities.turns.supportsActiveSteering !== true ||
     !["ready", "running"].includes(session.status)
   )
     return { error: "Batch steering requires an unchanged active Codex or Claude turn." } as const;
   const activeMessage = projection.messages.find((message) => message.id === target.userMessageId);
-  if (
-    activeMessage !== undefined &&
-    /^\/(?:compact|logout|goal)(?:\s|$)/iu.test(activeMessage.text.trim())
-  )
+  if (activeMessage !== undefined && blocksQueuedSteerIntoRun(activeMessage))
     return { error: "Wait for the active command to finish." } as const;
   if (projection.runtimeRequests.some((request) => request.status === "pending"))
     return { error: "Resolve the pending request before steering queued messages." } as const;

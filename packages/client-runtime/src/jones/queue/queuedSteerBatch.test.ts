@@ -245,6 +245,28 @@ describe("queued batch client state", () => {
     expect(items).toHaveLength(21);
     expect(items.some((item) => item.messageId === "message-1")).toBe(false);
   });
+
+  it.each([
+    ["/goal Verify delivery", true],
+    ["/goal resume", true],
+    ["/goal clear", false],
+    ["/compact", false],
+    ["/logout", false],
+  ])("checks a running turn that began with %s", (text, allowsSteering) => {
+    const state = input();
+    const base = state.projection;
+    const view = deriveQueuedSteerBatch({
+      ...state,
+      projection: {
+        ...base,
+        messages: [
+          ...base.messages,
+          { ...base.messages[0]!, id: base.runs[0]!.userMessageId, text },
+        ],
+      },
+    });
+    expect(view?.reason === null).toBe(allowsSteering);
+  });
 });
 
 describe("queued batch submission identity", () => {

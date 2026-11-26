@@ -18,6 +18,7 @@ export const QueuedSteerBatchCapability = Schema.Struct({
   maxImageBytes: PositiveInt,
   maxItems: PositiveInt,
 });
+export const QueuedToolBoundaryFollowUpRunId = Schema.optional(RunId);
 export const QueuedSteerBatchCommand = Schema.Struct({
   type: Schema.Literal("queued-message.promote-batch-to-steer"),
   commandId: CommandId,

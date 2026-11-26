@@ -8835,6 +8835,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         activeAttemptId: attemptId,
         status: "queued",
         ...(queuedToolBoundaryEligible === undefined ? {} : { queuedToolBoundaryEligible }),
+        ...(activeRun !== undefined &&
+        queuedToolBoundaryEligible === true &&
+        !freshContext &&
+        (command.modelSelection === undefined || command.modelSelectionExplicit === false)
+          ? { queuedToolBoundaryFollowUpOfRunId: activeRun.id }
+          : {}),
         ...(steerWhenReadyRunId === undefined ? {} : { steerWhenReadyRunId }),
         ...(worktreeMissingRun !== undefined ||
         stoppedNotificationSource !== undefined ||
