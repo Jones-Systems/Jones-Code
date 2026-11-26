@@ -253,7 +253,7 @@
     },
     {
       "from": "apps/server/src/bin.ts",
-      "sourceSha256": "80cc7b9f794fa17b72b58b49ab5e69085c72698c4f8b37c24c52598e451a5175",
+      "sourceSha256": "668ae274ecc41fdb302f6fbe48aa9db84c3a51700b3326df895df060c130da94",
       "expression": "process.execPath",
       "reason": "Single-executable launch loads one of two embedded entries through require(process.execPath). The private compute command selects the compute asset, and ordinary CLI dispatch selects the CLI asset. Exact launcher and packager hashes bind this computed require to both entry sources. Runtime verification exercises the generated executable separately.",
       "anchors": [
