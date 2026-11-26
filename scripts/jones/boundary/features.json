@@ -2117,6 +2117,14 @@
       "scope": "Showcase Metro uses a run-selected available port, preserves intentional config and environment overrides, rejects busy explicit ports, and requires child liveness, Metro status and successful bundle warming. The shared runner passes the selected port to both platforms and retains explicit reuse and keep-running modes. Jones-owned socket and child lifecycle tests cover unrelated listeners, dead children, startup errors, timeouts and cleanup isolation. The scripts package registers the focused Node tests alongside its existing Node suite; the existing showcase tests retain CLI and capture-planning coverage."
     },
     {
+      "id": "terminal-close-confirmation",
+      "tests": [
+        "apps/web/src/lib/terminalCloseConfirm.browser.test.tsx",
+        "apps/web/src/components/ui/dialog.browser.test.tsx"
+      ],
+      "scope": "Terminal close explicitly focuses Confirm while preserving the destructive style and warning. The existing terminal helper owns the opt-in. Small shared host and UI-only option edits reuse the alert dialog focus behavior. Browser coverage checks mouse-open, Enter to confirm, Escape to cancel, and existing focus defaults."
+    },
+    {
       "id": "shell-destination",
       "tests": [
         "apps/web/src/jones/shellDestination/model.test.ts",
