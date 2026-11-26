@@ -344,10 +344,15 @@ export function WorkspaceBrowserPreview(props: {
     return () => session.dispose();
   }, [session]);
 
-  const revisionSuffix = (url: string) =>
-    revision === null
-      ? ""
-      : `${url.includes("?") ? "&" : "?"}${fileRevision !== undefined ? "file" : "workspace"}-revision=${encodeURIComponent(revision)}`;
+  const revisionUrl = (url: string) => {
+    if (revision === null || /^(?:blob|data):/i.test(url)) return url;
+    const fragmentAt = url.indexOf("#");
+    const target = fragmentAt < 0 ? url : url.slice(0, fragmentAt);
+    const fragment = fragmentAt < 0 ? "" : url.slice(fragmentAt);
+    const querySeparator = target.includes("?") ? "&" : "?";
+    const key = fileRevision !== undefined ? "file-revision" : "workspace-revision";
+    return `${target}${querySeparator}${key}=${encodeURIComponent(revision)}${fragment}`;
+  };
 
   if (assetUrl._tag === "Failure") {
     return (
@@ -366,9 +371,7 @@ export function WorkspaceBrowserPreview(props: {
       </div>
     );
   }
-  const load = pdf
-    ? session.load(`${assetUrl.url}${revisionSuffix(assetUrl.url)}`, retryRevision)
-    : undefined;
+  const load = pdf ? session.load(revisionUrl(assetUrl.url), retryRevision) : undefined;
   return (
     <BrowserDocumentFrame
       key={pdf ? undefined : retryRevision}
@@ -378,13 +381,11 @@ export function WorkspaceBrowserPreview(props: {
         const url = await refresh();
         if (!url) throw new Error("Reconnect to the environment and try again.");
         if (pdf && load) {
-          if (!acceptRetry?.(`${url}${revisionSuffix(url)}`)) return;
+          if (!acceptRetry?.(revisionUrl(url))) return;
         }
         setRetryRevision((value) => value + 1);
       }}
-      src={
-        load?.src ?? `${frame?.url ?? assetUrl.url}${revisionSuffix(frame?.url ?? assetUrl.url)}`
-      }
+      src={load?.src ?? revisionUrl(frame?.url ?? assetUrl.url)}
       pdfSession={pdf ? session : undefined}
       documentKey={
         pdf

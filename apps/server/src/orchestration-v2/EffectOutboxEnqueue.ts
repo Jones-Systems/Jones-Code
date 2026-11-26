@@ -170,6 +170,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
     request: Schema.optional(Schema.Never),
     nativeCreationExecutionReference: Schema.optional(Schema.Never),
+    type: Schema.Literal("thread-content.purge"),
+  }),
+  Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("thread-title.generate"),
     kind: Schema.Union([
       Schema.Struct({ type: Schema.Literal("initial"), messageId: MessageId }),

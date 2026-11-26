@@ -32,15 +32,15 @@ vi.mock(import("~/assets/assetUrls"), async (original) => ({
   },
   useAssetUrlState: assetUrlState,
 }));
-vi.mock(import("pdfjs-dist"), async (original) => {
+vi.mock(import("./pdfDocument"), async (original) => {
   const actual = await original();
   return {
     ...actual,
-    getDocument: (source: Parameters<typeof actual.getDocument>[0]) => {
+    openWorkspacePdf: (source: Parameters<typeof actual.openWorkspacePdf>[0]) => {
       if (source && typeof source === "object" && "url" in source && source.url) {
         pdfLoads.push(String(source.url));
       }
-      return actual.getDocument(source);
+      return actual.openWorkspacePdf(source);
     },
   };
 });
@@ -1885,6 +1885,7 @@ it("keeps a workspace PDF open across URL renewals and reloads it when the file 
     await screen.rerender(preview("fourth"));
     await vi.waitFor(() => expect(pdfLoads).toHaveLength(3));
     expect(pdfLoads[2]).toContain(original);
+    await expect.element(screen.getByRole("textbox", { name: "Zoom percentage" })).toBeEnabled();
   } finally {
     URL.revokeObjectURL(original);
     URL.revokeObjectURL(renewed);

@@ -36,6 +36,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -180,6 +181,7 @@ function layerExecutorFor(input: {
       Layer.mergeAll(
         layerDependencies,
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
+        Layer.mock(ProjectionMaintenance.ProjectionMaintenanceV2)({}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
         Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
           getByCommandId: () => Effect.succeedNone,

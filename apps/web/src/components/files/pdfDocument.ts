@@ -38,6 +38,10 @@ export function sharedPdfWorker() {
   return (worker ??= new PDFWorker());
 }
 
+export function openWorkspacePdf(options: Parameters<typeof getDocument>[0]) {
+  return getDocument(options);
+}
+
 export function openPdf(bytes: ArrayBuffer) {
   return getDocument({
     worker: sharedPdfWorker(),

@@ -99,6 +99,14 @@ import * as WsAnalyticsService from "../telemetry/AnalyticsService.ts";
 import * as WsThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as WsScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as WsPullRequestService from "../pullRequest/PullRequestService.ts";
+import * as IssueService from "../issue/IssueService.ts";
+import * as IssueTrackerConnections from "../issue/IssueTrackerConnections.ts";
+import * as ThreadIssueService from "./ThreadIssueService.ts";
+import * as PeerClientPairing from "../peer/PeerClientPairing.ts";
+import * as FeedbackStore from "../feedback/FeedbackStore.ts";
+import * as WorkflowRuntime from "../workflows/WorkflowRuntime.ts";
+import * as Workflows from "../workflows/Workflows.ts";
+import * as TaskFolders from "../workspace/TaskFolders.ts";
 import * as WsPullRequestSyncReactor from "../orchestration-v2/PullRequestSyncReactor.ts";
 import * as WsDeviceService from "../device/DeviceService.ts";
 import * as WsOrchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -604,6 +612,17 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
   }
 });
 
+const unrelatedWsOwners = Layer.mergeAll(
+  Layer.mock(IssueService.IssueService)({}),
+  Layer.mock(IssueTrackerConnections.IssueTrackerConnections)({}),
+  Layer.mock(ThreadIssueService.ThreadIssueService)({}),
+  Layer.mock(PeerClientPairing.PeerClientPairing)({}),
+  Layer.mock(FeedbackStore.FeedbackStore)({}),
+  Layer.mock(WorkflowRuntime.WorkflowDefinitions)({}),
+  Workflows.layerDisabled,
+  Layer.mock(TaskFolders.TaskFolders)({}),
+);
+
 it("rejects unauthenticated and query-token WebSocket ingress at the actual production auth boundary with zero RPC work", async () => {
   let rpcWork = 0;
   const denyRpcWork = () =>
@@ -621,6 +640,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
   );
   // Unrelated owners are deliberately unavailable; rejection must precede any RPC layer construction.
   const deniedRpcOwners = Layer.mergeAll(
+    unrelatedWsOwners,
     Layer.mock(DocumentText.DocumentText)({ ensure: denyRpcWork }),
     Layer.mock(ShellMaterialization.ShellMaterialization)({}),
     Layer.mock(WsGuestShareService.GuestShareService)({}),
@@ -1527,6 +1547,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
         >[0][] = [];
         const order: string[] = [];
         const rpcOwners = Layer.mergeAll(
+          unrelatedWsOwners,
           Layer.mock(DocumentText.DocumentText)({
             ensure: (path) => Effect.succeed(new Map<string, string>().get(path)),
           }),

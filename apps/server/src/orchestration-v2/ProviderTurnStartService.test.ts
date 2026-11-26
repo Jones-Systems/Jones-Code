@@ -278,6 +278,7 @@ function startWithMissingWorktree(
         nativeThreadRef: null,
       },
     ],
+    providerTurns: [],
     messages: [
       {
         id: messageId,

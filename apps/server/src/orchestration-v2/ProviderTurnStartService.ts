@@ -1393,10 +1393,10 @@ export const layer: Layer.Layer<
       const originalRun = manualResume
         ? projection.runs.find((source) => source.id === run.manualContinuationOfRunId)
         : undefined;
-      const originalTurn = latestProviderTurnForAttempt(
-        projection.providerTurns,
-        originalRun?.activeAttemptId,
-      );
+      const originalTurn =
+        originalRun === undefined
+          ? undefined
+          : latestProviderTurnForAttempt(projection.providerTurns, originalRun.activeAttemptId);
       // The durable owner first admits this exact native conversation. A terminal
       // that explicitly reports a dropped prompt then permits replay of its input.
       const droppedOriginalPrompt =

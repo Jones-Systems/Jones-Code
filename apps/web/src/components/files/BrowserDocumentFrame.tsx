@@ -134,6 +134,9 @@ function PdfDocumentRevision(props: {
     !(navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   const { pdfSession } = props;
   const load = pdfSession?.load(src);
+  const openPdfLink = (url: string, event: MouseEvent) => {
+    void openLink(url, { event }).catch((cause: unknown) => console.error(cause));
+  };
   if (props.onRetry)
     return (
       <Suspense fallback={<FileSurfaceLoading />}>
@@ -145,6 +148,7 @@ function PdfDocumentRevision(props: {
           onPositionChange={
             load && pdfSession ? (view) => pdfSession.remember(load, view) : undefined
           }
+          onOpenLink={openPdfLink}
           actions={props.actions}
         />
       </Suspense>
@@ -164,9 +168,7 @@ function PdfDocumentRevision(props: {
         positionKey={props.positionKey}
         initialView={props.initialView}
         onViewChange={props.onViewChange}
-        onOpenLink={(url, event) => {
-          void openLink(url, { event }).catch((cause: unknown) => console.error(cause));
-        }}
+        onOpenLink={openPdfLink}
         actions={props.actions}
       />
     </Suspense>
