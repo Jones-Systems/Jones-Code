@@ -18,6 +18,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthAccessWriteScope,
   AuthSettingsWriteScope,
+  AuthTerminalOperateScope,
   AuthProvidersManageScope,
   type AuthEnvironmentScope,
 } from "./auth.ts";
@@ -2187,6 +2188,8 @@ export function requiredScopesForServerSettingsPatch(
     ...(changesAccess ? [AuthAccessWriteScope] : []),
     // Saving a script is choosing a command for the host to run, wherever the patch carries it.
     ...(carriesProjectScripts(patch) ? [AuthOrchestrationOperateScope] : []),
+    // Enabling Workflows evaluates saved definitions and resumes work as the server user.
+    ...(patch.workflowsEnabled === true ? [AuthTerminalOperateScope] : []),
   ];
 }
 

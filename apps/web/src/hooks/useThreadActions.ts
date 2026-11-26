@@ -41,6 +41,7 @@ import { useRouter } from "@tanstack/react-router";
 import { getFallbackThreadIdAfterDelete, pinOrderKeyBetween } from "../components/Sidebar.logic";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { environmentSession, readEnvironmentScope } from "../state/session";
+import { readEnvironment } from "../state/environments";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentServerConfigsAtom } from "../state/server";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
@@ -863,9 +864,11 @@ export function useThreadActions() {
     const wokeAt = resolved ? threadWokeAt(resolved.thread, { now: nowIso }) : null;
     const undoPlan = ThreadUndo.planThreadUndo("settle", resolved?.thread);
     // Jones: a caller-owned ID requires a server receipt before offering exact Undo.
-    const settleCommandId = readEnvironmentSupportsSettlementRestore(target.environmentId)
-      ? newSettleCommandId()
-      : undefined;
+    const settleCommandId =
+      readEnvironment(target.environmentId)?.connection.phase === "connected" &&
+      readEnvironmentSupportsSettlementRestore(target.environmentId)
+        ? newSettleCommandId()
+        : undefined;
     const settleWasNoop =
       resolved?.thread.settledOverride === "settled" &&
       resolved.thread.settledAt != null &&

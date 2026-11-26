@@ -691,6 +691,46 @@ describe("settings mutation authorization", () => {
     }),
   );
 
+  it.effect("requires terminal authority to enable saved workflows", () =>
+    Effect.gen(function* () {
+      const handled: boolean[] = [];
+      const clientWithScopes = (scopes: Parameters<typeof RpcAuthorization.layer>[0]) =>
+        RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              group.toLayerHandler(WS_METHODS.serverUpdateSettings, ({ patch }) =>
+                Effect.sync(() => {
+                  handled.push(patch.workflowsEnabled === true);
+                  return DEFAULT_SERVER_SETTINGS;
+                }),
+              ),
+              RpcAuthorization.layer(scopes),
+            ),
+          ),
+        );
+
+      const settings = yield* clientWithScopes([AuthSettingsWriteScope]);
+      expect(
+        yield* settings[WS_METHODS.serverUpdateSettings]({
+          patch: { workflowsEnabled: true },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthTerminalOperateScope });
+      expect(handled).toEqual([]);
+      yield* settings[WS_METHODS.serverUpdateSettings]({ patch: { workflowsEnabled: false } });
+
+      const terminal = yield* clientWithScopes([AuthTerminalOperateScope]);
+      expect(
+        yield* terminal[WS_METHODS.serverUpdateSettings]({
+          patch: { workflowsEnabled: true },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+
+      const owner = yield* clientWithScopes([AuthSettingsWriteScope, AuthTerminalOperateScope]);
+      yield* owner[WS_METHODS.serverUpdateSettings]({ patch: { workflowsEnabled: true } });
+      expect(handled).toEqual([false, true]);
+    }),
+  );
+
   it.effect("does not let a settings grant send a named secret to a gateway it picks", () =>
     Effect.gen(function* () {
       const group = WsRpcGroup.omit(

@@ -4209,7 +4209,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         continue;
       }
       // Stop drops a steer it reached; say so, as the adapter does for steers it still held.
-      if (yield* projectionStore.hasRunInterruptRequest(threadId, run.id)) {
+      if (yield* hasRunStop(threadId, run.id)) {
         const now = yield* DateTime.now;
         yield* writeSystemEvents([
           {
@@ -15818,12 +15818,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
   });
 
-  /** Late tool calls and restart continuations must not outlive Stop. */
-  const stopReachedRun = (
-    command: OrchestrationV2ServerCommand,
-    threadId: ThreadId,
-    runId: RunId,
-  ) =>
+  const hasRunStop = (threadId: ThreadId, runId: RunId) =>
     runtimeStopFences.hasRunFence(threadId, runId).pipe(
       Effect.flatMap((fenced) =>
         fenced ? Effect.succeed(true) : runtimeStopFences.hasAttributedRunStop(threadId, runId),
@@ -15831,8 +15826,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Effect.flatMap((stopped) =>
         stopped ? Effect.succeed(true) : projectionStore.hasRunInterruptRequest(threadId, runId),
       ),
-      mapDispatchError(command),
     );
+
+  /** Late tool calls and restart continuations must not outlive Stop. */
+  const stopReachedRun = (
+    command: OrchestrationV2ServerCommand,
+    threadId: ThreadId,
+    runId: RunId,
+  ) => hasRunStop(threadId, runId).pipe(mapDispatchError(command));
 
   const markStoppedRun = Effect.fnUntraced(function* (input: {
     readonly command: Extract<

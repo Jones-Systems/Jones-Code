@@ -359,14 +359,18 @@ const make = Effect.gen(function* () {
             worktree: string;
             thread_id: string;
             settled_at: string;
-          }>`SELECT script_state,worktree,thread_id,settled_at FROM jones_workspace_retirement_intents WHERE event_id=${event}`;
+            deleted: number;
+          }>`SELECT i.script_state,i.worktree,i.thread_id,i.settled_at,EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_threads t WHERE t.thread_id=i.thread_id
+              AND json_extract(t.payload_json,'$.deletedAt') IS NOT NULL
+          ) AS deleted FROM jones_workspace_retirement_intents i WHERE i.event_id=${event}`;
           const intent = rows[0];
           if (!intent)
             return yield* new RetirementError({
               reason: "settlement_intent_missing",
               target: event,
             });
-          if (intent.script_state !== "pending") return false;
+          if (intent.script_state !== "pending" || intent.deleted === 1) return false;
           yield* writable(intent.worktree);
           const captured = yield* sql<{
             identity_json: string;
@@ -381,7 +385,6 @@ const make = Effect.gen(function* () {
             const holder = yield* decodeSettlementHolder(captured[0].holder_json);
             const currentThread =
               yield* sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=${intent.thread_id}
-              AND json_extract(payload_json,'$.deletedAt') IS NULL
               AND json_extract(payload_json,'$.settledOverride')='settled' AND json_extract(payload_json,'$.settledAt')=${intent.settled_at}
               AND json_extract(payload_json,'$.worktreePath')=${intent.worktree} AND json_extract(payload_json,'$.projectId')=${holder.projectId}
               AND json_extract(payload_json,'$.branch') IS ${holder.branch}`;
