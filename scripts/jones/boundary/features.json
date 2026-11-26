@@ -3112,6 +3112,7 @@
         "apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts",
         "packages/provider-cursor/src/server/adapter.test.ts",
         "packages/provider-cursor/src/server/CursorAgentSdk.test.ts",
+        "packages/provider-cursor/src/server/CursorAgentSdkProcessRunner.test.ts",
         "packages/provider-cursor/src/server/driver.test.ts",
         "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
         "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
