@@ -13,6 +13,7 @@ import * as Projects from "../../project/ProjectService.ts";
 import * as Managed from "../../project/ManagedProjectFolders.ts";
 import * as Providers from "../../provider/ProviderRegistry.ts";
 import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
+import * as TaskFolders from "../../workspace/TaskFolders.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as NodePath from "@effect/platform-node/NodePath";
@@ -277,6 +278,10 @@ export const makeLaunchFixture = Effect.fn("LaunchPreparationFixture.make")(func
           IdAllocator.layer,
           SetupTracker.layer,
           setup,
+          Layer.mock(TaskFolders.TaskFolders)({
+            plan: () => Effect.succeed(null),
+            find: () => Effect.succeed(null),
+          }),
           Layer.mock(Clones.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
           Layer.mock(Terminals.TerminalManager)({
             close: () => Effect.die("ordinary material must be retained"),

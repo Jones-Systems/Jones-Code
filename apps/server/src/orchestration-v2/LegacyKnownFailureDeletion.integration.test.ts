@@ -739,29 +739,28 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                         acceptCompactThreadVisits: true,
                         requestCompletionMarker: true,
                       }),
-                    ).pipe(Stream.take(3), Stream.runCollect, Effect.timeout("5 seconds")),
+                    ).pipe(Stream.take(2), Stream.runCollect, Effect.timeout("5 seconds")),
                   );
                   assert.deepEqual(
                     replayFrames.map((frame) => frame.kind),
-                    ["event", "event", "synchronized"],
+                    ["event", "synchronized"],
                   );
                   assert.deepEqual(
                     replayFrames
                       .filter((frame) => frame.kind === "event")
-                      .map((frame) => frame.sequence),
-                    deletionEvents.map((event) => event.sequence),
+                      .map((frame) => [frame.event.type, frame.sequence]),
+                    [["thread.deleted", deletionEvents[1]!.sequence]],
                   );
-                  const snapshotFrames = Array.from(
-                    yield* Stream.unwrap(
-                      subscribeOrchestrationV2Thread({
-                        threadId,
-                        requestCompletionMarker: true,
-                      }),
-                    ).pipe(Stream.take(2), Stream.runCollect, Effect.timeout("5 seconds")),
-                  );
-                  assert.deepEqual(
-                    snapshotFrames.map((frame) => frame.kind),
-                    ["snapshot", "synchronized"],
+                  const snapshotError = yield* subscribeOrchestrationV2Thread({
+                    threadId,
+                    requestCompletionMarker: true,
+                  }).pipe(Effect.flip);
+                  const projectionError = snapshotError.cause;
+                  if (!(projectionError instanceof Orchestrator.OrchestratorProjectionError))
+                    return yield* Effect.die(snapshotError);
+                  assert.instanceOf(
+                    projectionError.cause,
+                    ProjectionStore.ProjectionStoreThreadNotFoundError,
                   );
                   const ready = yield* Deferred.make<void>();
                   const live = yield* Stream.unwrap(
@@ -819,7 +818,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     liveFrames[1]!.kind === "event" ? liveFrames[1]!.sequence : -1,
                     staleCommit.receipt.resultSequence,
                   );
-                  for (const frames of [replayFrames, snapshotFrames, liveFrames]) {
+                  for (const frames of [replayFrames, liveFrames]) {
                     const publicFrames = yield* Effect.forEach(frames, (frame) =>
                       encodeOrchestrationV2ThreadStreamItem(frame),
                     );

@@ -51,9 +51,10 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
     model: driver === "codex" ? "gpt-5.4" : "claude-sonnet-4-6",
   };
   const observed: Array<{ method: string; cwd: string | null; mcp: boolean; resume: boolean }> = [];
+  const nativeThreadId = "native-c9";
   const nativeThread = (cwd: string | null) => ({
-    id: "native-c9",
-    sessionId: "native-c9",
+    id: nativeThreadId,
+    sessionId: nativeThreadId,
     cwd,
     createdAt: 1,
     updatedAt: 1,
@@ -87,6 +88,7 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
         };
       }
       if (method === "config/read") return { config: {}, origins: {} };
+      if (method === "thread/name/set" && input.threadId === nativeThreadId) return {};
       if (method === "turn/start") {
         observed.push({ method, cwd: input.cwd ?? null, mcp: true, resume: false });
         return {

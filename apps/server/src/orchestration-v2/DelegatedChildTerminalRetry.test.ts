@@ -82,7 +82,7 @@ const runDelegation = (input: {
               lastError: null,
             },
             events: Stream.fromQueue(events),
-            ensureThread: ({ threadId }) =>
+            ensureThread: ({ threadId, existingProviderThread }) =>
               IdAllocator.isDelegatedTaskThread(threadId)
                 ? Effect.fail(
                     new ProviderAdapter.ProviderAdapterEnsureThreadError({
@@ -92,12 +92,14 @@ const runDelegation = (input: {
                     }),
                   )
                 : Effect.succeed({
-                    id: ProviderThreadId.make(`provider-thread:${threadId}`),
+                    id:
+                      existingProviderThread?.id ??
+                      ProviderThreadId.make(`provider-thread:${threadId}`),
                     driver,
                     providerInstanceId: instanceId,
                     providerSessionId: session.providerSessionId,
                     appThreadId: threadId,
-                    ownerNodeId: null,
+                    ownerNodeId: existingProviderThread?.ownerNodeId ?? null,
                     nativeThreadRef: { driver, nativeId: `native:${threadId}`, strength: "strong" },
                     nativeConversationHeadRef: null,
                     status: "idle",
@@ -180,7 +182,7 @@ const runDelegation = (input: {
           Stream.filter(predicate),
           Stream.take(1),
           Stream.runDrain,
-          Effect.forkScoped,
+          Effect.forkScoped({ startImmediately: true }),
         );
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -391,14 +393,16 @@ it.effect("stopping a delegated child with a queued message does not report the 
               lastError: null,
             },
             events: Stream.fromQueue(events),
-            ensureThread: ({ threadId }) =>
+            ensureThread: ({ threadId, existingProviderThread }) =>
               Effect.succeed({
-                id: ProviderThreadId.make(`provider-thread:${threadId}`),
+                id:
+                  existingProviderThread?.id ??
+                  ProviderThreadId.make(`provider-thread:${threadId}`),
                 driver,
                 providerInstanceId: instanceId,
                 providerSessionId: session.providerSessionId,
                 appThreadId: threadId,
-                ownerNodeId: null,
+                ownerNodeId: existingProviderThread?.ownerNodeId ?? null,
                 nativeThreadRef: { driver, nativeId: `native:${threadId}`, strength: "strong" },
                 nativeConversationHeadRef: null,
                 status: "idle",
@@ -460,7 +464,7 @@ it.effect("stopping a delegated child with a queued message does not report the 
           Stream.filter(predicate),
           Stream.take(1),
           Stream.runDrain,
-          Effect.forkScoped,
+          Effect.forkScoped({ startImmediately: true }),
         );
       const settle = Effect.gen(function* () {
         for (let attempt = 0; attempt < 5; attempt++) {

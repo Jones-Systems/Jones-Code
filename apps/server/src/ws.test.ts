@@ -2762,7 +2762,11 @@ it.effect("thread resume replays a deleted thread's deletion and nothing recorde
       lastVisitedAt: null,
     });
 
-    const items = yield* subscribeOrchestrationV2Thread({ threadId, afterSequence: 0 }).pipe(
+    const items = yield* subscribeOrchestrationV2Thread({
+      threadId,
+      afterSequence: 0,
+      acceptCompactThreadVisits: true,
+    }).pipe(
       Effect.flatMap(Stream.runCollect),
       Effect.provideService(ThreadManagement.ThreadManagementService, {
         ensureLegacyTranscript: () => Effect.void,
