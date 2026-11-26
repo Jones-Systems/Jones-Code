@@ -868,21 +868,17 @@ export const layer: Layer.Layer<
         };
         const allocateEventId = () => idAllocator.allocate.event({ threadId: input.run.threadId });
         const buildRestoredHandoffEvents = () =>
-          input.terminal.promptDropped === true &&
-          input.restoredHandoffs !== undefined &&
-          input.restoredHandoffs.length > 0
-            ? Effect.forEach(input.restoredHandoffs, (handoff) =>
-                Effect.map(allocateEventId(), (id) => ({
-                  id,
-                  type: "context-handoff.updated" as const,
-                  threadId: input.run.threadId,
-                  runId: input.run.id,
-                  providerInstanceId: input.run.providerInstanceId,
-                  occurredAt: completedAt,
-                  payload: { ...handoff, updatedAt: completedAt },
-                })),
-              )
-            : Effect.succeed([]);
+          Effect.forEach(input.restoredHandoffs ?? [], (handoff) =>
+            Effect.map(allocateEventId(), (id) => ({
+              id,
+              type: "context-handoff.updated" as const,
+              threadId: input.run.threadId,
+              runId: input.run.id,
+              providerInstanceId: input.run.providerInstanceId,
+              occurredAt: completedAt,
+              payload: { ...handoff, updatedAt: completedAt },
+            })),
+          );
         const shouldFinalizeRun =
           input.shouldFinalizeRun === undefined ? true : yield* input.shouldFinalizeRun();
         if (!shouldFinalizeRun) {
@@ -1286,7 +1282,7 @@ export const layer: Layer.Layer<
                 ? Effect.die(Cause.squash(cause))
                 : Effect.logWarning(
                     "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
-                    { runId: input.run.id },
+                    { runId: input.run.id, cause },
                   ),
           ),
         );
@@ -1526,6 +1522,10 @@ export const layer: Layer.Layer<
           const providerThread = yield* Ref.get(latestProviderThread);
           const openSubagents = yield* Ref.get(openRunOwnedSubagents);
           const accepted = yield* Ref.get(acceptedRootTerminal);
+          const restoredHandoffs =
+            terminal.promptDropped === true && input.loadDroppedInlineHandoffs !== undefined
+              ? yield* input.loadDroppedInlineHandoffs()
+              : undefined;
           const writeTerminal = (settledTerminal: ProviderTerminalEvent) =>
             writeFinalRunEvents({
               run: input.run,
@@ -1555,6 +1555,7 @@ export const layer: Layer.Layer<
                 : { loadRunInterruptReason: input.loadRunInterruptReason }),
               openRunOwnedSubagents: openSubagents,
               openRunOwnedSubagentsTerminal: terminal,
+              ...(restoredHandoffs === undefined ? {} : { restoredHandoffs }),
               persistProviderTurn,
               ...(abandonedProviderTurn === undefined ? {} : { abandonedProviderTurn }),
               publicationTerminal: accepted?.event ?? terminal,
@@ -2479,6 +2480,7 @@ export const layer: Layer.Layer<
                   const latestItemOrdinal = yield* Ref.get(latestTurnItemOrdinal);
                   const openSubagents = yield* Ref.get(openRunOwnedSubagents);
                   const droppedPrompt =
+                    acceptedTerminal?.promptDropped === true ||
                     (yield* Ref.get(terminalEvent))?.promptDropped === true ||
                     rootProviderTurn?.promptDropped === true;
                   const recoveredHandoffs =

@@ -28,6 +28,7 @@ import {
   OrchestrationV2ThreadProjectionJson,
   ScheduledTaskId,
   type ServerProvider,
+  TaskFolderError,
   type TerminalError,
   ThreadId,
   TextGenerationError,
@@ -79,6 +80,7 @@ import * as TaskFolders from "../workspace/TaskFolders.ts";
 import {
   approveLayoutCommands,
   layerTaskFoldersWithGit,
+  taskFoldersTestProjectId,
   type TaskFoldersTestState,
 } from "../workspace/TaskFolders.testkit.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
@@ -89,7 +91,7 @@ import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
-const projectId = ProjectId.make("project:launch-test");
+const projectId = taskFoldersTestProjectId;
 const otherProjectId = ProjectId.make("project:launch-other");
 const encodeThreadProjection = Schema.encodeEffect(OrchestrationV2ThreadProjectionJson);
 const dispatchIntakeCommand = (
@@ -220,6 +222,30 @@ function makeHarness(options: HarnessOptions = {}) {
   const generateThreadTitle = vi.fn(
     options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
   );
+  const layerSingleCheckoutTaskFolders = Layer.unwrap(
+    Effect.map(ThreadManagement.ThreadManagementService, (threads) =>
+      Layer.mock(TaskFolders.TaskFolders)({
+        plan: () => Effect.succeed(null),
+        find: () => Effect.succeed(null),
+        removeForProjectFolder: (input) =>
+          threads.getShellSnapshot({ worktreePath: input.path }).pipe(
+            Effect.orDie,
+            Effect.flatMap((snapshot) =>
+              [...snapshot.threads, ...snapshot.archivedThreads].some(
+                (thread) => thread.worktreePath === input.path,
+              )
+                ? Effect.fail(
+                    new TaskFolderError({
+                      operation: "remove",
+                      detail: "another thread has a workspace binding here",
+                    }),
+                  )
+                : removeWorktree(input),
+            ),
+          ),
+      }),
+    ),
+  ).pipe(Layer.provide(layerThreadManagement));
   const layerExternalServices = Layer.mergeAll(
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
@@ -275,8 +301,7 @@ function makeHarness(options: HarnessOptions = {}) {
     }),
     layerServerSettings,
     ProviderRegistryMock.layer(options.providers),
-    options.taskFolders ??
-      Layer.mock(TaskFolders.TaskFolders)({ plan: () => Effect.succeed(null) }),
+    options.taskFolders ?? layerSingleCheckoutTaskFolders,
     options.managedFolders ??
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
@@ -3032,17 +3057,22 @@ it.effect("cancels tracked setup before provider work is released", () =>
       });
       const launched = yield* launches.launch(input);
       yield* Deferred.await(entered);
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        Stream.filter((stored) => stored.commandId === `${input.commandId}:branch-rename`),
+        Stream.runHead,
+      );
+      const before = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(before.thread.worktreePath, "/repo-worktrees/feature");
+      assert.equal(before.thread.branch, "generated-branch");
       assert.equal((yield* tracker.get(launched.threadId))?.phase, "running");
       assert.isTrue(yield* tracker.cancel(launched.threadId));
       assert.equal((yield* tracker.get(launched.threadId))?.phase, "cancelled");
       const projection = yield* threads.getThreadProjection(launched.threadId);
       assert.equal(projection.runs[0]?.status, "failed");
-      assert.isNull(projection.thread.worktreePath);
-      assert.deepEqual(harness.deleteLocalBranch.mock.calls[0]?.[0], {
-        cwd: "/repo",
-        refName: "generated-branch",
-        force: true,
-      });
+      assert.equal(projection.thread.worktreePath, before.thread.worktreePath);
+      assert.equal(projection.thread.branch, before.thread.branch);
+      assert.isEmpty(harness.removeWorktree.mock.calls);
+      assert.isEmpty(harness.deleteLocalBranch.mock.calls);
       assert.isEmpty(yield* outbox.listByCommandId(CommandId.make(`${input.commandId}:release`)));
     }).pipe(Effect.provide(harness.layer));
   }),
@@ -3509,13 +3539,14 @@ it.effect(
   },
 );
 
-const concurrentTaskFolderUses = [
-  "side chat",
-  "side chat without a run",
-  "independent launch",
+const taskFolderLaunchCases = [
+  { kind: "side chat", name: "retains the recorded task folder when setup is cancelled" },
+  { kind: "idle", name: "refuses idle task folder creation without per-checkout custody" },
+  { kind: "independent launch", name: "retains a task folder shared with an independent launch" },
+  { kind: "unpublished", name: "cleans real task folder checkouts interrupted before publication" },
 ] as const;
 
-it.live.each(concurrentTaskFolderUses)("cancels task folder setup with %s", (concurrent) => {
+it.live.each(taskFolderLaunchCases)("$name", ({ kind }) => {
   const state: TaskFoldersTestState = { workspaceRoot: "/unset", trackedFolders: [], thread: null };
   const layerGit = GitVcsDriver.layer.pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-launch-folders-" })),
@@ -3552,10 +3583,47 @@ it.live.each(concurrentTaskFolderUses)("cancels task folder setup with %s", (con
       path: folder,
       name: path.basename(folder),
     }));
+    const initialRegistrations = yield* Effect.forEach(repositories, (folder) =>
+      run(folder, "worktree", "list", "--porcelain"),
+    );
     const entered = yield* Deferred.make<void>();
+    const claimedRoot = yield* Deferred.make<string>();
+    const checkoutsCreated = yield* Deferred.make<void>();
+    const interruptCreate = yield* Deferred.make<void>();
+    const taskFolderLayer =
+      kind === "unpublished"
+        ? Layer.effect(
+            TaskFolders.TaskFolders,
+            Effect.map(TaskFolders.TaskFolders, (folders) =>
+              TaskFolders.TaskFolders.of({
+                ...folders,
+                create: (input) =>
+                  folders.create({
+                    ...input,
+                    onClaimed: (folder, branch) =>
+                      (input.onClaimed?.(folder, branch) ?? Effect.void).pipe(
+                        Effect.andThen(Deferred.succeed(claimedRoot, folder.root)),
+                        Effect.asVoid,
+                      ),
+                    onRepository: (progress) =>
+                      (input.onRepository?.(progress) ?? Effect.void).pipe(
+                        Effect.andThen(
+                          progress.done === progress.total
+                            ? Deferred.succeed(checkoutsCreated, undefined).pipe(
+                                Effect.andThen(Deferred.await(interruptCreate)),
+                                Effect.andThen(Effect.interrupt),
+                              )
+                            : Effect.void,
+                        ),
+                      ),
+                  }),
+              }),
+            ),
+          ).pipe(Layer.provide(layerTaskFolders))
+        : layerTaskFolders;
     const parentId = ThreadId.make("thread:task-folder");
     const harness = makeHarness({
-      taskFolders: layerTaskFolders,
+      taskFolders: taskFolderLayer,
       runSetup: ({ threadId }) =>
         threadId === parentId
           ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never))
@@ -3566,31 +3634,89 @@ it.live.each(concurrentTaskFolderUses)("cancels task folder setup with %s", (con
       const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const threads = yield* ThreadManagement.ThreadManagementService;
       const taskFolders = yield* TaskFolders.TaskFolders;
-      const launched = yield* launches.launch(
-        launchInput({
-          command: "launch:task-folder",
-          thread: parentId,
-          ...(concurrent === "side chat without a run" ? {} : { message: "Start" }),
-          workspace: { type: "worktree", baseRef: "main", branch: "feature/launch" },
-        }),
-      );
-      yield* Deferred.await(entered);
-
-      const { thread, runs } = yield* threads.getThreadProjection(launched.threadId);
-      if (concurrent === "side chat without a run") {
-        assert.isEmpty(runs);
-      } else {
-        assert.equal(runs[0]?.status, "preparing");
-        assert.equal(runs[0]?.workspacePreparation?.type, "worktree");
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const input = launchInput({
+        command: "launch:task-folder",
+        thread: parentId,
+        ...(kind === "idle" ? {} : { message: "Start" }),
+        workspace: { type: "worktree", baseRef: "main", branch: "feature/launch" },
+      });
+      const releaseCommandId = CommandId.make(`${input.commandId}:release`);
+      const assertSourcesUnchanged = Effect.gen(function* () {
+        for (const [index, folder] of repositories.entries()) {
+          assert.equal(yield* run(folder, "branch", "--list", "feature/launch"), "");
+          assert.equal(
+            yield* run(folder, "worktree", "list", "--porcelain"),
+            initialRegistrations[index],
+          );
+        }
+      });
+      if (kind === "idle") {
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const refused = yield* launches.launch(input).pipe(Effect.flip);
+        assert.instanceOf(refused, ThreadLaunch.ThreadLaunchError);
+        assert.equal(refused.operation, "provision-worktree");
+        assert.equal(
+          refused.cause,
+          "This launch path does not have a preparation receipt and base policy for every task folder checkout.",
+        );
+        assert.isNull(yield* threads.getThreadShell(parentId));
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(input.commandId)));
+        assert.isNull(yield* tracker.get(parentId));
+        assert.isEmpty(harness.runSetup.mock.calls);
+        assert.isEmpty(yield* outbox.listByCommandId(releaseCommandId));
+        yield* assertSourcesUnchanged;
+        return;
       }
+
+      const launched = yield* launches.launch(input);
+      if (kind === "unpublished") {
+        const root = yield* Deferred.await(claimedRoot);
+        yield* Deferred.await(checkoutsCreated);
+        const taskFolder = yield* taskFolders.find(root);
+        assert.isNotNull(taskFolder);
+        assert.lengthOf(taskFolder.repositories, repositories.length);
+        for (const repository of taskFolder.repositories) {
+          assert.include(
+            yield* run(repository.repositoryPath, "worktree", "list", "--porcelain"),
+            `worktree ${repository.worktreePath}\n`,
+          );
+          assert.equal(
+            yield* run(repository.worktreePath, "symbolic-ref", "--short", "HEAD"),
+            "feature/launch",
+          );
+        }
+        assert.isNull((yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath);
+
+        yield* Deferred.succeed(interruptCreate, undefined);
+        const after = yield* preparationSettled(launched.threadId);
+        assert.equal(after.runs[0]?.status, "failed");
+        assert.isNull(after.thread.worktreePath);
+        assert.isNull(yield* taskFolders.find(root));
+        assert.isFalse(yield* fileSystem.exists(root));
+        assert.isEmpty(harness.runSetup.mock.calls);
+        assert.isEmpty(yield* outbox.listByCommandId(releaseCommandId));
+        yield* assertSourcesUnchanged;
+        return;
+      }
+
+      yield* Deferred.await(entered);
+      const { thread, runs } = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(runs[0]?.status, "preparing");
+      assert.equal(runs[0]?.workspacePreparation?.type, "worktree");
       const taskFolder = yield* taskFolders.find(thread.worktreePath!);
-      assert.equal(thread.worktreePath, taskFolder?.projectPath);
+      assert.isNotNull(taskFolder);
+      assert.equal(taskFolder.projectId, input.projectId);
+      assert.equal(thread.worktreePath, taskFolder.projectPath);
       assert.equal(thread.branch, "feature/launch");
       assert.sameMembers(
-        taskFolder!.repositories.map((repository) => repository.repositoryPath),
+        taskFolder.repositories.map((repository) => repository.repositoryPath),
         repositories,
       );
-      for (const repository of taskFolder!.repositories) {
+      const registrations = yield* Effect.forEach(repositories, (folder) =>
+        run(folder, "worktree", "list", "--porcelain"),
+      );
+      for (const repository of taskFolder.repositories) {
         assert.equal(
           yield* run(repository.worktreePath, "symbolic-ref", "--short", "HEAD"),
           "feature/launch",
@@ -3609,8 +3735,8 @@ it.live.each(concurrentTaskFolderUses)("cancels task folder setup with %s", (con
       );
       assert.match(stages[1]?.detail ?? "", /\(2 of 2\)$/);
 
-      if (concurrent === "independent launch") {
-        const checkoutPath = taskFolder!.repositories[0]!.worktreePath;
+      if (kind === "independent launch") {
+        const checkoutPath = taskFolder.repositories[0]!.worktreePath;
         const sentinel = path.join(checkoutPath, "sentinel.txt");
         const shared = yield* launches.launch(
           launchInput({
@@ -3623,30 +3749,32 @@ it.live.each(concurrentTaskFolderUses)("cancels task folder setup with %s", (con
         yield* fileSystem.writeFileString(sentinel, "edit");
         assert.isTrue(yield* tracker.cancel(launched.threadId));
         assert.equal(yield* fileSystem.readFileString(sentinel), "edit");
-        assert.equal((yield* taskFolders.find(taskFolder!.root))?.root, taskFolder!.root);
         assert.equal(
-          (yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath,
-          taskFolder!.projectPath,
+          (yield* threads.getThreadProjection(shared.threadId)).thread.worktreePath,
+          checkoutPath,
         );
         const sideChatId = yield* forkSideChat(threads, launched.threadId, "after-cancellation");
         assert.equal(
           (yield* threads.getThreadProjection(sideChatId)).thread.worktreePath,
-          taskFolder!.projectPath,
+          taskFolder.projectPath,
         );
-        return;
+      } else {
+        const refused = yield* forkSideChat(threads, launched.threadId, "during-setup").pipe(
+          Effect.flip,
+        );
+        assert.equal(refused._tag, "OrchestratorDispatchError");
+        assert.isTrue(yield* tracker.cancel(launched.threadId));
       }
-      const refused = yield* forkSideChat(threads, launched.threadId, "during-setup").pipe(
-        Effect.flip,
-      );
-      assert.equal(refused._tag, "OrchestratorDispatchError");
-      assert.isTrue(yield* tracker.cancel(launched.threadId));
 
-      assert.isNull((yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath);
-      assert.isNull(yield* taskFolders.find(taskFolder!.root));
-      assert.isFalse(yield* fileSystem.exists(taskFolder!.root));
-      for (const folder of repositories) {
-        assert.equal(yield* run(folder, "branch", "--list", "feature/launch"), "");
-        assert.notInclude(yield* run(folder, "worktree", "list", "--porcelain"), taskFolder!.root);
+      const after = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(after.runs[0]?.status, "failed");
+      assert.equal(after.thread.worktreePath, thread.worktreePath);
+      assert.equal(after.thread.branch, thread.branch);
+      assert.deepEqual(yield* taskFolders.find(taskFolder.root), taskFolder);
+      assert.isTrue(yield* fileSystem.exists(taskFolder.root));
+      assert.isEmpty(yield* outbox.listByCommandId(releaseCommandId));
+      for (const [index, folder] of repositories.entries()) {
+        assert.equal(yield* run(folder, "worktree", "list", "--porcelain"), registrations[index]);
       }
     }).pipe(Effect.provide(harness.layer));
   }).pipe(Effect.provide(layerGit), Effect.scoped);
@@ -3677,11 +3805,19 @@ it.effect(
         );
         yield* Deferred.await(claimed);
         assert.isTrue(yield* tracker.cancel(launched.threadId));
-        assert.equal(harness.removeWorktree.mock.calls[0]?.[0].path, "/repo-worktrees/feature");
-        assert.equal(
-          harness.deleteLocalBranch.mock.calls[0]?.[0].refName,
-          harness.createWorktree.mock.calls[0]?.[0].newRefName,
-        );
+        assert.deepEqual(harness.removeWorktree.mock.calls, [
+          [{ cwd: "/repo", path: "/repo-worktrees/feature", force: false }],
+        ]);
+        assert.deepEqual(harness.deleteLocalBranch.mock.calls, [
+          [
+            {
+              cwd: "/repo",
+              refName: harness.createWorktree.mock.calls[0]![0].newRefName,
+              force: false,
+            },
+          ],
+        ]);
+        assert.isNull((yield* preparationSettled(launched.threadId)).thread.worktreePath);
       }).pipe(Effect.provide(harness.layer));
     }),
 );
@@ -3718,6 +3854,9 @@ it.effect("stops an in-flight branch rename when tracked setup is cancelled", ()
       );
       yield* Deferred.await(setupEntered);
       yield* Deferred.await(branchNameStarted);
+      const before = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(before.thread.worktreePath, "/repo-worktrees/feature");
+      assert.equal(before.thread.branch, harness.createWorktree.mock.calls[0]?.[0].newRefName);
       assert.isTrue(yield* tracker.cancel(launched.threadId));
       yield* Deferred.succeed(allowBranchName, undefined);
       yield* Effect.raceFirst(
@@ -3729,11 +3868,12 @@ it.effect("stops an in-flight branch rename when tracked setup is cancelled", ()
         "the cancelled setup's branch rename kept running",
       );
       assert.equal(harness.renameBranch.mock.calls.length, 0);
-      assert.isNull((yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath);
-      assert.equal(
-        harness.deleteLocalBranch.mock.calls[0]?.[0].refName,
-        harness.createWorktree.mock.calls[0]?.[0].newRefName,
-      );
+      const after = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(after.thread.worktreePath, before.thread.worktreePath);
+      assert.equal(after.thread.branch, before.thread.branch);
+      assert.equal(after.runs[0]?.status, "failed");
+      assert.isEmpty(harness.removeWorktree.mock.calls);
+      assert.isEmpty(harness.deleteLocalBranch.mock.calls);
     }).pipe(Effect.provide(harness.layer));
   }),
 );

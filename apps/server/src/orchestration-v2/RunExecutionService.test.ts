@@ -18,6 +18,7 @@ import {
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
@@ -1230,6 +1231,11 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
     const checkpointScope = {
       id: CheckpointScopeId.make("checkpoint-scope:run-execution-baseline-failure"),
     } as OrchestrationV2CheckpointScope;
+    const appThread = {
+      ...rootAppThread(threadId),
+      projectId: ProjectId.make("project:run-execution-baseline-failure"),
+      worktreePath: "/repo-worktrees/baseline-failure",
+    };
     const providerStarts = yield* Ref.make(0);
     const warnings: Array<ReadonlyArray<unknown>> = [];
     const logger = Logger.make(({ logLevel, message }) => {
@@ -1249,14 +1255,18 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
           McpAppModelContext.layerEmpty,
           PreviewAgentActivity.layer,
           Layer.mock(CheckpointService.CheckpointServiceV2)({
-            captureBaseline: () =>
-              Effect.fail(
-                new CheckpointService.CheckpointBaselineCaptureError({
-                  scopeId: checkpointScope.id,
-                  ordinalWithinScope: 0,
+            captureBaseline: ({ scope, ordinalWithinScope, thread }) =>
+              Effect.gen(function* () {
+                assert.strictEqual(scope, checkpointScope);
+                assert.equal(ordinalWithinScope, 0);
+                assert.equal(thread?.projectId, appThread.projectId);
+                assert.equal(thread?.worktreePath, appThread.worktreePath);
+                return yield* new CheckpointService.CheckpointBaselineCaptureError({
+                  scopeId: scope.id,
+                  ordinalWithinScope,
                   cause: new Error("VCS process timed out"),
-                }),
-              ),
+                });
+              }),
           }),
           layerTurnItemPositionsTest,
           mockEventSink({
@@ -1280,7 +1290,7 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
       const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
       yield* runExecution.startRootRun({
         commandId: CommandId.make("command:run-execution-baseline-failure"),
-        appThread: rootAppThread(threadId),
+        appThread,
         providerSessionId,
         session: {
           events: Stream.never,
@@ -3835,6 +3845,34 @@ it.effect("restores dropped inline handoffs when ingestion fails before the term
   }),
 );
 
+it.effect.each([true, false])(
+  "restores inline handoffs when the terminal reports a dropped prompt (%s)",
+  (promptDropped) =>
+    Effect.gen(function* () {
+      const key = `dropped-terminal:${promptDropped}`;
+      const handoff = { id: `handoff:${key}` } as unknown as OrchestrationV2ContextHandoff;
+      const loads = yield* Ref.make(0);
+      const { finalEvents } = yield* captureRootRunTermination({
+        key,
+        shouldFinalizeRun: () => Effect.succeed(true),
+        loadDroppedInlineHandoffs: () =>
+          Ref.update(loads, (count) => count + 1).pipe(Effect.as([handoff])),
+        events: (ids) =>
+          Stream.make({
+            ...rootTerminalEvent(ids, "failed"),
+            ...(promptDropped ? { promptDropped: true as const } : {}),
+          }),
+      });
+      assert.equal(yield* Ref.get(loads), promptDropped ? 1 : 0);
+      assert.deepEqual(
+        finalEvents.flatMap((event) =>
+          event.type === "context-handoff.updated" ? [event.payload.id] : [],
+        ),
+        promptDropped ? [handoff.id] : [],
+      );
+    }),
+);
+
 it.effect("does not interrupt a provider when ingestion fails before the root turn is known", () =>
   Effect.gen(function* () {
     const interrupts = yield* Ref.make(0);
@@ -4286,6 +4324,7 @@ export function captureRootRunTermination(input: {
           threadId: ids.threadId,
           ordinal: 1,
           providerInstanceId,
+          checkpointId: null,
         } as OrchestrationV2Run,
         rootNode: {
           id: ids.rootNodeId,

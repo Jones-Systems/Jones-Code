@@ -842,6 +842,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId | null,
+    releaseWorkspace: Effect.Effect<void>,
     operation?: LaunchPreparation.LaunchOperation,
     observeExistingSetup = false,
   ) {
@@ -873,6 +874,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
     let idleCleanupOwned = true;
     // Stop background renames before forgetting worktrees; completed renames record them again.
     let branchRename: Fiber.Fiber<unknown, ThreadLaunchError> | null = null;
+    let stopBranchName = Effect.void;
     if (input.workspaceStrategy.type === "worktree") {
       yield* setupTracker.begin({
         threadId,
@@ -1015,6 +1017,23 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
       let worktreePath =
         input.workspaceStrategy.type === "existing_worktree"
           ? input.workspaceStrategy.worktreePath
+          : null;
+      // Generate the name during checkout. Renaming still requires the recorded workspace.
+      const branchName =
+        strategy.type === "worktree" &&
+        reused === undefined &&
+        initialMessage !== undefined &&
+        branch !== null &&
+        (generatedTemporaryBranch || isTemporaryWorktreeBranch(branch))
+          ? yield* generateBranchNameFor(project.workspaceRoot, initialMessage).pipe(
+              Effect.forkIn(preparationScope),
+              Effect.tap((fiber) =>
+                Effect.sync(() => {
+                  stopBranchName = Fiber.interrupt(fiber);
+                }),
+              ),
+              Effect.uninterruptible,
+            )
           : null;
       if (input.workspaceStrategy.type === "worktree") {
         if (idle !== undefined)
@@ -1363,7 +1382,11 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
       ) {
         const oldBranch = branch;
         const worktreeCwd = worktreePath;
-        branchRename = yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
+        const generatedName =
+          branchName === null
+            ? generateBranchNameFor(worktreeCwd, initialMessage)
+            : Fiber.join(branchName);
+        branchRename = yield* generatedName.pipe(
           Effect.flatMap(({ branch: newBranch, exactName }) => {
             const renameInput = {
               cwd: worktreeCwd,
@@ -1489,6 +1512,8 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
           Effect.mapError(mapError(input, "provision-worktree", threadId)),
           Effect.forkIn(preparationScope),
         );
+      } else {
+        yield* stopBranchName;
       }
 
       if (runId !== null && worktreePath !== null) {
@@ -1509,8 +1534,11 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
       // Jones hook: a root launch runs the project's setup in the project root, an
       // explicit opt-out skips setup, and an `auto` placement never runs it here.
       const setupCwd = worktreePath ?? project.workspaceRoot;
-      const runsSetup = input.runSetupScript !== false && input.workspaceStrategy.type !== "auto";
-      if (idle !== undefined && worktreePath !== null && input.runSetupScript !== false)
+      const runsSetup =
+        input.runSetupScript !== false &&
+        strategy.type !== "auto" &&
+        (yield* projectCommandsNow) === "permitted";
+      if (idle !== undefined && runsSetup)
         yield* idle.store
           .issueSetup(idle.identity)
           .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
@@ -1665,6 +1693,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
           Effect.uninterruptible,
         );
       }
+      yield* releaseWorkspace;
       yield* setupTracker.stageStatus(threadId, "agent", "done");
       yield* awaitAsyncSetup;
       yield* setupTracker.finish(threadId, "done");
@@ -1675,6 +1704,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
           if (idle !== undefined)
             yield* idle.store.markUnresolved(idle.identity).pipe(Effect.ignore);
           if (branchRename !== null) yield* Fiber.interrupt(branchRename);
+          yield* stopBranchName;
           yield* setupTracker.finish(
             threadId,
             cancelled ? "cancelled" : "failed",
@@ -1871,7 +1901,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
             (task) => task.origin === "app_owned" && task.childThreadId === threadId,
           );
         }));
-      const prepare = Effect.gen(function* () {
+      const prepare = Effect.fnUntraced(function* (releaseWorkspace: Effect.Effect<void>) {
         yield* requirePreparationGraph;
         if (runId !== null && input.nativeCreation !== true && Option.isSome(launchPreparation)) {
           if (
@@ -1898,13 +1928,28 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
                 { ...input, workspaceStrategy: strategy },
                 threadId,
                 runId,
+                releaseWorkspace,
                 operation,
                 observeExistingSetup,
               ),
           );
         }
-        return yield* prepareInBackground(input, threadId, runId, undefined, observeExistingSetup);
+        return yield* prepareInBackground(
+          input,
+          threadId,
+          runId,
+          releaseWorkspace,
+          undefined,
+          observeExistingSetup,
+        );
       });
+      const preparingWorkspace = Effect.acquireUseRelease(
+        input.workspaceStrategy.type === "worktree"
+          ? setupTracker.holdWorkspace(threadId)
+          : Effect.succeed(Effect.void),
+        prepare,
+        (releaseWorkspace) => releaseWorkspace,
+      );
       if (
         runId === null ||
         (Option.isNone(launchPreparation) &&
@@ -1912,7 +1957,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
           input.reusedWorktree === undefined &&
           !observeExistingSetup)
       ) {
-        return yield* prepare;
+        return yield* preparingWorkspace;
       }
       const afterSequence = yield* threads.getThreadEventSequence(threadId);
       const projection = yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [runId] });
@@ -1930,7 +1975,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
           Stream.runHead,
           Effect.flatMap((event) => (Option.isSome(event) ? Effect.interrupt : Effect.never)),
         );
-      yield* Effect.raceFirst(prepare, interruption);
+      yield* Effect.raceFirst(preparingWorkspace, interruption);
     });
     yield* preparation.pipe(
       Effect.onError((cause) =>
