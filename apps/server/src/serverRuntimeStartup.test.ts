@@ -28,6 +28,7 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as Background from "./background/BackgroundPolicy.ts";
 
 import * as ServerConfig from "./config.ts";
 import { resolveServerParallelismProfile } from "./jones/serverParallelism/config.ts";
@@ -106,6 +107,7 @@ it.effect.each([
       const imports = { importedThreadCount: 0, importedMessageCount: 0 };
       const sql = yield* SqlClient.SqlClient;
       const dependencies = Layer.mergeAll(
+        Layer.mock(Background.BackgroundPolicy)({ shouldRunHostWork: Effect.succeed(false) }),
         Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
           count:
             scenario === "count-failure"

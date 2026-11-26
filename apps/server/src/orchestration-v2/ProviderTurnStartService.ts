@@ -464,6 +464,7 @@ export interface ProviderTurnStartServiceV2Shape {
 
 type RunStartInput = Parameters<ProviderTurnStartServiceV2Shape["start"]>[0] & {
   readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
+  readonly expectedAttemptId?: RunAttemptId;
 };
 type RunStart = (input: RunStartInput) => Effect.Effect<void, ProviderTurnStartError>;
 
@@ -844,7 +845,10 @@ export const layer: Layer.Layer<
       if (run === undefined) {
         return yield* new ProviderTurnStartError({ runId, cause: `Run ${runId} was not found.` });
       }
-      if (run.status !== "starting") {
+      if (
+        run.status !== "starting" ||
+        (input.expectedAttemptId !== undefined && run.activeAttemptId !== input.expectedAttemptId)
+      ) {
         return;
       }
       captureStartingRun(run);
@@ -1963,7 +1967,7 @@ export const layer: Layer.Layer<
       // No project folders and leftover-only folders. A native-verified
       // workspace is never restored by ordinary means.
       const recreateResult = yield* Effect.result(
-        input.nativeCreationGuard === undefined
+        input.nativeCreationGuard === undefined && projection.thread.worktreePath !== null
           ? guardClaim(
               Effect.andThen(
                 assertAdmission(providerThread),
@@ -2032,7 +2036,7 @@ export const layer: Layer.Layer<
               return;
             }
             yield* assertAdmission(providerThread);
-            yield* runStart(input);
+            yield* runStart({ ...input, expectedAttemptId: attempt.id });
           }),
         };
       }
@@ -2497,10 +2501,11 @@ export const layer: Layer.Layer<
         session.providerSession.capabilities.turns.supportsNativeGoals === true;
       const goalCommand = goalDriver && parseGoalCommand(providerMessage) !== null;
       // Part of the user text, so every way a turn starts carries it, after the user's own words.
-      const userText =
+      const outputSuffix =
         run.outputSchema === undefined || goalCommand || isProviderCommand(providerMessage)
-          ? messageText
-          : `${messageText}\n\n${outputInstructions(run.outputSchema)}`;
+          ? ""
+          : `\n\n${outputInstructions(run.outputSchema)}`;
+      const userText = messageText + outputSuffix;
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
       const noteContinuation = isRestartNoteContinuation(
         run,
@@ -3671,7 +3676,19 @@ export const layer: Layer.Layer<
         sideChatHandoff !== undefined ||
         restartNote !== "" ||
         noteContinuation;
-      if (manualResume && unsentResumeMessage === undefined && session.resumeTurn === undefined) {
+      const nativeResumeRequested =
+        resumeDisposition === "native_resume" && unsentResumeMessage === undefined;
+      // A provider without native resume can deliver pending context with a new prompt
+      // on the same admitted conversation. Exact continuations still need native resume.
+      const resumeWithContext =
+        nativeResumeRequested &&
+        session.resumeTurn === undefined &&
+        carriesPendingContext &&
+        !guarded &&
+        !plannedWorkResume &&
+        !continuityRequired &&
+        capturedAdmission.nativeCreationGuard === undefined;
+      if (nativeResumeRequested && session.resumeTurn === undefined && !resumeWithContext) {
         yield* settleStartFailure({
           signal: "resume-unsupported",
           title: "Native resume is unavailable",
@@ -3937,6 +3954,13 @@ export const layer: Layer.Layer<
       let promptDroppedOnTerminal = false;
       const inlineDeliveryLock = yield* Semaphore.make(1);
       const retryHandoffIds = new Set(retryHandoff.handoffs.map((handoff) => handoff.id));
+      const revalidateDispatch = assertAdmission(runningProviderThread).pipe(
+        Effect.andThen(() =>
+          resumeWithContext && continuityRequired
+            ? Effect.fail(admissionError("Goal continuity requires native resume."))
+            : Effect.void,
+        ),
+      );
       const startWithConfiguredEffort = Effect.fn(
         "ProviderTurnStartService.startWithConfiguredEffort",
       )(
@@ -4009,7 +4033,7 @@ export const layer: Layer.Layer<
               }
             }
             if (!(yield* isCurrentAttemptInStatus("running"))) return yield* unsent;
-            yield* assertAdmission(runningProviderThread);
+            yield* revalidateDispatch;
             // The adapter confirms the captured continuation session at its native boundary.
             yield* (
               compact ? session.compactThread!(dispatchInput) : session.startTurn(dispatchInput)
@@ -4049,7 +4073,6 @@ export const layer: Layer.Layer<
                 startWithConfiguredEffort(value, true),
             }),
       };
-      const revalidateDispatch = assertAdmission(runningProviderThread);
       const dispatchContinuity = goalContinuity.context(
         continuityRecoveryCapability(
           session.driver,
@@ -4068,7 +4091,7 @@ export const layer: Layer.Layer<
           const revalidateHandoff = Effect.gen(function* () {
             if (!(yield* isCurrentAttemptInStatus("running")))
               return yield* admissionError("The original attempt stopped before handoff delivery.");
-            yield* assertAdmission(runningProviderThread);
+            yield* revalidateDispatch;
           }).pipe(
             Effect.mapError((cause) =>
               isProviderAdapterTurnStartError(cause) ? cause : admissionError(cause),
@@ -4130,13 +4153,21 @@ export const layer: Layer.Layer<
                   (missed) =>
                     !turnInput.message.attachments.some((current) => current.id === missed.id),
                 );
+          if (resumeWithContext && context === "" && missedAttachments.length === 0)
+            return yield* new ProviderAdapter.ProviderResumeUnsupportedError({
+              driver: session.driver,
+              providerThreadId: runningProviderThread.id,
+            });
+          const requestText = resumeWithContext
+            ? `Continue where you left off.${outputSuffix}`
+            : userText;
           const startInput = continuationPrompt(turnInput, {
             sameNativeThread,
             noteContinuation: noteContinuation || missedAttachments.length > 0,
             context: slashCommand ? "" : context,
-            userText,
+            userText: requestText,
           });
-          const inlineContextLength = startInput.message.text.length - userText.length;
+          const inlineContextLength = startInput.message.text.length - requestText.length;
           const operation = start({
             ...startInput,
             ...(missedAttachments.length === 0
@@ -4149,7 +4180,7 @@ export const layer: Layer.Layer<
                 }),
             ...(inlineContextLength === 0 ? {} : { inlineContextLength }),
           });
-          yield* assertAdmission(runningProviderThread);
+          yield* revalidateDispatch;
           yield* operation.pipe(
             // Clear pending handoff markers for refused prompts so the next turn retains the native session.
             // Jones: a current-attempt proof that Codex did not apply the prompt also restores them.
@@ -4224,7 +4255,7 @@ export const layer: Layer.Layer<
       return runExecution.startRootRun({
         goalContinuityContext: dispatchContinuity,
         checkContinuity: () =>
-          assertAdmission(runningProviderThread).pipe(
+          revalidateDispatch.pipe(
             Effect.mapError(
               (cause) =>
                 new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -4266,7 +4297,7 @@ export const layer: Layer.Layer<
               .filter((turn) => turn.providerThreadId === providerThread.id)
               .map((turn) => turn.ordinal),
           ) + 1,
-        resume: manualResume && unsentResumeMessage === undefined,
+        resume: nativeResumeRequested && !resumeWithContext,
         nativeThreadHasTurns:
           nativeInputRunIds.size > 0 ||
           (legacyInputRunIds.size > 0 &&
@@ -4331,7 +4362,13 @@ export const layer: Layer.Layer<
                 const startSettled = start(input, captureStartingRun).pipe(
                   Effect.filterOrElse(
                     (started) => started !== CUT_TURN_SETTLED,
-                    () => start(input, captureStartingRun),
+                    () =>
+                      Effect.suspend(() => {
+                        const expectedAttemptId = startingRun?.activeAttemptId;
+                        return expectedAttemptId == null
+                          ? Effect.undefined
+                          : start({ ...input, expectedAttemptId }, captureStartingRun);
+                      }),
                   ),
                   Effect.map((started) => (started === CUT_TURN_SETTLED ? undefined : started)),
                 );

@@ -1503,7 +1503,7 @@ it.effect("restarts the turn for an image when native steering takes text only",
 );
 
 it.effect.each(["complete", "stop-before-end"] as const)(
-  "starts a steer that missed the turn in its place on the saved next-turn selection: %s",
+  "recovers a steer that missed the turn with its saved next-turn selection and honors Stop: %s",
   (timing) =>
     Effect.gen(function* () {
       const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
@@ -1581,11 +1581,10 @@ it.effect.each(["complete", "stop-before-end"] as const)(
             .toSorted((left, right) => (left.queuePosition ?? 0) - (right.queuePosition ?? 0));
           assert.deepEqual(
             queued.map((run) => [run.userMessageId, run.queueHeld === true]),
-            [
-              [MessageId.make("message:steer"), false],
-              [MessageId.make("message:queued-later"), false],
-            ],
+            [[MessageId.make("message:queued-later"), true]],
           );
+          assert.deepEqual(steered, []);
+          assert.equal(started.length, 1);
           return;
         }
         yield* orchestrator.resumeQueuedRuns;

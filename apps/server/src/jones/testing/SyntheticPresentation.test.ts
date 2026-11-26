@@ -26,6 +26,7 @@ import * as ThreadMetadata from "../orchestration/threadMetadataReads.ts";
 import * as Analytics from "../../telemetry/AnalyticsService.ts";
 import * as Secrets from "../../auth/ServerSecretStore.ts";
 import * as Auth from "../../auth/EnvironmentAuth.ts";
+import * as Background from "../../background/BackgroundPolicy.ts";
 import * as External from "../../process/externalLauncher.ts";
 import * as Git from "../../vcs/GitVcsDriver.ts";
 import { assert, it } from "@effect/vitest";
@@ -45,6 +46,7 @@ import {
   OrchestrationV2DomainEvent,
   TurnItemId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Digest from "effect/crypto/Digest";
@@ -68,6 +70,7 @@ import * as Incarnation from "../cleanup/sharedAdmission/DatabaseIncarnation.ts"
 import { prepareSyntheticOpen } from "../cleanup/sharedAdmission/DatabaseIncarnation.fixture.ts";
 import {
   SyntheticPresentation,
+  SyntheticPresentationError,
   installSelectedSyntheticPresentation,
   type SyntheticPresentationCapability,
 } from "./SyntheticPresentation.ts";
@@ -608,7 +611,7 @@ it.effect.each([
           let shellReads = 0,
             detailReads = 0;
           const activated = yield* Deferred.make<void>();
-          const aborted = yield* Deferred.make<void>();
+          const aborted = yield* Deferred.make<Startup.ServerRuntimeStartupError>();
           const fs = yield* FileSystem.FileSystem;
           const config = yield* Config.ServerConfig;
           const gatedFs = {
@@ -692,6 +695,7 @@ it.effect.each([
             Layer.succeed(Projects.ProjectStoreV2, yield* Projects.ProjectStoreV2),
             Layer.succeed(Outbox.EffectOutboxV2, yield* Outbox.EffectOutboxV2),
             Layer.succeed(SecureRandom.SecureRandom, yield* SecureRandom.SecureRandom),
+            Layer.mock(Background.BackgroundPolicy)({ shouldRunHostWork: Effect.succeed(false) }),
             Layer.mock(Keybindings.Keybindings)({ start: record("keybindings") }),
             Layer.mock(Legacy.LegacyV1ThreadImporter)({
               pendingThreadCount: Effect.succeed(0),
@@ -760,6 +764,13 @@ it.effect.each([
           );
           yield* Effect.gen(function* () {
             const startup = yield* Startup.ServerRuntimeStartup;
+            const awaitBeforeReady = (milestone: Deferred.Deferred<void>, phase: string) =>
+              Effect.raceFirst(
+                Deferred.await(milestone),
+                startup.awaitCommandReady.pipe(
+                  Effect.andThen(Effect.die(`Command readiness preceded ${phase}.`)),
+                ),
+              );
             const command = yield* startup.enqueueCommand(record("command")).pipe(Effect.forkChild);
             yield* startup.awaitCommandReady.pipe(
               Effect.match({
@@ -772,7 +783,7 @@ it.effect.each([
             yield* startup.markHttpListening(
               NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 5511),
             );
-            yield* Deferred.await(entered);
+            yield* awaitBeforeReady(entered, "source validation");
             assert.deepEqual(calls, [
               "keybindings",
               "settings",
@@ -794,7 +805,7 @@ it.effect.each([
             );
             yield* Deferred.succeed(release, undefined);
             if (mode !== "projection-failure") {
-              yield* Deferred.await(shellEntered);
+              yield* awaitBeforeReady(shellEntered, "committed shell readback");
               assert.strictEqual(
                 (yield* input.sql`SELECT thread_id FROM orchestration_v2_projection_threads`)
                   .length,
@@ -805,7 +816,7 @@ it.effect.each([
               assert.isFalse(calls.includes("command"));
               yield* Deferred.succeed(shellRelease, undefined);
               if (mode !== "shell-read-failure") {
-                yield* Deferred.await(detailEntered);
+                yield* awaitBeforeReady(detailEntered, "committed detail readback");
                 assert.isFalse(yield* Deferred.isDone(activated));
                 assert.isFalse(yield* Deferred.isDone(readiness));
                 assert.isFalse(calls.includes("command"));
@@ -828,12 +839,20 @@ it.effect.each([
                 5,
               );
             } else {
-              yield* Deferred.await(aborted);
-              assert.strictEqual(
-                (yield* startup.awaitCommandReady.pipe(Effect.result))._tag,
-                "Failure",
-              );
-              assert.strictEqual((yield* Fiber.join(command).pipe(Effect.result))._tag, "Failure");
+              const startupError = yield* Effect.flip(startup.awaitCommandReady);
+              assert.strictEqual(yield* Deferred.await(aborted), startupError);
+              assert.strictEqual(yield* Effect.flip(Fiber.join(command)), startupError);
+              const fixtureError = Cause.isCause(startupError.cause)
+                ? Cause.squash(startupError.cause)
+                : startupError.cause;
+              const expectedReason =
+                mode === "projection-failure"
+                  ? "fixture_installation_failed"
+                  : mode.endsWith("-read-failure")
+                    ? "fixture_committed_read_failed"
+                    : "fixture_committed_shape_mismatch";
+              assert.instanceOf(fixtureError, SyntheticPresentationError);
+              assert.propertyVal(fixtureError, "reason", expectedReason);
               assert.isFalse(calls.includes("activate"));
               assert.isFalse(calls.includes("ready"));
               assert.isFalse(calls.includes("welcome"));
@@ -866,8 +885,11 @@ it.effect.each([
                 activate: record("activate").pipe(
                   Effect.andThen(Deferred.succeed(activated, undefined)),
                 ),
-                abort: () =>
-                  record("abort").pipe(Effect.andThen(Deferred.succeed(aborted, undefined))),
+                abort: (error) =>
+                  record("abort").pipe(
+                    Effect.andThen(Deferred.succeed(aborted, error)),
+                    Effect.asVoid,
+                  ),
               }).pipe(Layer.provide(dependencies)),
             ),
             Effect.provideService(SyntheticPresentation, input.capability),

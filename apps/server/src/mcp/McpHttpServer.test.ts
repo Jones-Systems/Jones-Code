@@ -141,6 +141,7 @@ const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
       Layer.mock(PullRequestService.PullRequestService)({}),
       Layer.mock(Orchestrator.OrchestratorV2)(unusedCorePorts),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+      Layer.mock(GitManager.GitManager)({}),
       ServerSettings.layerTest(),
       NodeServices.layer,
       NodeCrypto.layer,

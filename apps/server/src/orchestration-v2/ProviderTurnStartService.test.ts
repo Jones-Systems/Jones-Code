@@ -45,6 +45,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSetupError,
+  type Project,
   RunAttemptId,
   RunId,
   RuntimeRequestId,
@@ -199,6 +200,15 @@ const nativeFixtureOperation = <A>(action: () => Promise<A>) =>
     try: action,
     catch: (cause) => new NativeTurnStartFixtureError({ cause }),
   }).pipe(Effect.uninterruptible);
+
+const initializeTestCheckout = (fileSystem: FileSystem.FileSystem, worktreePath: string) =>
+  fileSystem.makeDirectory(worktreePath, { recursive: true }).pipe(
+    Effect.andThen(() =>
+      nativeFixtureOperation(() => nativeGit(worktreePath, ["init", "-b", "feature/restore"])),
+    ),
+    Effect.asVoid,
+  );
+
 const startRecreationFixture = Effect.gen(function* () {
   const fixture = yield* Effect.acquireRelease(
     nativeFixtureOperation(acquireNativeFixture),
@@ -881,12 +891,16 @@ function makeLocalCommandHarness(
     readonly nativeResumeUnsupported?: boolean;
     readonly steeringRestart?: boolean;
     readonly nativeGoals?: boolean;
+    readonly canForkWhileSourceRunning?: boolean;
+    readonly exposesNativeTurnId?: boolean;
     readonly goalDriver?: "opencode" | "antigravity";
     readonly worktreePath?: string;
     readonly worktreesDir?: string;
     readonly workspaceRoot?: string;
     readonly gitWorkflow?: GitWorkflow.GitWorkflowService["Service"];
     readonly fileSystem?: FileSystem.FileSystem;
+    readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
+    readonly recreatedBeforeDispatch?: boolean;
     readonly previousNativeSession?: boolean;
     readonly previousMessages?: ReadonlyArray<string>;
     readonly logoutFailure?: string;
@@ -922,6 +936,8 @@ function makeLocalCommandHarness(
       readonly acceptedResume?: boolean;
       readonly restartedResume?: boolean;
       readonly nativeForkFrom?: "idle" | "busy";
+      readonly sourceBoundary?: "native" | "synthetic";
+      readonly sourceRolledBack?: boolean;
       readonly switchedProvider?: boolean;
       readonly threadRuntimeMode?: OrchestrationV2ThreadProjection["thread"]["runtimeMode"];
     };
@@ -1886,6 +1902,12 @@ function makeLocalCommandHarness(
   );
   const recreateCheckout = vi.fn<RecreateCheckout>();
   const recreationLayer = observedRecreationLayer(input.recreation, recreateCheckout);
+  const project = {
+    id: projection.thread.projectId,
+    workspaceRoot:
+      input.recreation?.projectRoot ?? input.workspaceRoot ?? "/tmp/native-account-project",
+  } as Project;
+  let setupPending = input.recreatedBeforeDispatch === true;
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -1928,9 +1950,16 @@ function makeLocalCommandHarness(
           : [Layer.mock(PlannedUpdateContinuity.PlannedUpdateContinuity)(input.plannedContinuity)]),
         layerNoTaskFolders,
         Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
-          runForThread: () => Effect.succeed({ status: "no-script" }),
+          runForThread: input.runSetup ?? (() => Effect.succeed({ status: "no-script" })),
         }),
-        Layer.mock(ThreadWorktreeRestore)({ takeRecreated: () => Effect.undefined }),
+        Layer.mock(ThreadWorktreeRestore)({
+          takeRecreated: (id) =>
+            Effect.sync(() => {
+              if (!setupPending || id !== threadId || input.worktreePath === undefined) return;
+              setupPending = false;
+              return { project, worktreePath: input.worktreePath };
+            }),
+        }),
         Layer.mock(StartRefusals.StartRefusals)({ cross: () => Effect.void }),
         Layer.mock(RestartPreparation.RestartPreparation)({
           assertThreadOpen: (id) =>
@@ -1997,13 +2026,7 @@ function makeLocalCommandHarness(
             })
           : Layer.succeed(GitWorkflow.GitWorkflowService, input.gitWorkflow),
         Layer.mock(ProjectService.ProjectService)({
-          getById: () =>
-            Effect.succeedSome({
-              workspaceRoot:
-                input.recreation?.projectRoot ??
-                input.workspaceRoot ??
-                "/tmp/native-account-project",
-            } as never),
+          getById: () => Effect.succeedSome(project),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getForkSourceRunIds: () => Effect.succeed(parentRecords.runs.map((run) => run.id)),
@@ -3271,15 +3294,19 @@ effectIt.effect("leaves a managed worktree folder without .git that holds user f
 );
 
 effectIt.effect.each([
-  { async: false, exitCode: 0 },
-  { async: false, exitCode: 1 },
-  { async: true, exitCode: 0 },
-])("restored setup respects async=$async and exitCode=$exitCode", (input) =>
+  { async: false, exitCode: 0, replaced: false },
+  { async: false, exitCode: 1, replaced: false },
+  { async: true, exitCode: 0, replaced: false },
+  { async: false, exitCode: 0, replaced: true },
+])("restored setup async=$async exit=$exitCode replaced=$replaced", (input) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const worktreesDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-restore-setup-" });
+    const worktreesDir = yield* fileSystem.makeTempDirectoryScoped({
+      prefix: "t3-restore-setup-",
+    });
     const worktreePath = path.join(worktreesDir, "project", "restore");
+    yield* fileSystem.makeDirectory(path.join(worktreePath, "node_modules"), { recursive: true });
     const setupStarted = yield* Deferred.make<void>();
     const setupDone = yield* Deferred.make<ProjectSetupScriptRunner.ProjectSetupScriptCompletion>();
     const completionObserved = yield* Deferred.make<void>();
@@ -3306,19 +3333,59 @@ effectIt.effect.each([
         ),
     });
     harness.createWorktree.mockImplementation(() =>
-      fileSystem
-        .makeDirectory(path.join(worktreePath, ".git"), { recursive: true })
-        .pipe(Effect.as({} as never), Effect.orDie),
+      initializeTestCheckout(fileSystem, worktreePath).pipe(Effect.as({} as never), Effect.orDie),
     );
 
     const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
-    yield* Deferred.await(setupStarted);
+    yield* Deferred.await(setupStarted).pipe(
+      Effect.raceFirst(
+        Fiber.join(startup).pipe(
+          Effect.andThen(Deferred.isDone(setupStarted)),
+          Effect.tap((started) => Effect.sync(() => expect(started).toBe(true))),
+          Effect.asVoid,
+        ),
+      ),
+    );
+    const replacementAttempt = RunAttemptId.make("replacement-while-reentering-start");
+    if (input.replaced) {
+      const read = harness.getThreadRecords.getMockImplementation()!;
+      harness.getThreadRecords.mockImplementation((...args) =>
+        Effect.suspend(() => {
+          if (args[1].length === 0) {
+            const current = harness.projection();
+            if (current.runs.at(-1)?.activeAttemptId !== replacementAttempt) {
+              harness.setProjection({
+                ...current,
+                runs: current.runs.map((run) => ({
+                  ...run,
+                  activeAttemptId: replacementAttempt,
+                })),
+                attempts: [
+                  ...current.attempts,
+                  { ...current.attempts[0]!, id: replacementAttempt },
+                ],
+              });
+            }
+          }
+          return read(...args);
+        }),
+      );
+    }
     if (input.async) yield* Fiber.join(startup);
     else expect(harness.open).not.toHaveBeenCalled();
     yield* Deferred.succeed(setupDone, { exitCode: input.exitCode, durationMs: 0 });
     yield* Deferred.await(completionObserved);
     yield* Fiber.join(startup);
 
+    if (input.replaced) {
+      expect(harness.projection().runs.at(-1)).toMatchObject({
+        status: "starting",
+        activeAttemptId: replacementAttempt,
+      });
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      return;
+    }
     const failed = !input.async && input.exitCode !== 0;
     expect(harness.projection().runs.at(-1)?.status).toBe(failed ? "failed" : "running");
     expect(harness.open).toHaveBeenCalledTimes(failed ? 0 : 1);
@@ -3342,7 +3409,7 @@ effectIt.effect("runs setup for a worktree a send recreated before dispatch", ()
     const path = yield* Path.Path;
     const worktreesDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-sent-setup-" });
     const worktreePath = path.join(worktreesDir, "project", "restore");
-    yield* fileSystem.makeDirectory(path.join(worktreePath, ".git"), { recursive: true });
+    yield* initializeTestCheckout(fileSystem, worktreePath);
     const runSetup = vi.fn(() => Effect.succeed({ status: "no-script" as const }));
     const harness = makeLocalCommandHarness({
       text: "Continue",
@@ -3355,7 +3422,7 @@ effectIt.effect("runs setup for a worktree a send recreated before dispatch", ()
     });
     yield* harness.start;
     expect(harness.createWorktree).not.toHaveBeenCalled();
-    expect(runSetup).toHaveBeenCalledWith(expect.objectContaining({ worktreePath }));
+    expect(runSetup).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ worktreePath }));
     expect(harness.open).toHaveBeenCalledTimes(1);
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
@@ -3588,9 +3655,21 @@ effectIt.effect.each([
       });
       yield* harness.start;
       expect(harness.settledRuns).toEqual([]);
-      expect(harness.startTurn.mock.calls.map(([turn]) => turn.message.text)).toEqual([
-        withInlineContext("SIDE_CHAT_CONTEXT", "Continue where you left off."),
-      ]);
+      expect(harness.resumeTurn).not.toHaveBeenCalled();
+      expect(harness.startRootRun).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ resume: false }),
+      );
+      expect(harness.startTurn).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          providerThread: expect.objectContaining({
+            nativeThreadRef: expect.objectContaining({ nativeId: "side-chat-native" }),
+          }),
+          revalidateStartAdmission: expect.anything(),
+          message: expect.objectContaining({
+            text: withInlineContext("SIDE_CHAT_CONTEXT", "Continue where you left off."),
+          }),
+        }),
+      );
     }),
 );
 
@@ -3860,8 +3939,8 @@ effectIt.effect.each(
     }),
 );
 
-effectIt.effect.each(["before-start", "during-fork"] as const)(
-  "recovers a planned native fork after the parent rolls back %s",
+effectIt.effect.each(["before-start", "during-fork", "during-fork-without-proof"] as const)(
+  "requires evidence before recovering a planned native fork after parent rollback %s",
   (rollback) =>
     Effect.gen(function* () {
       const harness = makeLocalCommandHarness({
@@ -3925,7 +4004,7 @@ effectIt.effect.each(["before-start", "during-fork"] as const)(
       harness.getThreadRecords.mockImplementation((id) =>
         Effect.succeed(id === parentThreadId ? parent : harness.projection()),
       );
-      harness.forkThread.mockImplementation(() =>
+      harness.forkThread.mockImplementation(({ sourceProviderThread }) =>
         Effect.sync(() => {
           parent = {
             ...parent,
@@ -3937,8 +4016,11 @@ effectIt.effect.each(["before-start", "during-fork"] as const)(
           Effect.andThen(
             Effect.fail(
               new ProviderAdapter.ProviderAdapterForkThreadError({
-                driver: ProviderDriverKind.make("codex"),
-                providerThreadId: ProviderThreadId.make("side-chat-parent-provider-thread"),
+                driver: sourceProviderThread.driver,
+                providerThreadId: sourceProviderThread.id,
+                ...(rollback === "during-fork"
+                  ? { unappliedSourceNativeId: sourceProviderThread.nativeThreadRef!.nativeId! }
+                  : {}),
                 cause: "Selected native turn was removed by rollback",
               }),
             ),
@@ -3949,6 +4031,16 @@ effectIt.effect.each(["before-start", "during-fork"] as const)(
       yield* harness.start;
 
       expect(harness.forkThread).toHaveBeenCalledTimes(rollback === "before-start" ? 0 : 1);
+      if (rollback === "during-fork-without-proof") {
+        expect(harness.projection().contextTransfers).toMatchObject([
+          { id: "side-chat-fork", status: "pending" },
+        ]);
+        expect(harness.settledRuns).toEqual(["failed"]);
+        expect(harness.prepareProviderHandoff).not.toHaveBeenCalled();
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+        expect(harness.startTurn).not.toHaveBeenCalled();
+        return;
+      }
       expect(harness.projection().contextTransfers).toMatchObject([
         { id: "side-chat-fork", status: "resolved_portable" },
       ]);
@@ -4093,7 +4185,7 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
       const path = yield* Path.Path;
       const workspaceRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-start-" });
       const worktreePath = path.join(workspaceRoot, "project", "worktree");
-      yield* fileSystem.makeDirectory(path.join(worktreePath, ".git"), { recursive: true });
+      yield* initializeTestCheckout(fileSystem, worktreePath);
       const release = yield* Deferred.make<void>();
       const openEntered = yield* Deferred.make<void>();
       const harness = makeLocalCommandHarness({
@@ -4104,9 +4196,7 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
         failReadsAfterRunning: true,
       });
       harness.createWorktree.mockImplementation(() =>
-        fileSystem
-          .makeDirectory(path.join(worktreePath, ".git"), { recursive: true })
-          .pipe(Effect.as({} as never), Effect.orDie),
+        initializeTestCheckout(fileSystem, worktreePath).pipe(Effect.as({} as never), Effect.orDie),
       );
       const open = harness.open.getMockImplementation()!;
       harness.open.mockImplementation((openInput) =>
@@ -4866,13 +4956,14 @@ effectIt.effect(
     }),
 );
 
-effectIt.effect(
-  "production Resume holds an unknown original prefix before opening or resending",
-  () =>
+effectIt.effect.each([true, false])(
+  "production Resume holds an unknown original prefix with native resume unsupported=%s",
+  (nativeResumeUnsupported) =>
     Effect.gen(function* () {
       const harness = makeLocalCommandHarness({
         text: "",
         manualContinuation: true,
+        nativeResumeUnsupported,
         sideChat: { contextRun: "failed", unsentResume: true },
         resumeDisposition: "held",
       });

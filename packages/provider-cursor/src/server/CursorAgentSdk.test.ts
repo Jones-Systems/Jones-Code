@@ -240,6 +240,15 @@ const makeNativeWitnessHarness = Effect.fn("makeNativeWitnessHarness")(function*
     publish: Effect.promise(() =>
       publish!({ update: { type: "assistant-message-chunk", text: "live update" } }),
     ),
+    publishShell: Effect.promise(() =>
+      publish!({
+        update: {
+          type: "shell-tool-call-delta",
+          callId: "shell-during-callback-drain",
+          content: "last native output",
+        },
+      }),
+    ),
   };
 });
 
@@ -303,7 +312,7 @@ describe("CursorAgentSdkRunner", () => {
               updates += 1;
             }).pipe(
               Effect.andThen(
-                update.type === "shell-output-delta"
+                update.type === "shell-tool-call-delta"
                   ? Deferred.succeed(shellStarted, undefined).pipe(
                       Effect.andThen(Deferred.await(shellRelease)),
                     )
@@ -328,27 +337,21 @@ describe("CursorAgentSdkRunner", () => {
         assert.isUndefined(projected.pollUnsafe());
         assert.isFalse(Deferred.isDoneUnsafe(diagnosticStarted));
 
-        (Reflect.get(globalThis, Symbol.for("@cursor/sdk.shellStreamOutput")) as Function)({
-          conversationId: "agent-cursor-agent-sdk-test",
-          toolCallId: "shell-during-callback-drain",
-          event: { case: "stdout", value: { data: "last native output" } },
-        });
+        const publishingShell = yield* h.publishShell.pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
         yield* Deferred.succeed(callbackRelease, undefined);
         yield* Fiber.join(publishing);
         yield* Deferred.await(shellStarted);
         assert.isUndefined(projected.pollUnsafe());
         assert.isFalse(Deferred.isDoneUnsafe(diagnosticStarted));
         yield* Deferred.succeed(shellRelease, undefined);
+        yield* Fiber.join(publishingShell);
         yield* Deferred.await(diagnosticStarted);
         assert.isUndefined(projected.pollUnsafe());
         assert.strictEqual(yield* run.nativeWait!, nativeWitnessResult);
         yield* Deferred.succeed(diagnosticRelease, undefined);
         assert.strictEqual(yield* Fiber.join(projected), nativeWitnessResult);
-        (Reflect.get(globalThis, Symbol.for("@cursor/sdk.shellStreamOutput")) as Function)({
-          conversationId: "agent-cursor-agent-sdk-test",
-          toolCallId: "shell-after-projected-wait",
-          event: { case: "stdout", value: { data: "already unsubscribed" } },
-        });
         assert.strictEqual(yield* run.wait, nativeWitnessResult);
         assert.strictEqual(updates, 2);
         assert.strictEqual(h.wait.mock.calls.length, 1);

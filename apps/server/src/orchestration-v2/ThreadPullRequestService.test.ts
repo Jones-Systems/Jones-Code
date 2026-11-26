@@ -561,7 +561,9 @@ describe("ThreadPullRequestServiceV2 reads", () => {
               list: () => Effect.sync(() => ({ snapshotSequence: 1, threads: [thread] })),
             }),
             Layer.mock(Orchestrator.OrchestratorV2)({
+              ...unusedCorePorts(),
               streamDomainEvents: Stream.fromQueue(domainEvents),
+              getThreadEventSequence: () => Effect.succeed(1),
               // The thread changed api and web, and a folder the project no longer tracks.
               getCheckpointContext: () =>
                 Effect.succeed({
@@ -613,8 +615,12 @@ describe("ThreadPullRequestServiceV2 reads", () => {
                   }),
                 ),
             }),
-            Layer.mock(PullRequestService.PullRequestService)({}),
-            Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({}),
+            Layer.mock(PullRequestService.PullRequestService)({
+              notifyLinkedThreadsChanged: Effect.void,
+            }),
+            Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+              resolve: () => Effect.succeed(null),
+            }),
             Layer.mock(BackgroundPolicy.BackgroundPolicy)({
               shouldRunScopeWork: () => Effect.succeed(false),
               shouldRunOpportunisticWork: Effect.succeed(false),
@@ -624,7 +630,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
               SecureRandom.SecureRandom,
               SecureRandom.make((size) => new Uint8Array(size).fill(1)),
             ),
-            FileSystem.layerNoop({}),
+            FileSystem.layerNoop({ exists: () => Effect.succeed(false) }),
             Path.layer,
           );
           yield* Effect.gen(function* () {

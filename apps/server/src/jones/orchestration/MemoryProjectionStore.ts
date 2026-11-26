@@ -215,6 +215,7 @@ type ProjectionNode = OrchestrationV2ThreadProjection["nodes"][number];
 type ProjectionRun = OrchestrationV2ThreadProjection["runs"][number];
 interface ProjectionReplayState {
   readonly projections: Map<ThreadId, OrchestrationV2ThreadProjection>;
+  readonly forkSourceRuns: Map<ThreadId, ReadonlyArray<RunId>>;
   readonly legacyThreads: Map<
     ThreadId,
     { readonly projectId: ProjectId; readonly createdAt: string; readonly metadata: ThreadMetadata }
@@ -385,6 +386,7 @@ export const makeMemoryLayer = (
   function makeProjectionReplayState(): ProjectionReplayState {
     return {
       projections: new Map(),
+      forkSourceRuns: new Map(),
       legacyThreads: new Map(),
       legacyRuns: new Map(),
       providerSessionThreadIds: new Map(),
@@ -432,6 +434,19 @@ export const makeMemoryLayer = (
     }
     event = decodePublicDomainEvent(event);
     if (event.type === "thread.created" && !state.projections.has(event.threadId)) {
+      const fork = event.payload.forkedFrom;
+      if (fork?.type === "run") {
+        const source = state.projections.get(fork.threadId);
+        const base = source?.runs.find((run) => run.id === fork.runId);
+        state.forkSourceRuns.set(
+          event.threadId,
+          base === undefined
+            ? []
+            : (source?.runs ?? [])
+                .filter((run) => run.ordinal <= base.ordinal && run.status !== "rolled_back")
+                .map((run) => run.id),
+        );
+      }
       state.projections.set(event.threadId, emptyProjection(event));
       return true;
     }
@@ -564,6 +579,34 @@ export const makeMemoryLayer = (
               );
             }),
           ),
+      };
+      const runProviderRecords = (
+        projection: OrchestrationV2ThreadProjection,
+        runId: RunId,
+        nodeId: Parameters<ProjectionStoreV2Shape["getRunProviderRecords"]>[2],
+      ) => {
+        const runs = projection.runs.filter((run) => run.id === runId);
+        const run = runs[0];
+        const attempts = projection.attempts.filter(
+          (attempt) => attempt.id === run?.activeAttemptId,
+        );
+        const attemptTurns =
+          run?.activeAttemptId == null
+            ? []
+            : projection.providerTurns.filter((turn) => turn.runAttemptId === run.activeAttemptId);
+        return {
+          thread: projection.thread,
+          runs,
+          attempts,
+          nodes: projection.nodes.filter((node) => node.id === nodeId),
+          providerThreads: projection.providerThreads.filter(
+            (thread) => thread.id === run?.providerThreadId,
+          ),
+          providerTurns:
+            attemptTurns.length > 0
+              ? attemptTurns
+              : projection.providerTurns.filter((turn) => turn.id === attempts[0]?.providerTurnId),
+        };
       };
       const service: ProjectionStoreV2Shape = {
         legacyRecords,
@@ -814,6 +857,7 @@ export const makeMemoryLayer = (
                 ] => {
                   const next: ProjectionReplayState = {
                     projections: new Map(existing.projections),
+                    forkSourceRuns: new Map(existing.forkSourceRuns),
                     legacyThreads: new Map(existing.legacyThreads),
                     legacyRuns: new Map(existing.legacyRuns),
                     providerSessionThreadIds: new Map(existing.providerSessionThreadIds),
@@ -991,6 +1035,10 @@ export const makeMemoryLayer = (
           }
           return projection.thread;
         }),
+        findThread: (threadId) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) => state.projections.get(threadId)?.thread ?? null),
+          ),
         getSettlementCandidates: Effect.fn("ProjectionStore.getSettlementCandidates")(
           function* (threadId) {
             const projections = (yield* Ref.get(replayState)).projections;
@@ -1338,35 +1386,19 @@ export const makeMemoryLayer = (
             ),
           ),
         getRunProviderRecords: (threadId, runId, nodeId) =>
+          service
+            .getThreadProjection(threadId)
+            .pipe(Effect.map((projection) => runProviderRecords(projection, runId, nodeId))),
+        getRunCardRecords: (threadId, runId, nodeId, cardType) =>
           service.getThreadProjection(threadId).pipe(
-            Effect.map((projection) => {
-              const runs = projection.runs.filter((run) => run.id === runId);
-              const run = runs[0];
-              const attempts = projection.attempts.filter(
-                (attempt) => attempt.id === run?.activeAttemptId,
-              );
-              const attemptTurns =
-                run?.activeAttemptId == null
-                  ? []
-                  : projection.providerTurns.filter(
-                      (turn) => turn.runAttemptId === run.activeAttemptId,
-                    );
-              return {
-                thread: projection.thread,
-                runs,
-                attempts,
-                nodes: projection.nodes.filter((node) => node.id === nodeId),
-                providerThreads: projection.providerThreads.filter(
-                  (thread) => thread.id === run?.providerThreadId,
-                ),
-                providerTurns:
-                  attemptTurns.length > 0
-                    ? attemptTurns
-                    : projection.providerTurns.filter(
-                        (turn) => turn.id === attempts[0]?.providerTurnId,
-                      ),
-              };
-            }),
+            Effect.map((projection) => ({
+              ...runProviderRecords(projection, runId, nodeId),
+              turnItems: projection.turnItems.filter((item) => item.type === cardType),
+            })),
+          ),
+        getRunCount: (threadId) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) => state.projections.get(threadId)?.runs.length ?? 0),
           ),
         isNodeStored: (node) =>
           Ref.get(replayState).pipe(
@@ -1456,6 +1488,31 @@ export const makeMemoryLayer = (
               ["thread", projection.thread],
               ...fields.map((field) => [field, selected[field]]),
             ]) as ProjectionRecords<(typeof fields)[number]>;
+          },
+        ),
+        getForkSourceRunIds: (threadId) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) => state.forkSourceRuns.get(threadId) ?? []),
+          ),
+        // The replay store already has the whole history in one Ref snapshot.
+        getDelegatedChildControls: Effect.fn("ProjectionStore.getDelegatedChildControls")(
+          function* (threadId) {
+            const projection = (yield* Ref.get(replayState)).projections.get(threadId);
+            if (projection === undefined)
+              return yield* new ProjectionStoreThreadNotFoundError({ threadId });
+            return {
+              thread: projection.thread,
+              runs: projection.runs,
+              messages: projection.messages.filter(
+                (message) =>
+                  message.role === "user" &&
+                  (message.notification?.source.kind === "monitor" ||
+                    message.delegatedCompletion !== undefined),
+              ),
+              subagents: projection.subagents,
+              providerThreads: projection.providerThreads,
+              runsFloor: undefined,
+            };
           },
         ),
         getRuntimeRequest: Effect.fn("ProjectionStore.getRuntimeRequest")(
@@ -1826,7 +1883,11 @@ export const makeMemoryLayer = (
           );
         }),
         getThreadProjection: Effect.fn("ProjectionStore.getThreadProjection")(function* (threadId) {
-          const { projections: existing, providerThreadInstanceIds } = yield* Ref.get(replayState);
+          const {
+            projections: existing,
+            forkSourceRuns,
+            providerThreadInstanceIds,
+          } = yield* Ref.get(replayState);
           const readProjection = (
             targetThreadId: ThreadId,
             seenThreadIds: ReadonlySet<ThreadId>,
@@ -1848,6 +1909,7 @@ export const makeMemoryLayer = (
               visibleTurnItems: buildVisibleTurnItems({
                 projection,
                 sourceProjection,
+                inheritedRunIds: forkSourceRuns.get(targetThreadId) ?? [],
               }),
             };
           };

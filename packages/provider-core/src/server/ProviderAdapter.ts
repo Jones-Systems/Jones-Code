@@ -216,6 +216,7 @@ export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("background_work.lost"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: ThreadId,
     providerThreadId: ProviderThreadId,
     tasks: Schema.Array(OrchestrationV2PendingBackgroundTask),

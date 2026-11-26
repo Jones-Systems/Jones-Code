@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { HttpRouter, HttpServer } from "effect/http";
 import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
+import * as SessionStore from "../../auth/SessionStore.ts";
 import * as ServerBrowser from "../../preview/ServerBrowser.ts";
 import * as ServerBrowserStream from "../../preview/ServerBrowserStream.ts";
 import { CompanionHostUnavailable } from "./CompanionHostRegistry.ts";
@@ -15,15 +16,18 @@ import { CompanionHostUnavailable } from "./CompanionHostRegistry.ts";
 it.live("closes the real stream socket with 4504 and bounded host status", () =>
   Effect.gen(function* () {
     const hostId = "m".repeat(64);
-    const auth = Layer.mock(EnvironmentAuth.EnvironmentAuth, {
-      authenticateWebSocketUpgrade: () =>
-        Effect.succeed({
-          sessionId: AuthSessionId.make("test"),
-          subject: "human",
-          method: "bearer-access-token",
-          scopes: [AuthOrchestrationReadScope],
-        }),
-    });
+    const auth = Layer.merge(
+      Layer.mock(EnvironmentAuth.EnvironmentAuth, {
+        authenticateWebSocketUpgrade: () =>
+          Effect.succeed({
+            sessionId: AuthSessionId.make("test"),
+            subject: "human",
+            method: "bearer-access-token",
+            scopes: [AuthOrchestrationReadScope],
+          }),
+      }),
+      Layer.mock(SessionStore.SessionStore, { awaitInvalidation: () => Effect.never }),
+    );
     const services = yield* Layer.build(
       HttpRouter.serve(
         ServerBrowserStream.routeLayer.pipe(

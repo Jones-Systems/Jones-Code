@@ -4777,11 +4777,13 @@ export const layerWithOptions = (
         };
       };
 
-      const startEventPump = (entry: LiveSessionEntry) => {
+      const startEventPump = (entry: LiveSessionEntry, sessionClosed: Deferred.Deferred<void>) => {
         let stoppedByProvider = false;
         let lastSessionStatus = entry.runtime.providerSession.status;
         const retryStalls = makeRetryStallWatch(entry);
         return entry.runtime.events.pipe(
+          // Some adapters keep their event queue open after their session finalizers finish.
+          Stream.interruptWhen(Deferred.await(sessionClosed)),
           Stream.filterEffect((event) => validateProviderEvent(entry.runtime, event)),
           Stream.runForEach((nativeEvent) => {
             if (shutdownSignal.received) return Effect.void;
@@ -6133,6 +6135,9 @@ export const layerWithOptions = (
                   }
                 });
                 const sessionScope = yield* Scope.fork(sessionScopes);
+                // Signal after the adapter's finalizers so the pump can ingest shutdown events.
+                const sessionClosed = yield* Deferred.make<void>();
+                yield* Scope.addFinalizer(sessionScope, Deferred.done(sessionClosed, Exit.void));
                 const runtimeOwner: {
                   runtime: ProviderAdapterV2SessionRuntime | undefined;
                   active: boolean;
@@ -6344,7 +6349,7 @@ export const layerWithOptions = (
                     ).pipe(logReleaseFailure(input.providerSessionId)),
                   ),
                 );
-                yield* startEventPump(entry);
+                yield* startEventPump(entry, sessionClosed);
                 yield* scheduleIdleRelease(input.providerSessionId);
                 return exposedRuntime;
               }).pipe((effect) =>

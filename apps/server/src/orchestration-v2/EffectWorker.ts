@@ -681,6 +681,15 @@ export const layerExecutor: Layer.Layer<
                           ? error
                           : new GoalNotificationDeliveryUnknown({ cause: error });
                       }
+                      // Ordinary steers that the completed turn could not receive keep their
+                      // original queue position and selection. The dispatcher checks the source
+                      // run's Stop fence before moving the message to a successor.
+                      const orderedFollowUp =
+                        steerDeclined ||
+                        (turnCompleted &&
+                          message.notification === undefined &&
+                          message.delegatedCompletion === undefined &&
+                          request.steerFollowUpAfterRunOrdinal !== undefined);
                       // Reuse the message identity and a stable command receipt so an outbox
                       // retry cannot append a duplicate message or start a second follow-up.
                       yield* threads
@@ -689,8 +698,8 @@ export const layerExecutor: Layer.Layer<
                           commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
                           threadId: effect.threadId,
                           messageId: message.id,
-                          ...(steerDeclined ? { steerFollowUpOfRunId: run.id } : {}),
-                          ...(steerDeclined && request.steerFollowUpAfterRunOrdinal !== undefined
+                          ...(orderedFollowUp ? { steerFollowUpOfRunId: run.id } : {}),
+                          ...(orderedFollowUp && request.steerFollowUpAfterRunOrdinal !== undefined
                             ? { steerFollowUpAfterRunOrdinal: request.steerFollowUpAfterRunOrdinal }
                             : {}),
                           text: message.text,
@@ -698,7 +707,7 @@ export const layerExecutor: Layer.Layer<
                           attachments: message.attachments,
                           // A delegated-task question is a new turn on the thread's selection;
                           // other notifications stay on the run they were meant to reach.
-                          ...(steerDeclined && request.modelSelection !== undefined
+                          ...(orderedFollowUp && request.modelSelection !== undefined
                             ? { modelSelection: request.modelSelection }
                             : message.delegatedCompletion === undefined &&
                                 (message.notification === undefined ||
@@ -709,7 +718,7 @@ export const layerExecutor: Layer.Layer<
                             type:
                               message.delegatedCompletion === undefined &&
                               message.notification === undefined &&
-                              !steerDeclined
+                              !orderedFollowUp
                                 ? "start_immediately"
                                 : "queue_after_active",
                           },

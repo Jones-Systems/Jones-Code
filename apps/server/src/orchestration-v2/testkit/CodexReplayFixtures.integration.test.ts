@@ -86,7 +86,7 @@ it.effect(
     Effect.gen(function* () {
       const fixture = findReplayFixture("multi_turn")!;
       const driver = fixture.providers.find((provider) => provider.driver === "codex")!;
-      const writes: number[] = [];
+      const writes: Array<{ readonly parent: string | undefined; readonly count: number }> = [];
       const tracer = Tracer.make({
         span(options) {
           const span = new Tracer.NativeSpan(options);
@@ -94,7 +94,14 @@ it.effect(
           span.end = (time, exit) => {
             end(time, exit);
             if (span.name === "orchestrationV2.EventSink.providerBatch") {
-              writes.push(Number(span.attributes.get("orchestration_v2.batch_writes")));
+              const parent =
+                span.parent._tag === "Some" && span.parent.value._tag === "Span"
+                  ? span.parent.value.name
+                  : undefined;
+              writes.push({
+                parent,
+                count: Number(span.attributes.get("orchestration_v2.batch_writes")),
+              });
             }
           };
           return span;
@@ -108,10 +115,26 @@ it.effect(
         materializeWorkspace: (transcript, workspace) =>
           Effect.succeed(materializeReplayTranscriptWorkspace(transcript, workspace)),
       }).pipe(Effect.withTracer(tracer), Effect.withTracerEnabled(true));
-      assert.equal(
-        writes.reduce((total, count) => total + count, 0),
-        6,
+      // Each run promotion checks its outbox claim inside a separate provider batch.
+      assert.deepEqual(
+        writes
+          .filter(({ parent }) => parent === "ProviderTurnStartService.writeWithStartClaim")
+          .map(({ count }) => count),
+        [1, 1],
+        JSON.stringify(writes),
       );
-      assert.isTrue(writes.every((count) => count <= 3));
+      const snapshotWrites = writes.filter(
+        ({ parent }) => parent === "orchestrationV2.ProviderCommitBatch.flush",
+      );
+      assert.equal(
+        snapshotWrites.reduce((total, { count }) => total + count, 0),
+        6,
+        JSON.stringify(writes),
+      );
+      assert.equal(
+        writes.reduce((total, { count }) => total + count, 0),
+        8,
+      );
+      assert.isTrue(writes.every(({ count }) => count <= 3));
     }),
 );

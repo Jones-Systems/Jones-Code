@@ -8798,7 +8798,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // An inherited owner follow-up keeps the saved selection when it must wait.
       dispatchMode = { type: "queue_after_active" };
       if (!ownerMessage) modelSelection = deferredSteer.modelSelection;
-      queuedToolBoundaryEligible ??= true;
+      if (!(yield* limitForbidsParkedSteer)) queuedToolBoundaryEligible ??= true;
     }
     // Stop leaves the run reading as running until its provider stops. A plain
     // send in that window queues behind the stopped queue. Explicit resume
@@ -9188,27 +9188,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           )) &&
         !(yield* stopReachedRun(command, command.threadId, target.id))
       ) {
-        const adapter = yield* providerAdapters
-          .get(target.providerInstanceId)
-          .pipe(mapDispatchError(command));
-        const capabilities = yield* adapter.getCapabilities().pipe(mapDispatchError(command));
-        yield* commandPolicy
-          .decideSteeringExecution({
-            commandId: command.commandId,
-            threadId: command.threadId,
-            providerInstanceId: target.providerInstanceId,
-            capabilities,
-          })
-          .pipe(mapDispatchError(command));
-        yield* ensureSteeringMessage(command, command);
-        steerWhenReadyRunId = target.id;
-        queuedToolBoundaryEligible ??= true;
-        if (
-          ownerMessage ||
-          command.modelSelection === undefined ||
-          command.modelSelectionExplicit === false
-        )
-          modelSelection = target.modelSelection;
+        if (!(yield* limitForbidsParkedSteer)) {
+          const adapter = yield* providerAdapters
+            .get(target.providerInstanceId)
+            .pipe(mapDispatchError(command));
+          const capabilities = yield* adapter.getCapabilities().pipe(mapDispatchError(command));
+          yield* commandPolicy
+            .decideSteeringExecution({
+              commandId: command.commandId,
+              threadId: command.threadId,
+              providerInstanceId: target.providerInstanceId,
+              capabilities,
+            })
+            .pipe(mapDispatchError(command));
+          yield* ensureSteeringMessage(command, command);
+          steerWhenReadyRunId = target.id;
+          queuedToolBoundaryEligible ??= true;
+          if (
+            ownerMessage ||
+            command.modelSelection === undefined ||
+            command.modelSelectionExplicit === false
+          )
+            modelSelection = target.modelSelection;
+        }
         dispatchMode = { type: "queue_after_active" };
       }
     }

@@ -1969,6 +1969,42 @@ export async function waitInactive(rpc, threadId) {
   }
 }
 
+function verifierRunEvidence(projection, runId) {
+  const run = projection?.runs.find((candidate) => candidate.id === runId);
+  return run === undefined
+    ? { outcome: "run-missing" }
+    : {
+        outcome: "observed",
+        runId: run.id,
+        status: run.status,
+        started: run.startedAt !== null,
+        completed: run.completedAt !== null,
+        nativeTurnStates: projection.providerTurns
+          .filter((turn) => turn.runAttemptId === run.activeAttemptId)
+          .map((turn) => turn.status),
+      };
+}
+
+async function readVerifierRunEvidence(rpc, threadId, runId) {
+  if (runId === undefined) return { outcome: "launch-run-unattributed" };
+  let request;
+  let timer;
+  try {
+    request = rpc.call("orchestration.getThreadProjection", { threadId });
+    return await Promise.race([
+      request.result.then((projection) => verifierRunEvidence(projection, runId)),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ outcome: "readback-timed-out" }), 5_000);
+      }),
+    ]);
+  } catch {
+    return { outcome: "readback-unavailable" };
+  } finally {
+    clearTimeout(timer);
+    request?.interrupt();
+  }
+}
+
 export async function readBuildReceipt(source, buildReceipt, rendererDir) {
   const expected = JSON.parse(await NodeFSP.readFile(buildReceipt, "utf8"));
   const nativeGit = (...args) =>
@@ -2047,6 +2083,7 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
     build: expected,
     outcome: "running",
     scenarios: [],
+    verifierRuns: [],
     boundaries: [
       "Shared web renderer through native T3 Preview",
       "Synthetic remote descriptor/update responses; real authentication",
@@ -2168,7 +2205,8 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
           };
           // Settings persistence acknowledges before the provider registry finishes hydration.
           await waitProviderReady(primary.rpc, instanceId);
-          await primary.rpc.call("orchestration.launchThread", {
+          const messageId = id();
+          const launch = await primary.rpc.call("orchestration.launchThread", {
             commandId: id(),
             projectId,
             threadId,
@@ -2179,12 +2217,22 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
             interactionMode: "default",
             workspaceStrategy: { type: "root" },
             initialMessage: {
-              messageId: id(),
+              messageId,
               text: `JONES_PREVIEW_SCENARIO:${Buffer.from(JSON.stringify(scenario)).toString("base64")}`,
               attachments: [],
             },
           }).result;
-          const acknowledged = await channel.wait(["report", "final"], deadline(signal));
+          const runId = launch.projection.runs.find((run) => run.userMessageId === messageId)?.id;
+          const accepted = verifierRunEvidence(launch.projection, runId);
+          let acknowledged;
+          try {
+            acknowledged = await channel.wait(["report", "final"], deadline(signal));
+          } catch (error) {
+            const readback = await readVerifierRunEvidence(primary.rpc, threadId, runId);
+            evidence.verifierRuns.push({ mode, threadId, accepted, readback });
+            throw error;
+          }
+          evidence.verifierRuns.push({ mode, threadId, accepted });
           const preliminary = await readAcknowledgedMilestone(
             files[acknowledged.name],
             acknowledged,

@@ -131,6 +131,8 @@ const makeRefreshBarrierFixture = Effect.gen(function* () {
           ? gates.paths
           : gates.content;
       return Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
+        list: () => Effect.succeed({ entries: [], truncated: false }),
+        searchContents: () => Effect.succeed({ matches: [], truncated: false }),
         refresh: () =>
           Effect.gen(function* () {
             yield* Deferred.succeed(gate.started, undefined);
@@ -139,16 +141,21 @@ const makeRefreshBarrierFixture = Effect.gen(function* () {
           }).pipe(Effect.onInterrupt(() => Deferred.succeed(gate.interrupted, undefined))),
       });
     },
+    { idleTimeToLive: WorkspaceSearchIndex.WORKSPACE_INDEX_IDLE_TTL },
   );
-  for (const variant of WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS) {
-    yield* indexes.contextEffect(
-      WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, variant),
-    );
-  }
   const entries = yield* WorkspaceEntries.make.pipe(
     Effect.provideService(WorkspaceSearchIndex.WorkspaceSearchIndexMap, indexes),
     Effect.provide(VcsProcess.layer),
   );
+  yield* entries.list({ cwd });
+  yield* entries.searchContents({
+    cwd,
+    query: "new",
+    limit: 1,
+    caseSensitive: false,
+    wholeWord: false,
+    useRegex: false,
+  });
   const files = yield* WorkspaceFileSystem.make.pipe(
     Effect.provideService(WorkspaceEntries.WorkspaceEntries, entries),
     Effect.provide(layerKnownWorkspacesTest),

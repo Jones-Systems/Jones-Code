@@ -404,13 +404,10 @@ function makeProviderThread(input: {
   };
 }
 
-// A Codex native subagent's provider thread is owned by its child app thread
-// but reachable from the parent's projection through the subagent record.
 // Persist the synthetic target that these manager unit tests dispatch. Managed
 // runtimes still receive and execute the original admission callback.
-const startTestTurn = (
-  runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
-  input: ProviderAdapter.ProviderAdapterV2TurnInput,
+const persistTestTurnTarget = (
+  input: Pick<ProviderAdapter.ProviderAdapterV2TurnInput, "threadId" | "providerThread">,
 ) =>
   Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;
@@ -426,9 +423,15 @@ const startTestTurn = (
         },
       ],
     });
-    yield* runtime.startTurn(input);
   });
 
+const startTestTurn = (
+  runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+  input: ProviderAdapter.ProviderAdapterV2TurnInput,
+) => persistTestTurnTarget(input).pipe(Effect.andThen(() => runtime.startTurn(input)));
+
+// A Codex native subagent's provider thread is owned by its child app thread
+// but reachable from the parent's projection through the subagent record.
 const makeNativeChildFixture = Effect.fnUntraced(function* () {
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const eventSink = yield* EventSink.EventSinkV2;
@@ -2130,7 +2133,11 @@ it.effect(
             }),
           );
         });
-        assert.equal((yield* startOnReleasedRuntime)._tag, "ProviderAdapterTurnStartError");
+        const releasedBinding = {
+          _tag: "ProviderRuntimeBindingError",
+          detail: "The captured native runtime attachment is no longer live.",
+        };
+        assert.include(yield* startOnReleasedRuntime, releasedBinding);
 
         // Nor may it leave its turn busy on a replacement opened under the same id.
         yield* manager.open({
@@ -2140,7 +2147,7 @@ it.effect(
           modelSelection,
           runtimePolicy,
         });
-        assert.equal((yield* startOnReleasedRuntime)._tag, "ProviderAdapterTurnStartError");
+        assert.include(yield* startOnReleasedRuntime, releasedBinding);
         assert.isTrue(yield* release(sibling));
       }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60 * 60_000 })));
     }),
@@ -2340,7 +2347,13 @@ it.effect.each([
             yield* makeThreadCreatedEvent({ idAllocator, threadId, now: yield* DateTime.now }),
           ],
         });
-        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        yield* manager.open({
+          ...makeTestAdmission().input,
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
         yield* TestClock.adjust(minutes * 60_000 - 1_000);
         assert.isTrue(yield* manager.isLive(providerSessionId));
         yield* TestClock.adjust("1 second");
@@ -2366,7 +2379,9 @@ const idleReleaseAroundRun = (start: "compactThread" | "resumeTurn") =>
       yield* eventSink.write({
         events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
       });
+      const admission = makeTestAdmission();
       const runtime = yield* manager.open({
+        ...admission.input,
         threadId,
         providerSessionId,
         modelSelection,
@@ -2387,6 +2402,7 @@ const idleReleaseAroundRun = (start: "compactThread" | "resumeTurn") =>
       });
       const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
       const run = {
+        ...admission.input,
         appThread: (yield* projectionStore.getThreadProjection(threadId)).thread,
         threadId,
         runId,
@@ -2398,6 +2414,7 @@ const idleReleaseAroundRun = (start: "compactThread" | "resumeTurn") =>
         modelSelection,
         runtimePolicy,
       };
+      yield* persistTestTurnTarget(run);
       const messageId = yield* idAllocator.allocate.message({ threadId, ordinal: 1 });
       yield* start === "compactThread"
         ? runtime.compactThread!({

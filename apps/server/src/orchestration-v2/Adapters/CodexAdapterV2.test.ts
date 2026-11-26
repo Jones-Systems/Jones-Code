@@ -1679,7 +1679,8 @@ function withCodexSetupExchanges(
         params.input.length === 0 &&
         startedThreads.has(params.threadId);
       if (frame.method === "turn/start") startedThreads.add(params.threadId);
-      const turnStart = frame.method === "turn/start" && !capacityRetry;
+      const turnStart =
+        frame.method === "turn/start" && !capacityRetry && previousMethod !== "config/read";
       const exchanges: Array<readonly [string, unknown, unknown]> = [];
       if (turnStart && !namedThreads.has(params.threadId)) {
         namedThreads.add(params.threadId);
@@ -1766,6 +1767,28 @@ function withReplayRequestId(
   return entry.type !== "runtime_exit" && Predicate.isObject(entry.frame)
     ? { ...entry, frame: { ...entry.frame, id } }
     : entry;
+}
+
+function replayBackgroundTerminalsList(
+  id: number,
+  threadId: string,
+  processIds: ReadonlyArray<string>,
+): Array<CodexReplay.CodexAppServerReplayEntry> {
+  return [
+    {
+      type: "expect_outbound",
+      label: "thread/backgroundTerminals/list",
+      frame: { id, method: "thread/backgroundTerminals/list", params: { threadId } },
+    },
+    {
+      type: "emit_inbound",
+      label: "thread/backgroundTerminals/list",
+      frame: {
+        id,
+        result: { data: processIds.map((processId) => ({ processId })), nextCursor: null },
+      },
+    },
+  ];
 }
 
 describe("CodexAdapterV2 process exit", () => {
@@ -2814,6 +2837,20 @@ describe("CodexAdapterV2 session initialize", () => {
         assert.isFalse(yield* Deferred.isDone(physicalExit));
 
         if (existing !== undefined) {
+          if (method === "thread/resume") {
+            const started = yield* Queue.take(session.events);
+            assert.equal(started.type, "provider_session.updated");
+            if (started.type === "provider_session.updated") {
+              assert.equal(started.providerSession.startupPhase, "resume");
+              assert.equal(started.providerSession.startupPhaseThreadId, existing.appThreadId);
+            }
+            const cleared = yield* Queue.take(session.events);
+            assert.equal(cleared.type, "provider_session.updated");
+            if (cleared.type === "provider_session.updated") {
+              assert.isUndefined(cleared.providerSession.startupPhase);
+              assert.isUndefined(cleared.providerSession.startupPhaseThreadId);
+            }
+          }
           yield* session.notify("model/rerouted", {
             threadId: nativeThreadId,
             toModel: "gpt-6",
@@ -6802,7 +6839,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     { hook: "wrong-turn", status: "interrupted", expected: false },
     { hook: "wrong-thread", status: "interrupted", expected: false },
     { hook: "unscoped", status: "interrupted", expected: false },
-    { hook: "stopped", status: "completed", expected: false },
+    { hook: "stopped", status: "completed", expected: true },
     { hook: "stopped", status: "failed", expected: false },
   ] as const)(
     "correlates $hook hook output with a $status turn only",
@@ -7651,6 +7688,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             dispatchMode: { type: "start_immediately" },
           });
           yield* worker.drain();
+          assert.isNull((yield* Ref.get(driver.state)).failure);
           yield* Fiber.join(retrying);
           assert.equal(
             (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)?.status,
@@ -7658,7 +7696,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
           const completed = yield* orchestrator.streamDomainEvents.pipe(
             Stream.filter(
-              (event) => event.type === "run.updated" && event.payload.status === "waiting",
+              (event) =>
+                event.type === "run.updated" &&
+                event.threadId === threadId &&
+                event.payload.completedAt !== null,
             ),
             Stream.runHead,
             Effect.forkChild({ startImmediately: true }),
@@ -9051,10 +9092,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             ...backgroundExecTranscript.entries.slice(0, -2),
             ...(retainContext ? [monitor("inProgress")] : []),
             backgroundExecTranscript.entries.at(-2)!,
-            ...unsubscribe(4),
-            ...unsubscribe(5, [notification("thread/closed", { threadId: "unrelated-thread" })]),
-            ...unsubscribe(6, [closed]),
-            ...unsubscribe(7, [
+            ...replayBackgroundTerminalsList(4, BG_NATIVE_THREAD, ["4242"]),
+            ...unsubscribe(5),
+            ...unsubscribe(6, [notification("thread/closed", { threadId: "unrelated-thread" })]),
+            ...unsubscribe(7, [closed]),
+            ...unsubscribe(8, [
               closed,
               notification("item/completed", {
                 threadId: BG_NATIVE_THREAD,
@@ -9159,12 +9201,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       scenario: `codex-bg-stop-${terminated}`,
       entries: [
         ...backgroundExecTranscript.entries.slice(0, -1),
-        ...noActiveGoal(4, BG_NATIVE_THREAD),
+        ...replayBackgroundTerminalsList(4, BG_NATIVE_THREAD, ["4242"]),
+        ...noActiveGoal(5, BG_NATIVE_THREAD),
         {
           type: "expect_outbound",
           label: "terminate-background-command",
           frame: {
-            id: 5,
+            id: 6,
             method: "thread/backgroundTerminals/terminate",
             params: { threadId: BG_NATIVE_THREAD, processId: "4242" },
           },
@@ -9175,68 +9218,41 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           frame:
             terminated === "thread_unloaded"
               ? {
-                  id: 5,
+                  id: 6,
                   error: { code: -32600, message: `thread not found: ${BG_NATIVE_THREAD}` },
                 }
-              : { id: 5, result: { terminated: terminated === true } },
+              : { id: 6, result: { terminated: terminated === true } },
         },
         ...(terminated === false || stillRunning
-          ? [
-              {
-                type: "expect_outbound" as const,
-                frame: {
-                  id: 6,
-                  method: "thread/backgroundTerminals/list",
-                  params: { threadId: BG_NATIVE_THREAD },
-                },
-              },
-              {
-                type: "emit_inbound" as const,
-                frame: {
-                  id: 6,
-                  result: { data: stillRunning ? [{ processId: "4242" }] : [], nextCursor: null },
-                },
-              },
-            ]
+          ? replayBackgroundTerminalsList(7, BG_NATIVE_THREAD, stillRunning ? ["4242"] : [])
           : []),
         ...(stillRunning
           ? [
               {
                 type: "expect_outbound" as const,
                 frame: {
-                  id: 7,
-                  method: "thread/backgroundTerminals/terminate",
-                  params: { threadId: BG_NATIVE_THREAD, processId: "4242" },
-                },
-              },
-              {
-                type: "emit_inbound" as const,
-                frame: { id: 7, result: { terminated: false } },
-              },
-              {
-                type: "expect_outbound" as const,
-                frame: {
                   id: 8,
-                  method: "thread/backgroundTerminals/list",
-                  params: { threadId: BG_NATIVE_THREAD },
-                },
-              },
-              {
-                type: "emit_inbound" as const,
-                frame: { id: 8, result: { data: [{ processId: "4242" }], nextCursor: null } },
-              },
-              ...noActiveGoal(9, BG_NATIVE_THREAD),
-              {
-                type: "expect_outbound" as const,
-                frame: {
-                  id: 10,
                   method: "thread/backgroundTerminals/terminate",
                   params: { threadId: BG_NATIVE_THREAD, processId: "4242" },
                 },
               },
               {
                 type: "emit_inbound" as const,
-                frame: { id: 10, result: { terminated: true } },
+                frame: { id: 8, result: { terminated: false } },
+              },
+              ...replayBackgroundTerminalsList(9, BG_NATIVE_THREAD, ["4242"]),
+              ...noActiveGoal(10, BG_NATIVE_THREAD),
+              {
+                type: "expect_outbound" as const,
+                frame: {
+                  id: 11,
+                  method: "thread/backgroundTerminals/terminate",
+                  params: { threadId: BG_NATIVE_THREAD, processId: "4242" },
+                },
+              },
+              {
+                type: "emit_inbound" as const,
+                frame: { id: 11, result: { terminated: true } },
               },
             ]
           : []),
@@ -9373,9 +9389,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           createdBy: "user",
           creationSource: "web",
         });
-        const waiting = yield* orchestrator.streamDomainEvents.pipe(
+        const settled = yield* orchestrator.streamDomainEvents.pipe(
           Stream.filter(
-            (event) => event.type === "run.updated" && event.payload.status === "waiting",
+            (event) =>
+              event.type === "run.updated" &&
+              event.threadId === threadId &&
+              event.payload.completedAt !== null,
           ),
           Stream.runHead,
           Effect.forkChild({ startImmediately: true }),
@@ -9393,7 +9412,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         });
         yield* worker.drain();
         assert.isNull((yield* Ref.get(replayDriver.state)).failure);
-        yield* Fiber.join(waiting);
+        yield* Fiber.join(settled);
         yield* worker.drain();
         const projection = yield* orchestrator.getThreadProjection(threadId);
         const run = projection.runs.at(-1)!;
@@ -9418,6 +9437,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           threadId,
         });
         yield* worker.drain();
+        assert.isNull((yield* Ref.get(replayDriver.state)).failure);
         yield* Fiber.join(stopped);
         assert.equal(
           (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)?.status,
@@ -13229,7 +13249,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             error: { code: -32600, message: `session ${nativeThreadId} is archived` },
           }),
           ...exchange(5, "thread/unarchive", { threadId: nativeThreadId }, { result: thread }),
-          ...exchange(6, "thread/resume", resumeParams, { result: thread }),
+          ...exchange(
+            6,
+            "thread/resume",
+            resumeParams,
+            { result: thread },
+            REPLAY_NATIVE_OPEN_RETRY,
+          ),
           ...exchange(
             7,
             "thread/turns/list",
@@ -13469,8 +13495,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         method: string,
         params: unknown,
         reply: { readonly result: unknown } | { readonly error: unknown },
+        label = method,
       ): Array<CodexReplay.CodexAppServerReplayEntry> => [
-        { type: "expect_outbound", label: method, frame: { id, method, params } },
+        { type: "expect_outbound", label, frame: { id, method, params } },
         { type: "emit_inbound", label: method, frame: { id, ...reply } },
       ];
       const transcript = makeCodexReplayTranscript({
@@ -15775,7 +15802,15 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         const transcript = makeCodexReplayTranscript({
           scenario: "origin-approval-order",
           entries: [
-            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId,
+              prompt,
+              turnPolicy: {
+                approvalPolicy: "untrusted",
+                sandboxPolicy: { type: "readOnly" },
+              },
+            }),
             {
               type: "emit_inbound",
               frame: {
@@ -15832,16 +15867,23 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             ),
           ),
         );
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("origin-approval-order"),
-            text: prompt,
-          }),
+        const turnInput = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("origin-approval-order"),
+          text: prompt,
+        });
+        yield* harness.runtime.startTurn({
+          ...turnInput,
+          runtimePolicy: { ...turnInput.runtimePolicy, runtimeMode: "approval-required" },
+        });
+        const published = yield* Effect.raceFirst(
+          Deferred.await(requestPublished),
+          Effect.raceFirst(harness.firstTerminal, harness.eventsEnded).pipe(
+            Effect.andThen(Effect.die("Codex ended before publishing the pending approval.")),
+          ),
         );
-        const published = yield* Deferred.await(requestPublished);
         const pending = published.event.runtimeRequest;
         const nodeEvent = published.preceding.find(
           (
@@ -21884,15 +21926,16 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         scenario: backgroundStop.scenario,
         entries: [
           ...backgroundStop.entries.slice(0, terminationIndex),
+          ...replayBackgroundTerminalsList(4, BG_NATIVE_THREAD, ["4242"]),
           {
             type: "expect_outbound",
             label: "read-goal-before-background-stop",
-            frame: { id: 4, method: "thread/goal/get", params: { threadId: BG_NATIVE_THREAD } },
+            frame: { id: 5, method: "thread/goal/get", params: { threadId: BG_NATIVE_THREAD } },
           },
           {
             type: "emit_inbound",
             label: "read-goal-before-background-stop",
-            frame: { id: 4, result: { goal: activeGoal ? goal : null } },
+            frame: { id: 5, result: { goal: activeGoal ? goal : null } },
           },
           ...(activeGoal
             ? [
@@ -21900,7 +21943,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
                   type: "expect_outbound" as const,
                   label: "pause-goal-before-background-stop",
                   frame: {
-                    id: 5,
+                    id: 6,
                     method: "thread/goal/set",
                     params: { threadId: BG_NATIVE_THREAD, status: "paused" },
                   },
@@ -21908,7 +21951,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
                 {
                   type: "emit_inbound" as const,
                   label: "pause-goal-before-background-stop",
-                  frame: { id: 5, result: { goal: { ...goal, status: "paused" } } },
+                  frame: { id: 6, result: { goal: { ...goal, status: "paused" } } },
                 },
               ]
             : []),
@@ -21918,7 +21961,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
               (entry.type === "expect_outbound" || entry.type === "emit_inbound") &&
               Predicate.isObject(entry.frame) &&
               typeof entry.frame.id === "number"
-                ? { ...entry, frame: { ...entry.frame, id: entry.frame.id + (activeGoal ? 2 : 1) } }
+                ? withReplayRequestId(entry, entry.frame.id + (activeGoal ? 3 : 2))
                 : entry,
             ),
         ],
@@ -21981,9 +22024,12 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
               createdBy: "user",
               creationSource: "web",
             });
-            const waiting = yield* orchestrator.streamDomainEvents.pipe(
+            const settled = yield* orchestrator.streamDomainEvents.pipe(
               Stream.filter(
-                (event) => event.type === "run.updated" && event.payload.status === "waiting",
+                (event) =>
+                  event.type === "run.updated" &&
+                  event.threadId === threadId &&
+                  event.payload.completedAt !== null,
               ),
               Stream.runHead,
               Effect.forkChild({ startImmediately: true }),
@@ -22001,7 +22047,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             });
             yield* worker.drain();
             assert.isNull((yield* Ref.get(replayDriver.state)).failure);
-            yield* Fiber.join(waiting);
+            yield* Fiber.join(settled);
             yield* worker.drain();
             const projection = yield* orchestrator.getThreadProjection(threadId);
             const run = projection.runs.at(-1)!;
@@ -24223,7 +24269,19 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
                   },
                 },
               },
-              ...replacementTurn,
+              // The prior process already set the name on this native conversation.
+              {
+                type: "expect_outbound",
+                frame: {
+                  id: 3,
+                  method: "config/read",
+                  params: { cwd: "/workspace", includeLayers: false },
+                },
+              },
+              { type: "emit_inbound", frame: { id: 3, result: { config: {}, origins: {} } } },
+              ...replacementTurn.map((entry, index) =>
+                index < 2 ? withReplayRequestId(entry, 4) : entry,
+              ),
               capacityCompletionEntry(nativeThreadId, "second-turn", "completed"),
             ],
           });

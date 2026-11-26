@@ -3849,35 +3849,34 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             Effect.gen(function* () {
               const producer = (yield* CodexProducerContext) ?? currentProducer;
               if (!(yield* canEmitFor(producer))) return;
-              const providerThreadId =
-                event.type === "provider_thread.updated"
-                  ? event.providerThread.id
-                  : event.type === "provider_turn.updated"
-                    ? event.providerTurn.providerThreadId
-                    : event.type === "turn.terminal"
-                      ? event.providerThreadId
-                      : undefined;
-              const thread =
-                producer === undefined || providerThreadId === undefined
-                  ? undefined
-                  : [...producer.bindings.values()].find((bound) => bound.id === providerThreadId);
-              const binding =
-                thread === undefined || producer === undefined
-                  ? undefined
-                  : runtimeBinding(thread, producer.generation);
-              // Prompt suggestions are unpersisted hints that no evidence guard reads.
-              const queuedEvent: ProviderAdapterV2Event =
-                binding === undefined ||
-                event.type === "runtime_identity.observed" ||
-                event.type === "prompt_suggestion.updated"
-                  ? event
-                  : {
+              let queuedEvent = event;
+              if (
+                event.type === "provider_thread.updated" ||
+                event.type === "provider_turn.updated" ||
+                event.type === "turn.terminal"
+              ) {
+                const providerThreadId =
+                  event.type === "provider_thread.updated"
+                    ? event.providerThread.id
+                    : event.type === "provider_turn.updated"
+                      ? event.providerTurn.providerThreadId
+                      : event.providerThreadId;
+                const thread = [...producer.bindings.values()].find(
+                  (bound) => bound.id === providerThreadId,
+                );
+                if (thread !== undefined) {
+                  const binding = runtimeBinding(thread, producer.generation);
+                  if (binding !== undefined) {
+                    queuedEvent = {
                       ...event,
                       runtimeEvidence: {
                         ...binding,
-                        evidenceRevision: thread!.runtimeIdentity?.evidenceRevision,
+                        evidenceRevision: thread.runtimeIdentity?.evidenceRevision,
                       },
                     };
+                  }
+                }
+              }
               const providerTurnId =
                 event.type === "turn.terminal"
                   ? event.providerTurnId
