@@ -321,6 +321,7 @@ interface CaptureIndexChange {
   readonly fs: FileSystem.FileSystem;
   readonly path: Path.Path;
   readonly cwd: string;
+  readonly gitCommonDir: string;
 }
 
 const makeCheckpointFixture = Effect.fn("makeCheckpointFixture")(function* (
@@ -536,6 +537,12 @@ it.effect.each(["interrupt", "timeout", "success"] as const)(
     }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
 );
 
+const lfsStandInStorageScript = (gitCommonDir: string) => [
+  "const { execFileSync } = require('node:child_process');",
+  "const configured = execFileSync('git', ['config', '--null', '--default', 'lfs', 'lfs.storage'], { encoding: 'utf8' }).slice(0, -1);",
+  `const storage = require('node:path').resolve(${JSON.stringify(gitCommonDir)}, configured || 'lfs');`,
+];
+
 it.effect.each(["interrupt", "timeout"] as const)(
   "checkpoint staging $0 removes the Git LFS temp files its clean filter wrote",
   (stop) =>
@@ -544,11 +551,12 @@ it.effect.each(["interrupt", "timeout"] as const)(
       const path = yield* Path.Path;
       const driver = yield* GitVcsDriver.makeVcsDriverShape();
       const sandbox = yield* fs.makeTempDirectoryScoped({ prefix: "t3-lfs-checkpoint-" });
-      const cwd = path.join(sandbox, "repo");
-      yield* fs.makeDirectory(cwd);
-      const { git, checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
+      const { cwd, git, gitCommonDir, checkpointRef } = yield* makeCheckpointFixture(
+        driver,
+        sandbox,
+      );
       yield* driver.checkpoints.captureCheckpoint({ cwd, checkpointRef });
-      const lfsTmp = path.join(cwd, ".git/lfs/tmp");
+      const lfsTmp = path.join(gitCommonDir, "lfs", "tmp");
       yield* fs.makeDirectory(lfsTmp, { recursive: true });
       const otherOperation = path.join(lfsTmp, "owned-by-another-git-lfs");
       yield* fs.writeFileString(otherOperation, "another git-lfs process is hashing this");
@@ -585,7 +593,7 @@ it.effect.each(["interrupt", "timeout"] as const)(
         filter,
         [
           "const fs = require('node:fs');",
-          `const storage = require('node:child_process').execSync('git config --default .git/lfs lfs.storage').toString().trim();`,
+          ...lfsStandInStorageScript(gitCommonDir),
           "fs.mkdirSync(storage + '/tmp', { recursive: true });",
           "fs.writeFileSync(storage + '/tmp/' + process.pid, Buffer.alloc(1024 * 1024));",
           `const s = require('node:net').connect(${address.port}, '127.0.0.1');`,
@@ -638,16 +646,17 @@ it.effect.each(checkpointLfsStorageCases)(
       const path = yield* Path.Path;
       const driver = yield* GitVcsDriver.makeVcsDriverShape();
       const sandbox = yield* fs.makeTempDirectoryScoped({ prefix: "t3-lfs-checkpoint-" });
-      const cwd = path.join(sandbox, "repo");
-      yield* fs.makeDirectory(cwd);
-      const { git, checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
+      const { cwd, git, gitCommonDir, checkpointRef } = yield* makeCheckpointFixture(
+        driver,
+        sandbox,
+      );
       // Like git-lfs clean: hash through <lfs.storage>/tmp, then move the copy into objects.
       const filter = path.join(sandbox, "lfs-clean.cjs");
       yield* fs.writeFileString(
         filter,
         [
           "const fs = require('node:fs');",
-          `const storage = require('node:child_process').execSync('git config --default .git/lfs lfs.storage').toString().trim();`,
+          ...lfsStandInStorageScript(gitCommonDir),
           "const content = fs.readFileSync(0);",
           "const oid = require('node:crypto').createHash('sha256').update(content).digest('hex');",
           "fs.mkdirSync(storage + '/tmp', { recursive: true });",
@@ -669,7 +678,7 @@ it.effect.each(checkpointLfsStorageCases)(
 
       const pointer = yield* git(["show", `${checkpointRef}:weights.npz`]);
       const oid = pointer.stdout.trim().slice("oid sha256:".length);
-      const storage = path.join(cwd, ".git", configuredStorage ?? "lfs");
+      const storage = path.join(gitCommonDir, configuredStorage ?? "lfs");
       assert.strictEqual(
         yield* fs.readFileString(
           path.join(storage, "objects", oid.slice(0, 2), oid.slice(2, 4), oid),
@@ -688,8 +697,6 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
       const path = yield* Path.Path;
       const driver = yield* GitVcsDriver.makeVcsDriverShape();
       const sandbox = yield* fs.makeTempDirectoryScoped({ prefix: "t3-lfs-checkpoint-" });
-      const cwd = path.join(sandbox, "repo");
-      yield* fs.makeDirectory(cwd);
       const lfs = yield* driver.execute({
         operation: "checkpoint-test",
         cwd: sandbox,
@@ -697,7 +704,7 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         allowNonZeroExit: true,
       });
       if (lfs.exitCode !== 0) return ctx.skip("Install git-lfs to run this test.");
-      const { git, checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
+      const { cwd, git, checkpointRef } = yield* makeCheckpointFixture(driver, sandbox);
       yield* git(["lfs", "install", "--local"]);
       // Last in the config, git-lfs 3.6 trims the space unless T3's own -c entries follow it.
       yield* driver.execute({
@@ -727,16 +734,14 @@ it.effect("checkpoint capture fails instead of dropping Git LFS objects it canno
     const path = yield* Path.Path;
     const driver = yield* GitVcsDriver.makeVcsDriverShape();
     const sandbox = yield* fs.makeTempDirectoryScoped({ prefix: "t3-lfs-checkpoint-" });
-    const cwd = path.join(sandbox, "repo");
-    yield* fs.makeDirectory(cwd);
-    const { git, checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
+    const { cwd, git, gitCommonDir, checkpointRef } = yield* makeCheckpointFixture(driver, sandbox);
     // A file where git-lfs keeps its objects makes the store unreadable without being absent.
     const filter = path.join(sandbox, "lfs-clean.cjs");
     yield* fs.writeFileString(
       filter,
       [
         "const fs = require('node:fs');",
-        `const storage = require('node:child_process').execSync('git config --default .git/lfs lfs.storage').toString().trim();`,
+        ...lfsStandInStorageScript(gitCommonDir),
         "fs.readFileSync(0);",
         "fs.mkdirSync(storage, { recursive: true });",
         "fs.writeFileSync(storage + '/objects', 'not a directory');",
@@ -1241,14 +1246,16 @@ it.effect.each([
     name: "the last of several core.attributesFile values changed its rules",
     reuses: false,
     // Git reads only the last value, as a local value overrides a global one.
-    setup: ({ git, write, path, cwd }: CaptureIndexChange) =>
+    setup: ({ git, fs, path, gitCommonDir }: CaptureIndexChange) =>
       Effect.gen(function* () {
         for (const name of ["attributes-first", "attributes-last"]) {
-          yield* write(`.git/${name}`, "");
-          yield* git(["config", "--add", "core.attributesFile", path.join(cwd, ".git", name)]);
+          const attributes = path.join(gitCommonDir, name);
+          yield* fs.writeFileString(attributes, "");
+          yield* git(["config", "--add", "core.attributesFile", attributes]);
         }
       }),
-    change: ({ write }: CaptureIndexChange) => write(".git/attributes-last", "*.txt text eol=lf\n"),
+    change: ({ fs, path, gitCommonDir }: CaptureIndexChange) =>
+      fs.writeFileString(path.join(gitCommonDir, "attributes-last"), "*.txt text eol=lf\n"),
   },
   {
     name: "a relative core.attributesFile changed its rules, captured from a subfolder",
@@ -1256,13 +1263,13 @@ it.effect.each([
     reuses: false,
     // Git reads a relative path from the working-tree root, not from the capture's folder.
     setup: (context: CaptureIndexChange) =>
-      context.write(".git/capture-attributes", "").pipe(
-        Effect.andThen(context.git(["config", "core.attributesFile", ".git/capture-attributes"])),
+      context.write("../capture-attributes", "").pipe(
+        Effect.andThen(context.git(["config", "core.attributesFile", "../capture-attributes"])),
         // Older than the user's index, whose timestamp a rebuild keeps, so Git trusts its stat.
         Effect.andThen(backdate(context)),
       ),
     change: ({ write }: CaptureIndexChange) =>
-      write(".git/capture-attributes", "*.txt text eol=lf\n"),
+      write("../capture-attributes", "*.txt text eol=lf\n"),
   },
   {
     name: "an ignored root .gitattributes changed its rules",
@@ -1323,9 +1330,9 @@ it.effect.each([
   {
     name: "the kept index is corrupt",
     reuses: false,
-    change: ({ fs, path, cwd }: CaptureIndexChange) =>
+    change: ({ fs, path, gitCommonDir }: CaptureIndexChange) =>
       Effect.gen(function* () {
-        const root = path.join(cwd, ".git", "t3-checkpoint-indexes");
+        const root = path.join(gitCommonDir, "t3-checkpoint-indexes");
         for (const scope of yield* fs.readDirectory(root)) {
           for (const entry of yield* fs.readDirectory(path.join(root, scope))) {
             if (entry.startsWith("index."))
@@ -1337,15 +1344,15 @@ it.effect.each([
   {
     name: "the kept index is missing",
     reuses: false,
-    change: ({ fs, path, cwd }: CaptureIndexChange) =>
-      fs.remove(path.join(cwd, ".git", "t3-checkpoint-indexes"), { recursive: true }),
+    change: ({ fs, path, gitCommonDir }: CaptureIndexChange) =>
+      fs.remove(path.join(gitCommonDir, "t3-checkpoint-indexes"), { recursive: true }),
   },
   {
     name: "the kept index uses another index version",
     reuses: true,
-    change: ({ gitWithIndex, fs, path, cwd }: CaptureIndexChange) =>
+    change: ({ gitWithIndex, fs, path, gitCommonDir }: CaptureIndexChange) =>
       Effect.gen(function* () {
-        const root = path.join(cwd, ".git", "t3-checkpoint-indexes");
+        const root = path.join(gitCommonDir, "t3-checkpoint-indexes");
         for (const scope of yield* fs.readDirectory(root)) {
           for (const entry of yield* fs.readDirectory(path.join(root, scope))) {
             if (!entry.startsWith("index.")) continue;
@@ -1397,19 +1404,8 @@ it.effect.each([
           },
         }),
       );
-      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-capture-index-" });
-      const git = (args: ReadonlyArray<string>) =>
-        driver.execute({ operation: "checkpoint-test", cwd, args });
-      yield* git(["init"]);
-      yield* git(["config", "user.name", "Test"]);
-      yield* git(["config", "user.email", "test@test.com"]);
-      yield* fs.writeFileString(path.join(cwd, "file.txt"), "initial\n");
-      yield* git(["add", "."]);
-      yield* git(["commit", "-m", "initial"]);
-      const checkpointRef = CheckpointRef.make("refs/t3/checkpoints/test");
-      yield* fs.writeFileString(path.join(cwd, "file.txt"), "staged\n");
-      yield* git(["add", "."]);
-      yield* fs.writeFileString(path.join(cwd, "file.txt"), "unstaged\n");
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-capture-index-" });
+      const { cwd, git, gitCommonDir, checkpointRef } = yield* makeCheckpointFixture(driver, root);
       const write = (relativePath: string, contents: string) =>
         fs.writeFileString(path.join(cwd, relativePath), contents);
       const writeGitPath = Effect.fn(function* (gitPath: string, contents: string) {
@@ -1438,6 +1434,7 @@ it.effect.each([
         fs,
         path,
         cwd,
+        gitCommonDir,
       };
       yield* fs.makeDirectory(path.join(cwd, "nested"));
       yield* write(file, "line\r\n".repeat(3 * 1024 * 1024));
@@ -1499,9 +1496,9 @@ it.effect.each([
         },
       }),
     );
-    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-capture-sparse-bool-" });
-    const { checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
-    const configFile = path.join(cwd, ".git/config");
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-capture-sparse-bool-" });
+    const { cwd, gitCommonDir, checkpointRef } = yield* makeCheckpointFixture(driver, root);
+    const configFile = path.join(gitCommonDir, "config");
     yield* fs.writeFileString(
       configFile,
       `${yield* fs.readFileString(configFile)}[core]\n\t${line}\n`,
@@ -1530,8 +1527,8 @@ it.effect("a capture through a kept index skips the index rebuild and its scan",
         },
       }),
     );
-    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-capture-index-count-" });
-    const { checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-capture-index-count-" });
+    const { cwd, checkpointRef } = yield* makeCheckpointFixture(driver, root);
     yield* fs.writeFileString(path.join(cwd, "untracked.txt"), "untracked\n");
     yield* driver.checkpoints.captureCheckpoint({ cwd, checkpointRef });
     const rebuilt = commands;
@@ -1663,10 +1660,10 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32" || process.getu
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const driver = yield* GitVcsDriver.makeVcsDriverShape();
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+      const root = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-checkpoint-unreadable-",
       });
-      const { git, checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
+      const { cwd, git, checkpointRef } = yield* makeCheckpointFixture(driver, root);
       yield* fileSystem.writeFileString(path.join(cwd, "locked.txt"), "committed\n");
       yield* git(["add", "locked.txt"]);
       yield* git(["commit", "-m", "locked"]);
@@ -2572,8 +2569,8 @@ it.effect.each(["local", "mixed", "exit", "non-UTF-8 refs", "pruned ref"] as con
       const path = yield* Path.Path;
       const driver = yield* GitVcsDriver.makeVcsDriverShape();
       const liveProcess = yield* VcsProcess.VcsProcess;
-      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-authorship-" });
-      const { git } = yield* makeCheckpointFixture(driver, cwd);
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-authorship-" });
+      const { cwd, git } = yield* makeCheckpointFixture(driver, root);
       yield* git(["commit", "-am", "baseline"]);
       const fromCheckpointRef = CheckpointRef.make("refs/t3/checkpoints/authorship/from");
       const toCheckpointRef = CheckpointRef.make("refs/t3/checkpoints/authorship/to");
@@ -2772,8 +2769,8 @@ it.effect("checkpoint authorship works with git that rejects --diff-merges=remer
     const path = yield* Path.Path;
     const driver = yield* GitVcsDriver.makeVcsDriverShape();
     const liveProcess = yield* VcsProcess.VcsProcess;
-    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-old-git-" });
-    const { git } = yield* makeCheckpointFixture(driver, cwd);
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-old-git-" });
+    const { cwd, git } = yield* makeCheckpointFixture(driver, root);
     yield* git(["commit", "-am", "baseline"]);
     const fromCheckpointRef = CheckpointRef.make("refs/t3/checkpoints/old-git/from");
     const toCheckpointRef = CheckpointRef.make("refs/t3/checkpoints/old-git/to");
@@ -2900,24 +2897,28 @@ it.effect.each([{ snapshot: "before the switch" }, { snapshot: "after the switch
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const driver = yield* GitVcsDriver.makeVcsDriverShape();
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+      const root = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-checkpoint-clean-switch-",
       });
-      const git = (args: ReadonlyArray<string>, at = 1_700_000_000) =>
+      const repository = path.join(root, "repository");
+      const cwd = path.join(root, "worktree");
+      const gitAt = (cwd: string, args: ReadonlyArray<string>, at = 1_700_000_000) =>
         driver.execute({
           operation: "checkpoint-test",
           cwd,
           args,
           env: { ...process.env, GIT_COMMITTER_DATE: `@${at} +0000` },
         });
-      yield* git(["init"]);
-      yield* git(["config", "user.name", "Test"]);
-      yield* git(["config", "user.email", "test@test.com"]);
-      yield* fileSystem.writeFileString(path.join(cwd, "f.txt"), "base\n");
-      yield* git(["add", "."]);
-      yield* git(["commit", "-m", "base"]);
+      yield* fileSystem.makeDirectory(repository);
+      yield* gitAt(repository, ["init"]);
+      yield* gitAt(repository, ["config", "user.name", "Test"]);
+      yield* gitAt(repository, ["config", "user.email", "test@test.com"]);
+      yield* fileSystem.writeFileString(path.join(repository, "f.txt"), "base\n");
+      yield* gitAt(repository, ["add", "."]);
+      yield* gitAt(repository, ["commit", "-m", "base"]);
+      yield* gitAt(repository, ["worktree", "add", "-b", "a", cwd]);
+      const git = (args: ReadonlyArray<string>, at?: number) => gitAt(cwd, args, at);
       yield* git(["branch", "b"]);
-      yield* git(["checkout", "-b", "a"]);
       yield* fileSystem.writeFileString(path.join(cwd, "a.txt"), "a\n");
       yield* git(["add", "."]);
       yield* git(["commit", "-m", "a"]);
@@ -3355,8 +3356,14 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
       // The newline name takes the per-path fallback; the other takes the one-spawn answer.
       for (const name of ["repo ", "multi\nline "]) {
         const cwd = path.join(parent, name);
-        yield* fileSystem.makeDirectory(cwd);
-        yield* git(cwd, ["init", `--separate-git-dir=${path.join(parent, `${name.trim()} git `)}`]);
+        const repository = path.join(parent, `${name.trim()}-primary`);
+        yield* fileSystem.makeDirectory(repository);
+        yield* git(repository, [
+          "init",
+          `--separate-git-dir=${path.join(parent, `${name.trim()} git `)}`,
+        ]);
+        yield* git(repository, ["commit", "--allow-empty", "-m", "base"]);
+        yield* git(repository, ["worktree", "add", "-b", "checkpoint-test", cwd]);
         yield* git(cwd, ["-c", "protocol.file.allow=always", "submodule", "add", library, "lib"]);
         yield* git(cwd, ["commit", "-m", "initial"]);
         yield* fileSystem.writeFileString(path.join(cwd, "dirty.txt"), "pending\n");
