@@ -336,6 +336,58 @@ export const JonesInstallPlanLaptopEvidence = Schema.Struct({
 });
 export type JonesInstallPlanLaptopEvidence = typeof JonesInstallPlanLaptopEvidence.Type;
 
+export const VERIFIED_LAPTOP_MAX_AGE_MS = 120_000;
+
+export function ordinaryJonesLaptopProof(evidence: JonesInstallPlanLaptopEvidence) {
+  const proof = evidence.ordinaryRecovery;
+  return proof !== undefined &&
+    evidence.committedTransactionId === undefined &&
+    proof.activeGeneration === evidence.activeGeneration &&
+    proof.transactionId === `manual-${proof.activeGeneration}`
+    ? proof
+    : undefined;
+}
+
+/** Native evidence for the active Laptop generation, independent of offers and artifacts. */
+export function verifiedRunningLaptop(
+  evidence: JonesInstallPlanLaptopEvidence,
+  environmentId: EnvironmentId | undefined,
+  now: number,
+) {
+  const { activeSource, activeTree, activeVersion, activeGeneration } = evidence;
+  const age = now - Date.parse(evidence.observedAt);
+  const ordinaryRecovery = ordinaryJonesLaptopProof(evidence);
+  const transactionId = evidence.committedTransactionId ?? ordinaryRecovery?.transactionId;
+  if (
+    environmentId === undefined ||
+    evidence.environmentId !== environmentId ||
+    !Number.isFinite(age) ||
+    age < 0 ||
+    age >= VERIFIED_LAPTOP_MAX_AGE_MS ||
+    evidence.activationBlocked ||
+    evidence.reopenToCheckInstall === true ||
+    activeSource === undefined ||
+    activeTree === undefined ||
+    activeVersion === undefined ||
+    activeGeneration === undefined ||
+    transactionId === undefined ||
+    (evidence.ordinaryRecovery !== undefined && ordinaryRecovery === undefined)
+  )
+    return undefined;
+  return {
+    environmentId,
+    generation: activeGeneration,
+    target: {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: activeSource,
+      sourceTree: activeTree,
+      version: activeVersion,
+    } satisfies JonesInstallPlanTarget,
+    transactionId,
+    ordinaryRecovery,
+  };
+}
+
 const JonesInstallPlanRecoverySummary = Schema.Struct({
   planId: JonesOperationId,
   revision: Schema.Number,
@@ -368,6 +420,7 @@ export const JonesInstallPlanState = Schema.Struct({
     recoveryHistory: Schema.optionalKey(Schema.Literal(1)),
     directiveFence: Schema.optionalKey(Schema.Literal(1)),
     orphanRecovery: Schema.optionalKey(Schema.Literal(1)),
+    matchRunningLaptop: Schema.optionalKey(Schema.Literal(1)),
     manualClose: Schema.optionalKey(
       Schema.Struct({
         laptop: RunningBuild,
@@ -416,6 +469,7 @@ export const JonesInstallPlanRequest = Schema.Union([
     origin: JonesInstallPlanOrigin,
     target: JonesInstallPlanTarget,
     select: Schema.Array(JonesInstallPlanSelection).check(Schema.isMaxLength(16)),
+    expectedRunningGeneration: Schema.optionalKey(TrimmedNonEmptyString),
     laptop: Schema.optionalKey(
       Schema.Struct({
         action: Schema.Literals(["download", "install"]),

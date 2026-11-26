@@ -5,6 +5,8 @@ import { canonicalJonesCommand } from "@t3tools/client-runtime/jones/updates/act
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   JonesInstallPlanRequest as RequestSchema,
+  ordinaryJonesLaptopProof as ordinaryProof,
+  verifiedRunningLaptop,
   type JonesInstallPlanRequest,
   type JonesInstallPlanResult,
   type JonesInstallPlanState,
@@ -110,16 +112,6 @@ const LEASE_MS = 120_000;
 const PAUSED_GATE_MESSAGE =
   "Laptop verification is temporarily unavailable. Check the Laptop before continuing.";
 const DEVICE_RECOVERY_HOLD = "An earlier plan still needs recovery on this device.";
-
-const ordinaryProof = (evidence: JonesInstallPlanLaptopEvidence) => {
-  const proof = evidence.ordinaryRecovery;
-  return proof !== undefined &&
-    evidence.committedTransactionId === undefined &&
-    proof.activeGeneration === evidence.activeGeneration &&
-    proof.transactionId === `manual-${proof.activeGeneration}`
-    ? proof
-    : undefined;
-};
 
 const verificationBlocked = (evidence: JonesInstallPlanLaptopEvidence) =>
   evidence.activationBlocked || evidence.reopenToCheckInstall === true;
@@ -358,7 +350,12 @@ export function createInstallPlanCoordinator(options: {
         complete: editable && isPlanComplete(current),
         ...(editable ? { cancelPlan: 1 as const, deviceRecovery: 1 as const } : {}),
         ...(snapshot.readOnly === undefined
-          ? { recoveryHistory: 1 as const, directiveFence: 1 as const, orphanRecovery: 1 as const }
+          ? {
+              recoveryHistory: 1 as const,
+              directiveFence: 1 as const,
+              orphanRecovery: 1 as const,
+              matchRunningLaptop: 1 as const,
+            }
           : {}),
         ...(manualClose === undefined ? {} : { manualClose }),
       },
@@ -1374,14 +1371,19 @@ export function createInstallPlanCoordinator(options: {
             extras = { command: receipt };
           }
         } else if (req.type === "publication") {
-          const code = evidence.activationBlocked
+          const environmentId = options.localEnvironmentId();
+          const running = verifiedRunningLaptop(evidence, environmentId, options.now());
+          const code = verificationBlocked(evidence)
             ? "blocked"
-            : evidence.activeSource === undefined || evidence.activeTree === undefined
+            : evidence.activeSource === undefined ||
+                evidence.activeTree === undefined ||
+                evidence.environmentId === undefined ||
+                evidence.environmentId !== environmentId
               ? "unavailable"
               : dispositions.targets.some((target) => target.targetSource === evidence.activeSource)
                 ? "plan-managed"
-                : evidence.committedTransactionId === undefined &&
-                    (req.acceptOrdinaryRecovery !== 1 || ordinaryProof(evidence) === undefined)
+                : running === undefined ||
+                    (running.ordinaryRecovery !== undefined && req.acceptOrdinaryRecovery !== 1)
                   ? "unproved"
                   : undefined;
           extras = {
@@ -1389,13 +1391,11 @@ export function createInstallPlanCoordinator(options: {
               code === undefined
                 ? {
                     kind:
-                      evidence.committedTransactionId === undefined
-                        ? "ordinary-verified"
-                        : "committed",
+                      running!.ordinaryRecovery !== undefined ? "ordinary-verified" : "committed",
                     source: {
-                      repository: "Jones-Systems/Jones-Code",
-                      sha: evidence.activeSource!,
-                      tree: evidence.activeTree!,
+                      repository: running!.target.repository,
+                      sha: running!.target.sourceSha,
+                      tree: running!.target.sourceTree,
                     },
                   }
                 : {
@@ -1407,6 +1407,7 @@ export function createInstallPlanCoordinator(options: {
           };
         } else if (req.type === "start") {
           const environmentId = options.localEnvironmentId();
+          const expectedGeneration = req.expectedRunningGeneration;
           const held = req.select.filter((selection) =>
             heldByClosedPlan(document, selection.environmentId),
           );
@@ -1420,11 +1421,23 @@ export function createInstallPlanCoordinator(options: {
           if (plan?.laptop.gatePause === true) refuse("gate-closed", PAUSED_GATE_MESSAGE);
           else if (
             plan !== null &&
-            (req.target.laptopArtifactId !== undefined ||
+            (expectedGeneration !== undefined ||
+              req.target.laptopArtifactId !== undefined ||
               !canSupersede(plan) ||
               planHasLaptopRecoveryDuty(plan))
           )
             refuse("plan-active", "Finish the current plan before starting another.");
+          else if (
+            expectedGeneration !== undefined &&
+            (req.laptop !== undefined ||
+              req.target.laptopArtifactId !== undefined ||
+              req.target.buildStartedAt !== undefined ||
+              verifiedRunningLaptop(evidence, environmentId, options.now())?.generation !==
+                expectedGeneration ||
+              evidence.activeVersion !== req.target.version ||
+              !prior)
+          )
+            refuse("invalid-evidence", "The verified running Laptop build changed. Check again.");
           else if (
             laptopHasOrphan(document, environmentId) ||
             closedPlans(document).some(planHasLaptopRecoveryDuty)

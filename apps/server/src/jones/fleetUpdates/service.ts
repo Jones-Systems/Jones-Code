@@ -420,7 +420,7 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
       reason:
         leaderSource === null
           ? "Waiting for the laptop to report its installed build."
-          : "Checking the laptop's installed build.",
+          : "Checking the last source the laptop reported.",
     } satisfies FleetFollowerStatus;
   };
   const status = Effect.fn("FleetUpdates.status")(function* (operationId?: string) {
@@ -1065,7 +1065,7 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
       return show({
         state: "waiting-for-leader",
         reason:
-          "This host already runs a newer build than the laptop's and does not go back. It updates once the laptop reports a newer build.",
+          "This host runs a newer build than the last one the laptop reported. It will wait for a newer report.",
       });
 
     const intended =

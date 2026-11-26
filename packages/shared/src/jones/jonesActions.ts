@@ -39,6 +39,7 @@ export type JonesActionsBlockedReason =
   | "rate-limited"
   | "unavailable"
   | "unqualified"
+  | "target-older-than-installed"
   | "integrity"
   | "occupied-cache"
   | "unsupported-platform";
@@ -117,6 +118,9 @@ export type JonesActionsCheckResult = { readonly classification?: JonesCheckClas
 );
 
 export type JonesSourceRelationKind = "ahead" | "behind" | "identical" | "diverged";
+
+type AncestryProof = "ahead" | "behind" | "identical" | "unproved";
+const includesBase = (proof: AncestryProof) => proof === "ahead" || proof === "identical";
 
 interface JonesActionsCheckInput {
   readonly installedSource: string;
@@ -402,6 +406,31 @@ function source(value: unknown): string {
   if (!SHA.test(result)) throw new JonesActionsError("unqualified");
   return result;
 }
+
+function provedSourceRelation(
+  comparison: Record<string, unknown>,
+  base: string,
+  head: string,
+): JonesSourceRelationKind {
+  const mergeBase = source(record(comparison.merge_base_commit).sha);
+  const aheadBy = count(comparison.ahead_by);
+  const behindBy = count(comparison.behind_by);
+  if (source(record(comparison.base_commit).sha) !== base)
+    throw new JonesActionsError("unqualified");
+  if (comparison.status === "ahead" && mergeBase === base && aheadBy > 0 && behindBy === 0)
+    return "ahead";
+  if (comparison.status === "behind" && mergeBase === head && behindBy > 0 && aheadBy === 0)
+    return "behind";
+  if (
+    comparison.status === "diverged" &&
+    mergeBase !== base &&
+    mergeBase !== head &&
+    aheadBy > 0 &&
+    behindBy > 0
+  )
+    return "diverged";
+  throw new JonesActionsError("unqualified");
+}
 function digest(value: unknown): string {
   const result = text(value).replace(/^sha256:/, "");
   if (!HASH.test(result)) throw new JonesActionsError("unqualified");
@@ -647,7 +676,7 @@ export class JonesActionsClient {
   private readonly transport: JonesActionsTransport;
   private readonly now: () => number;
   /** Immutable `base...head` ancestry answers, oldest first; bounded by `ANCESTRY_MEMO_LIMIT`. */
-  private readonly ancestry = new Map<string, boolean>();
+  private readonly ancestry = new Map<string, AncestryProof>();
   constructor(
     options: { readonly transport?: JonesActionsTransport; readonly now?: () => number } = {},
   ) {
@@ -736,13 +765,15 @@ export class JonesActionsClient {
       context.origin = "validation";
       return response;
     };
-    const descends = async (base: string, head: string): Promise<boolean> => {
+    const readAncestry = async (base: string, head: string): Promise<AncestryProof> => {
       context.operation = "ancestry";
       context.origin = "unknown";
-      const proven = await this.descends(base, head, api);
+      const proof = await this.readAncestry(base, head, api);
       context.origin = "validation";
-      return proven;
+      return proof;
     };
+    const descends = async (base: string, head: string) =>
+      includesBase(await readAncestry(base, head));
     const observeTerminal = (
       run: Record<string, unknown>,
       stage: FailedWitness["stage"],
@@ -773,12 +804,12 @@ export class JonesActionsClient {
       // Installed source must itself be on canonical main, including after a force rewrite.
       if (!(await descends(input.installedSource, mainSource)))
         throw new JonesActionsError("unqualified");
-      if (
-        targetSource !== undefined &&
-        (!(await descends(input.installedSource, targetSource)) ||
-          !(await descends(targetSource, mainSource)))
-      )
-        throw new JonesActionsError("unqualified");
+      if (targetSource !== undefined) {
+        const proof = await readAncestry(input.installedSource, targetSource);
+        if (proof === "behind") throw new JonesActionsError("target-older-than-installed");
+        if (!includesBase(proof) || !(await descends(targetSource, mainSource)))
+          throw new JonesActionsError("unqualified");
+      }
       if ((targetSource ?? mainSource) === input.installedSource) {
         discovery.termination = "target-proved";
         return { ...completedEvidence(), kind: "target-already-running" };
@@ -984,61 +1015,47 @@ export class JonesActionsClient {
       const comparison = record(
         await this.transport.api(`${API_ROOT}/compare/${base}...${head}?per_page=1`),
       );
-      const mergeBase = source(record(comparison.merge_base_commit).sha);
-      const aheadBy = count(comparison.ahead_by),
-        behindBy = count(comparison.behind_by);
-      if (source(record(comparison.base_commit).sha) !== base)
-        throw new JonesActionsError("unqualified");
-      if (comparison.status === "ahead" && mergeBase === base && aheadBy > 0 && behindBy === 0)
-        return "ahead";
-      if (comparison.status === "behind" && mergeBase === head && behindBy > 0 && aheadBy === 0)
-        return "behind";
-      if (
-        comparison.status === "diverged" &&
-        mergeBase !== base &&
-        mergeBase !== head &&
-        aheadBy > 0 &&
-        behindBy > 0
-      )
-        return "diverged";
-      throw new JonesActionsError("unqualified");
+      return provedSourceRelation(comparison, base, head);
     } catch (error) {
       throw safeTransportError(error);
     }
   }
 
   /**
-   * Whether `base` is an ancestor of `head` and the merge base is `base`. Ancestry between two
-   * exact commits never changes, so a parsed answer is remembered for this client; main
-   * membership is still proven on every check because the fresh main SHA is part of the pair.
-   * Transport failures and unparsable comparisons are never remembered.
+   * Ancestry between exact commits is immutable. Each check still reads the current main SHA
+   * to prove membership. Transport failures and unparsable comparisons are never remembered.
    */
-  private async descends(
+  private async readAncestry(
     base: string,
     head: string,
     api: JonesActionsTransport["api"] = (endpoint) => this.transport.api(endpoint),
-  ): Promise<boolean> {
-    if (base === head) return true;
+  ): Promise<AncestryProof> {
+    if (base === head) return "identical";
     const pair = `${source(base)}...${source(head)}`;
     const known = this.ancestry.get(pair);
     if (known !== undefined) return known;
     const comparison = record(await api(`${API_ROOT}/compare/${pair}?per_page=1`));
-    if (comparison.status === "ahead") {
-      const proven = record(comparison.merge_base_commit).sha === base;
-      if (proven) this.remember(pair, true);
-      return proven;
+    if (comparison.status === "ahead" && record(comparison.merge_base_commit).sha === base) {
+      this.remember(pair, "ahead");
+      return "ahead";
     }
-    if (comparison.status === "behind" || comparison.status === "diverged")
-      this.remember(pair, false);
-    return false;
+    if (
+      comparison.status === "behind" &&
+      provedSourceRelation(comparison, base, head) === "behind"
+    ) {
+      this.remember(pair, "behind");
+      return "behind";
+    }
+    if (comparison.status === "diverged") this.remember(pair, "unproved");
+    return "unproved";
   }
 
-  private remember(pair: string, descends: boolean): void {
+  private remember(pair: string, proof: AncestryProof): void {
     if (this.ancestry.size >= ANCESTRY_MEMO_LIMIT) {
       const oldest = this.ancestry.keys().next();
       if (!oldest.done) this.ancestry.delete(oldest.value);
     }
-    this.ancestry.set(pair, descends);
+    this.ancestry.set(pair, proof);
   }
 
   /** Download changes only the staging cache; it never extracts or launches the candidate app/runtime. */
@@ -1062,8 +1079,8 @@ export class JonesActionsClient {
       ci.head_sha !== candidate.source ||
       commit.sha !== candidate.source ||
       record(commit.tree).sha !== candidate.tree ||
-      !(await this.descends(candidate.installedSource, candidate.source)) ||
-      !(await this.descends(candidate.source, source(main.sha)))
+      !includesBase(await this.readAncestry(candidate.installedSource, candidate.source)) ||
+      !includesBase(await this.readAncestry(candidate.source, source(main.sha)))
     )
       throw new JonesActionsError("unqualified");
     const artifact = record(

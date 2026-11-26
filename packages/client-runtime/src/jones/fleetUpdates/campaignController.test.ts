@@ -7,6 +7,7 @@ import type {
 } from "@t3tools/contracts/jones/fleet-updates";
 import {
   advanceFleetCampaigns,
+  refreshFleetFollowerReport,
   type FleetCampaignDriver,
   type FleetPublicationReport,
 } from "./campaignController.ts";
@@ -666,6 +667,88 @@ describe("publication acknowledgement boundaries", () => {
     expect(actions(f).every((action) => action === "status")).toBe(true);
   });
 
+  it("reports a later verified source through a retained directive without releasing the campaign hold", async () => {
+    const f = followingFixture();
+    f.setFollower({
+      protocol: 1,
+      leaderSource: installed,
+      leaderPublishedAt: "2026-11-11T11:00:00.000Z",
+      state: "waiting-for-leader",
+      planDirective: directive,
+    });
+    const report = vi.fn<(value: FleetPublicationReport) => void>();
+    const driver = {
+      ...f.driver,
+      publication: async () => ({ kind: "ordinary-verified", source: laptop }) as const,
+      onPublication: report,
+    };
+    await advanceFleetCampaigns(driver);
+    expect(actions(f).filter((action) => action !== "status")).toEqual(["leader"]);
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("waiting");
+    expect(report.mock.calls[0]?.[0].hosts[0]).toMatchObject({
+      outcome: "directive-held",
+      publicationAcknowledged: true,
+      follower: { leaderSource: laptop.sha, planDirective: directive },
+    });
+    await advanceFleetCampaigns(driver);
+    expect(actions(f).filter((action) => action === "leader")).toHaveLength(1);
+  });
+
+  it.each(["directive-target", "unproved"] as const)(
+    "holds ordinary publication for %s",
+    async (reason) => {
+      const f = followingFixture();
+      f.setFollower({
+        protocol: 1,
+        leaderSource: installed,
+        state: "waiting-for-leader",
+        planDirective:
+          reason === "directive-target" ? { ...directive, targetSource: laptop.sha } : directive,
+      });
+      const report = vi.fn<(value: FleetPublicationReport) => void>();
+      await advanceFleetCampaigns({
+        ...f.driver,
+        publication: async () =>
+          reason === "unproved"
+            ? { kind: "withheld", code: "unproved", message: "Native proof is missing." }
+            : { kind: "ordinary-verified", source: laptop },
+        onPublication: report,
+      });
+      expect(actions(f).every((action) => action === "status")).toBe(true);
+      expect(report.mock.calls[0]?.[0].hosts[0]).toMatchObject({
+        outcome: "directive-held",
+        follower: { leaderSource: installed },
+      });
+      expect(report.mock.calls[0]?.[0].hosts[0]?.publicationAcknowledged).toBeUndefined();
+    },
+  );
+
+  it("refreshes only the bound host report without advancing its campaign", async () => {
+    const f = followingFixture();
+    const other = { ...enrollment, environmentId: EnvironmentId.make("other-host") };
+    f.setState({ ...f.state(), enrollments: [enrollment, other] });
+    const report = vi.fn<(value: FleetPublicationReport) => void>();
+    const driver = { ...f.driver, committedSource: async () => laptop, onPublication: report };
+
+    await refreshFleetFollowerReport(driver, {
+      ...enrollment,
+      enrollmentId: directive.directiveId,
+    });
+    expect(actions(f)).toEqual([]);
+    expect(report).not.toHaveBeenCalled();
+
+    await refreshFleetFollowerReport(driver, enrollment);
+    expect(actions(f)).toEqual(["status", "leader"]);
+    expect(f.driver.host.mock.calls.map(([id]) => id)).toEqual([environmentId, environmentId]);
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("waiting");
+    expect(report.mock.calls[0]?.[0].hosts[0]).toMatchObject({
+      enrollment,
+      outcome: "following",
+      publicationAcknowledged: true,
+      follower: { leaderSource: laptop.sha },
+    });
+  });
+
   it.each(["source-read", "status", "leader"] as const)(
     "rechecks cancellation after %s",
     async (at) => {
@@ -791,7 +874,7 @@ describe("publication acknowledgement boundaries", () => {
           outcome: "observed",
           follower: { leaderSource: installed, leaderPublishedAt: "2026-11-11T11:00:00.000Z" },
         },
-        { enrollment: offline, outcome: "unknown" },
+        { enrollment: offline, outcome: "unknown", failure: "unreachable" },
       ],
     });
   });

@@ -10,6 +10,14 @@ describe("following host status line", () => {
       describeFollower({ protocol: 1, leaderSource: null, state: "waiting-for-leader" }, time),
     ).toBe("Waiting for the laptop to report a build");
     expect(
+      describeFollower({
+        protocol: 1,
+        leaderSource,
+        state: "waiting-for-leader",
+        reason: "This host runs a newer build than the last one the laptop reported.",
+      }),
+    ).toBe("This host runs a newer build than the last one the laptop reported.");
+    expect(
       describeFollower(
         {
           protocol: 1,

@@ -1,11 +1,21 @@
 import { useEffect } from "react";
 import {
   advanceFleetCampaigns,
+  refreshFleetFollowerReport,
+  type FleetCampaignDriver,
   type FleetPublication,
 } from "@t3tools/client-runtime/jones/fleet-updates";
+import type { FleetEnrollment } from "@t3tools/contracts/jones/fleet-updates";
+import type { JonesInstallPlanLaptopEvidence } from "@t3tools/contracts/jones/installPlan";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
-import { fleetInstalledSource, fleetPublication } from "./publicationState";
+import { fleetPublication } from "./publicationState";
 import { fleetDesktop, fleetHost, fleetStatusError, refreshFleetDesktopState } from "./runtime";
+
+let refreshMountedFollower: ((enrollment: FleetEnrollment) => Promise<void>) | undefined;
+
+export function refreshFleetFollower(enrollment: FleetEnrollment) {
+  return refreshMountedFollower?.(enrollment) ?? Promise.resolve();
+}
 
 /** Native proof gates activation; ordinary app startup and source equality do not. */
 export function FleetController() {
@@ -14,34 +24,65 @@ export function FleetController() {
     const bridge = window.desktopBridge?.fleetUpdates;
     if (bridge === undefined) return;
     let cancelled = false;
-    let installedReadVersion = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let latestLaptop: JonesInstallPlanLaptopEvidence | undefined;
+    let tail = Promise.resolve();
+    const refreshes = new Map<string, Promise<void>>();
+    const enqueue = (work: () => Promise<void>) => {
+      const next = tail.then(async () => {
+        if (!cancelled) await work();
+      });
+      tail = next.catch(() => undefined);
+      return next;
+    };
+    const driver: FleetCampaignDriver = {
+      desktop: (request) => fleetDesktop(request, () => cancelled),
+      host: fleetHost,
+      cancelled: () => cancelled,
+      publication: () =>
+        readFleetPublication((laptop) => {
+          latestLaptop = laptop;
+        }),
+      onPublication: (report) => {
+        if (!cancelled) appAtomRegistry.set(fleetPublication, { ...report, laptop: latestLaptop });
+      },
+    };
+    const refresh = (enrollment: FleetEnrollment) => {
+      const { environmentId } = enrollment;
+      const key = JSON.stringify([
+        environmentId,
+        enrollment.enrollmentId,
+        enrollment.continueRunningThreads,
+      ]);
+      const existing = refreshes.get(key);
+      if (existing !== undefined) return existing;
+      const next = enqueue(() =>
+        refreshFleetFollowerReport(
+          {
+            ...driver,
+            onPublication: (report) => {
+              if (cancelled) return;
+              const others = (appAtomRegistry.get(fleetPublication)?.hosts ?? []).filter(
+                (host) => host.enrollment.environmentId !== environmentId,
+              );
+              return driver.onPublication?.({ ...report, hosts: [...others, ...report.hosts] });
+            },
+          },
+          enrollment,
+        ),
+      ).finally(() => {
+        refreshes.delete(key);
+      });
+      refreshes.set(key, next);
+      return next;
+    };
+    refreshMountedFollower = refresh;
     const tick = async () => {
       try {
-        installedReadVersion = installedReadVersion + 1;
-        const readVersion = installedReadVersion;
-        // Label lookup cannot hold fleet observation or authorize publication.
-        void Promise.resolve()
-          .then(() => window.desktopBridge?.getUpdateState())
-          .then((installed) => {
-            if (!cancelled && readVersion === installedReadVersion)
-              appAtomRegistry.set(fleetInstalledSource, installed?.jones?.installedSource ?? null);
-          })
-          .catch(() => {
-            if (!cancelled && readVersion === installedReadVersion)
-              appAtomRegistry.set(fleetInstalledSource, null);
-          });
-        await advanceFleetCampaigns({
-          desktop: (request) => fleetDesktop(request, () => cancelled),
-          host: fleetHost,
-          cancelled: () => cancelled,
-          // The native active install's provenance; the renderer only relays it.
-          publication: readFleetPublication,
-          onPublication: (report) => {
-            if (!cancelled) appAtomRegistry.set(fleetPublication, report);
-          },
+        await enqueue(async () => {
+          await advanceFleetCampaigns(driver);
+          if (!cancelled) await refreshFleetDesktopState();
         });
-        if (!cancelled) await refreshFleetDesktopState();
       } catch {
         if (!cancelled)
           appAtomRegistry.set(
@@ -55,6 +96,10 @@ export function FleetController() {
     return () => {
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
+      if (refreshMountedFollower === refresh) {
+        refreshMountedFollower = undefined;
+        appAtomRegistry.set(fleetPublication, null);
+      }
     };
   }, []);
   return null;
@@ -65,8 +110,11 @@ export async function readFleetPublicationSource() {
   return publication.kind === "withheld" ? undefined : publication.source;
 }
 
-export async function readFleetPublication(): Promise<FleetPublication> {
+export async function readFleetPublication(
+  onLaptop?: (laptop: JonesInstallPlanLaptopEvidence | undefined) => void,
+): Promise<FleetPublication> {
   const bridge = window.desktopBridge;
+  onLaptop?.(undefined);
   if (bridge?.installPlan === undefined)
     return {
       kind: "withheld",
@@ -75,6 +123,13 @@ export async function readFleetPublication(): Promise<FleetPublication> {
     };
   try {
     const result = await bridge.installPlan({ type: "publication", acceptOrdinaryRecovery: 1 });
+    if (result.refused !== undefined || result.state?.readOnly !== undefined)
+      return {
+        kind: "withheld",
+        code: "unavailable",
+        message: "Native publication proof is unavailable.",
+      };
+    onLaptop?.(result.state?.laptop);
     return (
       result.publication ?? {
         kind: "withheld",

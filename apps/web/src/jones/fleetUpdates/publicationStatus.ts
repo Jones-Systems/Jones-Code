@@ -1,6 +1,5 @@
 import { shortJonesSource } from "@t3tools/client-runtime/jones/updates";
 import type {
-  FleetCommittedSource,
   FleetPublication,
   FleetPublicationReceipt,
 } from "@t3tools/client-runtime/jones/fleet-updates";
@@ -36,6 +35,14 @@ export function selectPublicationReceipt(
     status.enrollment.enrollmentId === enrollment.enrollmentId &&
     status.enrollment.continueRunningThreads === enrollment.continueRunningThreads;
   const follower = bound ? status.follower : undefined;
+  const earlierFollower = receipt?.follower;
+  const acknowledged =
+    !local.unavailable &&
+    follower !== undefined &&
+    earlierFollower !== undefined &&
+    receipt?.publicationAcknowledged === true &&
+    follower.leaderSource === earlierFollower.leaderSource &&
+    follower.leaderPublishedAt === earlierFollower.leaderPublishedAt;
   return {
     enrollment,
     observedAt: local.observedAt,
@@ -46,8 +53,18 @@ export function selectPublicationReceipt(
           ? "directive-held"
           : follower === undefined
             ? "legacy"
-            : "observed",
-    ...(follower === undefined ? {} : { follower }),
+            : acknowledged
+              ? "following"
+              : "observed",
+    ...(local.unavailable || !bound
+      ? {
+          failure: local.unavailable ? "unreachable" : "unconfirmed",
+          ...(earlierFollower === undefined ? {} : { follower: earlierFollower }),
+        }
+      : follower === undefined
+        ? {}
+        : { follower }),
+    ...(acknowledged ? { publicationAcknowledged: true } : {}),
   };
 }
 
@@ -68,27 +85,34 @@ export function formatFleetTime(iso: string): string {
 
 export function describePublication(
   publication: FleetPublication | undefined,
-  installedSource?: FleetCommittedSource | null,
+  runningSource?: string,
 ): string {
-  const installed =
-    installedSource == null
-      ? ""
-      : ` Laptop last observed installed build: ${shortJonesSource(installedSource.sha)}.`;
-  if (publication === undefined) return `Laptop publication status unknown.${installed}`;
-  if (publication.kind !== "withheld")
-    return `Laptop publication authorized for ${shortJonesSource(publication.source.sha)}.${installed}`;
+  const running =
+    runningSource === undefined
+      ? "Laptop running build verification is unavailable."
+      : `Verified running laptop build ${shortJonesSource(runningSource)}.`;
+  if (publication === undefined) return `Laptop publication status unknown. ${running}`;
+  if (publication.kind !== "withheld") {
+    const published = shortJonesSource(publication.source.sha);
+    return runningSource === publication.source.sha
+      ? `${running} Publication authorized for ${published}.`
+      : `${running} Publication was last authorized for ${published}.`;
+  }
   const reason = {
     "plan-managed": "update plan",
     unproved: "native proof missing",
     blocked: "native verification blocked",
     unavailable: "native proof unavailable",
   }[publication.code];
-  return `Automatic publication withheld (${reason}).${installed}`;
+  return `Automatic publication withheld (${reason}). ${running}${
+    publication.code === "unproved" ? " Open Install status to check laptop verification." : ""
+  }`;
 }
 
 export function describePublicationReceipt(
   label: string,
   receipt: FleetPublicationReceipt | undefined,
+  runningSource?: string,
   formatTime: (iso: string) => string = formatFleetTime,
 ): string {
   if (receipt === undefined) return `${label}: host report unknown; not reached yet.`;
@@ -96,17 +120,32 @@ export function describePublicationReceipt(
   const reported =
     follower?.leaderSource == null
       ? "last reported laptop build unknown"
-      : `last reported laptop build ${shortJonesSource(follower.leaderSource)} at ${
+      : `last reported laptop build ${shortJonesSource(follower.leaderSource)}, published ${
           follower.leaderPublishedAt === undefined
             ? "time unknown"
             : formatTime(follower.leaderPublishedAt)
         }`;
-  const outcome = {
-    following: "publication acknowledged",
-    "directive-held": "update plan holds automatic following",
-    unknown: "latest acknowledgement unknown; host not reached or response not confirmed",
-    legacy: "host uses laptop campaigns",
-    observed: "host status observed",
-  }[receipt.outcome];
-  return `${label}: ${reported} · ${outcome}.`;
+  const outcome =
+    receipt.outcome === "unknown"
+      ? receipt.failure === "unreachable"
+        ? "host status could not be read"
+        : "latest host acknowledgement could not be confirmed"
+      : {
+          following: "publication acknowledged",
+          "directive-held": "manual review directive retained",
+          legacy: "host uses laptop campaigns",
+          observed: "host status observed",
+        }[receipt.outcome];
+  const mismatch =
+    receipt.outcome !== "unknown" &&
+    runningSource !== undefined &&
+    follower?.leaderSource != null &&
+    follower.leaderSource !== runningSource
+      ? " · report is stale"
+      : "";
+  const acknowledged =
+    receipt.publicationAcknowledged === true && receipt.outcome === "directive-held"
+      ? " · publication acknowledged"
+      : "";
+  return `${label}: ${reported}${mismatch}${acknowledged} · ${outcome}.`;
 }
