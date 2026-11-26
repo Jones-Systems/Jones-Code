@@ -6692,7 +6692,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const targetBranch = input.newRefName ?? input.refName;
     // Resolve sub/.. before taking the basename.
     const repoName = path.basename(path.resolve(input.cwd));
-    let worktreePath = input.path;
+    // Git interprets a relative destination from its repository cwd. Later
+    // checkout, custody, and cleanup operations need that same physical path.
+    let worktreePath = input.path == null ? undefined : path.resolve(input.cwd, input.path);
     if (worktreePath == null) {
       const parentDir = resolveWorktreesDirectory(
         options?.worktreesDirectory ?? "",

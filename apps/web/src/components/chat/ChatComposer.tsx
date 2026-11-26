@@ -2628,8 +2628,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const onComposerCommandKey = (
     ...args: Parameters<ReturnType<typeof composerCommandKeyHandler>>
-  ) =>
-    composerCommandKeyHandler({
+  ) => {
+    const [key, event] = args;
+    if (
+      key === "Escape" &&
+      composerSendHeld &&
+      !event.defaultPrevented &&
+      !event.isComposing &&
+      event.keyCode !== 229
+    ) {
+      cancelHeldSend();
+      return true;
+    }
+    return composerCommandKeyHandler({
       steeringBlockedByQuestion,
       hasDraftContext: () =>
         composerImagesRef.current.length > 0 ||
@@ -2691,6 +2702,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       promptSuggestion: offeredPromptSuggestion,
       dismissPromptSuggestion,
     })(...args);
+  };
 
   const {
     stashQueue,
@@ -2967,7 +2979,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (questionAttachmentTarget) return false;
     return insertAttachmentReferencesForDraft({
       target: composerDraftTarget,
-      liveAttachmentTargetKey: attachmentTargetKeyRef.current,
+      liveAttachmentTargetKey: composerMountedRef.current ? attachmentTargetKeyRef.current : "",
       references,
       insertReferences: () => {
         if (pendingInsertion?.insert(references)) return true;
@@ -3897,10 +3909,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         />
       </ComposerBanner.Dock>
       {showComposerAttachAction ? (
+        // Keep the picker mounted through collapse and bound to the draft that opened it.
         <ComposerAttachInput
+          key={attachmentTargetKey}
           ref={composerAttachInputRef}
           addComposerAttachments={addComposerAttachments}
-          focusComposer={focusComposer}
+          focusComposer={() => {
+            if (
+              composerMountedRef.current &&
+              attachmentTargetKeyRef.current === attachmentTargetKey &&
+              composerSurfaceRef.current?.dataset.chatComposerMobileCollapsed !== "true"
+            ) {
+              focusComposer();
+            }
+          }}
         />
       ) : null}
       <div className="relative">

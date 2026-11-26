@@ -483,7 +483,7 @@ export function useComposerSend(input: ComposerSendInput) {
       : composerRef.current?.getSendContext();
     const isCurrentRouteThread = () => currentRouteThreadKeyRef.current === routeThreadKey;
     // `/side` beats an open question and a plan follow-up, which would send the text to main.
-    const sideChatCommand =
+    let sideChatCommand =
       sendCtx && !directAnnotation && !queuedRunEdit.isEditing
         ? parseSideChatCommand(promptAtSend)
         : null;
@@ -584,6 +584,9 @@ export function useComposerSend(input: ComposerSendInput) {
       if (!draftAfterHold) return;
       // A dictation sent after leaving the thread carries its transcript outside the draft.
       promptAtSend = detachedOverride ? detachedOverride.prompt : draftAfterHold.prompt;
+      if (sideChatCommand) {
+        sideChatCommand = parseSideChatCommand(promptAtSend) ?? sideChatCommand;
+      }
       if (sendCtx) {
         sendCtx = {
           ...sendCtx,
@@ -2054,24 +2057,23 @@ export function useComposerSend(input: ComposerSendInput) {
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
       if (definitelyUnsent) composerRecovery.rejected();
-      if (
-        isAtomCommandInterrupted(failure) &&
-        pending?.delivery === "uncertain" &&
-        isCurrentComposerSend() &&
-        currentRouteThreadKeyRef.current === routeThreadKey &&
-        composerDraftHasUserContent(
-          useComposerDraftStore.getState().getComposerDraft(recoveryTarget()),
-        )
-      ) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "warning",
-            title: "Message may not have been sent",
-            description: "Your new draft was kept.",
-          }),
-        );
-      }
-      if (!isAtomCommandInterrupted(failure)) {
+      if (pending?.delivery === "uncertain") {
+        if (
+          isCurrentComposerSend() &&
+          isCurrentRouteThread() &&
+          composerDraftHasUserContent(
+            useComposerDraftStore.getState().getComposerDraft(recoveryTarget()),
+          )
+        ) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: "Message may not have been sent",
+              description: "Your new draft was kept.",
+            }),
+          );
+        }
+      } else if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         setThreadError(
           threadIdForSend,
@@ -2149,8 +2151,14 @@ export function useComposerSend(input: ComposerSendInput) {
     return { result, draftReady: draftStatus === "ready", sameRoute };
   };
   const sendWithEnvironmentRefresh = async (...args: Parameters<typeof onSend>) => {
+    // A preparing image already belongs to this draft, like a ready attachment.
+    const hasPreparingImages =
+      countPreparingComposerImages(composerTargetKey(composerDraftTarget)) > 0;
     const refresh =
-      args[3] || sendInFlightRef.current || readPendingEnvironmentChange() !== null
+      args[3] ||
+      hasPreparingImages ||
+      sendInFlightRef.current ||
+      readPendingEnvironmentChange() !== null
         ? null
         : refreshBeforeSend();
     if (refresh === null) return onSend(...args);

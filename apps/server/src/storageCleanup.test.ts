@@ -390,6 +390,7 @@ const cleanupFixture = (
     let scheduledThreadIds: string[] = [];
     let branchPullRequests: Record<string, GitManager.GitBranchPullRequest> = {};
     let fullStatusCalls = 0;
+    let statusCommands = 0;
     let worktreeRemovalCalls = 0;
     const removalArgs: string[][] = [];
     const deletionRefusals: string[] = [];
@@ -612,6 +613,7 @@ const cleanupFixture = (
         execute: (input) =>
           Effect.gen(function* () {
             gitInspections++;
+            if (input.args[0] === "status") statusCommands++;
             if (input.args[0] === "worktree" && input.args[1] === "remove") {
               worktreeRemovalCalls++;
               removalArgs.push([...input.args]);
@@ -909,6 +911,7 @@ const cleanupFixture = (
       removalArgs: () => removalArgs,
       gitInspections: () => gitInspections,
       fullStatusCalls: () => fullStatusCalls,
+      statusCommands: () => statusCommands,
       deletionEvidence: () => ({ worktreeRemovalCalls, deletionRefusals, qualifiedDeletions }),
       snapshotReads: () => snapshotReads,
       snapshotReadPriorities: () => [...snapshotReadPriorities],

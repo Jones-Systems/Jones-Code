@@ -557,15 +557,11 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           const lookups: Array<{ readonly cwd: string; readonly branch: string }> = [];
           const dispatched: Array<OrchestrationV2ServerCommand> = [];
           const dependencies = Layer.mergeAll(
+            Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+              list: () => Effect.sync(() => ({ snapshotSequence: 1, threads: [thread] })),
+            }),
             Layer.mock(Orchestrator.OrchestratorV2)({
               streamDomainEvents: Stream.fromQueue(domainEvents),
-              getPullRequestSnapshot: () =>
-                Effect.sync(() => ({
-                  schemaVersion: 2,
-                  snapshotSequence: 1,
-                  threads: [thread],
-                  archivedThreads: [],
-                })),
               // The thread changed api and web, and a folder the project no longer tracks.
               getCheckpointContext: () =>
                 Effect.succeed({
@@ -841,18 +837,11 @@ describe("ThreadPullRequestServiceV2 reads", () => {
       const sweeps = yield* Queue.unbounded<void>();
       const lookups: Array<{ readonly cwd: string; readonly branch: string }> = [];
       const dependencies = Layer.mergeAll(
-        Layer.mock(Orchestrator.OrchestratorV2)({
-          streamDomainEvents: Stream.never,
-          getPullRequestSnapshot: () =>
-            Queue.offer(sweeps, undefined).pipe(
-              Effect.as({
-                schemaVersion: 2,
-                snapshotSequence: 1,
-                threads,
-                archivedThreads: [],
-              }),
-            ),
+        Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+          list: () =>
+            Queue.offer(sweeps, undefined).pipe(Effect.as({ snapshotSequence: 1, threads })),
         }),
+        Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
         Layer.mock(ProjectStore.ProjectStoreV2)({
           listShells: () => Effect.succeed([project]),
           getShell: () => Effect.succeedSome(project),

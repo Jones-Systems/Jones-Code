@@ -26,7 +26,7 @@ import { AppRoot } from "~/AppRoot";
 // The route loads ChatView lazily, and its first transform (React Compiler over ~4k lines)
 // takes 6-11s; importing it here keeps that out of the test's timeout.
 import "~/components/ChatView";
-import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
+import { DraftId, composerTargetKey, useComposerDraftStore } from "~/composerDraftStore";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "~/diffPanelStore";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import stylesheet from "~/index.css?inline";
@@ -37,16 +37,19 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { getRouter } from "~/router";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { environmentThreadDetails } from "~/state/threads";
+import { cancelPreparingComposerImages } from "./chat/preparingComposerImages";
 import {
   ENVIRONMENT_ID,
   PROJECT_ID,
   answerAssetUrls,
   answerRpc,
   assistantItem,
+  deferFakeSends,
   dispatchedCommands,
   emitThreadEvent,
   hasPendingAssetUrl,
   installFakeEnvironment,
+  refreshFakeShell,
   rejectPendingCommand,
   threadWithHistory,
   threadWithQuestion,
@@ -103,18 +106,18 @@ function acceptAttachmentUploads(): Disposable {
 // One input event, where typing a key at a time takes seconds on a loaded CI runner.
 const insertText = (text: string) => cdp().send("Input.insertText", { text });
 
-/** Holds every call to `method` until `release`, then ends it with `end`, until disposed. */
-function holdRpc<Input>(method: string, end: Effect.Effect<never, Error>) {
-  let release = () => {};
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const calls: Input[] = [];
-  const answer = answerRpc(method, (input: Input) => {
-    calls.push(input);
-    return Effect.promise(() => held).pipe(Effect.andThen(end));
-  });
-  return { calls, release, [Symbol.dispose]: () => answer[Symbol.dispose]() };
+function noProjectWorkspaceDefault(): Disposable {
+  return answerRpc(WS_METHODS.projectsReadFile, (input: ProjectReadFileInput) =>
+    input.relativePath === T3_PROJECT_FILE_NAME && input.allowMissing === true
+      ? Effect.succeed({
+          relativePath: input.relativePath,
+          contents: "",
+          byteLength: 0,
+          truncated: false,
+          exists: false,
+        })
+      : Effect.never,
+  );
 }
 
 // The socket is the only fake layer.
@@ -463,26 +466,16 @@ it("an interrupted image-only first send of a new thread says it may not have be
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
   });
   const draftId = DraftId.make("draft-image-only-interrupted");
+  const threadId = ThreadId.make("thread-image-only-interrupted");
   useComposerDraftStore
     .getState()
     .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
-      threadId: ThreadId.make("thread-image-only-interrupted"),
+      threadId,
       envMode: "local",
       environmentSelection: "manual",
     });
-  using _projectDefaults = answerRpc(WS_METHODS.projectsReadFile, (input: ProjectReadFileInput) =>
-    input.relativePath === T3_PROJECT_FILE_NAME && input.allowMissing === true
-      ? Effect.succeed({
-          relativePath: input.relativePath,
-          contents: "",
-          byteLength: 0,
-          truncated: false,
-          exists: false,
-        })
-      : Effect.never,
-  );
-  // A dropped connection interrupts a new thread's launch, which is not resent.
-  using launch = holdRpc(ORCHESTRATION_V2_WS_METHODS.launchThread, Effect.interrupt);
+  using _projectDefaults = noProjectWorkspaceDefault();
+  using delivery = deferFakeSends();
   const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
   await router.load();
   await using _app = await render(<AppRoot router={router} />, {
@@ -501,27 +494,44 @@ it("an interrupted image-only first send of a new thread says it may not have be
   editor
     .element()
     .dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
-  await expect.element(page.getByRole("img", { name: "shot.png" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Preview shot.png" })).toBeEnabled();
   await userEvent.keyboard("{Enter}");
-  await vi.waitFor(() => expect(launch.calls).toHaveLength(1));
-  await userEvent.keyboard("next draft");
+  await vi.waitFor(() => expect(delivery.requests).toHaveLength(1));
+  const original = delivery.requests[0]!;
+  expect(original.method).toBe(ORCHESTRATION_V2_WS_METHODS.launchThread);
+  expect(original.payload).toMatchObject({
+    threadId,
+    initialMessage: { attachments: [expect.objectContaining({ type: "image", id: "upload-1" })] },
+  });
+  await insertText("next draft");
   await expect.element(editor).toHaveTextContent("next draft");
-  launch.release();
+  await act(() => original.loseAcknowledgement());
 
-  await expect.element(page.getByText("Message not sent")).toBeVisible();
+  const waiting = page.getByText("Waiting for confirmation", { exact: true });
+  await expect.element(page.getByText("Message may not have been sent")).toBeVisible();
+  await expect.element(waiting).toBeVisible();
   await expect.element(editor).toHaveTextContent("next draft");
   // With no text there is nothing to copy.
   expect(page.getByText("Copy message", { exact: true }).query()).toBeNull();
+  expect(delivery.requests).toHaveLength(1);
+  await page.getByRole("button", { name: "Retry sending this message" }).click();
+  await vi.waitFor(() => expect(delivery.requests).toHaveLength(2));
+  const retry = delivery.requests[1]!;
+  expect(retry.method).toBe(original.method);
+  expect(retry.payload).toEqual(original.payload);
+  await act(() => retry.loseAcknowledgement());
+  await expect.element(waiting).toBeVisible();
+  await page.getByRole("button", { name: "Dismiss unsent message" }).click();
+  await expect.element(editor).toHaveTextContent("next draft");
 });
 
 it.each(["new", "existing"] as const)(
   "Enter while an image compresses shows a cancellable banner, cancels on edit or Esc, and still sends after leaving a %s thread",
   async (kind) => {
+    await using _viewport = await chatViewport();
     const thread = threadWithHistory(`upload-wait-${kind}`, 1);
     const other = threadWithHistory(`upload-wait-other-${kind}`, 1);
-    using _environment = installFakeEnvironment(kind === "existing" ? [thread, other] : [other], {
-      acceptCommands: true,
-    });
+    using _environment = installFakeEnvironment(kind === "existing" ? [thread, other] : [other]);
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,
       onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
@@ -532,9 +542,12 @@ it.each(["new", "existing"] as const)(
         .getState()
         .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
           threadId: thread.id,
+          envMode: "local",
+          environmentSelection: "manual",
         });
     }
-    using launch = holdRpc(ORCHESTRATION_V2_WS_METHODS.launchThread, Effect.interrupt);
+    using _projectDefaults = noProjectWorkspaceDefault();
+    using delivery = deferFakeSends();
     const router = getRouter(
       createMemoryHistory({
         initialEntries: [kind === "new" ? `/draft/${draftId}` : `/${ENVIRONMENT_ID}/${thread.id}`],
@@ -547,7 +560,16 @@ it.each(["new", "existing"] as const)(
     });
     const compressed = Promise.withResolvers<void>();
     compression.gate = compressed.promise;
-    using _compression = { [Symbol.dispose]: () => (compression.gate = null) };
+    const targetKey = composerTargetKey(
+      kind === "new" ? draftId : scopeThreadRef(ENVIRONMENT_ID, thread.id),
+    );
+    using _compression = {
+      [Symbol.dispose]: () => {
+        cancelPreparingComposerImages(targetKey);
+        compression.gate = null;
+        compressed.resolve();
+      },
+    };
     using _uploads = acceptAttachmentUploads();
     const editor = page.getByTestId("composer-editor");
     await expect.element(editor).toBeVisible();
@@ -561,53 +583,70 @@ it.each(["new", "existing"] as const)(
       .dispatchEvent(
         new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
       );
+    await expect.element(page.getByRole("button", { name: "Preview shot.png" })).toBeDisabled();
 
     // Enter arms the send and shows the banner plus a disabled spinner button.
-    await userEvent.keyboard("check image{Enter}");
-    await expect.element(page.getByText("Sending once image is ready")).toBeVisible();
+    await insertText("check image");
+    await userEvent.keyboard("{Enter}");
+    const banner = page.getByText("Sending once image is ready", { exact: true });
+    await expect.element(banner).toBeVisible();
     const waitingButton = page.getByRole("button", { name: "Sending when ready", exact: true });
     await expect.element(waitingButton).toBeDisabled();
     await expect.element(waitingButton).toHaveAttribute("aria-busy", "true");
 
     // Typing disarms the queued send and keeps the edit.
-    await userEvent.keyboard(" now");
-    await expect.element(page.getByText("Sending once image is ready")).not.toBeInTheDocument();
+    await insertText(" now");
+    await expect.element(banner).not.toBeInTheDocument();
     await expect.element(editor).toHaveTextContent("check image now");
 
     // Enter arms again; Esc cancels cleanly.
     await userEvent.keyboard("{Enter}");
-    await expect.element(page.getByText("Sending once image is ready")).toBeVisible();
+    await expect.element(banner).toBeVisible();
     await userEvent.keyboard("{Escape}");
-    await expect.element(page.getByText("Sending once image is ready")).not.toBeInTheDocument();
+    await expect.element(banner).not.toBeInTheDocument();
 
     // Enter arms again; leaving the thread still sends once the image is ready.
     await userEvent.keyboard("{Enter}");
-    await expect.element(page.getByText("Sending once image is ready")).toBeVisible();
+    await expect.element(banner).toBeVisible();
+    expect(delivery.requests).toHaveLength(0);
     await router.navigate({ to: `/${ENVIRONMENT_ID}/${other.id}` });
     await expect.element(page.getByText(`Answer 0 for upload-wait-other-${kind}.`)).toBeVisible();
+    await userEvent.click(editor);
+    await insertText("other thread draft");
 
     compressed.resolve();
-    await vi.waitFor(() => {
-      if (kind === "new") {
-        expect(launch.calls).toHaveLength(1);
-      } else {
-        expect(dispatchedCommands()).toContainEqual(
-          expect.objectContaining({
-            type: "message.dispatch",
-            threadId: thread.id,
-            attachments: [expect.objectContaining({ type: "image", id: "upload-1" })],
-          }),
-        );
-      }
+    await vi.waitFor(() => expect(delivery.requests).toHaveLength(1));
+    const sent = delivery.requests[0]!;
+    const message = {
+      text: "check image now",
+      attachments: [expect.objectContaining({ type: "image", id: "upload-1" })],
+    };
+    if (kind === "new") {
+      expect(sent.method).toBe(ORCHESTRATION_V2_WS_METHODS.launchThread);
+      expect(sent.payload).toMatchObject({ threadId: thread.id, initialMessage: message });
+    } else {
+      expect(sent.method).toBe(ORCHESTRATION_V2_WS_METHODS.dispatchCommand);
+      expect(sent.payload).toMatchObject({
+        type: "message.dispatch",
+        threadId: thread.id,
+        ...message,
+      });
+    }
+    await act(async () => {
+      await sent.commit();
+      sent.acknowledge();
     });
-    launch.release();
+    await expect.element(page.getByText(`Answer 0 for upload-wait-other-${kind}.`)).toBeVisible();
+    await expect.element(editor).toHaveTextContent("other thread draft");
+    expect(router.state.location.pathname).toBe(`/${ENVIRONMENT_ID}/${other.id}`);
+    expect(delivery.requests).toHaveLength(1);
   },
 );
 
 it("a file picked after the phone composer collapses still attaches", async () => {
+  await using _viewport = await chatViewport(390, 844);
   const thread = threadWithHistory("thread-40993", 1);
   using _environment = installFakeEnvironment([thread]);
-  await page.viewport(390, 844);
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
@@ -623,21 +662,33 @@ it("a file picked after the phone composer collapses still attaches", async () =
   using _uploads = acceptAttachmentUploads();
   const editor = page.getByTestId("composer-editor");
   await expect.element(page.getByText(`Answer 0 for ${thread.id}.`)).toBeVisible();
-  await userEvent.click(editor);
-  await expect.element(page.getByRole("button", { name: "Attach files" })).toBeVisible();
+  const expand = page.getByRole("button", { name: "Expand composer" });
+  await expand.click();
+  await expect.element(editor).toHaveFocus();
+  const attach = page.getByRole("button", { name: "Attach files" });
+  await expect.element(attach).toBeVisible();
   const input = document.querySelector<HTMLInputElement>(
     'form[data-chat-composer-form] input[type="file"]',
-  );
-  expect(input).not.toBeNull();
+  )!;
 
   // Opening the native picker blurs the editor, which collapses the phone composer.
-  (editor.element() as HTMLElement).blur();
-  await expect.element(page.getByRole("button", { name: "Attach files" })).not.toBeInTheDocument();
+  using picker = vi.spyOn(input, "click").mockImplementation(() => {
+    (editor.element() as HTMLElement).blur();
+  });
+  await attach.click();
+  expect(picker).toHaveBeenCalledOnce();
+  await expect.element(expand).toBeVisible();
+  await expect.element(attach).not.toBeInTheDocument();
+  expect(input.isConnected).toBe(true);
   const files = new DataTransfer();
   files.items.add(new File([PNG], "picked.png", { type: "image/png" }));
-  input!.files = files.files;
-  input!.dispatchEvent(new Event("change", { bubbles: true }));
+  input.files = files.files;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
 
+  const preview = page.getByRole("button", { name: "Preview picked.png", exact: true });
+  await expect.element(preview).toBeVisible();
+  expect(preview.element().closest("[data-chat-composer-resting-images]")).not.toBeNull();
+  await expand.click();
   await expect.element(page.getByRole("img", { name: "picked.png" })).toBeVisible();
 });
 
@@ -1107,10 +1158,11 @@ it("a subagent tab shows its read-only bar under no header of its own", async ()
 });
 
 it("/side sends the draft's attachments and context, and keeps them when it does not start", async () => {
-  await page.viewport(1400, 900);
+  await using _viewport = await chatViewport();
   const thread = threadWithHistory("side-attachments", 1);
+  const fixtures = [thread];
   let holdFork = false;
-  using _environment = installFakeEnvironment([thread], {
+  using _environment = installFakeEnvironment(fixtures, {
     acceptCommands: true,
     holdCommand: (command) => holdFork && command.type === "thread.fork",
   });
@@ -1131,6 +1183,7 @@ it("/side sends the draft's attachments and context, and keeps them when it does
 
   const editor = page.getByRole("textbox", { name: `Message ${thread.title}`, exact: true });
   const image = page.getByRole("img", { name: "shot.png" });
+  const reply = page.getByRole("button", { name: "Reply to this response" }).first();
   const sendImageToSideChat = async () => {
     await userEvent.click(editor);
     const clipboardData = new DataTransfer();
@@ -1140,17 +1193,33 @@ it("/side sends the draft's attachments and context, and keeps them when it does
       .dispatchEvent(
         new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
       );
-    await expect.element(image).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Preview shot.png" })).toBeEnabled();
     await insertText("/side what is this?");
     await userEvent.keyboard("{Enter}");
     await expect.element(image).not.toBeInTheDocument();
   };
-  // The tab opens once the start finished; until then `/side` refuses another side chat.
+  // An accepted fork has to reach the client through the shell before it can take a message.
   const sideChatTabs = page.getByRole("button", { name: "Side chat", exact: true });
   const sentMessage = async (fields: Record<string, unknown>, openTabs: number) => {
+    const fork = await vi.waitFor(() => {
+      const forks = dispatchedCommands().filter((command) => command.type === "thread.fork");
+      expect(forks).toHaveLength(openTabs);
+      return forks[openTabs - 1]!;
+    });
+    expect(fork).toMatchObject({ sideChat: true, sourceThreadId: thread.id });
+    fixtures.push({
+      ...threadWithHistory(fork.targetThreadId, 0),
+      sideChatOf: fork.sourceThreadId,
+      title: fork.title ?? "Side chat",
+    });
+    await act(() => refreshFakeShell());
     await vi.waitFor(() =>
       expect(dispatchedCommands()).toContainEqual(
-        expect.objectContaining({ type: "message.dispatch", ...fields }),
+        expect.objectContaining({
+          type: "message.dispatch",
+          threadId: fork.targetThreadId,
+          ...fields,
+        }),
       ),
     );
     await expect.element(sideChatTabs).toHaveLength(openTabs);
@@ -1170,7 +1239,7 @@ it("/side sends the draft's attachments and context, and keeps them when it does
   );
 
   // A reply alone is enough to send.
-  await page.getByRole("button", { name: "Reply to this response" }).first().click();
+  await reply.click();
   await userEvent.click(editor);
   await insertText("/side ");
   await userEvent.keyboard("{Enter}");
@@ -1185,6 +1254,7 @@ it("/side sends the draft's attachments and context, and keeps them when it does
 
   // A failed start puts the message back after the draft typed meanwhile.
   holdFork = true;
+  await reply.click();
   await sendImageToSideChat();
   await insertText("next draft");
   await vi.waitFor(() =>
@@ -1194,6 +1264,8 @@ it("/side sends the draft's attachments and context, and keeps them when it does
   );
   await rejectPendingCommand("Side chats are paused.");
   await expect.element(image).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
+  await expect.element(sideChatTabs).toHaveLength(2);
   await vi.waitFor(() =>
     expect((editor.element() as HTMLElement).innerText.split("\n").filter(Boolean)).toEqual([
       "next draft",

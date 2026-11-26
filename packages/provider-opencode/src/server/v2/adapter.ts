@@ -284,6 +284,7 @@ interface ActiveTurn {
   readonly settledInbox: Set<string>;
   // Reconnects replay finished tools, so each nested html_render / send_to_user takes its record only once.
   readonly takenPages: Set<string>;
+  readonly takenSentMessages: Map<string, string | null>;
   heldEnd: (TurnTerminal & { readonly evidenceKind: ExecutionEndEvidence }) | undefined;
   awaitingStart: boolean;
   /** Scope child tool IDs because model-generated IDs can repeat parent IDs. */
@@ -3458,6 +3459,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     ) {
       if (end.status === "completed" && (turn.steers.size > 0 || goalHoldsTurn(state))) {
         turn.heldEnd = { ...end, evidenceKind };
+        // A reconnect or another client may have paused the goal without an event.
+        if (goalHoldsTurn(state) && !state.goalRefreshing) yield* refreshGoal(state);
         return;
       }
       yield* finishTurn(state, end, "reusable", evidenceKind);
@@ -4040,11 +4043,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       const { next, nextAdoption, stream } = yield* Effect.gen(function* () {
         const next = yield* borrow.pipe(Effect.provideService(Scope.Scope, scope));
         const nextAdoption = yield* adopt(next);
-        return {
-          next,
-          nextAdoption,
-          stream: yield* next.events.pipe(Effect.provideService(Scope.Scope, scope)),
-        };
+        const events = next.events.pipe(Effect.provideService(Scope.Scope, scope));
+        return { next, nextAdoption, stream: yield* whileAlive(next.processExit, events) };
       }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       const previous = currentScope;
       if (next !== connection) eventProducer.retire();
@@ -4629,8 +4629,10 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       }
       const instructions = [
         buildRuntimeInstructions({
+          agentFeedback: mcpAvailable ? (turnInput.agentFeedback ?? "off") : "off",
           harness: "OpenCode",
           model: turnInput.modelSelection.model,
+          runtimePolicy: turnInput.runtimePolicy,
           ...(host.appIdentity === undefined ? {} : { appIdentity: host.appIdentity }),
         }),
         t3OrchestrationSystemPrompt(mcpAvailable, mcpSession?.capabilities?.has("device") === true),
