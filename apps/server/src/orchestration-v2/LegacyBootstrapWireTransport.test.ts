@@ -1348,6 +1348,10 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                 projectOwner,
                 runner,
                 WsWorktreeSetupTracker.layer,
+                Layer.mock(TaskFolders.TaskFolders)({
+                  plan: () => Effect.succeed(null),
+                  find: () => Effect.succeed(null),
+                }),
                 Layer.mock(WsProjectCloneTracker.ProjectCloneTracker)({
                   get: () => Effect.succeed(null),
                 }),

@@ -57,6 +57,7 @@ import * as RuntimePolicy from "../../orchestration-v2/RuntimePolicy.ts";
 import * as ThreadFork from "../../orchestration-v2/ThreadForkService.ts";
 import * as ThreadCommands from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as TurnItemPositions from "../../orchestration-v2/TurnItemPositionStore.ts";
+import * as TaskFolderStore from "../../workspace/TaskFolderStore.ts";
 import { workModeFixture } from "./Fixtures.testkit.ts";
 import {
   workModeCandidate,
@@ -94,6 +95,7 @@ const stores = Layer.mergeAll(
   CommandReceipts.layer,
   EffectOutbox.layer,
   TurnItemPositions.layer,
+  TaskFolderStore.layer.pipe(Layer.provide(NodeServices.layer)),
 ).pipe(Layer.provideMerge(database));
 const sink = EventSink.layerFromStores.pipe(Layer.provide(stores));
 const dependencies = Layer.mergeAll(

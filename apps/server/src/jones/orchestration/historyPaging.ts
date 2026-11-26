@@ -76,6 +76,10 @@ export const readLocalHistoryPage = Effect.fn("ProjectionStore.readLocalHistoryP
   const anchor = anchors[0];
   if (anchor === undefined) return null;
 
+  // Match the shared timeline policy for queued inputs and recovery-cancelled runs.
+  const heldRun = sql`(run.status IS 'queued' OR
+    (run.status IS 'cancelled' AND json_extract(run.payload_json, '$.startedAt') IS NULL))`;
+
   // Restrict correction work to runs/attempts that can hide rows. The separate
   // raw prefix count below stays covering-index-only, but is still O(N).
   const hidden = sql`WITH hidden AS (
@@ -89,7 +93,7 @@ export const readLocalHistoryPage = Effect.fn("ProjectionStore.readLocalHistoryP
       SELECT item.rowid
       FROM orchestration_v2_projection_runs AS run
       CROSS JOIN orchestration_v2_projection_turn_items AS item ON item.run_id = run.run_id
-      WHERE run.thread_id = ${threadId} AND run.status = 'cancelled'
+      WHERE run.thread_id = ${threadId} AND ${heldRun}
         AND item.thread_id = ${threadId} AND item.type = 'user_message'
         AND (item.ordinal, item.turn_item_id) < (${anchor.ordinal}, ${anchor.turn_item_id})
         AND json_extract(item.payload_json, '$.inputIntent') = 'queued_turn'
@@ -109,9 +113,9 @@ export const readLocalHistoryPage = Effect.fn("ProjectionStore.readLocalHistoryP
     )`;
   const hiddenAnchor = yield* sql<{ readonly hidden: number }>`
       SELECT 1 AS hidden WHERE EXISTS (
-        SELECT 1 FROM orchestration_v2_projection_runs
-        WHERE thread_id = ${threadId} AND run_id = ${anchor.run_id}
-          AND (status = 'rolled_back' OR (status = 'cancelled'
+        SELECT 1 FROM orchestration_v2_projection_runs AS run
+        WHERE run.thread_id = ${threadId} AND run.run_id = ${anchor.run_id}
+          AND (run.status IS 'rolled_back' OR (${heldRun}
             AND ${anchor.type} = 'user_message' AND ${anchor.input_intent} = 'queued_turn'))
       ) OR (${anchor.type} = 'run_interrupt_result' AND EXISTS (
         SELECT 1 FROM orchestration_v2_projection_run_attempts
@@ -181,7 +185,8 @@ export const readLocalHistoryPage = Effect.fn("ProjectionStore.readLocalHistoryP
         (interruptRuns.has(id) && !readInterrupts.has(id)),
     );
     if (unseen.length > 0) {
-      const runFacts = yield* sql<RunFacts>`SELECT wanted.value AS run_id, run.status,
+      const runFacts = yield* sql<RunFacts>`SELECT wanted.value AS run_id,
+          CASE WHEN run.status IS 'rolled_back' OR ${heldRun} THEN run.status END AS status,
           CASE WHEN wanted.value IN (SELECT value FROM json_each(${encodeIdList([...interruptRuns])}))
           THEN EXISTS (SELECT 1 FROM orchestration_v2_projection_turn_items AS request
             WHERE request.thread_id = ${threadId} AND request.run_id = wanted.value
@@ -193,7 +198,7 @@ export const readLocalHistoryPage = Effect.fn("ProjectionStore.readLocalHistoryP
               AND (run.status IS NULL OR run.status <> 'rolled_back')
               AND NOT (first.type = 'user_message'
                 AND json_extract(first.payload_json, '$.inputIntent') = 'queued_turn'
-                AND run.status IS 'cancelled')
+                AND ${heldRun})
             ORDER BY first.ordinal ASC, first.turn_item_id ASC LIMIT 1) END AS first_input_id
           FROM json_each(${encodeIdList(unseen)}) AS wanted
           LEFT JOIN orchestration_v2_projection_runs AS run
