@@ -1264,6 +1264,7 @@ export interface DesktopBridge {
     items: readonly ContextMenuItem<T>[],
     position?: { x: number; y: number },
     source?: ContextMenuSource,
+    textSelection?: boolean,
   ) => Promise<T | null>;
   receiveProviderAuthCallback: (authorizationUrl: string) => Promise<string>;
   cancelProviderAuthCallback: (authorizationUrl: string) => Promise<void>;
@@ -1546,6 +1547,7 @@ export interface LocalApi {
       items: readonly ContextMenuItem<T>[],
       position?: { x: number; y: number },
       source?: ContextMenuSource,
+      textSelection?: boolean,
     ) => Promise<T | null>;
     close: () => Promise<void>;
   };

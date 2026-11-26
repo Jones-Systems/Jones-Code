@@ -72,7 +72,9 @@ function sameAuthority(
 }
 
 export function createWebJonesExecutor(journal: JonesActionJournal) {
-  return async (input: Parameters<typeof executeJonesAction>[0]): Promise<JonesExecutionResult> => {
+  return async (
+    input: Parameters<typeof executeJonesAction>[0] & { readonly matchRunningGeneration?: string },
+  ): Promise<JonesExecutionResult> => {
     try {
       await journal.load();
     } catch {
@@ -130,6 +132,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
             input.review,
             native,
             () => !input.cancelled?.() && canHandOff(),
+            input.matchRunningGeneration,
           );
           host = { ...host, planGate: connections.planGate };
         } else {

@@ -4,6 +4,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { MessagesSquareIcon } from "lucide-react";
 import { useGT } from "gt-react";
 
+import { useLinkedThreadWorkstreamMenu } from "~/jones/workstreams/useLinkedThreadWorkstreamMenu";
 import { resolveThreadOpenRoute } from "~/lib/sideChatPane";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { useProject, useThreadShell } from "~/state/entities";
@@ -11,15 +12,14 @@ import { orchestrationEnvironment } from "~/state/orchestration";
 import { useEnvironmentQuery } from "~/state/query";
 import { ContextChip, ContextChipLabel } from "./ContextChip";
 import { ProjectFavicon } from "./ProjectFavicon";
-import { ThreadChipHoverCard } from "./ThreadChipHoverCard";
-import { ThreadHoverCardPopup } from "./ThreadHoverCard";
-import { Tooltip, TooltipTrigger } from "./ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 export function ThreadContextChip(props: {
   record: Pick<ThreadContextRecord, "environmentId" | "threadId" | "title" | "excerpt">;
   projectId?: ProjectId | null;
   copyMarkdown?: string;
   unreadable?: boolean;
+  resolved?: boolean;
 }) {
   const gt = useGT();
   const { environmentId, threadId } = props.record;
@@ -37,6 +37,10 @@ export function ThreadContextChip(props: {
   const project = useProject(projectId ? scopeProjectRef(environmentId, projectId) : null);
   const title = shell?.title?.trim() || metadata?.title.trim() || props.record.title;
   const navigate = useNavigate();
+  const resolved = props.resolved ?? (shell !== null || metadata !== undefined);
+  const workstream = useLinkedThreadWorkstreamMenu(
+    resolved && !props.unreadable ? { environmentId, id: threadId } : null,
+  );
   return (
     <Tooltip>
       <TooltipTrigger
@@ -61,6 +65,7 @@ export function ThreadContextChip(props: {
                   });
                 }}
                 draggable={false}
+                onContextMenu={workstream.onContextMenu}
               />
             }
             aria-label={gt("Thread, {title}", { title })}
@@ -76,14 +81,15 @@ export function ThreadContextChip(props: {
           </ContextChip>
         }
       />
-      <ThreadHoverCardPopup side="top">
-        <ThreadChipHoverCard
-          title={title}
-          project={project}
-          shell={shell}
-          unreadable={props.unreadable === true}
-        />
-      </ThreadHoverCardPopup>
+      <TooltipPopup side="top">
+        {resolved ? gt("Open thread") : gt("Thread no longer available")}
+        {props.record.excerpt?.status === "captured"
+          ? ". bounded point-in-time context attached"
+          : props.record.excerpt?.status === "unavailable"
+            ? `. context unavailable: ${props.record.excerpt.reason.replaceAll("_", " ")}; thread identity retained`
+            : ""}
+      </TooltipPopup>
+      {workstream.picker}
     </Tooltip>
   );
 }

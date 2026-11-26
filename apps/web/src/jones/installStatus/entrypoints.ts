@@ -12,6 +12,7 @@ import type {
   JonesInstallPlanState,
   JonesInstallPlanTarget,
 } from "@t3tools/contracts/jones/installPlan";
+import { verifiedRunningLaptop } from "@t3tools/contracts/jones/installPlan";
 import type {
   JonesOperationAction,
   JonesOperationStartInput,
@@ -361,6 +362,7 @@ export async function handOffJonesTargets(
   targets: readonly JonesHandoffTarget[],
   dispatch?: NativeJonesDispatch,
   reviewedBuild?: JonesUpdateProvenance,
+  match?: { readonly sourceSha: string; readonly generation: string },
 ): Promise<readonly JonesHandoffResult[]> {
   const binding = installPlanServices();
   if (binding?.services.bridge.installPlan === undefined) {
@@ -378,15 +380,44 @@ export async function handOffJonesTargets(
     return targets.map((target) => ({ ...target, handedOff: false, message: issue }));
   }
   requireWritablePlan(binding, read);
-  const desktop = await binding.services.bridge.getUpdateState();
-  const target = read.state.current?.target ?? targetForDesktop(desktop);
+  const current = read.state.current;
+  const desktop = match === undefined ? await binding.services.bridge.getUpdateState() : null;
+  const running =
+    match === undefined
+      ? undefined
+      : verifiedRunningLaptop(
+          read.state.laptop,
+          read.state.laptop.environmentId,
+          binding.services.now(),
+        );
+  if (match !== undefined) {
+    const refused = (message: string) =>
+      targets.map((target) => ({ ...target, handedOff: false, message }));
+    if (
+      read.state.view.matchRunningLaptop !== 1 ||
+      running?.target.sourceSha !== match.sourceSha ||
+      running.generation !== match.generation
+    )
+      return refused("The Laptop's verified running build changed or is unavailable. Check again.");
+    if (
+      current !== null &&
+      (current.target.sourceSha !== running.target.sourceSha ||
+        current.target.sourceTree !== running.target.sourceTree ||
+        current.laptop.gate?.activeGeneration !== running.generation ||
+        current.laptop.gateClosed !== undefined)
+    )
+      return refused(
+        "Review the current Laptop plan in Install status before matching this build.",
+      );
+  }
+  const target = current?.target ?? running?.target ?? targetForDesktop(desktop);
   if (
     reviewedBuild !== undefined &&
-    (read.state.current !== null ||
+    (current !== null ||
       target?.sourceSha !== reviewedBuild.sourceSha ||
       target.sourceTree !== reviewedBuild.sourceTree ||
       target.version !== reviewedBuild.version ||
-      desktop.jones?.provenance?.artifactId !== reviewedBuild.artifactId ||
+      desktop?.jones?.provenance?.artifactId !== reviewedBuild.artifactId ||
       desktop.jones.phase !== "available" ||
       !desktop.jones.capability.download)
   )
@@ -412,11 +443,17 @@ export async function handOffJonesTargets(
       const observed = observations[index];
       if (observed?.status !== "fulfilled") throw new Error("Fresh host status unavailable.");
       const device = observed.value;
+      if (device.environmentId !== entry.environmentId)
+        throw new Error("The observed host does not match this device.");
       if (
         device.observation.freshness === "fresh" &&
         device.observation.state?.installedSource?.sha === target.sourceSha
       ) {
-        results.push({ ...entry, handedOff: false, message: `Already on ${target.version}` });
+        results.push({
+          ...entry,
+          handedOff: false,
+          message: `Already on source ${target.sourceSha.slice(0, 8)}.`,
+        });
         continue;
       }
       const selection = selectionFor(device);
@@ -439,7 +476,6 @@ export async function handOffJonesTargets(
       });
     }
   }
-  const current = read.state.current;
   if (selections.length === 0 && reviewedBuild === undefined) return results;
   requireWritablePlan(binding, read);
   if (current === null) {
@@ -457,13 +493,14 @@ export async function handOffJonesTargets(
         }
       : {
           type: "start" as const,
-          origin: "update-everything" as const,
+          origin: match === undefined ? ("update-everything" as const) : ("connections" as const),
           target:
             reviewedBuild === undefined
               ? target
               : { ...target, laptopArtifactId: reviewedBuild.artifactId },
           select: selections,
-          ...(desktop.jones?.phase === "available" && desktop.jones.capability.download
+          ...(match === undefined ? {} : { expectedRunningGeneration: match.generation }),
+          ...(desktop?.jones?.phase === "available" && desktop.jones.capability.download
             ? { laptop: { action: "download" as const } }
             : {}),
         };
@@ -587,6 +624,7 @@ export function connectionsPlanDispatch(
   review: JonesReviewedInstall | undefined,
   dispatch: (canClaim?: () => boolean) => NativeJonesDispatch,
   canOperate: () => boolean,
+  matchRunningGeneration?: string,
 ) {
   let canStart = (_request: JonesOperationStartInput): boolean => false;
   const planGate: NonNullable<JonesExecutorHost["planGate"]> = async (
@@ -595,12 +633,26 @@ export function connectionsPlanDispatch(
   ) => {
     if (binding === undefined || installPlanServices() !== binding)
       return { kind: "refused", message: "Open Install status on Laptop first." };
+    if (action.kind !== "install" && matchRunningGeneration !== undefined) {
+      const device = binding.services.devices().find((d) => d.environmentId === environmentId);
+      const [result] = await handOffJonesTargets(
+        [{ environmentId, label: device?.label ?? "Device" }],
+        dispatch(),
+        undefined,
+        { sourceSha: targetSource, generation: matchRunningGeneration },
+      );
+      return result?.handedOff
+        ? { kind: "handled", message: result.message }
+        : { kind: "refused", message: result?.message ?? "The plan handoff was refused." };
+    }
     const active = await requestInstallPlan({ type: "read" }, binding);
     const issue = nativePlanIssue(active) ?? retainedRecoveryIssue(active.state, environmentId);
     if (issue !== undefined) return { kind: "refused", message: issue };
     requireWritablePlan(binding, active);
-    const desktopTarget = targetForDesktop(await binding.services.bridge.getUpdateState());
-    if ((active.state.current?.target.sourceSha ?? desktopTarget?.sourceSha) !== targetSource)
+    const target =
+      active.state.current?.target.sourceSha ??
+      targetForDesktop(await binding.services.bridge.getUpdateState())?.sourceSha;
+    if (target !== targetSource)
       return {
         kind: "refused",
         message:

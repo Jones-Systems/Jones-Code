@@ -18,6 +18,13 @@ const checkText = {
   failure: "The update check failed. Check the connection or authentication.",
 } as const;
 
+function failedCheckText(reason: string | undefined): string {
+  if (reason === "target-older-than-installed")
+    return "The requested build is older than the build running on this host. Jones Code does not downgrade.";
+  if (reason === "unqualified") return "The requested build could not be qualified.";
+  return checkText.failure;
+}
+
 const checkTime = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   year: "numeric",
@@ -41,11 +48,12 @@ export function jonesCheckOutcome(state: JonesUpdateState | null) {
   const kind = failed ? "failure" : classification!.kind;
   const checkedAt = failed ? lastCheck.at : classification!.checkedAt;
   const timestamp = Date.parse(checkedAt);
+  const message = failed ? failedCheckText(lastCheck.reason) : checkText[kind];
   return {
     kind,
     text: Number.isFinite(timestamp)
-      ? `${checkText[kind]} Checked ${checkTime.format(timestamp)}.`
-      : checkText[kind],
+      ? `${message} Checked ${checkTime.format(timestamp)}.`
+      : message,
     checkedAt,
     bounded: classification?.discovery?.bounded ?? false,
   };

@@ -16,15 +16,19 @@ import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 import type * as Electron from "electron";
 
-const { focusedWebContents, ownerWindow, exposeInMainWorld, invoke } = vi.hoisted(() => ({
-  focusedWebContents: vi.fn(),
-  ownerWindow: vi.fn(),
-  exposeInMainWorld: vi.fn(),
-  invoke: vi.fn(),
-}));
+const { focusedWebContents, ownerWindow, exposeInMainWorld, invoke, buildFromTemplate } =
+  vi.hoisted(() => ({
+    focusedWebContents: vi.fn(),
+    ownerWindow: vi.fn(),
+    exposeInMainWorld: vi.fn(),
+    invoke: vi.fn(),
+    buildFromTemplate:
+      vi.fn<(template: Electron.MenuItemConstructorOptions[]) => Pick<Electron.Menu, "popup">>(),
+  }));
 vi.mock("electron", () => ({
   webContents: { getFocusedWebContents: focusedWebContents },
   BrowserWindow: { fromWebContents: ownerWindow },
+  Menu: { buildFromTemplate },
   contextBridge: { exposeInMainWorld },
   ipcRenderer: { invoke, sendSync: vi.fn(() => false) },
   webFrame: {},
@@ -42,6 +46,7 @@ import * as DesktopShellEnvironment from "../../shell/DesktopShellEnvironment.ts
 import * as DesktopManagedPolicy from "../../app/DesktopManagedPolicy.ts";
 import * as DesktopWslEnvironment from "../../wsl/DesktopWslEnvironment.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
+import * as ElectronMenu from "../../electron/ElectronMenu.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
@@ -52,6 +57,7 @@ import {
   getPreviewAutomationRuntimeIdentity,
   probeRemoteEditors,
   readMedia,
+  showContextMenu,
   syncHtmlFullscreen,
   toLocalBackendPath,
 } from "./window.ts";
@@ -398,6 +404,49 @@ describe("readMedia", () => {
         mimeType: "",
         data: new Uint8Array(),
       });
+    }),
+  );
+});
+
+describe("showContextMenu", () => {
+  it.effect("places thread assignment after editing roles in the native Writing Tools menu", () =>
+    Effect.gen(function* () {
+      const frame = {} as Electron.WebFrameMain;
+      const window = {
+        id: 1,
+        webContents: { id: 2, mainFrame: frame, getZoomFactor: () => 1 },
+      } as Electron.BrowserWindow;
+      const popup = vi.fn((options: Electron.PopupOptions) => options.callback?.());
+      buildFromTemplate.mockReturnValueOnce({ popup });
+
+      yield* showContextMenu
+        .handler(
+          {
+            items: [{ id: "assign-thread", label: "Assign thread" }],
+            position: { x: 10, y: 20 },
+            source: "mouse",
+            textSelection: true,
+          },
+          { sender: window.webContents, senderFrame: frame },
+        )
+        .pipe(
+          Effect.provide(
+            Layer.merge(
+              Layer.mock(ElectronWindow.ElectronWindow)({
+                focusedMainOrFirst: Effect.succeedSome(window),
+              }),
+              ElectronMenu.layer.pipe(Layer.provide(Layer.succeed(HostProcess.Platform, "darwin"))),
+            ),
+          ),
+        );
+
+      const template = buildFromTemplate.mock.lastCall?.[0] ?? [];
+      assert.deepEqual(
+        template.map((item) => item.role ?? item.label ?? item.type),
+        ["cut", "copy", "paste", "selectAll", "separator", "Assign thread"],
+      );
+      assert.strictEqual(template[1]?.enabled, true);
+      assert.strictEqual(popup.mock.lastCall?.[0].frame, frame);
     }),
   );
 });
