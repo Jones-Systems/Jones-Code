@@ -1426,7 +1426,7 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
             Effect.sync(() => {
               openedOptions = input.options;
               return {
-                messages: Stream.never,
+                ...silentClaudeQueryFrames(),
                 offer: () => Effect.void,
                 setModel: () => Effect.void,
                 applyFlagSettings: () => Effect.void,
@@ -1441,8 +1441,8 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
+                termination: Effect.void,
                 interrupt: Effect.void,
-                close: Effect.void,
               };
             }),
           forkSession: () => Effect.die("unused"),
@@ -7127,7 +7127,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           },
         });
         const attachmentNote = `\n\n[Attached file "requirements.pdf" is saved at: ${path.join(harness.attachmentsDir, attachmentRelativePath(attachment)!)}]`;
-        assert.equal(harness.offeredMessages[1]?.priority, "now");
+        assert.equal(harness.offeredMessages[1]?.priority, "next");
         assert.deepEqual(harness.offeredMessages[1]?.message.content, [
           { type: "text", text: `${leadingText}${attachmentNote}` },
           { type: "text", text: `/implement the fixes${attachmentNote}` },
@@ -7163,23 +7163,41 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     {
       readBy: "none",
       echoes: true,
+      completedDuringStop: false,
       title: "warns that a steer Claude never read before Stop was not delivered",
     },
     {
       readBy: "none",
       echoes: false,
+      completedDuringStop: false,
       title: "does not warn about a steer on a CLI that never echoes prompt uuids",
     },
     {
       readBy: "assistant",
       echoes: true,
+      completedDuringStop: false,
       title: "does not warn about a steer Claude read before Stop",
     },
-  ] as const)("$title", ({ readBy, echoes }) =>
+    {
+      readBy: "none",
+      echoes: true,
+      completedDuringStop: true,
+      title: "keeps a native result that wins the Stop race and warns about the unread steer",
+    },
+  ] as const)("$title", ({ readBy, echoes, completedDuringStop }) =>
     Effect.gen(function* () {
+      const interruptStarted = yield* Deferred.make<void>();
+      const releaseInterrupt = yield* Deferred.make<void>();
       const harness = yield* makeWakeHarnessWithOptions({
         close: (sdkMessages) => Queue.shutdown(sdkMessages),
         freshQueueOnReopen: true,
+        ...(completedDuringStop
+          ? {
+              interrupt: Deferred.succeed(interruptStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseInterrupt)),
+              ),
+            }
+          : {}),
       });
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const firstInput = makeClaudeTestTurnInput({
@@ -7218,7 +7236,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           },
         }),
       );
-      // Past task_started the CLI queues a "now" steer until the call returns.
+      // The CLI queues the steer behind the foreground task.
       yield* harness.offerAndWait(
         claudeSdkFrame({
           type: "system",
@@ -7267,11 +7285,27 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }
       const noticesBefore = harness.events.length;
-      yield* harness.runtime.interruptTurn({
+      const stop = harness.runtime.interruptTurn({
         providerThread: harness.providerThread,
         providerTurnId,
       });
-      assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "interrupted");
+      if (completedDuringStop) {
+        const stopping = yield* stop.pipe(Effect.forkChild);
+        yield* Deferred.await(interruptStarted);
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            ...makeResultFrame({ uuid: "unread-steer-stop-result", result: "The task finished." }),
+            user_message_uuid: harness.promptUuid(0),
+          }),
+        );
+        yield* Deferred.succeed(releaseInterrupt, undefined);
+        yield* Fiber.join(stopping);
+      } else {
+        yield* stop;
+      }
+      const terminal = yield* Queue.take(harness.terminalReceipts);
+      assert.equal(terminal.status, completedDuringStop ? "completed" : "interrupted");
+      if (completedDuringStop) assert.equal(terminal.evidenceKind, "provider_result");
 
       const notices = harness.events
         .slice(noticesBefore)
@@ -10506,7 +10540,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               attachments: [],
             },
           });
-          assert.equal(harness.offeredMessages[1]?.priority, "now");
+          assert.equal(harness.offeredMessages[1]?.priority, "next");
         }
         yield* Queue.offer(
           harness.sdkMessages,

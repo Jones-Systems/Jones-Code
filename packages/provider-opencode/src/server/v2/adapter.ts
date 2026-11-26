@@ -2587,7 +2587,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               },
             }),
       };
-      yield* emitProviderTurn(state, turn, finalizedTurn);
+      yield* emitProviderTurn(turn, finalizedTurn);
       // Subagent turns are runless; their calls own settlement.
       if (state.subagent !== undefined) {
         const call = state.subagent.call;

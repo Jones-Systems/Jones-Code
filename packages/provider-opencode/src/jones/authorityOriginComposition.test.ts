@@ -365,6 +365,7 @@ describe("OpenCode session authority and captured origins", () => {
               client: {},
             } as unknown as V2Server.OpenCode2Connection),
           forget: Effect.void,
+          connections: Stream.empty,
         }),
       );
       const error = yield* adapter
@@ -514,6 +515,7 @@ describe("OpenCode session authority and captured origins", () => {
                     return use(v2Connection);
                   },
                   forget: Effect.void,
+                  connections: Stream.empty,
                 }),
               )
         ).pipe(

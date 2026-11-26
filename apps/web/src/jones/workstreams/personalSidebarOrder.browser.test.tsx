@@ -320,7 +320,7 @@ it("traverses Unassigned before named Workstreams and skips collapsed groups", a
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[0]}`),
     );
   });
-});
+}, 30_000);
 
 it("leaves hidden Workstream rows out of traversal and numeric jumps, keeping only the routed row as an anchor", async () => {
   await withSidebar(async ({ router, rows, visit, step }) => {

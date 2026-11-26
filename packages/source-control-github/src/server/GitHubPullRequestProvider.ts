@@ -399,7 +399,7 @@ export const make = Effect.gen(function* () {
                 .pipe(Effect.map((observation) => ({ ...pullRequest, ...observation }))),
       ),
       Effect.flatMap(({ unfinishedWorkflowRuns, ...pullRequest }) =>
-        (pullRequest.state !== "open" || pullRequest.isCrossRepository !== true
+        (pullRequest.state !== "open"
           ? Effect.succeed({
               runs: [] as ReadonlyArray<GitHubWorkflowRunApproval>,
               unavailable: false,

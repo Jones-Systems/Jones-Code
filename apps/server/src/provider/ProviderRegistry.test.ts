@@ -2924,6 +2924,7 @@ it.layer(
             Layer.provideMerge(
               Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
                 getInstance: () => Effect.succeed(instance),
+                getCatalogSource: (id) => (id === instanceId ? instance : undefined),
                 listInstances: Effect.succeed([instance]),
                 listUnavailable: Effect.succeed([]),
                 streamChanges: Stream.fromPubSub(changes),

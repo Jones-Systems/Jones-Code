@@ -231,12 +231,14 @@ function makeTestAdapter(input: {
                   : `:${yield* Ref.getAndUpdate(input.nativeThreadGeneration, (value) => value + 1)}`;
               const nativeThreadId = `${input.driver}:${threadInput.threadId}${generation}`;
               return {
-                id: ProviderThreadId.make(`provider-thread:${nativeThreadId}`),
+                id:
+                  threadInput.existingProviderThread?.id ??
+                  ProviderThreadId.make(`provider-thread:${nativeThreadId}`),
                 driver: input.driver,
                 providerInstanceId: input.instanceId,
                 providerSessionId: sessionInput.providerSessionId,
                 appThreadId: threadInput.threadId,
-                ownerNodeId: null,
+                ownerNodeId: threadInput.existingProviderThread?.ownerNodeId ?? null,
                 nativeThreadRef: {
                   driver: input.driver,
                   nativeId: nativeThreadId,

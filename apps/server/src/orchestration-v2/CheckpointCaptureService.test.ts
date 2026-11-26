@@ -1440,6 +1440,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
       readonly folders: Ref.Ref<ReadonlyArray<WorkspaceFolders.ThreadFolder>>;
       readonly git: (cwd: string, ...args: ReadonlyArray<string>) => Effect.Effect<string>;
       readonly initRepository: (cwd: string) => Effect.Effect<void>;
+      readonly initLinkedRepository: (cwd: string) => Effect.Effect<void>;
       readonly write: (file: string, contents: string) => Effect.Effect<void>;
       /** Runs one turn: baseline, the turn's edits, then the capture. Returns what it committed. */
       readonly turn: (
@@ -1555,7 +1556,10 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
         const vcsProcess = yield* VcsProcess.VcsProcess;
         const checkpoints = yield* CheckpointService.CheckpointServiceV2;
         const capture = yield* CheckpointCaptureService.CheckpointCaptureServiceV2;
-        const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: `${name}-` });
+        const temporary = yield* fileSystem.makeTempDirectoryScoped({ prefix: `${name}-` });
+        const fixture = yield* fileSystem.realPath(temporary);
+        const root = path.join(fixture, "workspace");
+        yield* fileSystem.makeDirectory(root);
         const git = (cwd: string, ...args: ReadonlyArray<string>) =>
           vcsProcess.run({ operation: "test.git", command: "git", cwd, args }).pipe(
             Effect.map((result) => result.stdout.trim()),
@@ -1573,6 +1577,16 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             yield* git(cwd, "config", "user.name", "Test");
             yield* git(cwd, "add", ".");
             yield* git(cwd, "commit", "-m", "initial commit");
+          });
+        let sourceCount = 0;
+        const initLinkedRepository = (cwd: string) =>
+          Effect.gen(function* () {
+            const source = path.join(fixture, `source-${++sourceCount}`);
+            yield* initRepository(source);
+            yield* fileSystem
+              .makeDirectory(path.dirname(cwd), { recursive: true })
+              .pipe(Effect.orDie);
+            yield* git(source, "worktree", "add", "--detach", cwd);
           });
         const rootScope = {
           id: repositoryRootScopeId,
@@ -1747,6 +1761,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           folders,
           git,
           initRepository,
+          initLinkedRepository,
           write,
           turn,
           capture: captureRun,
@@ -1767,7 +1782,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
     withTrackedRepositories("capture-git-commands", (thread) =>
       Effect.gen(function* () {
         const { root } = thread;
-        yield* thread.initRepository(root);
+        yield* thread.initLinkedRepository(root);
         yield* thread.turn(1, thread.write(`${root}/README.md`, "# one\n"));
         // Counted from after the turn's edits, so only the capture itself.
         const capture = (ordinal: number, edits: Effect.Effect<void>) =>
@@ -1841,7 +1856,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           isGitRepository: true,
         });
         yield* Effect.forEach(["api", "web", "docs"], (name) =>
-          thread.initRepository(`${root}/${name}`),
+          thread.initLinkedRepository(`${root}/${name}`),
         );
         yield* thread.write(`${root}/notes/todo.md`, "plain folder\n");
         yield* Ref.set(thread.folders, [
@@ -1951,8 +1966,8 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
       Effect.gen(function* () {
         const { root } = thread;
         const clone = `${root}/vendor/lib`;
-        yield* thread.initRepository(root);
-        yield* thread.initRepository(clone);
+        yield* thread.initLinkedRepository(root);
+        yield* thread.initLinkedRepository(clone);
         yield* Ref.set(thread.folders, [{ name: "lib", path: clone, isGitRepository: true }]);
 
         const recorded = yield* thread.turn(
@@ -1992,22 +2007,35 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
       Effect.gen(function* () {
         const { root } = thread;
         const submodule = `${root}/vendor/lib`;
-        yield* thread.initRepository(root);
-        yield* thread.initRepository(submodule);
-        yield* thread.write(
-          `${root}/.gitmodules`,
-          '[submodule "lib"]\n\tpath = vendor/lib\n\turl = ../lib\n',
+        const source = `${root}/../library`;
+        yield* thread.initLinkedRepository(root);
+        yield* thread.initRepository(source);
+        yield* thread.git(
+          root,
+          "-c",
+          "protocol.file.allow=always",
+          "submodule",
+          "add",
+          source,
+          "vendor/lib",
         );
-        yield* thread.git(root, "add", ".gitmodules", "vendor/lib");
         yield* thread.git(root, "commit", "-m", "Add lib");
-        yield* Ref.set(thread.folders, [{ name: "lib", path: submodule, isGitRepository: true }]);
 
         const recorded = yield* thread.turn(
           1,
           Effect.gen(function* () {
             yield* thread.write(`${submodule}/README.md`, "# lib\n");
             yield* thread.git(submodule, "add", "README.md");
-            yield* thread.git(submodule, "commit", "-m", "Describe lib");
+            yield* thread.git(
+              submodule,
+              "-c",
+              "user.email=test@test.com",
+              "-c",
+              "user.name=Test",
+              "commit",
+              "-m",
+              "Describe lib",
+            );
           }),
         );
 
@@ -2015,11 +2043,19 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           recorded.flatMap((entry) =>
             entry.run === true ? [{ label: entry.label, files: entry.files }] : [],
           ),
-          [
-            { label: "lib", files: ["README.md"] },
-            { label: "root", files: ["vendor/lib"] },
-          ],
+          [{ label: "root", files: ["vendor/lib"] }],
         );
+        // The linked parent's authority also captures the physical child under the same ref.
+        const context = yield* ProjectionStore.ProjectionStoreV2.use((store) =>
+          store.getCheckpointContext(thread.threadId),
+        );
+        const checkpoint = context.checkpoints.find((snapshot) => snapshot.appRunOrdinal === 1);
+        assert.equal(checkpoint?.status, "ready");
+        assert.equal(
+          yield* thread.git(root, "rev-parse", `${checkpoint!.ref}:vendor/lib`),
+          yield* thread.git(submodule, "rev-parse", "HEAD"),
+        );
+        assert.equal(yield* thread.git(submodule, "show", `${checkpoint!.ref}:README.md`), "# lib");
       }),
     ),
   );

@@ -7,6 +7,8 @@
   },
   "baseline": "36816d26be2d862440d6412d62332a10c4d896ff",
   "paths": {
+    "apps/desktop/scripts/build-apple-speech.mjs": "accepted-shared",
+    "evals/workflow-authoring/grade.ts": "accepted-shared",
     "apps/server/src/peer/PeerClientPairing.ts": "accepted-shared",
     "apps/server/src/peer/PeerClientPairing.test.ts": "jones-tests-in-upstream",
     "apps/server/src/workflows/Workflows.test.ts": "jones-tests-in-upstream",
