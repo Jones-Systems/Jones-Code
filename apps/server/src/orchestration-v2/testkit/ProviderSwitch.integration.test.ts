@@ -1690,7 +1690,7 @@ describe("orchestration v2 provider switching", () => {
     "other-error",
     "repaired-native",
     "background",
-  ] as const)("recovers invalid encrypted Codex history on the next prompt: %s", (scenario) =>
+  ] as const)("preserves the native Codex conversation after rejected history: %s", (scenario) =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("codex-rejected-history");
@@ -1834,50 +1834,46 @@ describe("orchestration v2 provider switching", () => {
           const recovered = yield* dispatch(3, "huh");
           if (scenario === "repaired-native") {
             assert.equal(recovered.runs.at(-1)?.status, "completed");
+            assert.equal(
+              (yield* Ref.get(capturedTurns)).at(-1)?.nativeThreadId,
+              "already-repaired",
+            );
+            assert.isTrue(
+              recovered.turnItems.some(
+                (item) => item.type === "assistant_message" && item.text === "RECOVERY_OK",
+              ),
+            );
+            const next = yield* dispatch(4, "Continue in the repaired conversation");
+            assert.equal(next.runs.at(-1)?.status, "completed");
+            assert.equal(
+              (yield* Ref.get(capturedTurns)).at(-1)?.nativeThreadId,
+              "already-repaired",
+            );
             assert.equal(yield* Ref.get(generation), 1);
-            assert.lengthOf(recovered.contextHandoffs, 0);
+            assert.lengthOf(next.contextHandoffs, 0);
+            assert.lengthOf(yield* Ref.get(injectedHistory), 0);
             return;
           }
-          if (scenario === "other-error" || scenario === "background") {
-            assert.equal(recovered.runs.at(-1)?.status, "failed");
-            assert.equal(yield* Ref.get(generation), 1);
-            assert.lengthOf(yield* Ref.get(capturedTurns), scenario === "background" ? 2 : 3);
-            if (scenario === "background") {
-              yield* Ref.set(pendingBackgroundWork, false);
-              assert.equal(
-                (yield* dispatch(4, "Continue after the worker finished")).runs.at(-1)?.status,
-                "completed",
-              );
-              assert.equal(yield* Ref.get(generation), 2);
-            }
-            return;
-          }
-          assert.equal(recovered.runs.at(-1)?.status, "completed");
-          assert.equal(yield* Ref.get(generation), 2);
+          assert.equal(recovered.runs.at(-1)?.status, "failed");
+          if (scenario === "background") yield* Ref.set(pendingBackgroundWork, false);
+          const final =
+            scenario === "background"
+              ? yield* dispatch(4, "Continue after the worker finished")
+              : recovered;
+          assert.equal(final.runs.at(-1)?.status, "failed");
+          assert.equal(yield* Ref.get(generation), 1);
+          assert.lengthOf(yield* Ref.get(injectedHistory), 0);
+          assert.lengthOf(final.contextHandoffs, 0);
+          const original = failed.providerThreads[0]!;
+          assert.deepEqual(
+            final.providerThreads.find((thread) => thread.id === original.id)?.nativeThreadRef,
+            original.nativeThreadRef,
+          );
           const turns = yield* Ref.get(capturedTurns);
-          assert.lengthOf(turns, 3);
-          assert.equal(turns[2]!.text, "huh");
-          assert.notEqual(turns[2]!.nativeThreadId, turns[1]!.nativeThreadId);
-          assert.equal(turns[2]!.providerThreadId, turns[1]!.providerThreadId);
-          const history = yield* encodeJson(yield* Ref.get(injectedHistory));
-          assert.include(history, "remember the constraint");
-          assert.include(history, "BASELINE_OK");
-          assert.notInclude(history, '"encrypted_content"');
-          assert.notInclude(history, "huh");
+          assert.lengthOf(turns, scenario === "other-error" ? 3 : 2);
           assert.isTrue(
-            recovered.turnItems.some(
-              (item) => item.type === "assistant_message" && item.text === "RECOVERY_OK",
-            ),
+            turns.every((turn) => turn.nativeThreadId === original.nativeThreadRef?.nativeId),
           );
-          const next = yield* dispatch(4, "ok");
-          assert.equal(next.runs.at(-1)?.status, "completed");
-          assert.equal(yield* Ref.get(generation), 2);
-          assert.equal(
-            (yield* Ref.get(capturedTurns))[3]!.nativeThreadId,
-            turns[2]!.nativeThreadId,
-          );
-          assert.equal(yield* encodeJson(yield* Ref.get(injectedHistory)), history);
-          assert.equal(next.contextHandoffs.length, recovered.contextHandoffs.length);
         }).pipe(
           Effect.provide(
             ProviderReplayHarness.layerWithRegistry(

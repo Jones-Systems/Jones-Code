@@ -491,7 +491,7 @@ it.effect.each(["cancelled_before_start", "cancelled_after_start"] as const)(
         later === "cancelled_after_start" ? "cancelled" : "completed",
         later === "cancelled_after_start"
           ? "Child task ended with status cancelled."
-          : "Child task completed without an assistant result.",
+          : "Original executed result",
         later === "cancelled_after_start" ? f.later.id : second!.origin.id,
       );
     }).pipe(Effect.provide(testLayer)),
@@ -564,9 +564,8 @@ it.effect.each([-8, 0])(
       yield* f.seedRun(human);
       const message = f.message(human, "Three delegated tasks failed");
       yield* f.putMessage(message);
-      const completion = yield* f.waitForAncestor;
       yield* f.cancel(f.cohorts[0]!.delivery);
-      assert.isTrue(Option.isSome(yield* Fiber.join(completion)));
+      yield* f.assertWaiting;
       const child = yield* f.projection();
       assert.equal(child.runs.find((row) => row.id === human.id)?.status, "queued");
       assert.isTrue(child.runs.find((row) => row.id === human.id)?.queueHeld);
@@ -574,6 +573,10 @@ it.effect.each([-8, 0])(
         child.messages.find((row) => row.id === message.id),
         message,
       );
+      const completion = yield* f.waitForAncestor;
+      yield* f.cancel(human);
+      yield* f.orchestrator.finalizeDelegatedTask(f.childId);
+      assert.isTrue(Option.isSome(yield* Fiber.join(completion)));
       yield* f.assertFinalized("completed", "Original executed result", f.cohorts[0]!.origin.id);
     }).pipe(Effect.provide(testLayer)),
 );
