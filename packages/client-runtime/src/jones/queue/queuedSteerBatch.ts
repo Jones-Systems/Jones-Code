@@ -1,6 +1,5 @@
 import { type CommandId, type ExecutionEnvironmentCapabilities } from "@t3tools/contracts";
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
-import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
 import type { ThreadStructure } from "../../state/models.ts";
 import { deriveThreadQueueWorkflowState } from "../../state/threadWorkflows.ts";
@@ -82,7 +81,7 @@ export function deriveQueuedSteerBatch(input: {
                 : active.rootNodeId === null ||
                     projection.thread.activeProviderThreadId !== providerThread?.id ||
                     projection.thread.providerInstanceId !== active.providerInstanceId ||
-                    !modelSelectionsEqual(projection.thread.modelSelection, active.modelSelection)
+                    projection.thread.modelSelection.instanceId !== active.modelSelection.instanceId
                   ? "The active provider changed. Wait for the thread to synchronize."
                   : activeMessage && specialCommand(activeMessage.text)
                     ? "Wait for the current maintenance command to finish."

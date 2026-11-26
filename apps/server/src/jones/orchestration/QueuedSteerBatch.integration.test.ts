@@ -47,6 +47,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import { queuedToolBoundaryTarget } from "../../orchestration-v2/QueuedToolBoundary.ts";
 import * as RuntimeStop from "../runtime/RuntimeStop.ts";
 import { makeRuntimeStopMethods } from "../runtime/RuntimeStopSqlite.ts";
+import { withOwnerSelectionIngress } from "../threadConfiguration/ownerIngress.ts";
 
 const makeQueuedProviderFixture = ({
   cwd,
@@ -718,12 +719,12 @@ it.effect.each([
     }).pipe(Effect.scoped),
 );
 
-it.effect.each(["manual", "automatic", "completed", "switched", "bounded"] as const)(
+it.effect.each(["manual", "automatic", "completed", "switched", "bounded", "saved-speed"] as const)(
   "originals use one batch effect and preserve delivery on %s",
   (mode) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const count = mode === "switched" ? 4 : 22;
+        const count = mode === "switched" || mode === "saved-speed" ? 4 : 22;
         const promotedCount = mode === "bounded" ? 2 : count;
         const driver = ProviderDriverKind.make("codex");
         const instanceId = ProviderInstanceId.make("codex");
@@ -787,6 +788,20 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded"] as co
             WHERE thread_id = ${threadId}`;
           assert.lengthOf(started, 1, JSON.stringify(initialEffects));
           yield* Fiber.join(running);
+          const savedSelection = {
+            ...modelSelection,
+            options: [{ id: "serviceTier", value: "ultrafast" }],
+          };
+          if (mode === "saved-speed") {
+            yield* orchestrator
+              .dispatch({
+                type: "thread.model-selection.set",
+                commandId: CommandId.make("save-speed"),
+                threadId,
+                modelSelection: savedSelection,
+              })
+              .pipe(withOwnerSelectionIngress);
+          }
           const threads = yield* ThreadManagementService.ThreadManagementService.pipe(
             Effect.provide(
               ThreadManagementService.layer.pipe(
@@ -872,6 +887,14 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded"] as co
                 ),
               })),
           };
+          if (mode === "saved-speed") {
+            assert.deepEqual(before.thread.modelSelection, savedSelection);
+            assert.deepEqual(
+              before.runs.find((run) => run.id === command.targetRunId)?.modelSelection,
+              modelSelection,
+            );
+            assert.isTrue("error" in validateQueuedSteerBatch(before, command, true));
+          }
           for (const index of [0, 1]) {
             for (const field of ["instance", "thread", "model", "options"] as const) {
               const changed = {
@@ -978,7 +1001,10 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded"] as co
                   ...before,
                   thread: {
                     ...before.thread,
-                    modelSelection: { ...modelSelection, model: "changed-model" },
+                    modelSelection: {
+                      ...modelSelection,
+                      instanceId: ProviderInstanceId.make("changed-account"),
+                    },
                   },
                 },
                 command,
@@ -1149,10 +1175,12 @@ it.effect.each(["manual", "automatic", "completed", "switched", "bounded"] as co
           }
           yield* worker.drain();
           assert.equal(steered.length, 1);
+          if (mode === "saved-speed") assert.equal(started.length, 1);
           assert.deepEqual(steered[0]!.attachments, firstMessage.attachments);
           for (let i = 0; i < promotedCount; i++)
             assert.include(steered[0]!.text, `sender: thread sender:${i}`);
           const after = yield* orchestrator.getThreadProjection(threadId);
+          if (mode === "saved-speed") assert.deepEqual(after.thread.modelSelection, savedSelection);
           assert.equal(
             after.runs.filter((run) => run.status === "queued").length,
             count - promotedCount + (mode === "automatic" ? 1 : 0),

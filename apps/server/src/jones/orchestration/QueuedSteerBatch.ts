@@ -88,7 +88,9 @@ export function validateQueuedSteerBatch(
     turn.providerThreadId !== provider.id ||
     projection.thread.activeProviderThreadId !== provider.id ||
     projection.thread.providerInstanceId !== target.providerInstanceId ||
-    !modelSelectionsEqual(projection.thread.modelSelection, target.modelSelection) ||
+    projection.thread.modelSelection.instanceId !== target.modelSelection.instanceId ||
+    (automaticDelivery &&
+      !modelSelectionsEqual(projection.thread.modelSelection, target.modelSelection)) ||
     !["codex", "claudeAgent"].includes(session.driver) ||
     session.capabilities.turns.supportsActiveSteering !== true ||
     !["ready", "running"].includes(session.status)

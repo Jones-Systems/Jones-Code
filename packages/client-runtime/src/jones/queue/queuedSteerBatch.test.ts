@@ -189,7 +189,7 @@ describe("queued batch client state", () => {
               ...state.projection.thread,
               modelSelection: {
                 ...state.projection.thread.modelSelection,
-                model: "unsynchronized",
+                instanceId: "different-account" as never,
               },
             },
           },
@@ -197,6 +197,34 @@ describe("queued batch client state", () => {
       ).toContain("synchronize");
     },
   );
+
+  it("allows a 19-message batch after saving a different speed for the same account", () => {
+    const state = input();
+    const base = projection(19);
+    const runningSelection = {
+      ...base.thread.modelSelection,
+      options: [{ id: "serviceTier", value: "default" }],
+    };
+    const savedSelection = {
+      ...base.thread.modelSelection,
+      options: [{ id: "serviceTier", value: "ultrafast" }],
+    };
+    const view = deriveQueuedSteerBatch({
+      ...state,
+      projection: {
+        ...base,
+        thread: { ...base.thread, modelSelection: savedSelection },
+        runs: base.runs.map((run) => ({
+          ...run,
+          modelSelection: run.status === "running" ? runningSelection : savedSelection,
+        })),
+      },
+    });
+    expect(view?.reason).toBeNull();
+    expect(view?.label).toBe("Steer all (19)");
+    expect(view?.targetRunId).toBe("active");
+    expect(view?.items).toHaveLength(19);
+  });
 
   it("stops before special commands and leaves automatic completions queued", () => {
     const state = input();
