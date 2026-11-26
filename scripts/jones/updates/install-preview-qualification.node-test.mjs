@@ -17,6 +17,7 @@ import {
   atomicJson,
   redact,
   scenarioFromPrompt,
+  writeVerifierScenario,
   createMilestoneChannel,
   publishMilestone,
   awaitMilestoneRelease,
@@ -231,22 +232,26 @@ NodeTest.test("fixture pairing refuses another base before spawning", async () =
 
 NodeTest.test(
   "native ACP framing retains the exact scenario through T3's instruction wrapper",
-  () => {
-    const scenario = { mode: "active", steps: [{ action: "wait", text: "Jones main" }] };
-    const marker = `JONES_PREVIEW_SCENARIO:${Buffer.from(JSON.stringify(scenario)).toString("base64")}`;
-    NodeAssert.deepEqual(
-      scenarioFromPrompt([
+  async () => {
+    await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      const report = NodePath.join(root, "report.json");
+      const scenario = { mode: "active", steps: [{ action: "wait", text: "A".repeat(128_000) }] };
+      const marker = await writeVerifierScenario(report, scenario);
+      NodeAssert.ok(marker.length < 100);
+      const prompt = [
         {
           type: "text",
           text: `<t3_code_instructions>\nNative context\n</t3_code_instructions>\n\n<user_request>\n${marker}\n</user_request>`,
         },
-      ]),
-      scenario,
-    );
-    NodeAssert.throws(
-      () => scenarioFromPrompt([{ type: "text", text: JSON.stringify(scenario) }]),
-      /scenario marker/,
-    );
+      ];
+      NodeAssert.deepEqual(await scenarioFromPrompt(prompt, report), scenario);
+      await NodeAssert.rejects(
+        scenarioFromPrompt([{ type: "text", text: JSON.stringify(scenario) }], report),
+        /scenario marker/,
+      );
+      await writeVerifierScenario(report, { ...scenario, mode: "browser-disabled" });
+      await NodeAssert.rejects(scenarioFromPrompt(prompt, report), /differs from the ACP prompt/);
+    });
   },
 );
 
@@ -2551,12 +2556,10 @@ NodeTest.test(
         });
         NodeAssert.equal(initialized.result.protocolVersion, 1);
         const created = await request("session/new", { cwd: root, mcpServers: [] });
-        const scenario = Buffer.from(JSON.stringify({ mode: "active", steps: [] })).toString(
-          "base64",
-        );
+        const marker = await writeVerifierScenario(report, { mode: "active", steps: [] });
         const result = await request("session/prompt", {
           sessionId: created.result.sessionId,
-          prompt: [{ type: "text", text: `JONES_PREVIEW_SCENARIO:${scenario}` }],
+          prompt: [{ type: "text", text: marker }],
         });
         NodeAssert.match(result.error.message, /Normal T3 MCP injection is required/);
         const final = await readAcknowledgedMilestone(

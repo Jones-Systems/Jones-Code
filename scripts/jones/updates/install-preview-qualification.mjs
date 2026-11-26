@@ -16,6 +16,7 @@ import {
   readAcknowledgedMilestone,
   redact,
   processIdentity,
+  writeVerifierScenario,
 } from "./install-preview-agent.mjs";
 
 const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
@@ -2267,6 +2268,7 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
               ...(renderer ? rendererSteps(renderer.origin, expected.sourceSha, id()) : []),
             ],
           };
+          const scenarioPrompt = await writeVerifierScenario(reportFile, scenario);
           // Settings persistence acknowledges before the provider registry finishes hydration.
           await waitProviderReady(primary.rpc, instanceId);
           const messageId = id();
@@ -2282,7 +2284,7 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
             workspaceStrategy: { type: "root" },
             initialMessage: {
               messageId,
-              text: `JONES_PREVIEW_SCENARIO:${Buffer.from(JSON.stringify(scenario)).toString("base64")}`,
+              text: scenarioPrompt,
               attachments: [],
             },
           }).result;
