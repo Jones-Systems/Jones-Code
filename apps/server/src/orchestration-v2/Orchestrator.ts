@@ -19543,7 +19543,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     };
   });
 
-  /** `sideChatIds` are the live side chats a `thread.delete` cascades to, read under their locks. */
   const legacyGuardRejection = Effect.fn("Orchestrator.legacyGuardRejection")(function* (
     command: OrchestrationV2ServerCommand,
     cause: unknown,
@@ -20451,27 +20450,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? dispatch
         : threadDispatch.withLock(command.sourceThreadId, dispatch);
     }
-    if (command.type === "thread.delete")
-      return yield* threadDispatch.withDeletionLock(
-        threadDispatch.withLock(
-          command.threadId,
-          liveSideChatIds(command.threadId).pipe(
-            Effect.flatMap((sideChatIds) =>
-              sideChatIds.reduce(
-                (locked, sideChatId) => threadDispatch.withLock(sideChatId, locked),
-                dispatchWithReceiptEffect(
-                  command,
-                  sideChatIds,
-                  undefined,
-                  undefined,
-                  checkout,
-                  admission,
-                ),
+    if (
+      command.type === "thread.delete" ||
+      command.type === "thread.archive" ||
+      command.type === "thread.unarchive"
+    ) {
+      const cascade = threadDispatch.withLock(
+        command.threadId,
+        liveSideChatIds(command.threadId).pipe(
+          Effect.flatMap((sideChatIds) =>
+            sideChatIds.reduce(
+              (locked, sideChatId) => threadDispatch.withLock(sideChatId, locked),
+              dispatchWithReceiptEffect(
+                command,
+                sideChatIds,
+                undefined,
+                undefined,
+                checkout,
+                admission,
               ),
             ),
           ),
         ),
       );
+      return yield* command.type === "thread.delete"
+        ? threadDispatch.withDeletionLock(cascade)
+        : cascade;
+    }
     // Taken before the lineage read, so a message whose read yields keeps its
     // place ahead of later messages to the same thread.
     const message =

@@ -1943,7 +1943,9 @@ it.effect("offers agent feedback tools only while the setting is on, to every cl
             Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
             Layer.mock(PullRequestService.PullRequestService)({}),
             Layer.mock(Orchestrator.OrchestratorV2)(unusedCorePorts),
-            Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getThreadShell: () => Effect.succeed(null),
+            }),
             NodeServices.layer,
             NodeCrypto.layer,
           ),
@@ -1966,6 +1968,7 @@ it.effect("offers agent feedback tools only while the setting is on, to every cl
               "application/json",
             ),
           });
+          expect(initialize.status).toBe(200);
           const response = yield* httpClient.post("/mcp", {
             headers: {
               ...headers,
@@ -1977,15 +1980,17 @@ it.effect("offers agent feedback tools only while the setting is on, to every cl
               "application/json",
             ),
           });
-          // tool_search answers as a stream, its result after the list_changed notice.
+          // tool_search can send its result after a list_changed notice and empty SSE frames.
           const text = yield* response.text;
-          const messages = text.startsWith("data:")
-            ? text
-                .split("\n")
-                .filter((line) => line.startsWith("data:"))
-                .map((line) => JSON.parse(line.slice(5)) as { readonly id?: number })
-            : [JSON.parse(text) as { readonly id?: number }];
-          return messages.find((message) => message.id === 2) as {
+          expect(response.status, `${method}: ${text}`).toBe(200);
+          const messages = text
+            .split("\n")
+            .map((line) => line.replace(/^data: ?/u, "").trim())
+            .filter((line) => line.startsWith("{"))
+            .map((line) => JSON.parse(line) as { readonly id?: number });
+          const reply = messages.find((message) => message.id === 2);
+          expect(reply).toBeDefined();
+          return reply as {
             readonly result?: {
               readonly tools?: ReadonlyArray<{ readonly name: string }>;
               readonly structuredContent?: { readonly tools?: ReadonlyArray<{ name: string }> };

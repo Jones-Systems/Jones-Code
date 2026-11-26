@@ -931,34 +931,44 @@ export const make = Effect.gen(function* () {
       }
     }
     echoedWrapperLines.push(...commandLine.split("\r").filter((line) => line.length > 0));
-    const write = Effect.suspend(() => {
-      const writeInput = {
-        threadId: input.threadId,
-        terminalId,
-        data: projectScriptTerminalInput(commandLine),
-      };
-      const action: Effect.Effect<
-        void,
-        | TerminalError
-        | TerminalManager.LegacyTerminalControlError
-        | NativeSetup.NativeSetupControlError
-      > =
-        native !== undefined
-          ? terminalManager.writeNativeSetup!(
-              writeInput,
-              native.control,
-              native.beforeWrite({ control: native.control, data: writeInput.data }),
-            )
-          : legacy === undefined
-            ? terminalManager.write(writeInput)
-            : terminalManager.write(writeInput, {
-                legacyOwnedControl: legacy.binding,
-                beforeWrite: legacy.beforeWrite,
-                afterWrite: legacy.afterWrite,
-              });
+    const write = (shell: "ready" | "quiet") =>
+      Effect.suspend(() => {
+        // Keep the captured bytes for owned setup. A ready interactive POSIX
+        // shell can receive ordinary multiline setup as a single bracketed paste.
+        const command =
+          !owned &&
+          shell === "ready" &&
+          selectedCompletionShell === "posix" &&
+          commandLine.includes("\r")
+            ? `\x1b[200~${commandLine.replaceAll("\r", "\n")}\x1b[201~`
+            : commandLine;
+        const writeInput = {
+          threadId: input.threadId,
+          terminalId,
+          data: projectScriptTerminalInput(command),
+        };
+        const action: Effect.Effect<
+          void,
+          | TerminalError
+          | TerminalManager.LegacyTerminalControlError
+          | NativeSetup.NativeSetupControlError
+        > =
+          native !== undefined
+            ? terminalManager.writeNativeSetup!(
+                writeInput,
+                native.control,
+                native.beforeWrite({ control: native.control, data: writeInput.data }),
+              )
+            : legacy === undefined
+              ? terminalManager.write(writeInput)
+              : terminalManager.write(writeInput, {
+                  legacyOwnedControl: legacy.binding,
+                  beforeWrite: legacy.beforeWrite,
+                  afterWrite: legacy.afterWrite,
+                });
 
-      return action;
-    });
+        return action;
+      });
 
     const cleanupObservation = (observed?.abandon ?? Effect.void).pipe(
       Effect.andThen(
@@ -988,7 +998,9 @@ export const make = Effect.gen(function* () {
           | TerminalManager.LegacyTerminalControlError
           | NativeSetup.NativeSetupControlError
         > =>
-          shell === "exited" ? Effect.fail(new ProjectSetupScriptTerminalExitedError()) : write,
+          shell === "exited"
+            ? Effect.fail(new ProjectSetupScriptTerminalExitedError())
+            : write(shell),
       ),
       Effect.mapError(
         (cause) =>

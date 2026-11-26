@@ -73,7 +73,7 @@ const makeHarness = Effect.fn(function* (options: {
             : Effect.void,
         ),
         Effect.map(() => {
-          session ??= openSnapshot(options.history ?? "");
+          if (session?.cwd !== input.cwd) session = openSnapshot(options.history ?? "");
           openedSessions.push(session);
           return session;
         }),
@@ -202,7 +202,10 @@ describe("ProjectSetupScriptRunner", () => {
   it.effect("replaces a surviving setup shell and types only once the line editor starts", () =>
     Effect.gen(function* () {
       const { result, completion, openedSessions, writes, outputLines, emit } = yield* setup({
-        previousSession: openSnapshot("previous setup in the deleted checkout"),
+        previousSession: {
+          ...openSnapshot("previous setup in the deleted checkout"),
+          cwd: "/repo/.t3/worktrees/deleted-checkout",
+        },
       });
       expect(result).toMatchObject({ status: "started", terminalId });
       expect(openedSessions).toEqual([openSnapshot("")]);
