@@ -756,7 +756,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     requestCompletionMarker: true,
                   }).pipe(Effect.flip);
                   const projectionError = snapshotError.cause;
-                  if (!(projectionError instanceof Orchestrator.OrchestratorProjectionError))
+                  if (!Schema.is(Orchestrator.OrchestratorProjectionError)(projectionError))
                     return yield* Effect.die(snapshotError);
                   assert.instanceOf(
                     projectionError.cause,

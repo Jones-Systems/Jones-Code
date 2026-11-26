@@ -3329,6 +3329,7 @@ effectIt.effect.each([
             terminalId: "setup-test",
             cwd: worktreePath,
             async: input.async,
+            writeCompletion: Effect.void,
             completion: Deferred.await(setupDone).pipe(
               Effect.tap(() => Deferred.succeed(completionObserved, undefined)),
             ),

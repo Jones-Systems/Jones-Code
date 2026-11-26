@@ -27,6 +27,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { LinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 import { canonicalJson } from "../jones/remoteDelegation/shared.ts";
+import * as WorkflowAgentJournal from "../jones/workflowAgents/Journal.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
@@ -35,12 +36,10 @@ import {
   type AgentTurn,
   isProjectPath,
   launchOnContinue,
-  linkedStepMarker,
   WorkflowAgentError,
   WorkflowAgentMutationUncertain,
   type WorkflowAgents,
 } from "./WorkflowAgents.ts";
-import * as WorkflowStore from "./WorkflowStore.ts";
 
 // A run acts for whoever owns this environment, not for an agent with modes of its own, so the
 // only ceiling on what it starts there is the access the link was paired with.
@@ -60,22 +59,23 @@ const isFinal = (error: OrchestratorMcpFailure) =>
 const retried = { schedule: Schedule.exponential("2 seconds"), times: 5 };
 const decodeSend = Schema.decodeUnknownEffect(OrchestratorMcpThreadSendInput);
 const encodeSend = Schema.encodeEffect(OrchestratorMcpThreadSendInput);
+const structuredOutputCapability = Schema.Struct({
+  features: Schema.Struct({ structuredWorkflowOutput: Schema.optional(Schema.Boolean) }),
+});
 
 type Service = WorkflowAgents["Service"];
 type Route = { readonly environmentId: EnvironmentId; readonly generation: string };
-const turnMarker = (key: string) => `workflow-agent/turn/v1/${key}`;
-const turnGenerationPrefix = (key: string) => `workflow-agent/turn-generation/v1/${key}/`;
 
 export const make = Effect.gen(function* () {
   const peers = yield* PeerMcpClient.PeerMcpClient;
   const links = yield* PeerLinks.PeerLinks;
   const digest = yield* Digest.Digest;
   const sql = yield* SqlClient.SqlClient;
-  const store = yield* WorkflowStore.make;
+  const journal = WorkflowAgentJournal.make(sql);
 
   const read = <S extends Schema.Decoder<unknown>>(
     route: Route,
-    tool: "t3_project_list" | "t3_thread_read" | "t3_thread_wait",
+    tool: "t3_project_list" | "t3_thread_read" | "t3_thread_wait" | "orchestrator_capabilities",
     success: S,
     args: Record<string, unknown>,
   ) =>
@@ -97,6 +97,23 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
+
+  const requireStructuredOutput = Effect.fn("WorkflowAgentLinks.requireStructuredOutput")(
+    function* (route: Route, needsOutput: boolean) {
+      if (!needsOutput) return;
+      const { features } = yield* read(
+        route,
+        "orchestrator_capabilities",
+        structuredOutputCapability,
+        {},
+      );
+      if (features.structuredWorkflowOutput !== true) {
+        return yield* new WorkflowAgentError({
+          reason: `Update ${route.environmentId} to a version that accepts structured workflow output, then resume the workflow.`,
+        });
+      }
+    },
+  );
 
   const write = <S extends Schema.Decoder<unknown>>(
     route: Route,
@@ -164,22 +181,14 @@ export const make = Effect.gen(function* () {
     return yield* hash([environment, threadId, turnId]);
   });
 
-  const turnGenerations = (runId: string, key: string) => sql<{ name: string }>`
-    SELECT name FROM workflow_marks
-    WHERE run_id = ${runId} AND name GLOB ${turnGenerationPrefix(key) + "*"}
-    LIMIT 2
-  `;
-
   const acceptedRoute = Effect.fn("WorkflowAgentLinks.acceptedRoute")(function* (
     runId: string | undefined,
     environment: string,
     key: string,
   ) {
     if (runId === undefined) return undefined;
-    const [mark, ambiguous] = yield* turnGenerations(runId, key);
-    if (mark === undefined || ambiguous !== undefined) return undefined;
-    const generation = mark.name.slice(turnGenerationPrefix(key).length);
-    if (generation === "") return undefined;
+    const generation = yield* journal.read(runId, "turn", key);
+    if (!generation) return undefined;
     return { environmentId: EnvironmentId.make(environment), generation };
   });
 
@@ -190,19 +199,8 @@ export const make = Effect.gen(function* () {
     uncertain: WorkflowAgentMutationUncertain,
   ) {
     const key = yield* turnKey(route.environmentId, turn);
-    const binding = `${turnGenerationPrefix(key)}${route.generation}`;
-    const proved = yield* sql
-      .withTransaction(
-        Effect.gen(function* () {
-          const arrival = yield* store.mark(runId, turnMarker(key));
-          const prior = arrival === 1 ? [] : yield* turnGenerations(runId, key);
-          // A legacy marker may name a different accepted write with the same turn ids.
-          if (arrival > 1 && prior.length === 0) return false;
-          // Keep conflicting evidence so neither pairing can later claim this turn.
-          yield* store.mark(runId, binding);
-          return prior.every((mark) => mark.name === binding);
-        }),
-      )
+    const proved = yield* journal
+      .acceptTurn(runId, key, route.generation)
       .pipe(Effect.catchTags({ SqlError: () => Effect.fail(uncertain) }));
     if (!proved) return yield* uncertain;
     return { ...turn, environment: route.environmentId };
@@ -211,32 +209,35 @@ export const make = Effect.gen(function* () {
   const recordIntent = Effect.fn("WorkflowAgentLinks.recordIntent")(function* <A extends Route>(
     runId: string,
     requestId: string,
-    provenance: string,
+    provenance: { readonly kind: "step" | "turn"; readonly name: string },
     request: unknown,
     prepared: Result.Result<A, WorkflowAgentError>,
     uncertain: WorkflowAgentMutationUncertain,
   ) {
-    const marker = `workflow-agent/write/v1/${requestId}`;
     const binding = Result.isSuccess(prepared)
       ? yield* hash([prepared.success.environmentId, prepared.success.generation, request])
       : undefined;
-    // The per-run mark grants one dispatch. The companion mark lets a replay verify the
-    // original generation and request before doing a read-only receipt lookup.
+    // The per-run claim grants one dispatch. A matching claim can only look up a receipt.
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
           // Never infer that a legacy step or turn had no writes just because it lacks a journal.
-          if ((yield* store.mark(runId, provenance)) === 1) return yield* uncertain;
-          const arrival = yield* store.mark(runId, marker);
-          if (Result.isFailure(prepared) || binding === undefined) {
-            return yield* arrival === 1 && Result.isFailure(prepared)
-              ? prepared.failure
-              : uncertain;
-          }
-          const boundArrival = yield* store.mark(runId, `${marker}/${binding}`);
-          // Roll back any mark for a mismatched request. It must never become a matching replay.
-          if (boundArrival !== arrival) return yield* uncertain;
-          return { ...prepared.success, first: arrival === 1 };
+          const proof = yield* journal.read(runId, provenance.kind, provenance.name);
+          if (
+            proof === undefined ||
+            (provenance.kind === "turn" &&
+              (Result.isFailure(prepared) || proof !== prepared.success.generation))
+          )
+            return yield* uncertain;
+          const prior = yield* journal.read(runId, "write", requestId);
+          if (Result.isFailure(prepared))
+            return yield* prior === undefined ? prepared.failure : uncertain;
+          if (binding === undefined) return yield* uncertain;
+          if (prior !== undefined && prior !== binding) return yield* uncertain;
+          const first =
+            prior === undefined && (yield* journal.insert(runId, "write", requestId, binding));
+          if (prior === undefined && !first) return yield* uncertain;
+          return { ...prepared.success, first };
         }),
       )
       .pipe(Effect.catchTags({ SqlError: () => Effect.fail(uncertain) }));
@@ -346,7 +347,7 @@ export const make = Effect.gen(function* () {
     const outputSchema =
       input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema };
     const { runId, step } = input.origin;
-    const provenance = linkedStepMarker(step);
+    const provenance = { kind: "step", name: step } as const;
     const origin = { schemaVersion: "t3.linked-message-origin/v1", environmentId: here } as const;
     if (input.thread !== undefined) {
       const threadId = input.thread;
@@ -366,6 +367,7 @@ export const make = Effect.gen(function* () {
       const prepared = yield* Effect.gen(function* () {
         const captured = yield* route;
         if (input.launch !== undefined) return yield* launchOnContinue;
+        yield* requireStructuredOutput(captured, input.outputSchema !== undefined);
         const args = yield* decodeSend(request).pipe(
           Effect.flatMap(encodeSend),
           Effect.mapError(
@@ -457,6 +459,7 @@ export const make = Effect.gen(function* () {
           reason: "An agent step needs a `project` to start in, or a `thread` to continue.",
         });
       }
+      yield* requireStructuredOutput(captured, input.outputSchema !== undefined);
       const projectId = byPath ? yield* listed(captured, project) : project;
       return { ...captured, project, projectId };
     }).pipe(Effect.result);
@@ -617,7 +620,7 @@ export const make = Effect.gen(function* () {
     const intent = yield* recordIntent(
       workflowRunId,
       requestId,
-      turnMarker(key),
+      { kind: "turn", name: key },
       ["t3_thread_interrupt", args],
       Result.succeed(route),
       uncertain,

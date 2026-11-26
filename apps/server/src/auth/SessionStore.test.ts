@@ -35,6 +35,7 @@ const layerFailingSessionLookupRepository = Layer.succeed(AuthSessions.AuthSessi
   createReplacingActive: () => Effect.succeed([]),
   createIfAbsent: () => Effect.void,
   getById: () => Effect.fail(repositoryFailure),
+  extend: () => Effect.fail(repositoryFailure),
   listActive: () => Effect.succeed([]),
   revoke: () => Effect.fail(repositoryFailure),
   revokeAllExcept: () => Effect.fail(repositoryFailure),

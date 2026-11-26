@@ -751,7 +751,7 @@ it.effect.each([
             }),
             Layer.mock(ThreadMetadata.ThreadMetadataReads)({ count: Effect.succeed(5) }),
             Layer.mock(Analytics.AnalyticsService)({
-              record: () => Effect.void,
+              record: () => Effect.succeed(false),
               recordOwners: () => Effect.void,
             }),
             Layer.mock(Secrets.ServerSecretStore)({ get: () => Effect.succeedNone }),

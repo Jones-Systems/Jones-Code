@@ -1532,7 +1532,7 @@ describe("orchestrator MCP toolkit", () => {
             // The fixture links by explicit URL and has no resolved forge for its checkout.
             Layer.provide(
               Layer.mock(PullRequestService.PullRequestService)({
-                addressedProject: () => Effect.succeed(undefined),
+                addressedProject: () => Effect.undefined,
               }),
             ),
             Layer.provide(Layer.mock(GitManager.GitManager)({})),

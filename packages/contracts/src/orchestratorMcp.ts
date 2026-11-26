@@ -857,6 +857,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
     remoteAdmissionRecoveredResultObservationVersion: Schema.optional(Schema.String),
     remoteAdmissionCapabilitiesRegisterVersion: Schema.optional(Schema.String),
     threadResultRequestVersion: Schema.optional(Schema.String),
+    structuredWorkflowOutput: Schema.optional(Schema.Boolean),
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,
     cancellation: Schema.Boolean,

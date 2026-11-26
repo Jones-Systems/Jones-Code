@@ -40,6 +40,7 @@ import {
 } from "./workflow.ts";
 import { type AgentResult, WorkflowAgentError, WorkflowAgents } from "./WorkflowAgents.ts";
 import WorkflowsMigration from "../persistence/Migrations/110_Workflows.ts";
+import WorkflowAgentJournalMigration from "../jones/persistence/Migrations/167_JonesWorkflowAgentJournal.ts";
 import WorkflowSkippedRunsMigration from "../persistence/Migrations/113_WorkflowSkippedRuns.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import WorkflowRunTagsMigration from "../persistence/Migrations/115_WorkflowRunTags.ts";
@@ -621,11 +622,7 @@ const fakeAgents = () => {
     string,
     { started: Deferred.Deferred<Started>; ended: Deferred.Deferred<AgentResult> }
   >();
-  const interrupted: Array<{
-    readonly threadId: string;
-    readonly environment?: string | undefined;
-    readonly turnId?: string | undefined;
-  }> = [];
+  const interrupted: Array<Parameters<WorkflowAgents["Service"]["interrupt"]>[0]> = [];
   let threads = 0;
   let refusals = 0;
   const unreadable = new Set<string>();
@@ -1018,6 +1015,7 @@ const harness = Effect.fnUntraced(function* (store?: typeof WorkflowStore.layer)
       Effect.andThen(WorkflowMailSenderMigration),
       Effect.andThen(WorkflowPoolsMigration),
       Effect.andThen(WorkflowRunSubjectMigration),
+      Effect.andThen(WorkflowAgentJournalMigration),
     ),
     database,
   );

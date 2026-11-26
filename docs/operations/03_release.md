@@ -1,5 +1,9 @@
 # Release Runbook
 
+> Upstream reference. This runbook describes T3 Code's release and deployment workflows.
+> Jones Code defers them under its [upstream workflow policy](./upstream-sync.md#workflow-policy).
+> See the [Jones macOS signing guide](./macos-signing.md) for Jones signing requirements.
+
 Unified release workflow: `.github/workflows/release.yml`. Beta is a product label, not a release channel—channels remain `stable` and `nightly` (plus `preview` for maintainer test builds).
 
 ## Channels and triggers

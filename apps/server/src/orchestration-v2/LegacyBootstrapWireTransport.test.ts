@@ -160,6 +160,7 @@ import * as WsServerRuntimeStartup from "../serverRuntimeStartup.ts";
 import * as WsWorkspaceEntries from "../workspace/WorkspaceEntries.ts";
 import * as WsWorkspaceFileSystem from "../workspace/WorkspaceFileSystem.ts";
 import * as WsServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as WorkspacePreviewRevisions from "../assets/WorkspacePreviewRevisions.ts";
 import * as PersonalWorkstreams from "../jones/workstreams/personal/service.ts";
 import * as WsBackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as WsEnvironmentAuth from "../auth/EnvironmentAuth.ts";
@@ -620,6 +621,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
 });
 
 const unrelatedWsOwners = Layer.mergeAll(
+  WorkspacePreviewRevisions.layer,
   Layer.mock(IssueService.IssueService)({}),
   Layer.mock(IssueTrackerConnections.IssueTrackerConnections)({}),
   Layer.mock(ThreadIssueService.ThreadIssueService)({}),
@@ -1610,7 +1612,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
           Layer.mock(WsThreadSearch.ThreadSearch)({}),
           Layer.mock(WsProviderSessionManager.ProviderSessionManagerV2)({}),
           Layer.mock(WsAnalyticsService.AnalyticsService)({
-            record: () => Effect.void,
+            record: () => Effect.succeed(false),
             recordOwners: () => Effect.void,
           }),
           Layer.mock(WsThreadLaunchService.ThreadLaunchService)({

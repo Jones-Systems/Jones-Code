@@ -2123,7 +2123,15 @@ it.effect(
           }),
           Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
             refreshStatus: () => Effect.die("unused"),
-            refreshLocalStatus: () => Effect.void,
+            refreshLocalStatus: () =>
+              Effect.succeed({
+                isRepo: false,
+                hasPrimaryRemote: false,
+                isDefaultRef: false,
+                refName: null,
+                hasWorkingTreeChanges: false,
+                workingTree: { files: [], insertions: 0, deletions: 0 },
+              }),
           }),
           Layer.mock(ExternalLauncher.ExternalLauncher)({}),
           Layer.mock(ProviderRegistry.ProviderRegistry)({}),
@@ -3401,6 +3409,7 @@ it.effect(
         client: new Rpc.ServerClient(0),
         requestId: RpcMessage.RequestId("open-binding-test"),
         headers: Headers.empty,
+        remoteParentSpan: undefined,
       };
       const open = (input: PreviewOpenInput) =>
         handlers.open(input, options).pipe(

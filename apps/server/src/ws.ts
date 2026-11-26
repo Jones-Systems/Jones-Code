@@ -2263,26 +2263,26 @@ export const layerWsRpc = (
                           result.replayed ? Effect.void : recordClientCommandAnalytics(command),
                         ),
                         Effect.map((result) => ({ sequence: result.sequence })),
-                        Effect.catch((cause) => {
-                          if (cause._tag === "EnvironmentAuthorizationError") {
-                            return Effect.fail(cause);
-                          }
-                          return threadManagement.getDispatchDeliveryEvidence(command).pipe(
-                            Effect.flatMap((deliveryEvidence) => {
-                              const detail = userFacingDispatchErrorMessage(cause);
-                              return Effect.fail(
-                                new OrchestrationV2DispatchCommandError({
-                                  commandId: command.commandId,
-                                  commandType: command.type,
-                                  message: detail ?? "Failed to dispatch orchestration V2 command",
-                                  ...(detail === undefined ? {} : { detail }),
-                                  deliveryEvidence,
-                                  cause,
-                                }),
-                              );
-                            }),
-                          );
-                        }),
+                        Effect.catchIf(
+                          (cause) => cause._tag !== "EnvironmentAuthorizationError",
+                          (cause) =>
+                            threadManagement.getDispatchDeliveryEvidence(command).pipe(
+                              Effect.flatMap((deliveryEvidence) => {
+                                const detail = userFacingDispatchErrorMessage(cause);
+                                return Effect.fail(
+                                  new OrchestrationV2DispatchCommandError({
+                                    commandId: command.commandId,
+                                    commandType: command.type,
+                                    message:
+                                      detail ?? "Failed to dispatch orchestration V2 command",
+                                    ...(detail === undefined ? {} : { detail }),
+                                    deliveryEvidence,
+                                    cause,
+                                  }),
+                                );
+                              }),
+                            ),
+                        ),
                       ),
                   ),
                 ),
@@ -4159,8 +4159,10 @@ export const layer = Layer.unwrap(
               ),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
               Layer.provide(Layer.succeed(PeerLinkRequests.PeerLinkRequests, peerLinkRequests)),
-              Layer.provide(Layer.succeed(PeerThreadRelay.PeerThreadRelay, peerThreadRelay)),
-              Layer.provide(Layer.succeed(PeerClientPairing.PeerClientPairing, peerClientPairing)),
+              Layer.provide([
+                Layer.succeed(PeerThreadRelay.PeerThreadRelay, peerThreadRelay),
+                Layer.succeed(PeerClientPairing.PeerClientPairing, peerClientPairing),
+              ]),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

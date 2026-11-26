@@ -1741,7 +1741,6 @@ it.effect.each(["expiry", "cap eviction"] as const)(
           title: "Recording tab",
           loading: false,
           visibleText: "Recording tab",
-          interactiveElements: [],
           accessibilityTree: null,
           consoleEntries: [],
           networkEntries: [],

@@ -214,6 +214,7 @@ const fixture = Effect.fnUntraced(function* (attachmentAvailable = true) {
   const manager = Layer.succeed(ProviderSessions.ProviderSessionManagerV2, {
     isMcpCallerAttached: () => Effect.succeed(false),
     releaseUnlessBusy: () => Effect.die("Unexpected releaseUnlessBusy"),
+    forgetLoadedProviderThread: () => Effect.die("Unexpected provider retirement"),
     otherWorkingThreads: () => Effect.die("Unexpected otherWorkingThreads"),
     subscribePromptSuggestion: () => Stream.empty,
     shutdown: Effect.void,

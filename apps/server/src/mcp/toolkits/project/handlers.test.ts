@@ -61,7 +61,6 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
-import * as NodeFSP from "node:fs/promises";
 
 function launchProjectLayer(projectId: ProjectId) {
   return Layer.mock(Project.ProjectService)({
@@ -1286,7 +1285,7 @@ it.effect("a launch binds only an existing checkout that is one of the project's
       });
     }
     // The thread keeps the registered worktree path when launched through a link to it.
-    yield* Effect.promise(() => NodeFSP.symlink(worktree, alias, "junction"));
+    yield* fileSystem.symlink(worktree, alias);
     expect((yield* launchInto(alias)).at(-1)?.result).toMatchObject({ projectId });
     expect(launched.map((launch) => launch.workspaceStrategy)).toEqual([
       { type: "existing_worktree", worktreePath: worktree },

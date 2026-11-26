@@ -66,6 +66,8 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   const hub = {
     running: true,
     spawnFails: false,
+    cameraProbes: 0,
+    cameraHelp: "",
     cleanup: Effect.void,
     spawnedArgs: [] as Array<ReadonlyArray<string>>,
     spawnedEnvironments: [] as Array<NodeJS.ProcessEnv | undefined>,
@@ -108,7 +110,9 @@ const agentFixture = Effect.fn("agentFixture")(function* (
           : Effect.addFinalizer(() => hub.cleanup).pipe(
               Effect.tap(() =>
                 Effect.sync(() => {
-                  if (command._tag === "StandardCommand") hub.spawnedArgs.push(command.args);
+                  if (command._tag === "StandardCommand") {
+                    hub.spawnedArgs.push(command.args.map(String));
+                  }
                   return hub.spawnedEnvironments.push(
                     (
                       command as unknown as {

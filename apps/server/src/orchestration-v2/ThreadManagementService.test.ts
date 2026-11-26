@@ -521,6 +521,7 @@ it.effect(
         Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
         Layer.provide(
           Layer.mock(Orchestrator.OrchestratorV2)({
+            ...unusedCorePorts,
             getThreadEventSequence: () => Effect.succeed(0),
             restartContinuationPending: () => Effect.succeed(false),
             streamStoredEventsFrom: (input) =>
@@ -675,6 +676,7 @@ it.effect("waitForThread waits for output only from a run that was asked for one
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts,
           getThreadEventSequence: () => Effect.succeed(0),
           restartContinuationPending: () => Effect.succeed(false),
           streamStoredEventsFrom: () => Stream.never,
@@ -1053,6 +1055,7 @@ it.effect.each(["steer", "promoted_queued_to_steer"] as const)(
         Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
         Layer.provide(
           Layer.mock(Orchestrator.OrchestratorV2)({
+            ...unusedCorePorts,
             getThreadEventSequence: () => Effect.succeed(0),
             restartContinuationPending: () => Effect.succeed(false),
             streamStoredEventsFrom: () => Stream.empty,

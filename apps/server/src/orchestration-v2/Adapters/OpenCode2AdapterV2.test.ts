@@ -9473,13 +9473,15 @@ it.effect.each(["text", "reasoning"] as const)(
         collected.filter((event) => event.type === "turn.terminal"),
         1,
       );
-      assert.deepInclude(collected[terminalIndex], {
+      const terminal = collected.find((event) => event.type === "turn.terminal");
+      assert.isDefined(terminal);
+      assert.deepInclude(terminal, {
         status: "failed",
         threadDisposition: "broken",
         evidenceKind: "local_failure",
         providerThreadId: thread.id,
-        providerTurnId: first.providerTurnId,
       });
+      assert.equal(terminal.providerTurnId, first.providerTurnId);
       if (kind === "text") {
         const message = collected.findLast((event) => event.type === "message.updated");
         assert.equal(

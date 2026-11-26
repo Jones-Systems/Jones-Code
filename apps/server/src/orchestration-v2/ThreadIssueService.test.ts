@@ -1,3 +1,4 @@
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
 import { IssueTrackerKind, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -33,6 +34,7 @@ describe("ThreadIssueService", () => {
             Layer.mergeAll(
               SqlitePersistence.layerMemory,
               Layer.mock(Orchestrator.OrchestratorV2)({
+                ...unusedCorePorts(),
                 getThreadShell: (threadId) =>
                   Effect.fail(new Orchestrator.OrchestratorProjectionError({ threadId })),
               }),

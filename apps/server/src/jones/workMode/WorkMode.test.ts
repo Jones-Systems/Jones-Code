@@ -101,6 +101,7 @@ const sink = EventSink.layerFromStores.pipe(Layer.provide(stores));
 const dependencies = Layer.mergeAll(
   stores,
   sink,
+  ThreadCommands.layer,
   IdAllocator.layer,
   CommandPolicy.layer,
   Layer.succeed(RuntimePolicy.RuntimePolicyV2, {

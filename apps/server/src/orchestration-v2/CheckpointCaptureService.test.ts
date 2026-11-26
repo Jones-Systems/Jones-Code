@@ -728,6 +728,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
                 }),
             }),
             Layer.mock(EventSink.EventSinkV2)({
+              supersededTerminalTrace: SupersededTerminalTrace.make(),
               commitCommand: (input) =>
                 Ref.set(committed, input.events).pipe(Effect.as({ committed: true } as never)),
             }),
@@ -1168,6 +1169,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
                   ),
               }),
               Layer.mock(EventSink.EventSinkV2)({
+                supersededTerminalTrace: SupersededTerminalTrace.make(),
                 commitCommand: (input) =>
                   Effect.forEach(input.events, (event) => projectionStore.apply(event)).pipe(
                     Effect.andThen(Ref.update(commits, (count) => count + 1)),
@@ -1520,6 +1522,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
               IdAllocator.layer,
               layerCheckpointService,
               Layer.mock(EventSink.EventSinkV2)({
+                supersededTerminalTrace: SupersededTerminalTrace.make(),
                 commitCommand: (input) =>
                   Effect.forEach(input.events, (event) => projectionStore.apply(event)).pipe(
                     Effect.andThen(Ref.set(committed, input.events)),

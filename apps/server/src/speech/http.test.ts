@@ -407,6 +407,7 @@ effectIt.effect("tells the client why transcript cleanup failed", () =>
           generateBranchName: () => Effect.die("not used"),
           generateThreadTitle: () => Effect.die("not used"),
           generateReviewGuide: () => Effect.die("not used"),
+          evaluateRemoteRequest: () => Effect.die("not used"),
           generateTranscriptionPostProcessing: () =>
             Effect.fail(
               new TextGenerationError({

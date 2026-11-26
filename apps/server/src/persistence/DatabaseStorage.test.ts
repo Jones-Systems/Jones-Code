@@ -346,6 +346,7 @@ it.effect(
         Effect.provide(
           DatabaseStorage.layer.pipe(
             Layer.provide(ProjectionMaintenance.layer),
+            Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
             Layer.provideMerge(Sqlite.layerMemory),
           ),
         ),

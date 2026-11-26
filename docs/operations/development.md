@@ -573,6 +573,5 @@ rustup target add aarch64-apple-darwin
 
 ### Signing and passkeys
 
-Add `--signed` after configuring the platform credentials in the
-[release runbook](./release.md). macOS passkeys need a signed, provisioned app; follow the
-[Connect setup](./connect-setup.md#desktop-passkeys) for local signing and renderer HMR.
+Follow the [Jones macOS signing guide](./macos-signing.md) for signing identity and verification.
+For local signed builds and passkeys, see the [Connect setup](./02_connect-setup.md#desktop-passkeys).

@@ -97,6 +97,7 @@ const openOn = Effect.fn("openOn")(function* (instance: ProviderInstance) {
       layerRegistry.pipe(
         Layer.provide(
           Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getCatalogSource: () => instance,
             getInstance: () => Effect.succeed(instance),
           }),
         ),

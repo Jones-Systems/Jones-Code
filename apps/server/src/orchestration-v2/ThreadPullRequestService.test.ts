@@ -847,7 +847,10 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           list: () =>
             Queue.offer(sweeps, undefined).pipe(Effect.as({ snapshotSequence: 1, threads })),
         }),
-        Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
+          streamDomainEvents: Stream.never,
+        }),
         Layer.mock(ProjectStore.ProjectStoreV2)({
           listShells: () => Effect.succeed([project]),
           getShell: () => Effect.succeedSome(project),

@@ -3191,14 +3191,22 @@ const make = Effect.gen(function* () {
               if (reveal === true && tab.viewers.size === 0) {
                 if (tab.desktop === null) {
                   shown = awaitViewer(tab, Math.min(REVEAL_VIEWER_WAIT_MS, remainingMs));
-                } else {
-                  const channel =
-                    tab.desktop.origin === "local" ? desktopChannel : placement!.channel;
-                  if (!channel.isShown(tab)) {
+                } else if (tab.desktop.origin === "local") {
+                  if (!desktopChannel.isShown(tab)) {
                     shown = runPromise(
-                      channel.awaitShown(tab, Math.min(REVEAL_DESKTOP_SHOWN_WAIT_MS, remainingMs)),
+                      desktopChannel.awaitShown(
+                        tab,
+                        Math.min(REVEAL_DESKTOP_SHOWN_WAIT_MS, remainingMs),
+                      ),
                     ).then(constVoid);
                   }
+                } else {
+                  shown = runPromise(
+                    placement!.channel.awaitAttached(
+                      tab,
+                      Math.min(REVEAL_DESKTOP_SHOWN_WAIT_MS, remainingMs),
+                    ),
+                  ).then(constVoid);
                 }
               }
             }

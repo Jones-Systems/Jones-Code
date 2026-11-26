@@ -509,6 +509,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);

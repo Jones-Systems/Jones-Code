@@ -736,6 +736,7 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
             const { error, output } = yield* runUpdate({
               baseDir,
               logsDir: baseDir,
+              databasePath: path.join(baseDir, "db.sqlite"),
               serverRuntimeStatePath: statePath,
               channel: undefined,
               requestedVersion: version,

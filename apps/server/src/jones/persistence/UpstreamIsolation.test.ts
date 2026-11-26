@@ -447,6 +447,7 @@ it.effect(
         [164, "LegacyBootstrap"],
         [165, "RequestManagement"],
         [166, "TaskFolderTeardown"],
+        [167, "WorkflowAgentJournal"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

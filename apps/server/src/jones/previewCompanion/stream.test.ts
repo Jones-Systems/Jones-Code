@@ -26,7 +26,11 @@ it.live("closes the real stream socket with 4504 and bounded host status", () =>
             scopes: [AuthOrchestrationReadScope],
           }),
       }),
-      Layer.mock(SessionStore.SessionStore, { awaitInvalidation: () => Effect.never }),
+      Layer.mock(SessionStore.SessionStore)({
+        cookieName: "fixture-session",
+        legacyCookieName: undefined,
+        awaitInvalidation: () => Effect.never,
+      }),
     );
     const services = yield* Layer.build(
       HttpRouter.serve(

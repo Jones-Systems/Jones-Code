@@ -87,9 +87,6 @@ export const launchOnContinue = new WorkflowAgentError({
 export const isProjectPath = (project: string) =>
   project.startsWith("/") || isWindowsDrivePath(project);
 
-/** An agent step opened with the linked-write journal in place. */
-export const linkedStepMarker = (step: string) => `workflow-agent/step/v1/${step}`;
-
 /** Where agent steps run. The server implements it with threads; tests stand in for it. */
 export class WorkflowAgents extends Context.Service<
   WorkflowAgents,

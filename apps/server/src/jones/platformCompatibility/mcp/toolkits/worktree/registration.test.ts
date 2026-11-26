@@ -63,6 +63,7 @@ import * as McpSessionRegistry from "../../../../../mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../../../../mcp/PreviewAutomationBroker.ts";
 import * as PreviewBrowser from "../../../../../preview/PreviewBrowser.ts";
 import * as PeerForwarding from "../../../../../peer/PeerForwarding.ts";
+import * as Workflows from "../../../../../workflows/Workflows.ts";
 
 import * as PersonalWorkstreams from "../../../../workstreams/personal/service.ts";
 import * as AgentWorkstreams from "../../../../workstreams/personal/agentService.ts";
@@ -72,6 +73,7 @@ type TurnAttachment = Parameters<
 >[0];
 const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
   Layer.mergeAll(
+    Workflows.layerDisabled,
     MilestoneHub.layer,
     Layer.mock(ReceiverInspection.ReceiverInspection)({}),
     Layer.mock(ReceiverProtocol.ReceiverPeerProtocol)({}),

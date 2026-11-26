@@ -244,6 +244,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     readonly sourceRunId: RunId;
     readonly processLossCount?: number;
     readonly continueWithoutPreference?: boolean;
+    readonly cause?: "provider_exit";
   }) {
     const settings = yield* ServerSettings.ServerSettingsService;
     const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));

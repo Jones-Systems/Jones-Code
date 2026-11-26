@@ -258,6 +258,7 @@ const fixture = Effect.fnUntraced(function* (retained = false) {
   const manager = Layer.succeed(ProviderSessions.ProviderSessionManagerV2, {
     isMcpCallerAttached: () => Effect.succeed(false),
     releaseUnlessBusy: () => Effect.die("Unexpected releaseUnlessBusy"),
+    forgetLoadedProviderThread: () => Effect.die("Unexpected provider retirement"),
     otherWorkingThreads: () => Effect.die("Unexpected otherWorkingThreads"),
     subscribePromptSuggestion: () => Stream.empty,
     isLive: () => Effect.die("Runtime stop must use the captured runtime binding"),

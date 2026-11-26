@@ -761,7 +761,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
   readonly conversationLayer?: Layer.Layer<ConversationPolicy.ConversationPolicy>;
-  readonly idleTimeoutMs: number;
+  readonly idleTimeoutMs?: number;
   readonly maxIdlePinMs?: number;
   readonly publishNativeLoads?: boolean;
   readonly beforePublication?: Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>;
@@ -2137,7 +2137,7 @@ it.effect(
           );
         });
         const releasedBinding = {
-          _tag: "ProviderRuntimeBindingError",
+          _tag: "ProviderRuntimeBindingError" as const,
           detail: "The captured native runtime attachment is no longer live.",
         };
         assert.include(yield* startOnReleasedRuntime, releasedBinding);

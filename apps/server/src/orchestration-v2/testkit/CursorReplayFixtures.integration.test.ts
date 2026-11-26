@@ -222,8 +222,7 @@ describe("Cursor replay fixtures", () => {
               cancelled?.type === "expect_outbound"
                 ? (cancelled.frame as CursorReplayFrame)
                 : undefined;
-            if (frame?.type !== "run.cancel")
-              throw new Error("Replay is missing its Cancel frame.");
+            assert(frame?.type === "run.cancel", "Replay is missing its Cancel frame.");
             const runner = makeCursorAgentSdkReplayRunner(transcript);
             return cursorReplayLayer(transcript, {
               runner: {

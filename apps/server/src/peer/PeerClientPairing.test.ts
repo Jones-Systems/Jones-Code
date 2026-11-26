@@ -21,7 +21,6 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpBody from "effect/http/HttpBody";
@@ -325,7 +324,7 @@ it.effect.each(["during resolution", "before dispatch"] as const)(
       const replaceLink = Ref.set(generation, "replacement-link");
       const peerLinks = Layer.mock(PeerLinks.PeerLinks)({
         enabled: Effect.succeed(true),
-        currentGeneration: () => Ref.get(generation).pipe(Effect.map(Option.some)),
+        currentGeneration: () => Ref.get(generation).pipe(Effect.asSome),
         get: () => Effect.succeedSome(link),
         resolve: () =>
           (stage === "during resolution" ? replaceLink : Effect.void).pipe(

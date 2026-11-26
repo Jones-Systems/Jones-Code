@@ -316,8 +316,8 @@ it.effect.each([
               ? Deferred.succeed(heartbeat, {
                   threadCount: Number(properties?.threadCount),
                   projectCount: Number(properties?.projectCount),
-                }).pipe(Effect.asVoid)
-              : Effect.void,
+                }).pipe(Effect.as(true))
+              : Effect.succeed(false),
           recordOwners: () => Effect.void,
         }),
         // No provider logins or Connect link, so startup records no owners.

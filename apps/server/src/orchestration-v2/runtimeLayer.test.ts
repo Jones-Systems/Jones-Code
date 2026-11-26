@@ -6654,6 +6654,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           // Each subscriber reads every event, as each event sink stream does, and replay means one
           // that subscribes late misses none.
           Layer.mock(Orchestrator.OrchestratorV2)({
+            remoteSendReceipts: orchestrator.remoteSendReceipts,
+            followUpCommandOwner: orchestrator.followUpCommandOwner,
             dispatch: orchestrator.dispatch,
             streamDomainEvents: Stream.fromPubSub(domainEvents),
           }),

@@ -3812,7 +3812,7 @@ it.effect(
           [
             {
               cwd: "/repo",
-              refName: harness.createWorktree.mock.calls[0]![0].newRefName,
+              refName: harness.createWorktree.mock.calls[0]![0].newRefName!,
               force: false,
             },
           ],

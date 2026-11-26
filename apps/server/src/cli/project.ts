@@ -98,6 +98,8 @@ export class ProjectLiveServerUndeclaredStatusError extends Schema.TaggedError<P
   }
 }
 
+const isProjectLiveServerUndeclaredStatusError = Schema.is(ProjectLiveServerUndeclaredStatusError);
+
 export class ProjectTitleEmptyError extends Schema.TaggedError<ProjectTitleEmptyError>()(
   "ProjectTitleEmptyError",
   {
@@ -353,11 +355,11 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
         if (snapshot._tag === "Failure") {
           const error = projectCommandErrorFromServerAnswer(snapshot.failure);
           // This GET sends no mutation, so a 503 can safely reach the offline ownership check.
-          if (error instanceof ProjectLiveServerUndeclaredStatusError && error.status === 503) {
+          if (isProjectLiveServerUndeclaredStatusError(error) && error.status === 503) {
             return { error } as const;
           }
           if (!isLiveServerUnanswered(snapshot.failure)) {
-            return yield* Effect.fail(error);
+            return yield* error;
           }
           return {
             error: new RunningServer.RunningServerUnreachableError({

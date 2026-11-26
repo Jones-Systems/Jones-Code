@@ -103,7 +103,9 @@ const catalog: ReadonlyArray<ServerProvider> = [source, target].map((instanceId)
 const registry = Registry.ProviderRegistry.of({
   getProviders: Effect.succeed(catalog),
   refresh: () => Effect.succeed(catalog),
+  rebuildMissingAndRefresh: Effect.succeed(catalog),
   reloadSecretsAndRefresh: () => Effect.succeed(catalog),
+  runtimeModeLimits: () => Effect.succeed([]),
   invalidateModelCaches: () => Effect.void,
   refreshModelCatalog: Effect.void,
   applySecretAndRefresh: () => Effect.die("unused"),

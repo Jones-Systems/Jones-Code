@@ -499,6 +499,7 @@ it.effect(
           [164, "LegacyBootstrap"],
           [165, "RequestManagement"],
           [166, "TaskFolderTeardown"],
+          [167, "WorkflowAgentJournal"],
         ],
       );
       assert.deepStrictEqual(
@@ -747,6 +748,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [164, "LegacyBootstrap"],
       [165, "RequestManagement"],
       [166, "TaskFolderTeardown"],
+      [167, "WorkflowAgentJournal"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

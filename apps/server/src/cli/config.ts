@@ -280,6 +280,7 @@ export interface ServerConfigOptions {
   readonly rejectRunningServer?: boolean;
   readonly selectAutomaticPort?: (
     preferred: number,
+    host: string | undefined,
   ) => Effect.Effect<number, NetService.NetError | CliError.UserError>;
 }
 

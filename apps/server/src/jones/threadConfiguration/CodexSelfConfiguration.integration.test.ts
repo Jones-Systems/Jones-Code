@@ -218,12 +218,10 @@ it.live(
           slashCommands: [],
           skills: [],
         };
-        const service = Service.layer.pipe(
-          Layer.provide(runtime),
-          Layer.provide(
-            Layer.mock(Catalog.ProviderRegistry)({ getProviders: Effect.succeed([catalog]) }),
-          ),
-        );
+        const providers = Layer.mock(Catalog.ProviderRegistry)({
+          getProviders: Effect.succeed([catalog]),
+        });
+        const service = Service.layer.pipe(Layer.provide(runtime), Layer.provide(providers));
         const tools = Layer.mergeAll(
           Mcp.layerThreadToolkit,
           Mcp.layerThreadSelfConfigurationToolkit,
@@ -233,6 +231,7 @@ it.live(
           Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
           Layer.provide(NodeCrypto.layer),
           Layer.provide(runtime),
+          Layer.provide(providers),
           Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
           Layer.provide(Layer.mock(Scheduled.ScheduledTaskService)({})),
           Layer.provide(Layer.mock(Peer.PeerForwarding)({})),

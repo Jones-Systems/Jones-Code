@@ -346,6 +346,7 @@ export const historyScenario = ({
           Layer.succeed(RunFinalizationService.RunFinalizationObserver, {
             refresh: () => Effect.void,
             refreshAfterTurn: () => Effect.void,
+            refreshRepositories: () => Effect.void,
           }),
         ),
       ),

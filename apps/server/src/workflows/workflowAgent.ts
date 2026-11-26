@@ -26,7 +26,6 @@ import {
   type AgentModel,
   AgentResult,
   AgentTurn,
-  linkedStepMarker,
   WorkflowAgents,
 } from "./WorkflowAgents.ts";
 import * as WorkflowStore from "./WorkflowStore.ts";
@@ -249,13 +248,12 @@ const attempt = Effect.fn("workflow.agent")(function* <A, I>(
   // What the agent's thread touches, its issue and the pull requests it links, is this step's.
   const touches = stepReferences(run.store, run.runId, name);
   const linked = (options.thread?.environment ?? options.environment) !== undefined;
-  const stepStarted = Effect.gen(function* () {
-    // A step already opened by an older build may have issued a write without recording it.
-    if (linked && !(yield* run.store.steps(run.runId)).some((step) => step.name === name)) {
-      yield* run.store.mark(run.runId, linkedStepMarker(name));
-    }
-    yield* run.store.stepStarted(run.runId, name, "agent");
-  });
+  const stepStarted = run.store.stepStarted(
+    run.runId,
+    name,
+    "agent",
+    linked ? { linkedAgent: true } : undefined,
+  );
   const start = (key: string, prompt: string, thread: AgentThread | undefined) =>
     agents
       .start({

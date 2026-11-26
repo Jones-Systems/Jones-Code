@@ -73,6 +73,7 @@ const switched: ModelSelection = {
   options: [{ id: "reasoningEffort", value: "high" }],
 };
 const nativeId = "native-delivery-lifecycle";
+const owner = { managesProviders: true };
 
 function initialize(home: string): Array<Replay.CodexAppServerReplayEntry> {
   return [
@@ -722,7 +723,7 @@ it.effect(
             creationSource: "web" as const,
           };
           assert.isFalse("modelSelection" in second);
-          yield* Intake.dispatchCommand(second);
+          yield* Intake.dispatchCommand(second, owner);
           const secondRun = (yield* threads.getThreadProjection(threadId)).runs.find(
             (run) => run.userMessageId === second.messageId,
           )!;
@@ -730,12 +731,15 @@ it.effect(
           yield* finishStart(threadId, secondRun.id);
           yield* Deferred.succeed(f.secondComplete, undefined);
           yield* waitRun(threadId, secondRun.id, "completed");
-          yield* Intake.dispatchCommand({
-            type: "provider.switch",
-            commandId: CommandId.make("spine:switch"),
-            threadId,
-            modelSelection: switched,
-          });
+          yield* Intake.dispatchCommand(
+            {
+              type: "provider.switch",
+              commandId: CommandId.make("spine:switch"),
+              threadId,
+              modelSelection: switched,
+            },
+            owner,
+          );
           assert.deepEqual(
             (yield* threads.getThreadProjection(threadId)).thread.modelSelection,
             switched,
@@ -749,7 +753,7 @@ it.effect(
           };
           const lostSend = new Error("Synthetic lost public send response");
           assert.strictEqual(
-            yield* Intake.dispatchCommand(third).pipe(
+            yield* Intake.dispatchCommand(third, owner).pipe(
               Effect.andThen(Effect.fail(lostSend)),
               Effect.flip,
             ),
@@ -774,7 +778,7 @@ it.effect(
               [instanceB]: { driver: Codex.CODEX_DRIVER_KIND, enabled: false },
             },
           });
-          assert.isTrue((yield* Intake.dispatchCommand(third)).replayed);
+          assert.isTrue((yield* Intake.dispatchCommand(third, owner)).replayed);
           assert.deepEqual(
             Option.getOrThrow(yield* receipts.getByCommandId(third.commandId)),
             acceptedReceipt,
@@ -788,8 +792,8 @@ it.effect(
             commandId: CommandId.make("spine:stop"),
             threadId,
           };
-          yield* Intake.dispatchCommand(stop);
-          assert.isTrue((yield* Intake.dispatchCommand(stop)).replayed);
+          yield* Intake.dispatchCommand(stop, owner);
+          assert.isTrue((yield* Intake.dispatchCommand(stop, owner)).replayed);
           yield* waitRun(threadId, thirdRun.id, "interrupted");
           const stopEffects = yield* outbox.listByCommandId(stop.commandId);
           const interrupts = stopEffects.filter(
@@ -1042,7 +1046,7 @@ it.effect(
             "ThreadLaunchError",
           );
           assert.deepEqual(yield* outbox.listByThreadId(rejected.threadId!), effectsBeforeRetry);
-          yield* Intake.dispatchCommand(recovery);
+          yield* Intake.dispatchCommand(recovery, owner);
           const recovered = yield* threads.getThreadProjection(rejected.threadId!);
           assert.lengthOf(
             recovered.messages.filter((message) => message.role === "user"),

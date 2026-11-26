@@ -94,6 +94,7 @@ function keptWarmThread(genuineAgeMs: number, followUp: "keep-warm" | "agent" = 
   const candidate: ProjectionStore.ProjectionSettlementCandidate = {
     ...shell,
     lastSnoozeWakeAt: null,
+    latestResumingMessageAt: null,
     latestUserAuthoredMessageAt: shell.latestUserAuthoredMessageAt ?? null,
   };
   return { projection, candidate, genuineAt, refreshAt };

@@ -81,6 +81,7 @@ function withFakeClaudeEnv<A, E, R>(
     imageAttemptLog?: string;
     configDirMustBe?: string;
     cwdMustNotBe?: string;
+    settingsLog?: string;
     capturePath?: string;
     evaluation?: boolean;
     investigation?: boolean;
@@ -290,6 +291,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
             const generated = yield* generation.generateReviewGuide({
               ...reviewGuideInput,
               cwd: process.cwd(),
+              projectCwd: process.cwd(),
             });
             expect(generated).toEqual({ stops: [] });
           }),

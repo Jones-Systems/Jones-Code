@@ -1930,9 +1930,14 @@ it.effect("offers agent feedback tools only while the setting is on, to every cl
         Layer.provide(Layer.mock(Feedback.FeedbackService)({})),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-            resolve: (token) =>
+            resolve: (token) => Effect.succeed(token === "agentToken" ? agentScope : undefined),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(McpHttpServer.McpClientAuthenticator, {
+            authenticate: (request) =>
               Effect.succeed(
-                token === "agentToken" ? agentScope : token === "cliToken" ? cliScope : undefined,
+                request.headers.authorization === "Bearer cliToken" ? cliScope : undefined,
               ),
           }),
         ),
@@ -2098,7 +2103,7 @@ it.effect(
                 servesProject: (projectId) => Effect.succeed(projectId !== "project-noForgeToken"),
               }),
               Layer.mock(GitManager.GitManager)({}),
-              Layer.mock(Orchestrator.OrchestratorV2)({}),
+              Layer.mock(Orchestrator.OrchestratorV2)(unusedCorePorts),
               Layer.mock(ProjectionStore.ProjectionStoreV2)({
                 getThreadShell: (threadId) =>
                   Effect.succeed({

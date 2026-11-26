@@ -200,6 +200,8 @@ const ensureNotInUse = Effect.fn("ensureDevDbNotInUse")(function* (databasePath:
 // Every kind startup recovery resumes, so a copied family never starts work by itself. The record
 // fails typecheck when a kind is added and not listed here.
 const RECOVERY_KIND_SET = {
+  "self-settlement": true,
+  "planned-update-queued-runs": true,
   "queued-runs": true,
   runtime: true,
   "restart-continuations": true,

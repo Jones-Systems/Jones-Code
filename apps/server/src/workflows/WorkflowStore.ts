@@ -19,6 +19,7 @@ import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as WorkflowAgentJournal from "../jones/workflowAgents/Journal.ts";
 import * as MilestoneHub from "../milestones/MilestoneHub.ts";
 
 export { WorkflowRun, WorkflowRunStatus, WorkflowStep };
@@ -150,7 +151,6 @@ type WorkflowMilestoneNews = WorkflowMilestone extends infer Event
   : never;
 // A wake is one write away from its claim. A claim this old without its run moving had none.
 const WAKE_REDONE_AFTER = Duration.seconds(30);
-const UNCONFIRMED_STOP_PREFIX = "workflow-cancellation/unconfirmed-linked-stop/";
 // Long enough for a sender's retries, short enough that the table stays small.
 // Enough to read what a step said; the page that shows it is not a place for a whole report.
 const STEP_RESULT_KEPT = 8_000;
@@ -242,6 +242,7 @@ export class WorkflowStore extends Context.Service<
       runId: string,
       name: string,
       kind: WorkflowStep["kind"],
+      options?: { readonly linkedAgent: true },
     ) => Effect.Effect<number>;
     readonly stepEnded: (
       runId: string,
@@ -480,6 +481,7 @@ export interface PlaceRow {
 
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const agentJournal = WorkflowAgentJournal.make(sql);
   const changes = yield* PubSub.unbounded<string>();
   // A write here is bookkeeping for a run the engine already journaled: failing it would park a
   // healthy run, so a database that cannot take it is a defect of the process instead.
@@ -919,28 +921,29 @@ export const make = Effect.gen(function* () {
         `,
       );
     }),
-    stepStarted: Effect.fn("WorkflowStore.stepStarted")(function* (runId, name, kind) {
+    stepStarted: Effect.fn("WorkflowStore.stepStarted")(function* (runId, name, kind, options) {
       const at = yield* now;
-      const rows = yield* sql<{ attempts: number | bigint }>`
+      const upsert = sql<{ attempts: number | bigint }>`
         INSERT INTO workflow_steps (run_id, name, kind, status, attempts, started_at)
         VALUES (${runId}, ${name}, ${kind}, 'running', 1, ${at})
         ON CONFLICT (run_id, name) DO UPDATE
         SET status = 'running', attempts = attempts + 1, detail = NULL, ended_at = NULL,
             started_at = excluded.started_at
         RETURNING attempts
-      `.pipe(Effect.orDie);
+      `;
+      const rows = yield* (
+        options?.linkedAgent
+          ? sql.withTransaction(agentJournal.registerStep(runId, name).pipe(Effect.andThen(upsert)))
+          : upsert
+      ).pipe(Effect.orDie);
       yield* PubSub.publish(changes, runId);
       return Number(rows[0]?.attempts ?? 1);
     }),
     stepEnded: Effect.fn("WorkflowStore.stepEnded")(
       function* (runId, name, status, detail, options) {
         const at = yield* now;
-        const stopMark = `${UNCONFIRMED_STOP_PREFIX}${name}`;
         const recordOutcome = options?.unconfirmedLinkedStop
-          ? sql`
-            INSERT INTO workflow_marks (run_id, name, count) VALUES (${runId}, ${stopMark}, 1)
-            ON CONFLICT (run_id, name) DO NOTHING
-          `
+          ? agentJournal.insert(runId, "unconfirmed_stop", name).pipe(Effect.asVoid)
           : status === "completed"
             ? // Only a step outside a pause resets the run's consecutive pauses.
               sql`
@@ -951,17 +954,15 @@ export const make = Effect.gen(function* () {
         yield* write(
           runId,
           sql.withTransaction(
-            Effect.andThen(
-              sql`
-              UPDATE workflow_steps
-              SET status = ${status}, detail = ${detail === null ? null : detailCut(detail)}, ended_at = ${at}
-              WHERE run_id = ${runId} AND name = ${name}
-                AND NOT EXISTS (
-                  SELECT 1 FROM workflow_marks WHERE run_id = ${runId} AND name = ${stopMark}
-                )
-            `,
-              recordOutcome,
-            ),
+            Effect.gen(function* () {
+              if ((yield* agentJournal.read(runId, "unconfirmed_stop", name)) !== undefined) return;
+              yield* sql`
+                UPDATE workflow_steps
+                SET status = ${status}, detail = ${detail === null ? null : detailCut(detail)}, ended_at = ${at}
+                WHERE run_id = ${runId} AND name = ${name}
+              `;
+              yield* recordOutcome;
+            }),
           ),
         );
       },
@@ -1159,6 +1160,7 @@ export const make = Effect.gen(function* () {
             Effect.gen(function* () {
               yield* sql`DELETE FROM workflow_steps WHERE ${sql.in("run_id", ids)}`;
               yield* sql`DELETE FROM workflow_marks WHERE ${sql.in("run_id", ids)}`;
+              yield* agentJournal.removeRuns(ids);
               yield* sql`DELETE FROM workflow_run_references WHERE ${sql.in("run_id", ids)}`;
               yield* sql`DELETE FROM workflow_runs WHERE ${sql.in("run_id", ids)}`;
             }),
@@ -1275,14 +1277,10 @@ export const make = Effect.gen(function* () {
         ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
       }));
     }),
-    hasUnconfirmedStop: Effect.fn("WorkflowStore.hasUnconfirmedStop")(function* (runId) {
-      const rows = yield* sql`
-        SELECT 1 FROM workflow_marks
-        WHERE run_id = ${runId} AND name LIKE ${`${UNCONFIRMED_STOP_PREFIX}%`}
-        LIMIT 1
-      `.pipe(Effect.orDie);
-      return rows.length > 0;
-    }),
+    hasUnconfirmedStop: Effect.fn("WorkflowStore.hasUnconfirmedStop")(
+      (runId) => agentJournal.hasUnconfirmedStop(runId),
+      Effect.orDie,
+    ),
     waitAt: Effect.fn("WorkflowStore.waitAt")(function* (address) {
       const rows = yield* (
         "runId" in address

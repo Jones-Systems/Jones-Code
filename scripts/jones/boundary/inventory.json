@@ -7,6 +7,10 @@
   },
   "baseline": "36816d26be2d862440d6412d62332a10c4d896ff",
   "paths": {
+    "apps/server/src/mcp/toolkits/issues/handlers.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ProjectionSettlement.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ThreadIssueService.test.ts": "jones-tests-in-upstream",
+    "docs/operations/03_release.md": "hook",
     "apps/web/src/components/WorktreeLayoutApprovalDialogHost.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/settings/AddEnvironmentDialog.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/settings/AddEnvironmentDialog.tsx": "accepted-shared",

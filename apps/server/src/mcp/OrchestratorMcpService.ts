@@ -3139,6 +3139,7 @@ const make = Effect.gen(function* () {
           threadManagement: true,
           incrementalThreadRead: true,
           threadContentEvidence: THREAD_CONTENT_EVIDENCE_CAPABILITY,
+          structuredWorkflowOutput: true,
           remoteTaskObservationVersion: ObservationSupport.version,
           ...(yield* sendIngress.capabilities(scope)),
           ...(resultDependencies === undefined ||

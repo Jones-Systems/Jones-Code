@@ -1139,7 +1139,7 @@ const make = Effect.gen(function* () {
         expectedBranch,
         inTurn: (effect) => layoutLocks.withLock(taskFolder.projectRoot, effect),
         approvedCommand: Effect.gen(function* () {
-          if (!laidOut || checkouts.length === 0) return null;
+          if (!laidOut) return null;
           const layout = yield* layoutCommand(taskFolder, "remove", input.projectCommands);
           if (layout === null || "refusal" in layout) return null;
           const recheck = recheckLayoutCommand("remove", layout.command);

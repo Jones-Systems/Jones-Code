@@ -1,3 +1,4 @@
+import { unusedCorePorts } from "../../../jones/testing/UnusedCorePorts.testkit.ts";
 import {
   EnvironmentId,
   IssueTrackerKind,
@@ -153,6 +154,7 @@ const makeHarness = Effect.fn("makeIssuesToolkitHarness")(function* (
   const layerDependencies = Layer.mergeAll(
     projectLayer,
     Layer.mock(Orchestrator.OrchestratorV2)({
+      ...unusedCorePorts(),
       getThreadShell: (id) => Effect.succeed(id === THREAD_ID ? makeThread(issues) : null),
     }),
     issueLayer ??

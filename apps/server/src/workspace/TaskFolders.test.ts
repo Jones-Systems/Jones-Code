@@ -532,7 +532,7 @@ it.live("adopts layout checkouts and skips teardown while unowned files remain",
         `${api}\n${web}`,
       );
       assert.equal(yield* worktreeCount(api), 1);
-      // Once the unique files have been dealt with, only empty scaffolding remains.
+      // Clear the unique files before allowing the approved teardown on a later attempt.
       yield* fileSystem.remove(path.join(taskFolder.root, "chosen"));
       yield* fileSystem.remove(path.join(taskFolder.root, ".git"), { recursive: true });
       yield* taskFolders.remove({
@@ -541,7 +541,7 @@ it.live("adopts layout checkouts and skips teardown while unowned files remain",
         forget: true,
         projectCommands: "permitted",
       });
-      assert.isFalse(yield* fileSystem.exists(path.join(shop, "torn-down")));
+      assert.isTrue(yield* fileSystem.exists(path.join(shop, "torn-down")));
       assert.isFalse(yield* fileSystem.exists(taskFolder.root));
     }),
   ),
@@ -1386,6 +1386,45 @@ it.live("holds a failed teardown across retries and later changes to layout perm
       assert.deepEqual(yield* remove("request-not-permitted"), hold);
       assert.equal(yield* fileSystem.readFileString(attempts), "attempt\n");
       assert.isTrue(yield* fileSystem.exists(folder.projectPath));
+      assert.deepEqual(yield* taskFolders.find(folder.root), folder);
+    }),
+  ),
+);
+
+it.live("claims an approved teardown even when the layout created no Git worktrees", () =>
+  withState((state) =>
+    Effect.gen(function* () {
+      const { fileSystem, path, project, createFor } = yield* layoutProject;
+      const attempts = path.join(project, "teardown-attempts");
+      yield* fileSystem.writeFileString(
+        path.join(project, "t3.json"),
+        JSON.stringify({
+          worktreeLayout: {
+            create: 'mkdir -p "$T3_WORKTREE_PROJECT_PATH"',
+            remove: 'printf "attempt\\n" >> "$T3_PROJECT_ROOT/teardown-attempts"; exit 4',
+          },
+        }),
+      );
+      state.workspaceRoot = project;
+      yield* approveLayoutCommands;
+      const made = yield* createFor("one");
+      const taskFolders = yield* TaskFolders.TaskFolders;
+      const folder = (yield* taskFolders.find(made!.worktree.path))!;
+      assert.isFalse(folder.projectIsWorktree);
+      assert.deepEqual(folder.repositories, []);
+      const remove = taskFolders.remove({
+        root: folder.root,
+        force: true,
+        forget: true,
+        projectCommands: "permitted",
+      });
+      const hold = {
+        removed: [],
+        kept: [{ path: folder.root, reason: "layout teardown outcome requires reconciliation" }],
+      };
+      assert.deepEqual(yield* remove, hold);
+      assert.deepEqual(yield* remove, hold);
+      assert.equal(yield* fileSystem.readFileString(attempts), "attempt\n");
       assert.deepEqual(yield* taskFolders.find(folder.root), folder);
     }),
   ),

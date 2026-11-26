@@ -13,13 +13,15 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import WorkflowAgentJournalMigration from "../jones/persistence/Migrations/167_JonesWorkflowAgentJournal.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import WorkflowsMigration from "../persistence/Migrations/110_Workflows.ts";
 import * as WorkflowAgentLinks from "./WorkflowAgentLinks.ts";
-import { WorkflowAgents, linkedStepMarker } from "./WorkflowAgents.ts";
+import { WorkflowAgents } from "./WorkflowAgents.ts";
 import * as WorkflowStore from "./WorkflowStore.ts";
 import { settleTurn } from "./workflowAgent.ts";
 
@@ -34,12 +36,23 @@ const journal = (filename: string) =>
   });
 const migratedJournal = (filename: string, prepared = true) =>
   Layer.effectDiscard(
-    prepared
-      ? WorkflowsMigration.pipe(
-          Effect.andThen(WorkflowStore.make),
-          Effect.flatMap((store) => store.mark("run-1", linkedStepMarker("write"))),
-        )
-      : WorkflowsMigration,
+    Effect.gen(function* () {
+      yield* WorkflowsMigration;
+      yield* WorkflowAgentJournalMigration;
+      const sql = yield* SqlClient.SqlClient;
+      for (const runId of ["run-1", "legacy-run"]) {
+        yield* sql`INSERT INTO workflow_runs (
+          run_id, workflow, version, engine_tag, idempotency_key, title, status, started_at, updated_at
+        ) VALUES (${runId}, 'fix', 1, 'fixture', ${runId}, 'Fix', 'running', 'now', 'now')`;
+      }
+      const store = yield* WorkflowStore.make;
+      yield* store.stepStarted(
+        "run-1",
+        "write",
+        "agent",
+        prepared ? { linkedAgent: true } : undefined,
+      );
+    }),
   ).pipe(Layer.provideMerge(journal(filename)));
 
 const journalFile = <A, E, R>(use: (filename: string) => Effect.Effect<A, E, R>) =>
@@ -56,7 +69,7 @@ interface Call {
   readonly arguments: Record<string, unknown>;
   readonly runtimeMode: string;
   readonly expectedGeneration: string | undefined;
-  readonly origin: { readonly environmentId: string } | undefined;
+  readonly origin: Parameters<PeerMcpClient.PeerMcpClient["Service"]["call"]>[0]["origin"];
 }
 
 /** The other environment, played by the test: each tool answers from a list, in order. */
@@ -65,18 +78,28 @@ const peer = (
   options: {
     readonly enabled?: boolean;
     readonly prepared?: boolean;
+    readonly structuredOutput?: boolean;
     readonly beforeAnswer?: (tool: string) => Effect.Effect<void>;
   } = {},
 ) => {
   const calls: Array<Call> = [];
+  const negotiations: Array<string | undefined> = [];
   const left = new Map(Object.entries(answers).map(([tool, list]) => [tool, [...list]]));
   let generation = "generation-1";
+  let structuredOutput = options.structuredOutput ?? true;
   const peerLayer = Layer.mergeAll(
     Layer.succeed(
       PeerMcpClient.PeerMcpClient,
       PeerMcpClient.PeerMcpClient.of({
         call: (input) =>
           Effect.suspend(() => {
+            if (input.tool === "orchestrator_capabilities") {
+              negotiations.push(input.expectedGeneration);
+              assert.equal(input.expectedGeneration, generation);
+              return Effect.succeed({
+                features: structuredOutput ? { structuredWorkflowOutput: true } : {},
+              } as never);
+            }
             calls.push({
               environmentId: input.environmentId,
               tool: input.tool,
@@ -106,6 +129,10 @@ const peer = (
   );
   return {
     calls,
+    negotiations,
+    upgrade: () => {
+      structuredOutput = true;
+    },
     layer: Layer.merge(peerLayer, migratedJournal(":memory:", options.prepared)),
     rePair: (nextGeneration: string) => {
       generation = nextGeneration;
@@ -349,6 +376,27 @@ it.effect("sends a queued structured request with its captured link and authenti
         },
       },
     ]);
+  }),
+);
+
+it.effect("does not claim a structured send until the same peer supports it", () =>
+  Effect.gen(function* () {
+    const there = peer({ t3_thread_send: [sent] }, { structuredOutput: false });
+    yield* Effect.gen(function* () {
+      const refusal = yield* continueThread.pipe(Effect.flip);
+      assert.equal(refusal._tag, "WorkflowAgentError");
+      assert.include(refusal.message, "structured workflow output");
+      assert.deepStrictEqual(there.calls, []);
+      there.upgrade();
+      assert.deepStrictEqual(yield* continueThread, sentTurn);
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(yield* sql`SELECT name FROM workflow_marks`, []);
+    }).pipe(Effect.provide(there.layer));
+    assert.deepStrictEqual(there.negotiations, ["generation-1", "generation-1"]);
+    assert.deepStrictEqual(
+      there.calls.map(({ tool }) => tool),
+      ["t3_thread_send"],
+    );
   }),
 );
 
