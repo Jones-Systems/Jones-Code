@@ -8835,6 +8835,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         activeAttemptId: attemptId,
         status: "queued",
         ...(queuedToolBoundaryEligible === undefined ? {} : { queuedToolBoundaryEligible }),
+        // Only eligible peer sends may cross an inherited selection change.
+        // Owner steers deferred during a provider gap keep their saved selection.
+        ...(activeRun !== undefined &&
+        command.creationSource === "mcp" &&
+        command.queuedToolBoundaryEligible === true &&
+        !freshContext &&
+        (command.modelSelection === undefined || command.modelSelectionExplicit === false)
+          ? { queuedToolBoundaryFollowUpOfRunId: activeRun.id }
+          : {}),
         ...(steerWhenReadyRunId === undefined ? {} : { steerWhenReadyRunId }),
         ...(worktreeMissingRun !== undefined ||
         stoppedNotificationSource !== undefined ||

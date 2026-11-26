@@ -288,9 +288,11 @@ At a tool boundary, messages follow their selected queue order. Later messages w
 delivery to succeed, including any retries.
 On servers that support batch steering, compatible queued messages are delivered together in one
 provider input, within the server's message-size limits. Queued messages from other agents can use
-the same safe tool-boundary delivery. Agents that need a separate turn can explicitly request
-`separate_turn` instead. Scheduled wakes still wait for a separate turn; repeated fires of the
-same task keep at most one pending wake in that thread.
+the same safe tool-boundary delivery. An eligible peer message with no explicit model choice can
+join the running Codex or Claude turn it was queued against after a same-account setting change.
+Messages that wait for the next turn use their queued settings. Agents that need a separate turn
+can explicitly request `separate_turn`. Scheduled wakes still wait for a separate turn. Repeated
+fires of the same task keep at most one pending wake in that thread.
 Failed or interrupted tools do not release the queue on their own; it waits for the next
 qualifying tool completion or the end of the turn. Stopping the thread keeps its queue held.
 
@@ -308,11 +310,12 @@ servers retain the individual row controls.
 Choosing **Steer all** sends one combined input to the currently running agent, including messages
 queued before you changed accounts or models. The separate timeline cards preserve the original
 messages; they do not mean each message started a separate turn. If the active turn finishes before
-delivery, the messages are preserved for follow-up delivery. Automatic delivery at a tool boundary
-still requires the queued messages to match the active provider and model.
+delivery, the messages are preserved for follow-up delivery. A running goal accepts **Steer all**
+and compatible automatic follow-ups. A queued `/goal` control waits for separate handling.
 
-If you change the model or effort within the same Codex account, **Steer** sends the message to the
-active turn with its current settings. The new settings apply to a subsequent turn.
+Saving a different model or option for the same account keeps **Steer all** available on the
+running turn. For Codex, **Steer** also uses the running turn's settings. The saved settings
+apply to a subsequent turn.
 
 If you stop the agent or the server restarts, queued messages keep their order and are held.
 Press **Resume** in an empty composer on web and desktop, or **Resume queue** on mobile, to

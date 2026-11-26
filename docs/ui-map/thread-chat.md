@@ -184,9 +184,13 @@ four ordinary messages whose saved account, provider thread and model differ
 from that turn. With no pending request or edit, **Steer all (4)** must be
 enabled. Click once: one command must contain all four ordered message IDs.
 Server readback must retain the four original messages and create one combined
-provider input. Automatic tool-boundary delivery must still reject mismatched
-queued configurations. Pending requests, stale message versions, maintenance
-commands, ended turns and input limits retain their own guards.
+provider input. For a speed change, save Ultrafast while a Standard Codex goal
+is active on the same account. **Steer all** should send into the active turn.
+An inherited peer follow-up can also join that run at the next safe tool
+boundary. A queued explicit speed change waits for its own turn, and
+Ultrafast stays saved for a subsequent turn. Pending requests,
+stale message versions, maintenance commands, ended turns and input limits
+retain their own guards.
 
 The adjacent [browser regression](../../apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx),
 [client tests](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts)
