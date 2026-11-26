@@ -105,6 +105,7 @@ describe("buildThreadActionMenuItems", () => {
       const items = buildThreadActionMenuItems({
         ...baseState,
         canOperate: false,
+        canTriage: false,
         isPinned: reversed,
         isSettled: reversed,
         isSnoozed: reversed,
@@ -137,6 +138,33 @@ describe("buildThreadActionMenuItems", () => {
         items.find((item) => item.id === "snooze")?.children?.every((child) => child.disabled) ??
           true,
       ).toBe(true);
+    },
+  );
+
+  it.each([false, true])(
+    "allows offline triage without a live operate grant (reversed: %s)",
+    (reversed) => {
+      const items = buildThreadActionMenuItems({
+        ...baseState,
+        canOperate: false,
+        canTriage: true,
+        isPinned: reversed,
+        isSettled: reversed,
+        isSnoozed: reversed,
+      });
+      const enabled = items.filter((item) => !item.disabled).map((item) => item.id);
+      expect(enabled).toEqual(
+        expect.arrayContaining(reversed ? ["unsettle", "unsnooze"] : ["settle", "snooze"]),
+      );
+      expect(enabled).not.toContain(reversed ? "unpin" : "pin");
+      expect(enabled).not.toContain("delete");
+      if (!reversed) {
+        const snooze = items.find((item) => item.id === "snooze");
+        expect(snooze?.children?.filter((item) => !item.disabled).map((item) => item.id)).toEqual([
+          "snooze:hour",
+          "snooze:custom",
+        ]);
+      }
     },
   );
 

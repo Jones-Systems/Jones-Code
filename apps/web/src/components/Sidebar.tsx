@@ -3166,6 +3166,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             withThreadSettlementRestore(
               buildThreadActionMenuItems({
                 canOperate,
+                canTriage: threadTriagePermitted(threadRef.environmentId),
                 environmentAccessStatus: environmentAccess.status,
                 assignmentItems: assignmentMenu?.items,
                 canFind: headerActions?.onFind !== undefined,
@@ -3186,6 +3187,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
                 isRegeneratingTitle,
                 isRunning: !threadRuntimeCanArchive(thread.runtime),
+                hasCompletedRun: thread.latestRun?.completedAt != null,
                 canShareWithGuest: appAtomRegistry.get(
                   canShareWithGuestAtom(threadRef.environmentId),
                 ),
@@ -3227,7 +3229,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           );
           return;
         }
-        if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
+        if (
+          threadActionRequiresOperate(clicked.value) &&
+          !checkThreadOperations([thread], isThreadTriageAction(clicked.value))
+        ) {
+          return;
+        }
         if (clicked.value.startsWith("assign-workstream:")) {
           assignmentMenu?.onAction(clicked.value);
           return;
@@ -3357,6 +3364,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           }
           case "rename":
+            if (fromSearch) return;
             if (headerActions) headerActions.onStartRename();
             else startThreadRename(threadRef, thread.title);
             return;
@@ -3907,6 +3915,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             searchMatchQuery={threadSearch.query}
                             onHighlight={() => setActiveSearchResultIndex(index)}
                             onSelect={() => selectThreadSearchResult(thread)}
+                            onContextMenu={handleSearchResultContextMenu}
                             onFileDropThreads={handleThreadFileDrop}
                           />
                         );

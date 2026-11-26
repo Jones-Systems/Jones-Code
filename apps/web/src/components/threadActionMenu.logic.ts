@@ -102,6 +102,8 @@ export function buildDraftActionMenuItems(
 export interface ThreadActionMenuState {
   readonly assignmentItems?: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> | undefined;
   readonly canOperate: boolean;
+  /** Settle, snooze and their undo stay available until the host denies the operate scope. */
+  readonly canTriage?: boolean;
   readonly environmentAccessStatus?: EnvironmentScopeAccess["status"];
   readonly canFind?: boolean;
   /** False where no inline title editor is rendered, such as sidebar search results. */
@@ -183,7 +185,9 @@ export function buildThreadActionMenuItems(
           },
         ]
       : []),
-    { id: "mark-unread", label: "Mark unread", icon: "mail-open" },
+    ...(state.hasCompletedRun && !state.isRunning
+      ? [{ id: "mark-unread" as const, label: resolve(msg("Mark unread")), icon: "mail-open" }]
+      : []),
     ...(state.supports.pinning
       ? [
           state.isPinned
@@ -276,7 +280,13 @@ export function buildThreadActionMenuItems(
     ...(state.canShareWithGuest
       ? [{ id: "share-guest" as const, label: resolve(msg("Share with guest")), icon: "user-plus" }]
       : []),
-    { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: !state.branch },
+    {
+      id: "rename",
+      label: resolve(msg("Rename thread")),
+      icon: "pencil",
+      disabled: state.canRename === false,
+      separatorBefore: !state.branch,
+    },
     ...(state.projectFilter
       ? [
           {

@@ -1,4 +1,8 @@
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
+import { deviceDisplayLabel } from "@t3tools/contracts/jones/devicePresentation";
+import { usePendingSidebarThread } from "../../jones/pendingSends/sidebar";
+import { useSidebarDevicePresentation } from "../../jones/sidebarAppearance/useSidebarDevicePresentation";
+import { useEnvironment } from "../../state/environments";
 import { asLaunchingThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { ThreadHoverCard, ThreadHoverCardTrigger } from "../ThreadHoverCard";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
@@ -916,12 +920,26 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     ? getTriggerDisplayModelName(selectedModel, providerEntry?.driverKind)
     : thread.modelSelection.model;
 
+  const device = useEnvironment(thread.environmentId);
+  const showDevice = device !== null || props.environmentLabel !== null;
+  const deviceLabel =
+    device?.displayLabel ??
+    deviceDisplayLabel(props.environmentLabel ?? "Unknown environment", props.environmentMachine);
+  const iconOverridden = device?.serverConfig?.settings.environmentIcon != null;
+  const devicePresentation = useSidebarDevicePresentation({
+    label: device?.label ?? props.environmentLabel,
+    kind: props.environmentMachine,
+    visibleLabel: deviceLabel,
+    iconOverridden,
+  });
+  const deviceSuffix = showDevice ? devicePresentation.accessibleSuffix : "";
+
   const detailsTooltip = (
     <SidebarThreadTooltip
       thread={checkoutThread}
       project={props.project}
       projectDisplayName={props.projectDisplayName}
-      environmentLabel={devicePresentation.hidden ? deviceLabel : props.environmentLabel}
+      environmentLabel={showDevice ? deviceLabel : null}
       environmentMachine={props.environmentMachine}
       providerEntry={providerEntry}
       providerEntryByInstanceId={props.providerEntryByInstanceId}
@@ -1312,21 +1330,25 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const diff = latestRunDiff(thread);
   // Only the trailing icons would remain, so the row moves them to the title line instead.
   const metaLineEmpty =
-    props.environmentLabel === null &&
+    !showDevice &&
     prBadge === null &&
     issueBadge === null &&
     diff === null &&
     runningTerminalIds.length === 0;
   const metaLine = metaLineEmpty ? null : (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
-      {props.environmentLabel !== null ? (
+      {showDevice ? (
         <>
           <EnvironmentMachineIcon
             aria-hidden
+            label={device?.label ?? props.environmentLabel}
+            override={iconOverridden}
             kind={props.environmentMachine}
             className="size-3.5 shrink-0 text-icon-muted"
           />
-          <span className="min-w-0 flex-1 truncate">{props.environmentLabel}</span>
+          <span data-jones-device-label className="min-w-0 flex-1 truncate">
+            {devicePresentation.hidden ? null : deviceLabel}
+          </span>
         </>
       ) : (
         <span className="flex-1" />
@@ -1385,7 +1407,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               tabIndex={0}
               data-sidebar-row={threadKey}
               data-sidebar-parent={props.navigationParent}
-              aria-label={accessibility.label}
+              aria-label={accessibility.label + deviceSuffix}
               aria-current={accessibility.current}
               data-testid={inFolder ? "sidebar-row-folder" : "sidebar-row-slim"}
               aria-busy={isRegeneratingTitle || undefined}
@@ -1599,7 +1621,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             tabIndex={0}
             data-sidebar-row={threadKey}
             data-sidebar-parent={props.navigationParent}
-            aria-label={accessibility.label}
+            aria-label={accessibility.label + deviceSuffix}
             aria-current={accessibility.current}
             data-testid="sidebar-row-card"
             aria-busy={isRegeneratingTitle || undefined}
@@ -1835,8 +1857,14 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
   onFileDropThreads: (threadRef: ScopedThreadRef, files: File[]) => void;
 }) {
   const messages = useMessages();
-  const thread =
-    useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
+  const liveThread = useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id));
+  const projectedThread =
+    liveThread === null
+      ? props.thread
+      : props.thread.runtime !== null
+        ? asLaunchingThread(liveThread)
+        : liveThread;
+  const thread = usePendingSidebarThread(projectedThread);
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
     statusLabel: null,

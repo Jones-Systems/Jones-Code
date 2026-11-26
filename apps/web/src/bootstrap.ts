@@ -13,6 +13,8 @@ const standaloneQueue =
   window.location?.pathname === "/work-queue" &&
   isHostedStaticApp();
 
-void (
+export const boot = (
   standaloneQueue ? import("./workQueuePreview") : import("./main").then(({ startup }) => startup)
-).catch(showBootError);
+).catch((error: unknown) => {
+  if (!chunkLoadState.reloadScheduled) showBootError(error);
+});
