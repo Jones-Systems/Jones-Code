@@ -76,6 +76,13 @@ export function AppRouteModal({
         if (nextOpen) return;
         if (
           eventDetails.reason === "escape-key" &&
+          eventDetails.event instanceof KeyboardEvent &&
+          eventDetails.event.repeat
+        ) {
+          return eventDetails.cancel();
+        }
+        if (
+          eventDetails.reason === "escape-key" &&
           ownsProviderReorderKey("Escape", eventDetails.event.target)
         ) {
           // Let the document-owned drag sensor cancel before a later Esc dismisses Settings.
@@ -158,6 +165,7 @@ export function AppRouteModal({
             >
               {children}
             </PanelFindScope>
+            <GlobalVoiceInputIndicator />
           </DialogPrimitive.Popup>
         </DialogPrimitive.Viewport>
       </DialogPrimitive.Portal>

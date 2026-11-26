@@ -24,6 +24,7 @@ import * as Schema from "effect/Schema";
 import { HttpBody, HttpClient, HttpRouter } from "effect/http";
 
 import * as ServerEnvironment from "../../../../../environment/ServerEnvironment.ts";
+import * as FeedbackStore from "../../../../../feedback/FeedbackStore.ts";
 import * as GitWorkflowService from "../../../../../git/GitWorkflowService.ts";
 import * as ProviderAdapterRegistry from "../../../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderSessionManager from "../../../../../orchestration-v2/ProviderSessionManager.ts";
@@ -82,6 +83,7 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.mock(Orchestrator.OrchestratorV2)({ ...unusedCorePorts() }),
     Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
     Layer.mock(DeviceService.DeviceService)({}),
+    Layer.mock(FeedbackStore.FeedbackStore)({}),
     Layer.mock(ThreadManagementService.ThreadManagementService)({}),
     Layer.mock(ProviderRegistry.ProviderRegistry)({}),
     Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),

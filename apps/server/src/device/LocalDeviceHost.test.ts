@@ -63,7 +63,13 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   const path = yield* Path.Path;
   const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-agent-start-" });
   yield* seedAndroidSdk(path.join(environment?.HOME ?? baseDir, "Library", "Android", "sdk"));
-  const hub = { running: true, spawnFails: false, cleanup: Effect.void };
+  const hub = {
+    running: true,
+    spawnFails: false,
+    cleanup: Effect.void,
+    spawnedArgs: [] as Array<ReadonlyArray<string>>,
+    spawnedEnvironments: [] as Array<NodeJS.ProcessEnv | undefined>,
+  };
   const daemonStopRequested = yield* Deferred.make<ReadonlyArray<string>>();
   const stateDir = agentDeviceStateDir(path, path.join(baseDir, "userdata"));
   const daemonHealthy = yield* Ref.make(true);

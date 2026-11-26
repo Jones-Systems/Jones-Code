@@ -7,6 +7,12 @@
   },
   "baseline": "36816d26be2d862440d6412d62332a10c4d896ff",
   "paths": {
+    "apps/server/src/workflows/Workflows.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/MermaidDiagram.tsx": "accepted-shared",
+    "scripts/metrics/mobile/cases.ts": "accepted-shared",
+    "scripts/metrics/mobile/mobile-metrics.ts": "accepted-shared",
+    "scripts/metrics/mobile/report.ts": "accepted-shared",
+    "scripts/scenarios/orphan-worktree-cleanup-refreshes-size.e2e.ts": "accepted-shared",
     "apps/web/src/components/CommandPaletteThreadActions.tsx": "accepted-shared",
     "apps/web/src/components/desktopUpdate.logic.test.ts": "jones-tests-in-upstream",
     "apps/server/src/workflows/WorkflowAgentLinks.test.ts": "jones-tests-in-upstream",

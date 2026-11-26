@@ -2142,7 +2142,12 @@ it.effect("an agent step in a linked environment keeps its thread there", () =>
         yield* workflows.cancel(run.runId, "not needed");
         // Only the step's own turn: someone else's turn on that thread is left alone.
         assert.deepStrictEqual(agents.interrupted, [
-          { threadId: "thread-1", environment: "env-b", turnId: `${run.runId}/land/0` },
+          {
+            threadId: "thread-1",
+            environment: "env-b",
+            turnId: `${run.runId}/land/0`,
+            workflowRunId: run.runId,
+          },
         ]);
       }),
     );
@@ -2165,7 +2170,11 @@ it.effect("cancelling a run stops its agent, and a turn a person stopped is not 
         const { steps } = yield* workflows.get(cancelled.runId);
         yield* workflows.cancel(cancelled.runId, "not needed");
         assert.deepStrictEqual(agents.interrupted, [
-          { threadId: steps[0]?.threadId ?? "no thread", turnId: `${cancelled.runId}/write/0` },
+          {
+            threadId: steps[0]?.threadId ?? "no thread",
+            turnId: `${cancelled.runId}/write/0`,
+            workflowRunId: cancelled.runId,
+          },
         ]);
 
         const stopped = yield* workflows.start("fix", { project: "p1" }, { idempotencyKey: "x2" });

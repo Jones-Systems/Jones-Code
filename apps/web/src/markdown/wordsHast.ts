@@ -161,11 +161,22 @@ function tokenize(html: string, offsetOf: (byte: number) => number): Tokenized {
     if (previous?.type === "text") previous.value += value;
     else parent.children.push({ type: "text", value } as Text);
   };
-  for (const match of html.matchAll(TAG)) {
+  const tags = new RegExp(TAG);
+  let match: ReturnType<RegExp["exec"]>;
+  while ((match = tags.exec(html)) !== null) {
     text(match.index);
     last = match.index + match[0].length;
     const tagName = match[2]?.toLowerCase();
     if (!tagName) continue;
+    if (!match[1] && svgDepth === 0 && (tagName === "script" || tagName === "style")) {
+      // These elements are discarded by the sanitizer. Their raw text cannot close an anchor
+      // or open a comment that consumes an actual closing tag outside the element.
+      const close = tagName === "script" ? /<\/script\s*>/gi : /<\/style\s*>/gi;
+      close.lastIndex = last;
+      last = close.exec(html) === null ? html.length : close.lastIndex;
+      tags.lastIndex = last;
+      continue;
+    }
     if (match[1]) {
       if (tagName === "a") anchors.pop();
       if (tagName === "p" && openParagraph(stack) < 0) {

@@ -13,6 +13,8 @@ const state = vi.hoisted(() => ({
   relatedShells: [] as unknown[],
   threadTitles: {} as Record<string, string>,
   archivedThreads: [] as unknown[],
+  connectedEnvironments: new Set<string>(),
+  peerNamesByEnvironment: new Map<string, ReadonlyMap<string, string>>(),
 }));
 
 vi.mock(import("../../state/query"), async (original) => ({
@@ -46,12 +48,16 @@ vi.mock(import("../../state/entities"), async (original) => ({
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
   useEnvironments: (() => ({ environments: [] })) as never,
-  useEnvironment: (() => null) as never,
+  useEnvironment: ((id: string | null) =>
+    id !== null && state.connectedEnvironments.has(id)
+      ? { label: id, connection: { phase: "connected" } }
+      : null) as never,
   useEnvironmentProviders: (() => new Map()) as never,
 }));
-vi.mock(import("../../state/peerLinks"), () => ({
-  peerLinkEnvironment: { readThread: {} } as never,
-  useLinkedEnvironments: (() => new Map()) as never,
+vi.mock(import("../../state/peerLinks"), async (original) => ({
+  ...(await original()),
+  useLinkedEnvironments: ((via: string | null) =>
+    (via === null ? undefined : state.peerNamesByEnvironment.get(via)) ?? new Map()) as never,
 }));
 vi.mock(import("../../lib/archivedThreadsState"), () => ({
   useArchivedThreadSnapshots: (() => ({
@@ -119,6 +125,8 @@ function setup() {
   state.relatedShells = [];
   state.threadTitles = { source: "Source" };
   state.archivedThreads = [];
+  state.connectedEnvironments.clear();
+  state.peerNamesByEnvironment.clear();
   state.projection = {
     thread: {
       id: threadId,
@@ -313,8 +321,11 @@ it("keeps focus on the list when Show more pages reveal the last rows", async ()
     />,
   );
   await screen.getByRole("button", { name: /Previous agents/ }).click();
-  await screen.getByRole("button", { name: "Show 1 more" }).click();
+  const showMore = screen.getByRole("button", { name: "Show 1 more" });
+  await act(() => showMore.element().focus());
+  await userEvent.keyboard("{Enter}");
   await expect.element(screen.getByRole("list", { name: "Related threads" })).toHaveFocus();
+  await expect.element(screen.getByRole("button", { name: /Agent 6/ })).toBeInTheDocument();
 });
 
 it("shows a lineage thread's full title in its tooltip", async () => {
@@ -342,41 +353,52 @@ it("shows a lineage thread's full title in its tooltip", async () => {
   );
 });
 
-it("shows a side chat's full title in its tooltip", async () => {
-  setup();
-  const longTitle = "Side chat question with a title that the side chat row truncates";
-  state.relatedShells = [
-    {
-      id: "side",
-      title: longTitle,
-      lineage: {
-        parentThreadId: threadId,
-        relationshipToParent: "fork",
-        rootThreadId: threadId,
-        sideChat: true,
+it.each([false, true])(
+  "shows one side chat with its full title on hover (Linked: %s)",
+  async (showLineage) => {
+    setup();
+    const longTitle = "Side chat question with a title that the side chat row truncates";
+    state.relatedShells = [
+      {
+        id: "side",
+        title: longTitle,
+        lineage: {
+          parentThreadId: threadId,
+          relationshipToParent: "fork",
+          rootThreadId: threadId,
+          sideChat: true,
+        },
       },
-    },
-  ];
-  await using _screen = await render(
-    <ThreadRelationshipsPanel
-      environmentId={environmentId}
-      threadId={threadId}
-      showLineage={false}
-      showSideChats
-    />,
-  );
+    ];
+    await using screen = await render(
+      <ThreadRelationshipsPanel
+        environmentId={environmentId}
+        threadId={threadId}
+        showLineage={showLineage}
+        showSideChats
+      />,
+    );
 
-  await userEvent.hover(page.getByText(longTitle, { exact: true }));
-  await vi.waitFor(() =>
-    expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(longTitle),
-  );
-});
+    await expect
+      .element(screen.getByRole("button", { name: /^Children\b/ }))
+      .not.toBeInTheDocument();
+    await userEvent.hover(page.getByText(longTitle, { exact: true }));
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(
+        longTitle,
+      ),
+    );
+  },
+);
 
-it("shows a remote subagent's full title in its tooltip even when its environment is unavailable", async () => {
+it("shows the full title and reads a remote subagent through its linked source", async () => {
   setup();
   const longTitle = "Investigate a remote subagent issue across linked environments";
   const remoteEnvId = EnvironmentId.make("remote-env");
   const remoteThreadId = ThreadId.make("remote-thread");
+  const label = "Remote VM with a long machine name in the office";
+  state.connectedEnvironments.add(environmentId);
+  state.peerNamesByEnvironment.set(environmentId, new Map([[remoteEnvId, label]]));
   const now = DateTime.makeUnsafe("2026-10-31T20:00:00.000Z");
   state.projection = {
     ...(state.projection as Record<string, unknown>),
@@ -404,7 +426,7 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
         remoteChild: {
           environmentId: remoteEnvId,
           threadId: remoteThreadId,
-          label: "Remote VM with a long machine name in the office",
+          label,
         },
       },
     ],
@@ -434,17 +456,33 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
   expect(
     page.getByText(longTitle, { exact: true }).element().getBoundingClientRect().width,
   ).toBeGreaterThan(0);
-  // Jones disables an unreachable row and wraps it in the tooltip trigger, which takes the hover.
-  await userEvent.hover(row.element().closest('[data-slot="tooltip-trigger"]')!);
+  await expect.element(row).toBeEnabled();
+  await userEvent.hover(row);
   await vi.waitFor(() =>
     expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(longTitle),
   );
   // This client is not connected there, so the row reads the thread through this environment.
   expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(
-    "Read the thread on Remote VM with a long machine name in the office",
+    `Read the thread on ${label}`,
   );
 
-  await row.click({ force: true });
+  await row.click();
+  const panel = selectThreadRightPanelState(
+    useRightPanelStore.getState().byThreadKey,
+    scopeThreadRef(environmentId, threadId),
+  );
+  expect(panel).toMatchObject({
+    isOpen: true,
+    activeSurfaceId: "linked-thread:environment:remote-env:remote-thread",
+    surfaces: [
+      {
+        kind: "linked-thread",
+        viaEnvironmentId: environmentId,
+        environmentId: remoteEnvId,
+        threadId: remoteThreadId,
+      },
+    ],
+  });
   expect(screen.router?.state.location.pathname).toBe("/environment/fork");
 });
 

@@ -102,6 +102,9 @@ export function ZoomableImage({
   const fit = imageFit({ naturalSize, viewerSize, panelSize, layout, mimeType, maxHeight });
   const width = naturalSize.width * fit * zoom;
   const height = naturalSize.height * fit * zoom;
+  const panelFitPending =
+    layout === "panel" &&
+    (naturalSize.width === 0 || panelSize.width === 0 || panelSize.height === 0);
 
   const changeZoom = (next: number, point?: { x: number; y: number }) => {
     const viewport = viewportRef.current;
@@ -368,14 +371,16 @@ export function ZoomableImage({
               draggable={false}
               className="block max-w-none select-none"
               style={
-                naturalSize.width
-                  ? {
-                      width,
-                      height,
-                      flexShrink: 0,
-                      margin: layout === "panel" ? "auto" : undefined,
-                    }
-                  : { maxWidth: "var(--media-width)", maxHeight }
+                panelFitPending
+                  ? { maxWidth: "100%", maxHeight, visibility: "hidden" }
+                  : naturalSize.width
+                    ? {
+                        width,
+                        height,
+                        flexShrink: 0,
+                        margin: layout === "panel" ? "auto" : undefined,
+                      }
+                    : { maxWidth: "var(--media-width)", maxHeight }
               }
               onLoad={(event) => {
                 setNaturalSize({

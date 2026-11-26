@@ -54,6 +54,21 @@ const decodeMetrics = Schema.decodeUnknownEffect(Schema.fromJsonString(MobileMet
 const encodeMetrics = Schema.encodeEffect(fromJsonStringPretty(MobileMetrics));
 const decodeFloors = Schema.decodeUnknownEffect(Schema.fromJsonString(Floors));
 const encodeFloors = Schema.encodeEffect(fromJsonStringPretty(Floors));
+const MetricsRecord = Schema.Record(Schema.String, Schema.Unknown);
+const metricsRecordJson = Schema.fromJsonString(MetricsRecord);
+const decodeMetricsRecord = Schema.decodeSync(metricsRecordJson);
+const encodeMetricsRecord = Schema.encodeSync(metricsRecordJson);
+const decodeProcessMemory = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      data: Schema.optional(
+        Schema.Struct({
+          metrics: Schema.optional(Schema.Struct({ memory: Schema.optional(MetricsRecord) })),
+        }),
+      ),
+    }),
+  ),
+);
 
 const log = (message: string) => Console.error(`[mobile-metrics] ${message}`);
 
@@ -89,9 +104,7 @@ const processMemory = Effect.fn("mobileMetrics.processMemory")(function* (
   const out = yield* device.run(["perf", "memory", "sample", "--json"]).pipe(Effect.option);
   if (Option.isNone(out)) return null;
   yield* Effect.promise(() => NodeFSP.writeFile(raw, out.value));
-  const memory = (
-    JSON.parse(out.value) as { data?: { metrics?: { memory?: Record<string, unknown> } } }
-  ).data?.metrics?.memory;
+  const memory = decodeProcessMemory(out.value).data?.metrics?.memory;
   if (!memory || memory.available === false) return null;
   const field =
     ["physFootprintKb", "footprintKb", "totalPssKb", "residentMemoryKb", "totalRssKb"].find(
@@ -245,7 +258,12 @@ const measureOnce = Effect.fn("mobileMetrics.measureOnce")(function* (options: M
       yield* Effect.promise(() =>
         NodeFSP.appendFile(
           NodePath.join(options.out, "soak-retention.ndjson"),
-          `${JSON.stringify({ iteration, case: name, heapMB: at.heapMB, ...JSON.parse(retention) })}\n`,
+          `${encodeMetricsRecord({
+            iteration,
+            case: name,
+            heapMB: at.heapMB,
+            ...decodeMetricsRecord(retention),
+          })}\n`,
         ),
       );
     yield* log(`soak ${iteration} ${name}: heap ${at.heapMB} MB, process ${at.processMB} MB`);

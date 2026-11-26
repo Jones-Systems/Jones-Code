@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalJsonInEffect:off - the scenario seeds an 8 MB file and rewrites settings.json as the repro wrote it.
+// @effect-diagnostics nodeBuiltinImport:off - the scenario seeds an 8 MB file.
 import * as NodeCrypto from "node:crypto";
 import { expect } from "e2e";
 import * as Effect from "effect/Effect";
@@ -9,9 +9,9 @@ import { T3_HOME } from "../e2e.config.ts";
 import { run } from "./shell.ts";
 import { runPromise, test, WEB } from "./t3.ts";
 
-const decodeSettings = Schema.decodeSync(
-  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
-);
+const settingsJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
+const decodeSettings = Schema.decodeSync(settingsJson);
+const encodeSettings = Schema.encodeSync(settingsJson);
 
 test(
   "Cleanup updates the displayed size of a kept worktree",
@@ -40,7 +40,7 @@ test(
               : {};
           yield* fs.writeFileString(
             settingsPath,
-            JSON.stringify({
+            encodeSettings({
               ...settings,
               storageCleanup: { ...storageCleanup, worktreeOnDelete: true },
             }),

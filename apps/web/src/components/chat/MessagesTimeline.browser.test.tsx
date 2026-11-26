@@ -2472,6 +2472,9 @@ describe("MessagesTimeline thread find", () => {
 
   it("reveals a match in a nested table clipped by the outer table", async () => {
     setup();
+    // Keep the diagnostic columns unwrapped so the inner cell starts past the clip edge.
+    __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, wordWrap: false });
+    onTestFinished(() => __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS));
     const columns = Array.from({ length: 12 }, (_, index) => `<td>DiagnosticsColumn${index}</td>`);
     const entry = message(
       `<table><tbody><tr>${columns.join("")}<td><table><tbody><tr><td>needle</td></tr></tbody></table></td></tr></tbody></table>`,
@@ -2486,16 +2489,17 @@ describe("MessagesTimeline thread find", () => {
       findQuery: "needle",
     };
     await using screen = await renderElement(<MessagesTimeline {...props} />);
-    const outerViewport = await vi.waitFor(() => {
-      const viewport = screen.container.querySelector(
+    const { outerViewport, nestedCell } = await vi.waitFor(() => {
+      const viewport = screen.container.querySelector<HTMLElement>(
         '.chat-markdown-table-container [data-slot="scroll-area-viewport"]',
       );
       const nestedCell = viewport?.querySelector("table table td");
-      expect(nestedCell?.textContent).toBe("needle");
-      expect(nestedCell!.getBoundingClientRect().left).toBeGreaterThan(
-        viewport!.getBoundingClientRect().right,
+      if (!viewport || !nestedCell) throw new Error("Missing nested table fixture");
+      expect(nestedCell.textContent).toBe("needle");
+      expect(nestedCell.getBoundingClientRect().left).toBeGreaterThan(
+        viewport.getBoundingClientRect().right,
       );
-      return viewport!;
+      return { outerViewport: viewport, nestedCell };
     });
 
     await screen.rerender(
@@ -2508,6 +2512,8 @@ describe("MessagesTimeline thread find", () => {
     await vi.waitFor(() => {
       const [match] = CSS.highlights.get("t3-thread-find-active") ?? [];
       if (!(match instanceof Range)) throw new Error("Missing active match range");
+      expect(match.startContainer.parentElement?.closest("td")).toBe(nestedCell);
+      expect(outerViewport.scrollLeft).toBeGreaterThan(0);
       const bounds = match.getBoundingClientRect();
       const clip = outerViewport.getBoundingClientRect();
       expect(bounds.left).toBeGreaterThanOrEqual(clip.left - 1);
@@ -3483,7 +3489,11 @@ describe("MessagesTimeline subagents", () => {
       if (result?.trim() && result !== preview) expect(text()).not.toContain(result);
       if (progress && progress !== preview) expect(text()).not.toContain(progress);
       await click(children()[0]!);
-      expect(onOpenThread).toHaveBeenCalledWith("thread-subagent-1");
+      expect(onOpenThread).toHaveBeenCalledExactlyOnceWith(
+        "thread-subagent-1",
+        undefined,
+        "primary",
+      );
       if (count > 1) {
         await click(button(`${count} subagents`));
         await vi.waitFor(() => expect(children()).toHaveLength(0));

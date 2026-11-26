@@ -2,6 +2,7 @@ import { defineRule, type ESTree } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
 import { getPropertyName, unwrapExpression } from "../utils.ts";
+import { matchJonesLegacyCopy } from "./jones-untranslated-copy-baseline.ts";
 
 const MESSAGE =
   "Untranslated copy. Wrap JSX text in <T>, props in gt(), and strings outside React in m(msg()). See docs/internals/14_i18n.md.";
@@ -361,7 +362,10 @@ export default defineRule({
     },
   },
   create(context) {
-    const report = (node: ESTree.Node) => context.report({ node, message: MESSAGE });
+    const isLegacyCopy = matchJonesLegacyCopy(context);
+    const report = (node: ESTree.Node) => {
+      if (!isLegacyCopy?.(node)) context.report({ node, message: MESSAGE });
+    };
     const reportLeaves = (expression: unknown) => {
       for (const leaf of literalLeaves(expression)) report(leaf);
     };

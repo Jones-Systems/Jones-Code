@@ -11,7 +11,7 @@ import * as Schema from "effect/Schema";
 
 import type { AxNode, Device, ProbeState } from "../../mobile-behavior/device.ts";
 import type { Session } from "../../mobile-behavior/session.ts";
-import { stepOf, type PerfWindow, type Step } from "./report.ts";
+import { PerfWindow, stepOf, type Step } from "./report.ts";
 
 export class CaseFailure extends Schema.TaggedError<CaseFailure>()("CaseFailure", {
   message: Schema.String,
@@ -49,6 +49,7 @@ const Peek = Schema.fromJsonString(
   }),
 );
 const decodePeek = Schema.decodeUnknownEffect(Peek);
+const decodeWindow = Schema.decodeSync(Schema.fromJsonString(PerfWindow));
 
 /** Runs `act` inside a probe window and returns what it measured. */
 const measure = Effect.fn("metrics.measure")(function* (
@@ -78,9 +79,7 @@ const measure = Effect.fn("metrics.measure")(function* (
     }
     yield* Effect.sleep("250 millis");
   }
-  const window = JSON.parse(
-    String(yield* device.evaluate("__t3Behavior.perfStop()")),
-  ) as PerfWindow;
+  const window = decodeWindow(String(yield* device.evaluate("__t3Behavior.perfStop()")));
   if (acted._tag === "Failure")
     return yield* new CaseFailure({
       message: `${step.case} ${step.step}: ${acted.failure.message}`,

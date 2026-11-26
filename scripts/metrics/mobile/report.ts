@@ -6,26 +6,32 @@ import { frameStats } from "../../mobile-behavior/grade.ts";
 import { MachineState, median, percentile, round, slope, topCounts } from "../core/report.ts";
 
 /** One perf window as the probe's `perfStop` returns it (see behavior-probe.ts). */
-export interface PerfWindow {
-  readonly startedAt: number;
-  readonly inputs: ReadonlyArray<{ readonly kind: string; readonly at: number }>;
-  readonly commits: ReadonlyArray<{ readonly at: number; readonly ms: number }>;
-  readonly content: ReadonlyArray<{
-    readonly thread: string;
-    readonly at: number;
-    readonly frameAt: number | null;
-  }>;
-  readonly keys: ReadonlyArray<number>;
-  readonly js: ReadonlyArray<number>;
-  readonly ui: ReadonlyArray<number>;
-  readonly renders: {
-    readonly commits: number;
-    readonly totalRenders: number;
-    readonly components: ReadonlyArray<{ readonly key: string; readonly count: number }>;
-    readonly causes: ReadonlyArray<{ readonly key: string; readonly count: number }>;
-  } | null;
-  readonly heapBytes: number | null;
-}
+const RenderCount = Schema.Struct({ key: Schema.String, count: Schema.Number });
+export const PerfWindow = Schema.Struct({
+  startedAt: Schema.Number,
+  inputs: Schema.Array(Schema.Struct({ kind: Schema.String, at: Schema.Number })),
+  commits: Schema.Array(Schema.Struct({ at: Schema.Number, ms: Schema.Number })),
+  content: Schema.Array(
+    Schema.Struct({
+      thread: Schema.String,
+      at: Schema.Number,
+      frameAt: Schema.NullOr(Schema.Number),
+    }),
+  ),
+  keys: Schema.Array(Schema.Number),
+  js: Schema.Array(Schema.Number),
+  ui: Schema.Array(Schema.Number),
+  renders: Schema.NullOr(
+    Schema.Struct({
+      commits: Schema.Number,
+      totalRenders: Schema.Number,
+      components: Schema.Array(RenderCount),
+      causes: Schema.Array(RenderCount),
+    }),
+  ),
+  heapBytes: Schema.NullOr(Schema.Number),
+});
+export type PerfWindow = typeof PerfWindow.Type;
 
 const Count = Schema.Struct({ name: Schema.String, count: Schema.Number });
 const Renders = Schema.Struct({
