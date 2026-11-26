@@ -678,7 +678,7 @@ describe("a host that follows its laptop", () => {
     expect(buttonNamed(container, "Install").disabled).toBe(false);
     expect(container.textContent).not.toContain("Follows its laptop");
     await act(async () => buttonNamed(container, "Details").click());
-    expect(container.textContent).toContain("Follows its laptop · takes only source 0368cbb");
+    expect(container.textContent).toContain("Follows its laptop · last reported source 0368cbb");
 
     await screen.rerender(statusUi({ state: staged(offeredSha, installedSha) }));
     expect(buttonNamed(container, "Install").disabled).toBe(true);
