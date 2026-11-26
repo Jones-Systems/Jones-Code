@@ -10,6 +10,7 @@ import * as Controls from "../../orchestration-v2/ProviderTurnControlService.ts"
 import * as Projections from "../../orchestration-v2/ProjectionStore.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
+import * as McpAppModelContext from "../../mcpApps/McpAppModelContext.ts";
 import * as SupersededTerminalTrace from "../orchestration/SupersededTerminalTrace.ts";
 import { workModeFixture } from "../workMode/Fixtures.testkit.ts";
 import {
@@ -109,7 +110,13 @@ it.effect.each(["stopped", "missing-target", "unknown-native-outcome"] as const)
             messageId: message.id,
           })
           .pipe(Effect.flip);
-      }).pipe(Effect.provide(Controls.layer.pipe(Layer.provide([projections, sessions, sink]))));
+      }).pipe(
+        Effect.provide(
+          Controls.layer.pipe(
+            Layer.provide([projections, sessions, sink, McpAppModelContext.layerEmpty]),
+          ),
+        ),
+      );
       expect(nativeCalls).toBe(scenario === "unknown-native-outcome" ? 1 : 0);
       expect(
         scenario === "unknown-native-outcome"

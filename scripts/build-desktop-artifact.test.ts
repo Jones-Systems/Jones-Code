@@ -42,6 +42,7 @@ import {
   createStageWorkspaceConfig,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
+  MAC_APPLE_SPEECH_EXTRA_RESOURCES,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   UnsupportedDesktopBuildArchitectureError,
@@ -854,7 +855,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       });
       assert.deepStrictEqual(planned.patchedDependencies, {
         "node-pty@1.2.0-beta.15": "patches/node-pty@1.2.0-beta.15.patch",
-        "@cursor/sdk@1.3.1": "patches/@cursor__sdk@1.3.1.patch",
+        "@cursor/sdk@1.5.0": "patches/@cursor__sdk@1.5.0.patch",
         "@ff-labs/fff-node@0.11.0": "patches/@ff-labs__fff-node@0.11.0.patch",
       });
       for (const [name, spec] of Object.entries(input.desktopDependencies)) {
@@ -1087,7 +1088,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "arm64",
           variant,
         );
-        assert.deepStrictEqual(config.extraResources, DESKTOP_EXTRA_RESOURCES);
+        assert.deepStrictEqual(config.extraResources, [
+          ...DESKTOP_EXTRA_RESOURCES,
+          ...MAC_APPLE_SPEECH_EXTRA_RESOURCES,
+        ]);
         assert.equal(
           config.afterPack,
           path.join(repoRoot, "scripts/prepare-server-compile-cache.cjs"),

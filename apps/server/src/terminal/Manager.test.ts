@@ -1104,6 +1104,13 @@ it.layer(
           worktreePath: control.worktreePath,
         });
         const order: string[] = [];
+        const startupOutput = yield* Deferred.make<number | undefined>();
+        const stop = yield* manager.subscribe((event) =>
+          event.type === "output" && event.data === "setup ready\n"
+            ? Deferred.succeed(startupOutput, event.sequence).pipe(Effect.asVoid)
+            : Effect.void,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(stop));
         const opened = yield* manager.openNativeSetup!(input, {
           control,
           beforeSpawn: (plan) =>
@@ -1118,9 +1125,16 @@ it.layer(
               assert.lengthOf(ptyAdapter.spawnInputs, 1);
               assert.equal(proof.pid, ptyAdapter.processes[0]!.pid);
               order.push("spawn-proof");
-            }),
+              ptyAdapter.processes[0]!.emitData("setup ready\n");
+            }).pipe(Effect.andThen(Deferred.await(startupOutput)), Effect.asVoid),
         });
-        assert.equal(opened.terminalId, control.terminalId);
+        expect(opened).toMatchObject({
+          terminalId: control.terminalId,
+          status: "running",
+          history: "setup ready\n",
+          sequence: expect.any(Number),
+        });
+        expect(opened.sequence).toBe(yield* Deferred.await(startupOutput));
         yield* manager.writeNativeSetup!(
           {
             threadId: control.threadId,
@@ -2243,6 +2257,26 @@ it.layer(
         expectedPid: original.pid,
       };
       yield* manager.write(pasteChunk);
+
+      const publishing = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const stop = yield* manager.subscribe((event) =>
+        event.type === "output"
+          ? Deferred.succeed(publishing, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() =>
+        Deferred.succeed(release, undefined).pipe(Effect.andThen(Effect.sync(stop))),
+      );
+      const process = ptyAdapter.processes[0]!;
+      process.emitData("output before exit");
+      yield* Deferred.await(publishing);
+      process.emitExit({ exitCode: 0, signal: 0 });
+      expect(yield* manager.write(pasteChunk).pipe(Effect.flip)).toMatchObject({
+        _tag: "TerminalProcessChangedError",
+      });
+      yield* Deferred.succeed(release, undefined);
+
       yield* manager.close({ threadId: input.threadId, terminalId: original.terminalId });
       expect(yield* manager.write(pasteChunk).pipe(Effect.flip)).toMatchObject({
         _tag: "TerminalProcessChangedError",
@@ -2977,6 +3011,43 @@ it.layer(
       yield* manager.clear({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID });
 
       expect((yield* getEvents).map((event) => event.type)).toContain("cleared");
+    }),
+  );
+
+  it.effect("keeps in-flight output out of an attached stream after clear", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      const input = openInput();
+      const publishing = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const delivered = yield* Deferred.make<void>();
+      const stopBlocking = yield* manager.subscribe((event) =>
+        event.type === "output" && event.data === "before clear\n"
+          ? Deferred.succeed(publishing, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() =>
+        Deferred.succeed(release, undefined).pipe(Effect.andThen(Effect.sync(stopBlocking))),
+      );
+      const events: TerminalAttachStreamEvent[] = [];
+      const stop = yield* manager.attachStream(input, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+          if (event.type === "output" && event.data === "after clear\n")
+            Deferred.doneUnsafe(delivered, Effect.void);
+        }),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(stop));
+      const process = ptyAdapter.processes[0]!;
+      process.emitData("before clear\n");
+      yield* Deferred.await(publishing);
+      yield* manager.clear(input);
+      process.emitData("after clear\n");
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.await(delivered);
+
+      expect(events.map((event) => event.type)).toEqual(["snapshot", "cleared", "output"]);
+      expect((yield* manager.open(input)).history).toBe("after clear\n");
     }),
   );
 

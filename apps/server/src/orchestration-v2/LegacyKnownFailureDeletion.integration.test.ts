@@ -641,7 +641,22 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     : -1,
                   failed.sequence,
                 );
-                assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+                assert.deepEqual(
+                  (yield* outbox.listByCommandId(commandId)).map(
+                    ({ request, status, threadId }) => ({
+                      request,
+                      status,
+                      threadId,
+                    }),
+                  ),
+                  [
+                    {
+                      request: { type: "thread-content.purge" },
+                      status: "pending",
+                      threadId,
+                    },
+                  ],
+                );
                 const publicEvents = deletionEvents.map((event) =>
                   projectDomainEventForWire(event.event),
                 );

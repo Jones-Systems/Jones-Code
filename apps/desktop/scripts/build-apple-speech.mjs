@@ -9,6 +9,34 @@ const hostArch = process.arch;
 // oxlint-disable-next-line t3code/no-global-process-runtime -- The Speech framework exists only in the macOS SDK.
 const hostPlatform = process.platform;
 
+function resolveCompilerEnvironment() {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Keep the compiler override local to these subprocesses.
+  const environment = process.env;
+  const hasSpeechSdk = (env) => {
+    const probe = NodeChildProcess.spawnSync("xcrun", ["--sdk", "macosx", "--show-sdk-version"], {
+      env,
+      encoding: "utf8",
+    });
+    return probe.status === 0 && Number.parseInt(probe.stdout, 10) >= 26;
+  };
+  if (hasSpeechSdk(environment)) return environment;
+  // Honor an explicit override. Some hosted images default to Xcode 16 while also shipping Xcode 26.
+  if (environment.DEVELOPER_DIR) return undefined;
+  const applications = "/Applications";
+  if (!NodeFS.existsSync(applications)) return undefined;
+  const installedXcodes = NodeFS.readdirSync(applications)
+    .filter((name) => /^Xcode(?:[_.-].+)?\.app$/.test(name))
+    .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
+  for (const app of installedXcodes) {
+    const env = {
+      ...environment,
+      DEVELOPER_DIR: NodePath.join(applications, app, "Contents", "Developer"),
+    };
+    if (hasSpeechSdk(env)) return env;
+  }
+  return undefined;
+}
+
 const { values } = NodeUtil.parseArgs({
   options: { output: { type: "string" }, arch: { type: "string", default: hostArch } },
 });
@@ -37,6 +65,15 @@ if (hostPlatform !== "darwin") {
       );
   } catch {}
   if (!current) {
+    const env = resolveCompilerEnvironment();
+    if (!env) {
+      const message =
+        "Building the Apple Speech helper requires the macOS 26 SDK (Xcode 26 or later).";
+      if (required) throw new Error(message);
+      console.warn(`${message} On-device Mac dictation is unavailable in this build.`);
+      // oxlint-disable-next-line t3code/no-global-process-runtime -- This optional build step has no Effect runtime.
+      process.exit(0);
+    }
     NodeFS.mkdirSync(NodePath.dirname(output), { recursive: true });
     const temporary = `${output}.${process.pid}.tmp`;
     const slices = targets.map((target) => `${temporary}.${target}`);
@@ -45,6 +82,8 @@ if (hostPlatform !== "darwin") {
         NodeChildProcess.execFileSync(
           "xcrun",
           [
+            "--sdk",
+            "macosx",
             "swiftc",
             "-O",
             "-swift-version",
@@ -56,18 +95,18 @@ if (hostPlatform !== "darwin") {
             "-o",
             slices[index],
           ],
-          { stdio: "inherit" },
+          { env, stdio: "inherit" },
         ),
       );
       NodeChildProcess.execFileSync("xcrun", ["lipo", "-create", ...slices, "-output", temporary], {
+        env,
         stdio: "inherit",
       });
       NodeFS.renameSync(temporary, output);
     } catch (cause) {
-      if (required)
-        throw new Error("Building the Apple Speech helper requires Xcode 26 or later.", { cause });
+      if (required) throw new Error("Failed to compile the Apple Speech helper.", { cause });
       console.warn(
-        "Skipping the Apple Speech helper (needs Xcode 26 or later); on-device Mac dictation is unavailable in this build.",
+        "Skipping the Apple Speech helper after a compiler failure; on-device Mac dictation is unavailable in this build.",
       );
     } finally {
       for (const file of [temporary, ...slices]) NodeFS.rmSync(file, { force: true });

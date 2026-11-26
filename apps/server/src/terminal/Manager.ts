@@ -671,10 +671,10 @@ function cleanupProcessHandles(session: TerminalSessionState): void {
 
 function enqueueProcessEvent(
   session: TerminalSessionState,
-  expectedPid: number,
+  process: PtyAdapter.PtyProcess,
   event: PendingProcessEvent,
 ): boolean {
-  if (!session.process || session.status !== "running" || session.pid !== expectedPid) {
+  if (session.process !== process || session.status !== "running") {
     return false;
   }
 
@@ -2314,6 +2314,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const clock = yield* Clock.Clock;
   const pasteIdleMillis = 15_000;
   const pasteEndOverlap = TERMINAL_BRACKETED_PASTE_END.length - 1;
+  const exitedProcesses = new WeakSet<PtyAdapter.PtyProcess>();
   const activePastes = new WeakMap<
     PtyAdapter.PtyProcess,
     {
@@ -2334,9 +2335,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   };
 
   const publishEvent =
-    /* Provider events include streaming deltas; avoid a span for each update. */
-    Effect.fnUntraced(function* (event: TerminalEvent) {
+    /* Output arrives in chunks. Avoid a span for each one. */
+    Effect.fnUntraced(function* (event: TerminalEvent, isCurrent?: () => boolean) {
       for (const listener of terminalEventListeners) {
+        if (isCurrent?.() === false) return;
         yield* listener(event).pipe(Effect.ignoreCause({ log: true }));
       }
     });
@@ -2554,6 +2556,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     // Subscribe before SIGTERM to catch immediate exits; Effect.ensuring releases even on interruption, unlike JS finally.
     const exited = Deferred.makeUnsafe<void>();
     const unsubscribeExit = process.onExit(() => {
+      exitedProcesses.add(process);
       Deferred.doneUnsafe(exited, Effect.void);
     });
     yield* Effect.gen(function* () {
@@ -2561,6 +2564,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       // Windows ignores the signal and node-pty kills the whole tree there.
       if (platform !== "win32") {
         yield* Effect.sync(() => {
+          if (exitedProcesses.has(process)) return;
           try {
             process.kill("SIGHUP");
           } catch {
@@ -2569,7 +2573,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         });
       }
       const terminated = yield* Effect.try({
-        try: () => process.kill("SIGTERM"),
+        try: () => {
+          if (exitedProcesses.has(process)) return false;
+          process.kill("SIGTERM");
+          return true;
+        },
         catch: (cause) =>
           new TerminalProcessSignalError({
             cause,
@@ -2577,7 +2585,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             terminalPid: process.pid,
           }),
       }).pipe(
-        Effect.as(true),
         Effect.catch((error) =>
           Effect.logWarning("failed to kill terminal process", {
             threadId,
@@ -2603,7 +2610,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }
 
       yield* Effect.try({
-        try: () => process.kill("SIGKILL"),
+        try: () => {
+          if (!exitedProcesses.has(process)) process.kill("SIGKILL");
+        },
         catch: (cause) =>
           new TerminalProcessSignalError({
             cause,
@@ -2934,14 +2943,12 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   const drainProcessEvents = Effect.fn("terminal.drainProcessEvents")(function* (
     session: TerminalSessionState,
-    expectedPid: number,
+    process: PtyAdapter.PtyProcess,
   ) {
     while (true) {
       const action: DrainProcessEventAction = yield* Effect.sync(() => {
-        if (session.pid !== expectedPid || !session.process || session.status !== "running") {
-          session.pendingProcessEvents = [];
-          session.pendingProcessEventIndex = 0;
-          session.processEventDrainRunning = false;
+        // A replaced PTY may still be finishing fanout. Its drain does not own the new queue.
+        if (session.process !== process || session.status !== "running") {
           return { type: "idle" } as const;
         }
 
@@ -2983,7 +2990,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           } as const;
         }
 
-        const process = session.process;
         // Observed exit ends this logical start, without retiring its possible
         // detached writers. A later explicit open gets an independent journal use.
         terminalStartIds.set(session, NodeCrypto.randomUUID());
@@ -3026,13 +3032,16 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           yield* queuePersist(action.threadId, action.terminalId, action.history);
         }
 
-        yield* publishEvent({
-          type: "output",
-          threadId: action.threadId,
-          terminalId: action.terminalId,
-          sequence: action.sequence,
-          data: action.data,
-        });
+        yield* publishEvent(
+          {
+            type: "output",
+            threadId: action.threadId,
+            terminalId: action.terminalId,
+            sequence: action.sequence,
+            data: action.data,
+          },
+          () => session.process === process,
+        );
         continue;
       }
 
@@ -3139,6 +3148,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         shellCandidates,
         spawnEnv,
         session,
+        beforeSpawn,
         index + 1,
         Result.isFailure(lookup)
           ? lookup.failure
@@ -3158,13 +3168,15 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             spawnEnv,
           )
         : { env: spawnEnv, tracker: undefined };
-    const launch = yield* agentScope.wrap({
-      command: candidate.shell,
-      args: candidate.args ?? [],
-      name: "terminal",
-      env: prompt.env,
-      survivesRestart: true,
-    });
+    const launch = yield* agentScope
+      .wrap({
+        command: lookup.success,
+        args: candidate.args ?? [],
+        name: "terminal",
+        env: prompt.env,
+        survivesRestart: true,
+      })
+      .pipe(withShellPreparationTimeout);
     const attempt = yield* Effect.result(
       beforeSpawn.pipe(
         Effect.andThen(
@@ -3521,7 +3533,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               sequence: session.eventSequence,
             };
             yield* modifyManagerState((state) => {
-              session.shellName = normalizeChildCommandName(spawnResult.shellLabel, platform);
+              session.shellName = normalizeChildCommandName(spawnResult.shell, platform);
               session.process = ptyProcess;
               session.shell = spawnResult.shell;
               session.pid = processPid;
@@ -3537,22 +3549,29 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               }
               // onExit may replay an exit immediately; accept it before subscribing.
               session.unsubscribeData = spawnResult.process.onData((raw) => {
+                if (
+                  session.process !== spawnResult.process ||
+                  exitedProcesses.has(spawnResult.process)
+                )
+                  return;
                 const data = session.idlePrompt?.output(raw) ?? raw;
                 if (data.length === 0) return;
-                if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
+                if (!enqueueProcessEvent(session, spawnResult.process, { type: "output", data })) {
                   return;
                 }
-                if (eventsActivated) runFork(drainProcessEvents(session, processPid));
+                if (eventsActivated) runFork(drainProcessEvents(session, spawnResult.process));
               });
               session.unsubscribeExit = spawnResult.process.onExit((event) => {
+                exitedProcesses.add(spawnResult.process);
+                releasePaste(spawnResult.process);
                 if (session.nativeSetupProcess === spawnResult.process)
                   session.nativeSetupExitObserved = true;
                 if (session.legacyOwnedProcess === spawnResult.process)
                   session.legacyExitObserved = true;
-                if (!enqueueProcessEvent(session, processPid, { type: "exit", event })) {
+                if (!enqueueProcessEvent(session, spawnResult.process, { type: "exit", event })) {
                   return;
                 }
-                if (eventsActivated) runFork(drainProcessEvents(session, processPid));
+                if (eventsActivated) runFork(drainProcessEvents(session, spawnResult.process));
               });
               eventStamp = advanceEventSequence(session);
               return [undefined, state] as const;
@@ -3567,7 +3586,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             });
             // Publish startup before draining any events replayed during subscription.
             eventsActivated = true;
-            if (session.processEventDrainRunning) runFork(drainProcessEvents(session, processPid));
+            if (session.processEventDrainRunning)
+              runFork(drainProcessEvents(session, spawnResult.process));
             if (nativeSetup !== undefined && chosenShell !== undefined)
               yield* nativeSetup
                 .afterSpawn({
@@ -3811,6 +3831,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   let quietSessions = new WeakMap<TerminalSessionState, QuietTerminalSession>();
   let skippedQuietTicks = 0;
+  // A slower base poll already gives steady commands their observation backoff.
+  const steadySnapshotEveryTicks = Math.max(
+    1,
+    Math.min(
+      STEADY_SUBPROCESS_SNAPSHOT_EVERY_TICKS,
+      Math.floor(
+        (STEADY_SUBPROCESS_SNAPSHOT_EVERY_TICKS * DEFAULT_SUBPROCESS_POLL_INTERVAL_MS) /
+          subprocessPollIntervalMs,
+      ),
+    ),
+  );
   const quietSnapshotEveryTicks = (session: TerminalSessionState & { pid: number }) => {
     const quiet = quietSessions.get(session);
     if (
@@ -3823,7 +3854,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     }
     return quiet.processKey === null
       ? QUIET_SUBPROCESS_SNAPSHOT_EVERY_TICKS
-      : STEADY_SUBPROCESS_SNAPSHOT_EVERY_TICKS;
+      : steadySnapshotEveryTicks;
   };
 
   const pollSubprocessActivity = Effect.fn("terminal.pollSubprocessActivity")(function* () {
@@ -4054,6 +4085,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     requestedInput: TerminalOpenInput,
     legacy?: LegacyTerminalPreparationHooks,
     nativeSetup?: NativeSetup.NativeSetupTerminalHooks,
+    supportsSnapshotSequenceState = false,
   ) {
     const terminalId = requestedInput.terminalId;
 
@@ -4155,22 +4187,25 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         sessions.set(sessionKey, createdSession);
         closedSessionKeys.delete(sessionKey);
         return [undefined, { ...state, sessions }] as const;
-      });
-
-      yield* evictInactiveSessionsIfNeeded();
-      yield* startSessionEffect(
-        session,
-        {
-          cwd: input.cwd,
-          ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
-          cols,
-          rows,
-        },
-        "started",
-        legacy,
-        nativeSetup,
+      }).pipe(
+        Effect.andThen(() => evictInactiveSessionsIfNeeded()),
+        Effect.andThen(() =>
+          startSessionEffect(
+            session,
+            {
+              cwd: input.cwd,
+              ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
+              cols,
+              rows,
+            },
+            "started",
+            legacy,
+            nativeSetup,
+          ),
+        ),
+        Effect.uninterruptible,
       );
-      return session;
+      return snapshot(session, supportsSnapshotSequenceState);
     }
 
     const liveSession = existing.value;
@@ -4228,14 +4263,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         },
         "started",
       );
-      return liveSession;
-    }
-
-    if (liveSession.cols !== targetCols || liveSession.rows !== targetRows) {
+    } else if (liveSession.cols !== targetCols || liveSession.rows !== targetRows) {
       yield* resizeSession(liveSession, liveSession.process, targetCols, targetRows);
     }
 
-    return liveSession;
+    return snapshot(liveSession, supportsSnapshotSequenceState);
   });
 
   function openWithWorkspaceLease(
@@ -4259,8 +4291,12 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     TerminalSessionSnapshot,
     TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
   > {
-    return openWithWorkspaceLeaseEffect(input, legacy).pipe(
-      Effect.map((session) => snapshot(session, supportsSnapshotSequenceState)),
+    return openWithWorkspaceLeaseEffect(
+      input,
+      legacy,
+      undefined,
+      supportsSnapshotSequenceState,
+    ).pipe(
       Effect.mapError((cause) =>
         isNativeSetupNativeSetupControlError(cause)
           ? new LegacyTerminalControlError({
@@ -4445,19 +4481,19 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             return Effect.void;
           }
 
-          // Fanout can finish after a snapshot that already includes the event.
-          // Keep only its sequence, not its history, until the session changes.
-          if (snapshotFloor !== null) {
-            if (
-              event.type === "started" ||
-              event.type === "restarted" ||
-              event.type === "error" ||
-              event.type === "closed"
-            ) {
-              snapshotFloor = null;
-            } else if (typeof event.sequence === "number" && event.sequence <= snapshotFloor) {
-              return Effect.void;
-            }
+          // A snapshot or clear can overtake output while another listener is stalled.
+          if (event.type === "started" || event.type === "restarted") {
+            snapshotFloor = event.snapshot.sequence ?? null;
+          } else if (event.type === "closed" || event.type === "error") {
+            snapshotFloor = null;
+          } else if (
+            snapshotFloor !== null &&
+            typeof event.sequence === "number" &&
+            event.sequence <= snapshotFloor
+          ) {
+            return Effect.void;
+          } else if (event.type === "cleared") {
+            snapshotFloor = event.sequence ?? snapshotFloor;
           }
 
           const attachEvent = terminalEventToAttachEvent(event);
@@ -4718,14 +4754,16 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     if (session.nativeSetupControl !== undefined)
       return yield* new TerminalSessionLookupError({ threadId: input.threadId, terminalId });
     const process = session.process;
+    const exited =
+      session.status === "exited" || (process !== null && exitedProcesses.has(process));
     if (
       input.expectedPid !== undefined &&
-      (process?.pid !== input.expectedPid || session.status !== "running")
+      (process?.pid !== input.expectedPid || session.status !== "running" || exited)
     ) {
       return yield* new TerminalProcessChangedError();
     }
+    if (exited) return;
     if (!process || session.status !== "running") {
-      if (session.status === "exited") return;
       return yield* new TerminalNotRunningError({
         threadId: input.threadId,
         terminalId,
@@ -4734,7 +4772,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     if (input.reply && !acceptsQueryReply(toSessionKey(input.threadId, terminalId), viewerId)) {
       return;
     }
-    const isCurrent = () => session.process === process && session.status === "running";
+    const isCurrent = () =>
+      session.process === process && session.status === "running" && !exitedProcesses.has(process);
     const inactiveError = () =>
       input.expectedPid === undefined
         ? new TerminalNotRunningError({ threadId: input.threadId, terminalId })
@@ -4750,14 +4789,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       session.idlePrompt?.input();
       session.inputCount += 1;
     };
-    const writeSplitData = (data: string) =>
-      Effect.try({
-        try: () => {
-          noteInput();
-          process.write(PtyAdapter.ptyInput(data, undefined));
-        },
-        catch: writeError,
-      });
+    const writeSplitData = (data: string) => {
+      noteInput();
+      process.write(PtyAdapter.ptyInput(data, undefined));
+    };
     if (
       phase &&
       (viewerId === undefined || input.binary || input.reply || (bracketed && input.plainWrite))
@@ -4778,13 +4813,16 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         return yield* writeError("Missing end of bracketed paste");
       }
       paste.lastWrite = clock.currentTimeMillisUnsafe();
+      try {
+        if (phase !== "abort" || bracketed) {
+          writeSplitData(phase === "abort" ? TERMINAL_BRACKETED_PASTE_END : input.data);
+        }
+      } catch (cause) {
+        return yield* writeError(cause);
+      }
       if (phase === "continue") {
-        yield* writeSplitData(input.data);
         paste.trailingData = (paste.trailingData + input.data).slice(-pasteEndOverlap);
         return;
-      }
-      if (phase !== "abort" || bracketed) {
-        yield* writeSplitData(phase === "abort" ? TERMINAL_BRACKETED_PASTE_END : input.data);
       }
       return releasePaste(process);
     }
@@ -4801,33 +4839,44 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         active = activePastes.get(process);
       }
     });
-    yield* awaitInputTurn;
     if (phase === "start" && viewerId !== undefined) {
       if (bracketed && !input.data.startsWith(TERMINAL_BRACKETED_PASTE_START)) {
         return yield* writeError("Missing start of bracketed paste");
       }
-      const paste = {
-        owner: viewerId,
-        bracketed,
-        finished: Deferred.makeUnsafe<void>(),
-        lastWrite: clock.currentTimeMillisUnsafe(),
-        trailingData: input.data.slice(-pasteEndOverlap),
-      };
-      // Close a disconnected sender's bracket on the captured PTY before releasing pending input.
-      yield* Effect.uninterruptible(
+      const tryStart = Effect.uninterruptible(
         Effect.gen(function* () {
-          yield* writeSplitData(input.data);
+          if (!isCurrent()) return yield* inactiveError();
+          if (activePastes.has(process)) return false;
+          // Reserve the PTY in the same turn as the first successful write.
+          try {
+            writeSplitData(input.data);
+          } catch (cause) {
+            return yield* writeError(cause);
+          }
+          if (!isCurrent()) return yield* inactiveError();
+          const paste = {
+            owner: viewerId,
+            bracketed,
+            finished: Deferred.makeUnsafe<void>(),
+            lastWrite: clock.currentTimeMillisUnsafe(),
+            trailingData: input.data.slice(-pasteEndOverlap),
+          };
           activePastes.set(process, paste);
+          // Close a disconnected sender's bracket on the captured PTY before releasing pending input.
           yield* Effect.gen(function* () {
             while (activePastes.get(process) === paste && isCurrent()) {
               const remaining = paste.lastWrite + pasteIdleMillis - clock.currentTimeMillisUnsafe();
               if (remaining <= 0) {
-                if (bracketed) {
-                  yield* writeSplitData(TERMINAL_BRACKETED_PASTE_END).pipe(
+                try {
+                  if (bracketed) writeSplitData(TERMINAL_BRACKETED_PASTE_END);
+                } catch (cause) {
+                  releasePaste(process);
+                  return yield* Effect.fail(writeError(cause)).pipe(
                     Effect.ignoreCause({ log: true }),
                   );
                 }
-                break;
+                releasePaste(process);
+                return;
               }
               const finished = yield* Deferred.await(paste.finished).pipe(
                 Effect.timeoutOption(Duration.millis(remaining)),
@@ -4836,35 +4885,38 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             }
             if (activePastes.get(process) === paste) releasePaste(process);
           }).pipe(Effect.interruptible, Effect.forkIn(workerScope));
+          return true;
         }),
       );
-      return;
+      while (true) {
+        yield* awaitInputTurn;
+        if (yield* tryStart) return;
+      }
     }
 
-    let observedCwd: string | null = null;
-    if (input.observation !== undefined) {
+    const observeCwd = Effect.gen(function* () {
+      if (input.observation === undefined) return null;
       const cwdObservation = yield* TerminalCwdObservation;
-      const observeCwd = Effect.tryPromise({
+      return yield* Effect.tryPromise({
         try: () => cwdObservation.observe(process.pid, session.workspaceDutyIdentity),
         catch: () => null,
       }).pipe(Effect.orElseSucceed(() => null));
-      observedCwd = yield* observeCwd;
-      while (activePastes.has(process)) {
-        yield* awaitInputTurn;
-        observedCwd = yield* observeCwd;
+    });
+    while (true) {
+      yield* awaitInputTurn;
+      const observedCwd = yield* observeCwd;
+      // Recheck ownership after cwd observation, which can yield to a paste or a close.
+      const current = yield* getSession(input.threadId, terminalId);
+      if (Option.isNone(current)) {
+        if (input.expectedPid !== undefined) return yield* new TerminalProcessChangedError();
+        return yield* new TerminalSessionLookupError({ threadId: input.threadId, terminalId });
       }
-    }
-    // Optional cwd observation can yield. Re-read the native owner before issuing
-    // bytes; closing/replacing that lifecycle must never write to the captured PTY.
-    const current = yield* getSession(input.threadId, terminalId);
-    if (Option.isNone(current)) {
-      if (input.expectedPid !== undefined) return yield* new TerminalProcessChangedError();
-      return yield* new TerminalSessionLookupError({ threadId: input.threadId, terminalId });
-    }
-    if (current.value !== session || !isCurrent()) return yield* inactiveError();
-    noteInput();
-    yield* Effect.try({
-      try: () =>
+      if (current.value !== session || !isCurrent()) return yield* inactiveError();
+      if (activePastes.has(process)) continue;
+      if (input.reply && !acceptsQueryReply(toSessionKey(input.threadId, terminalId), viewerId))
+        return;
+      try {
+        noteInput();
         scriptObserver.write(
           input,
           {
@@ -4878,9 +4930,12 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             isCurrent,
           },
           (data) => process.write(PtyAdapter.ptyInput(data, input.binary)),
-        ),
-      catch: writeError,
-    });
+        );
+      } catch (cause) {
+        return yield* writeError(cause);
+      }
+      return;
+    }
   });
 
   const checkLegacyControl = (

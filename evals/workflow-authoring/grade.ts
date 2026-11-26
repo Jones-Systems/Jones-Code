@@ -12,6 +12,7 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 
 import WorkflowsMigration from "../../apps/server/src/persistence/Migrations/110_Workflows.ts";
+import WorkflowSkippedRunsMigration from "../../apps/server/src/persistence/Migrations/113_WorkflowSkippedRuns.ts";
 import WorkflowRunTagsMigration from "../../apps/server/src/persistence/Migrations/115_WorkflowRunTags.ts";
 import WorkflowMailSenderMigration from "../../apps/server/src/persistence/Migrations/117_WorkflowMailSender.ts";
 import WorkflowPoolsMigration from "../../apps/server/src/persistence/Migrations/118_WorkflowPools.ts";
@@ -80,6 +81,7 @@ const world = Effect.fn("gradeWorkflow.world")(function* (
   const database = NodeSqliteClient.layer({ filename: path.join(directory, "state.sqlite") });
   yield* Effect.provide(
     WorkflowsMigration.pipe(
+      Effect.andThen(WorkflowSkippedRunsMigration),
       Effect.andThen(WorkflowRunTagsMigration),
       Effect.andThen(WorkflowMailSenderMigration),
       Effect.andThen(WorkflowPoolsMigration),

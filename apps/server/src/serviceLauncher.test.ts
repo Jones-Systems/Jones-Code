@@ -1042,9 +1042,7 @@ process.exit(0);
           serviceUnit: unit,
         },
       );
-      const running = launcher.run();
-      yield* Effect.promise(() => launcher.stop("SIGTERM"));
-      yield* Effect.promise(() => running);
+      yield* Effect.promise(() => stopAfterChildStarts(launcher));
 
       assert.equal(
         yield* fs.readFileString(unit.path),
@@ -1226,7 +1224,7 @@ process.exit(0);
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-slow-discard-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       const backupPath = path.join(root, "runtime", "db-backup", "update-1");
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "before trial");
@@ -1256,8 +1254,8 @@ setInterval(() => {}, 1_000);
           childSource,
         );
       }
-      yield* fs.makeDirectory(path.join(backupPath, "database"), { recursive: true });
-      yield* fs.writeFileString(path.join(backupPath, "database", "state.sqlite"), "before trial");
+      yield* fs.makeDirectory(backupPath, { recursive: true });
+      yield* fs.writeFileString(path.join(backupPath, "database"), "before trial");
       yield* Effect.promise(() =>
         writeServiceState(statePath, {
           protocol: SERVICE_LAUNCHER_PROTOCOL,
@@ -1268,6 +1266,7 @@ setInterval(() => {}, 1_000);
             targetVersion: "1.1.0",
             dbPath: databasePath,
             status: "pending",
+            phase: "trial-ready",
           },
         }),
       );

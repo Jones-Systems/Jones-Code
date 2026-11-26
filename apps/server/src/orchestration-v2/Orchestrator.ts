@@ -5378,7 +5378,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             cause: monitorSettlementBlockerMessage[blocker],
           });
       }
-      const projection = yield* loadProjectionForCommand(command, ["runs", "runtimeRequests"]);
+      const projection = yield* loadProjectionForCommand(command, [
+        "runs",
+        "runtimeRequests",
+        "providerThreads",
+        "turnItems",
+      ]);
       if (
         command.expectedLatestRunId !== undefined &&
         projection.runs.reduce<OrchestrationV2Run | undefined>(
@@ -5956,7 +5961,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...(command.legacyBootstrap === undefined
               ? {}
               : { legacyBootstrapClaim: command.legacyBootstrap }),
-            ...(command.title === undefined ? {} : { title: command.title }),
+            ...(command.title === undefined ? {} : { title: command.title, titleRenamed: true }),
             ...(command.threadMessagesBlocked === undefined
               ? {}
               : { threadMessagesBlocked: command.threadMessagesBlocked }),

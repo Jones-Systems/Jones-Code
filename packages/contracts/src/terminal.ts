@@ -287,6 +287,8 @@ export const TerminalWriteInput = Schema.Struct({
   // A renderer's answer to a terminal query (DA, DSR, DECRQM). Every attached renderer
   // answers, so the server passes on one viewer's replies; older servers ignore it.
   reply: Schema.optionalKey(Schema.Boolean),
+  // Reject the write if the process that owns the paste has gone.
+  expectedPid: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   observation: Schema.optional(
     Schema.Struct({
       invocationId: Schema.String.check(
@@ -298,7 +300,9 @@ export const TerminalWriteInput = Schema.Struct({
       scriptId: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256)),
     }),
   ),
-});
+}).check(
+  Schema.makeFilter(({ data, plainWrite }) => (plainWrite === "abort") === (data.length === 0)),
+);
 export type TerminalWriteInput = Schema.Codec.Encoded<typeof TerminalWriteInput>;
 
 /** Splits input into writes that fit `TerminalWriteInput`, never between a surrogate pair. */

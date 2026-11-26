@@ -473,7 +473,7 @@ describe("MCP task read selection", () => {
           messageRoles: ["assistant"],
           messageRunIds: [childRunId],
           turnItemRunIds: [childRunId],
-          turnItemTypes: ["assistant_message", "error"],
+          turnItemTypes: ["assistant_message", "error", "system_notice", "run_interrupt_result"],
         },
       };
       assert.deepEqual(
@@ -569,7 +569,12 @@ describe("MCP task read selection", () => {
               messageRoles: ["assistant"],
               messageRunIds: resultRunIds,
               turnItemRunIds: resultRunIds,
-              turnItemTypes: ["assistant_message", "error"],
+              turnItemTypes: [
+                "assistant_message",
+                "error",
+                "system_notice",
+                "run_interrupt_result",
+              ],
             },
           },
         ]);

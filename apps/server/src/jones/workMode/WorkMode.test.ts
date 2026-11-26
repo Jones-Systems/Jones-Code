@@ -101,7 +101,14 @@ const dependencies = Layer.mergeAll(
   sink,
   IdAllocator.layer,
   CommandPolicy.layer,
-  RuntimePolicy.layer,
+  Layer.succeed(RuntimePolicy.RuntimePolicyV2, {
+    resolve: ({ thread }) =>
+      Effect.succeed({
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+        cwd: thread.worktreePath,
+      }),
+  }),
   ServerSettings.layerTest({ workModeEnabled: true }).pipe(Layer.orDie),
   Layer.mock(ContextHandoff.ContextHandoffServiceV2)({}),
   Layer.mock(ProviderSwitch.ProviderSwitchServiceV2)({}),

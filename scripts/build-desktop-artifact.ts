@@ -1475,6 +1475,8 @@ ${associatedDomains}
     <true/>
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
     <!-- The hardened runtime denies camera and microphone to the app and every
          child process, with no prompt, unless the app claims these. Terminals
          and coding agents inherit the app's TCC identity, so without these a
@@ -3070,6 +3072,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           "T3 Code lets commands run by terminals and coding agents use the camera.",
         NSMicrophoneUsageDescription:
           "T3 Code lets commands run by terminals and coding agents use the microphone.",
+        NSAppleEventsUsageDescription:
+          "Jones Code lets commands run by terminals and coding agents control other apps.",
         NSSpeechRecognitionUsageDescription:
           "Jones Code transcribes your dictation on this Mac when you choose Apple Speech.",
         // macOS lists an app under Default web browser only when it opens web

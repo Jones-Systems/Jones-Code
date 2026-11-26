@@ -49,6 +49,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import { layerNoTaskFolders } from "../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "../../orchestration-v2/ThreadTitleRegenerationService.ts";
 import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -145,6 +146,7 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   const externalServices = Layer.mergeAll(
     WorktreeSetupTracker.layer,
+    layerNoTaskFolders,
     options.repoFreshness === undefined
       ? Layer.empty
       : Layer.succeed(RepoFreshness.RepoFreshness, options.repoFreshness),

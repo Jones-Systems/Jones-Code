@@ -262,7 +262,7 @@ it.live(
             commandId: CommandId.make("codex:create"),
             threadId,
             projectId: ProjectId.make("test"),
-            title: "Codex",
+            title: "Replay fixture: queued_turn",
             modelSelection: initial,
             runtimeMode: "full-access",
             interactionMode: "default",

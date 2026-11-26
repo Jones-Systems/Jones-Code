@@ -157,6 +157,30 @@ function turn(id: string, status: "inProgress" | "completed" | "interrupted") {
   };
 }
 
+function readCodexConfig(id: number, cwd: string): Array<Replay.CodexAppServerReplayEntry> {
+  return [
+    {
+      type: "expect_outbound",
+      frame: { id, method: "config/read", params: { cwd, includeLayers: false } },
+    },
+    { type: "emit_inbound", frame: { id, result: { config: {}, origins: {} } } },
+  ];
+}
+
+function setCodexThreadName(id: number): Array<Replay.CodexAppServerReplayEntry> {
+  return [
+    {
+      type: "expect_outbound",
+      frame: {
+        id,
+        method: "thread/name/set",
+        params: { threadId: nativeId, name: "Synthetic delivery" },
+      },
+    },
+    { type: "emit_inbound", frame: { id, result: {} } },
+  ];
+}
+
 function startTurn(
   id: number,
   ordinal: number,
@@ -167,11 +191,7 @@ function startTurn(
   const effort = target.options?.find((option) => option.id === "reasoningEffort")?.value;
   const started = turn(`delivery-turn-${ordinal}`, "inProgress");
   return [
-    {
-      type: "expect_outbound",
-      frame: { id: id - 1, method: "config/read", params: { cwd, includeLayers: false } },
-    },
-    { type: "emit_inbound", frame: { id: id - 1, result: { config: {}, origins: {} } } },
+    ...readCodexConfig(id - 1, cwd),
     {
       type: "expect_outbound",
       frame: {
@@ -243,27 +263,29 @@ const fixture = (runEffectWorker: boolean) =>
       scenario: "delivery-a",
       entries: [
         ...initialize(home),
+        ...readCodexConfig(2, cwd),
         {
           type: "expect_outbound",
           frame: {
-            id: 2,
+            id: 3,
             method: "thread/start",
             params: { cwd, model: selection.model, config: Codex.CODEX_THREAD_CONFIG },
           },
         },
         {
           type: "emit_inbound",
-          frame: { id: 2, result: nativeThread(cwd, home, selection.model) },
+          frame: { id: 3, result: nativeThread(cwd, home, selection.model) },
         },
-        ...startTurn(4, 1, cwd, selection, "First"),
+        ...setCodexThreadName(4),
+        ...startTurn(6, 1, cwd, selection, "First"),
         terminal(1, "completed", "complete-first"),
-        ...startTurn(6, 2, cwd, selection, "Second"),
+        ...startTurn(8, 2, cwd, selection, "Second"),
         terminal(2, "completed", "complete-second"),
         {
           type: "expect_outbound",
-          frame: { id: 7, method: "thread/unsubscribe", params: { threadId: nativeId } },
+          frame: { id: 9, method: "thread/unsubscribe", params: { threadId: nativeId } },
         },
-        { type: "emit_inbound", frame: { id: 7, result: { status: "unsubscribed" } } },
+        { type: "emit_inbound", frame: { id: 9, result: { status: "unsubscribed" } } },
         {
           type: "emit_inbound",
           frame: { method: "thread/closed", params: { threadId: nativeId } },
@@ -277,10 +299,11 @@ const fixture = (runEffectWorker: boolean) =>
       scenario: "delivery-b",
       entries: [
         ...initialize(home),
+        ...readCodexConfig(2, cwd),
         {
           type: "expect_outbound",
           frame: {
-            id: 2,
+            id: 3,
             method: "thread/resume",
             params: {
               threadId: nativeId,
@@ -291,17 +314,18 @@ const fixture = (runEffectWorker: boolean) =>
             },
           },
         },
-        { type: "emit_inbound", frame: { id: 2, result: nativeThread(cwd, home, switched.model) } },
-        ...startTurn(4, 3, cwd, switched, "Third"),
+        { type: "emit_inbound", frame: { id: 3, result: nativeThread(cwd, home, switched.model) } },
+        ...setCodexThreadName(4),
+        ...startTurn(6, 3, cwd, switched, "Third"),
         {
           type: "expect_outbound",
           frame: {
-            id: 5,
+            id: 7,
             method: "turn/interrupt",
             params: { threadId: nativeId, turnId: "delivery-turn-3" },
           },
         },
-        { type: "emit_inbound", frame: { id: 5, result: {} } },
+        { type: "emit_inbound", frame: { id: 7, result: {} } },
         terminal(3, "interrupted"),
       ],
     });
