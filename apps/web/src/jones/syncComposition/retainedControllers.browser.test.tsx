@@ -134,7 +134,11 @@ it("starts the real retained controllers once at AppRoot and releases their nati
   await using screen = await render(<AppRoot router={router} />, { router: false });
   await vi.waitFor(() => {
     expect(installPlan).toHaveBeenCalledWith({ type: "read" });
-    expect(installPlan).toHaveBeenCalledWith({ type: "publication", acceptOrdinaryRecovery: 1 });
+    expect(installPlan).toHaveBeenCalledWith({
+      type: "publication",
+      acceptOrdinaryRecovery: 1,
+      acceptHostOnlyHolds: 1,
+    });
     expect(fleetUpdates).toHaveBeenCalledWith({ action: "read" });
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "reset" }));
     expect(setTicketProviderReady).toHaveBeenCalledWith(true);

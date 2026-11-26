@@ -6,6 +6,7 @@ export {
 export { requestFleetHost, type FleetHostRequest } from "./hostBridge.ts";
 export {
   advanceFleetCampaigns,
+  refreshFleetFollowerReport,
   type FleetCampaignDriver,
   type FleetCommittedSource,
   type FleetPublication,

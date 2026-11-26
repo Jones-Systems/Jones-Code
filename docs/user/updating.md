@@ -299,8 +299,11 @@ Replacement downloads the matching source; it does not restart the server.
 Install remains a separate confirmed action.
 
 In the desktop app, **Settings → Connections → Match laptop** targets this
-laptop's verified installed source. It can also replace a different download
-after confirmation on supported hosts. The host's ordinary Download action
+laptop's verified running source. If there is no competing rollout, it can
+prepare a server-only plan even after the Mac installer for that source expires.
+The server still needs a qualified package for its own platform. Match laptop
+can also replace a different download after confirmation on supported hosts.
+The host's ordinary Download action
 follows its update channel and may offer a different source. Match laptop stays
 visible with an explanation when it cannot run, and disappears once the matching
 source is installed or downloaded. Older hosts may need an update before they
@@ -308,6 +311,11 @@ can replace a download. If replacement is interrupted, check the host's current
 status and explicitly download again if the earlier download is gone.
 Offline, unsupported, or newer servers show why the action is unavailable; the
 notice does not substitute the latest build.
+
+For an enrolled host, **Refresh** in its automatic update status checks what
+that host last recorded. When the laptop can publish a newer verified report,
+Refresh sends it and reads back the result. A retained manual-review directive
+keeps its own source and review requirement.
 
 When a download is retained, **Check** in Connections or **Check for builds** on
 mobile can show a separate **Alternative**. **Replace download** asks you to

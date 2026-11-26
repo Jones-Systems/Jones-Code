@@ -34,9 +34,18 @@ export interface FleetCampaignDriver {
 export type FleetPublication = NonNullable<JonesInstallPlanResult["publication"]>;
 export interface FleetPublicationReceipt {
   readonly enrollment: FleetEnrollment;
-  readonly outcome: "following" | "directive-held" | "unknown" | "legacy" | "observed";
+  readonly outcome:
+    | "following"
+    | "directive-held"
+    | "plan-held"
+    | "unknown"
+    | "legacy"
+    | "observed";
   readonly observedAt: string;
   readonly follower?: FleetFollowerStatus;
+  /** A host can acknowledge a report while retaining its manual-review directive. */
+  readonly publicationAcknowledged?: true;
+  readonly failure?: "unreachable" | "unconfirmed";
 }
 export interface FleetPublicationReport {
   readonly publication: FleetPublication;
@@ -387,8 +396,108 @@ function publicationSource(publication: FleetPublication) {
     : undefined;
 }
 
+function publicationHeld(publication: FleetPublication, environmentId: EnvironmentId) {
+  return publication.heldEnvironments?.includes(environmentId) === true;
+}
+
+async function observePublicationReceipt(
+  driver: FleetCampaignDriver,
+  enrollment: FleetEnrollment,
+  publication: FleetPublication,
+): Promise<FleetPublicationReceipt> {
+  const { environmentId } = enrollment;
+  const committed = publicationSource(publication);
+  let follower: FleetFollowerStatus | undefined;
+  let outcome: FleetPublicationReceipt["outcome"] = "unknown";
+  let failure: NonNullable<FleetPublicationReceipt["failure"]> = "unconfirmed";
+  let acknowledged = false;
+  const receipt = (): FleetPublicationReceipt => ({
+    enrollment,
+    outcome,
+    observedAt: observationTime(),
+    ...(follower === undefined ? {} : { follower }),
+    ...(outcome === "unknown" ? { failure } : {}),
+    ...(acknowledged ? { publicationAcknowledged: true } : {}),
+  });
+  if (driver.cancelled()) return receipt();
+  try {
+    failure = "unreachable";
+    let status = await driver.host(environmentId, { action: "status" });
+    failure = "unconfirmed";
+    if (driver.cancelled() || !boundStatus(status, enrollment)) return receipt();
+    if (publicationHeld(publication, environmentId)) {
+      if (status.follower?.protocol === 1) follower = status.follower;
+      outcome = "plan-held";
+      return receipt();
+    }
+    if (status.follower === undefined) {
+      outcome = "legacy";
+      return receipt();
+    }
+    if (status.follower.protocol !== 1) return receipt();
+    follower = status.follower;
+    const acknowledges = () =>
+      committed !== undefined &&
+      follower?.leaderSource === committed.sha &&
+      (status.update?.policy === undefined ||
+        (status.update.policy.leaderSource === committed.sha &&
+          status.update.policy.leaderTree === committed.tree));
+    // The directive keeps its target and the legacy campaign held. The follower
+    // decides whether it can follow a later verified source.
+    if (
+      committed !== undefined &&
+      !acknowledges() &&
+      follower.planDirective?.targetSource !== committed.sha
+    ) {
+      const current = await driver.desktop({ action: "read" });
+      if (
+        driver.cancelled() ||
+        !current.enrollments.some((entry) => sameEnrollment(enrollment, entry))
+      )
+        return receipt();
+      const latest = await readPublication(driver);
+      const latestSource = publicationSource(latest);
+      if (
+        driver.cancelled() ||
+        publicationHeld(latest, environmentId) ||
+        latestSource?.sha !== committed.sha ||
+        latestSource?.tree !== committed.tree
+      )
+        return receipt();
+      status = await driver.host(environmentId, {
+        action: "leader",
+        input: {
+          enrollmentId: enrollment.enrollmentId,
+          environmentId,
+          repository: committed.repository,
+          committedSource: committed.sha,
+          committedTree: committed.tree,
+        },
+      });
+      if (driver.cancelled() || !boundStatus(status, enrollment) || status.follower?.protocol !== 1)
+        return receipt();
+      follower = status.follower;
+      if (!acknowledges()) return receipt();
+    }
+    acknowledged = acknowledges();
+    outcome =
+      follower.planDirective !== undefined
+        ? "directive-held"
+        : acknowledged
+          ? "following"
+          : "observed";
+  } catch {
+    // A request may have committed before its reply was lost. The next pass reads back first.
+  }
+  return receipt();
+}
+
 /** Observe receipts even without a native publication grant. Unknown effects hold dispatch. */
-async function publishCommittedSource(driver: FleetCampaignDriver, state: FleetDesktopState) {
+async function publishCommittedSource(
+  driver: FleetCampaignDriver,
+  state: FleetDesktopState,
+  environmentId?: EnvironmentId,
+) {
   const followers = new Set<EnvironmentId>();
   const held = new Set<EnvironmentId>();
   const publication = await readPublication(driver);
@@ -396,73 +505,11 @@ async function publishCommittedSource(driver: FleetCampaignDriver, state: FleetD
   const committed = publicationSource(publication);
   const hosts = await Promise.all(
     state.enrollments
-      .filter((entry) => entry.enabled)
-      .map(async (enrollment): Promise<FleetPublicationReceipt> => {
-        let follower: FleetFollowerStatus | undefined;
-        let outcome: FleetPublicationReceipt["outcome"] = "unknown";
-        if (driver.cancelled()) return { enrollment, outcome, observedAt: observationTime() };
-        try {
-          let status = await driver.host(enrollment.environmentId, { action: "status" });
-          if (driver.cancelled()) return { enrollment, outcome, observedAt: observationTime() };
-          if (boundStatus(status, enrollment)) {
-            follower = status.follower?.protocol === 1 ? status.follower : undefined;
-            if (follower?.planDirective !== undefined) outcome = "directive-held";
-            else if (status.follower === undefined) outcome = "legacy";
-            else if (follower !== undefined) {
-              outcome = "observed";
-              if (committed !== undefined) {
-                if (follower.leaderSource !== committed.sha) {
-                  // Re-read local enrollment before sending a publication. The response is
-                  // not authority until its environment, enrollment and source all match.
-                  const current = await driver.desktop({ action: "read" });
-                  if (driver.cancelled())
-                    return { enrollment, outcome: "unknown", observedAt: observationTime() };
-                  if (!current.enrollments.some((entry) => sameEnrollment(enrollment, entry)))
-                    return { enrollment, outcome: "unknown", observedAt: observationTime() };
-                  const latestSource = publicationSource(await readPublication(driver));
-                  if (
-                    driver.cancelled() ||
-                    latestSource?.sha !== committed.sha ||
-                    latestSource?.tree !== committed.tree
-                  )
-                    return { enrollment, outcome: "unknown", observedAt: observationTime() };
-                  outcome = "unknown";
-                  status = await driver.host(enrollment.environmentId, {
-                    action: "leader",
-                    input: {
-                      enrollmentId: enrollment.enrollmentId,
-                      environmentId: enrollment.environmentId,
-                      repository: "Jones-Systems/Jones-Code",
-                      committedSource: committed.sha,
-                      committedTree: committed.tree,
-                    },
-                  });
-                  if (driver.cancelled())
-                    return { enrollment, outcome, observedAt: observationTime() };
-                  // Do not display an invalid acknowledgement as a host receipt.
-                  follower =
-                    boundStatus(status, enrollment) && status.follower?.protocol === 1
-                      ? status.follower
-                      : undefined;
-                }
-                if (follower?.planDirective !== undefined) outcome = "directive-held";
-                else if (follower?.leaderSource === committed.sha) outcome = "following";
-                else outcome = "unknown";
-              }
-            }
-          }
-        } catch {
-          // A leader request may have committed before its response was lost. Only
-          // a subsequent authoritative status read can release this pass's hold.
-          outcome = "unknown";
-        }
-        return {
-          enrollment,
-          outcome,
-          observedAt: observationTime(),
-          ...(follower === undefined ? {} : { follower }),
-        };
-      }),
+      .filter(
+        (entry) =>
+          entry.enabled && (environmentId === undefined || entry.environmentId === environmentId),
+      )
+      .map((enrollment) => observePublicationReceipt(driver, enrollment, publication)),
   );
   if (driver.cancelled()) return { state, followers, held };
   const current = await driver.desktop({ action: "read" });
@@ -480,7 +527,9 @@ async function publishCommittedSource(driver: FleetCampaignDriver, state: FleetD
     if (
       !stillEnrolled ||
       sourceChanged ||
+      publicationHeld(latestPublication, host.enrollment.environmentId) ||
       host.outcome === "unknown" ||
+      host.outcome === "plan-held" ||
       host.outcome === "directive-held"
     )
       held.add(host.enrollment.environmentId);
@@ -495,6 +544,20 @@ async function publishCommittedSource(driver: FleetCampaignDriver, state: FleetD
     // Diagnostics cannot grant, revoke or interrupt update authority.
   }
   return { state: current, followers, held };
+}
+
+/** Refresh one host's report using native publication authority, without advancing campaigns. */
+export async function refreshFleetFollowerReport(
+  driver: FleetCampaignDriver,
+  enrollment: FleetEnrollment,
+): Promise<void> {
+  const state = await driver.desktop({ action: "read" });
+  if (
+    !driver.cancelled() &&
+    enrollment.enabled &&
+    state.enrollments.some((entry) => sameEnrollment(enrollment, entry))
+  )
+    await publishCommittedSource(driver, state, enrollment.environmentId);
 }
 
 const passes = new WeakMap<FleetCampaignDriver["desktop"], number>();

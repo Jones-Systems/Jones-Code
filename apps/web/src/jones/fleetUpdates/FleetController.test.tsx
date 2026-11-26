@@ -25,6 +25,7 @@ describe("native fleet publication grant", () => {
       expect(installPlan).toHaveBeenCalledWith({
         type: "publication",
         acceptOrdinaryRecovery: 1,
+        acceptHostOnlyHolds: 1,
       });
       expect(getUpdateState).not.toHaveBeenCalled();
     },
@@ -35,6 +36,20 @@ describe("native fleet publication grant", () => {
     });
     expect(await readFleetPublication()).toEqual({ kind, source });
     expect(await readFleetPublicationSource()).toEqual(source);
+  });
+  it("projects the same native laptop reading even when a plan withholds publication", async () => {
+    const laptop = { activeSource: source.sha, observedAt: "2026-11-26T17:20:00.000Z" };
+    const publication = {
+      kind: "withheld",
+      code: "plan-managed",
+      message: "A native plan holds publication.",
+    };
+    vi.stubGlobal("window", {
+      desktopBridge: { installPlan: async () => ({ state: { laptop }, publication }) },
+    });
+    const observe = vi.fn();
+    expect(await readFleetPublication(observe)).toEqual(publication);
+    expect(observe).toHaveBeenLastCalledWith(laptop);
   });
   it("keeps an old bridge's installed source as display evidence only", async () => {
     const getUpdateState = vi.fn(async () => ({ jones: { installedSource: source } }));
