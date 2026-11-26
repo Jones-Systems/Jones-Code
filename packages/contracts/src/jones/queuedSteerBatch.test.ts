@@ -1,6 +1,11 @@
 import { expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
-import { QueuedSteerBatchCapability, QueuedSteerBatchCommand } from "./queuedSteerBatch.ts";
+import {
+  QUEUED_STEER_BATCH_CAPABILITY,
+  QUEUED_STEER_BATCH_LIMITS,
+  QueuedSteerBatchCapability,
+  QueuedSteerBatchCommand,
+} from "./queuedSteerBatch.ts";
 import { ExecutionEnvironmentCapabilities } from "../environment.ts";
 const compiledDecodeSync1 = Schema.decodeSync(
   Schema.Struct({ queuedSteerBatch: ExecutionEnvironmentCapabilities.fields.queuedSteerBatch }),
@@ -18,6 +23,12 @@ it("keeps the batch capability optional for old environments", () => {
       maxImageBytes: 83886080,
     }),
   ).toBe(true);
+  expect(
+    compiledDecodeSync1({ queuedSteerBatch: QUEUED_STEER_BATCH_LIMITS }).queuedSteerBatch,
+  ).toEqual(QUEUED_STEER_BATCH_LIMITS);
+  expect(
+    compiledDecodeSync1({ queuedSteerBatch: QUEUED_STEER_BATCH_CAPABILITY }).queuedSteerBatch,
+  ).toEqual(QUEUED_STEER_BATCH_CAPABILITY);
 });
 it("requires a nonempty bounded member list with current message identities", () => {
   const command = {

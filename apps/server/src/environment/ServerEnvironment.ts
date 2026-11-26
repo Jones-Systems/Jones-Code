@@ -1,11 +1,11 @@
 import { THREAD_MONITOR_GUARDED_SETTLE_CAPABILITY } from "@t3tools/contracts/jones/guardedThreadSettlement";
 import { LINKED_THREADS_CAPABILITY } from "@t3tools/contracts/jones/linkedThreadsCapability";
-import { QUEUED_STEER_BATCH_LIMITS } from "@t3tools/contracts";
 import { THREAD_ATTENTION_CAPABILITY } from "@t3tools/contracts/jones/threadAttention";
 import {
   EnvironmentId,
   ORCHESTRATION_PROTOCOL_VERSION,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  QUEUED_STEER_BATCH_CAPABILITY,
   QUEUE_DISPATCH_CAPABILITY,
   SETTLEMENT_ORIGINS_CAPABILITY,
   SETTLEMENT_RESTORE_CAPABILITY,
@@ -235,7 +235,7 @@ export const make = Effect.gen(function* () {
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     ...(databaseMigration === undefined ? {} : { databaseMigration }),
     capabilities: {
-      queuedSteerBatch: QUEUED_STEER_BATCH_LIMITS,
+      queuedSteerBatch: QUEUED_STEER_BATCH_CAPABILITY,
       queueDispatch: QUEUE_DISPATCH_CAPABILITY,
       threadAttention: THREAD_ATTENTION_CAPABILITY,
       linkedThreads: LINKED_THREADS_CAPABILITY,

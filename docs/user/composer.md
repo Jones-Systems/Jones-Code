@@ -122,7 +122,83 @@ Queued messages appear at the end of the thread (web/desktop) or above the compo
 - **Edit**: Opens the message and its attachments in the composer without losing your existing draft.
 - **Remove**: Cancels the queued message.
 
-If you stop the agent or the server restarts, queued messages pause in order. Click **Resume** in an empty composer (or send a new message) to continue. When the provider supports native continuation, **Resume** continues without sending a new prompt.
+On supporting servers, Queue sends compatible messages after the current foreground tool calls finish,
+even when you switch threads or disconnect the client. It waits while the agent needs an
+approval or answer. Providers that cannot accept input without restarting, commands such as
+`/compact`, and messages that change the provider, model, or modes wait for a later turn instead.
+At a tool boundary, messages follow their selected queue order. Later messages wait for earlier
+delivery to succeed, including any retries.
+On servers that support batch steering, compatible queued messages are delivered together in one
+provider input, within the server's message-size limits. Queued messages from other agents can use
+the same safe tool-boundary delivery. An eligible peer message with no explicit model choice can
+join the running Codex or Claude turn it was queued against after a same-account setting change.
+Messages that wait for the next turn use their queued settings. Agents that need a separate turn
+can explicitly request `separate_turn`. Scheduled wakes still wait for a separate turn. Repeated
+fires of the same task keep at most one pending wake in that thread.
+Failed or interrupted tools do not release the queue on their own; it waits for the next
+qualifying tool completion or the end of the turn. Stopping the thread keeps its queue held.
+
+Queued messages appear above the composer. Rows show a thumbnail of any attached image alongside
+the text. Drag a row by its handle to reorder it, use the handle's arrow keys, promote the message
+to a steer, or remove it.
+
+On supporting servers, **Steer all** in the queue header sends compatible queued messages together
+to the active agent. Its count shows how many messages will be sent. If the queue exceeds the
+server's text or attachment limits, the action sends the fitting prefix and leaves the remaining
+messages queued. It preserves each message's sender and timeline entry. Editing, pending questions
+or approvals, and providers that require a restart can make the batch action unavailable. Older
+servers retain the individual row controls.
+
+Choosing **Steer all** sends one combined input to the currently running agent, including messages
+queued before you changed accounts or models. The separate timeline cards preserve the original
+messages; they do not mean each message started a separate turn. If the active turn finishes before
+delivery, the messages are preserved for follow-up delivery. A running goal accepts **Steer all**
+and compatible automatic follow-ups. A queued `/goal` control waits for separate handling.
+
+Saving a different model or option for the same account keeps **Steer all** available on the
+running turn. For Codex, **Steer** also uses the running turn's settings. The saved settings
+apply to a subsequent turn.
+
+If you stop the agent or the server restarts, queued messages keep their order and are held.
+Press **Resume** in an empty composer on web and desktop, or **Resume queue** on mobile, to
+continue. Sending a new message does not release messages held by Stop. A new
+message can start independently when it is otherwise eligible. You can edit,
+reorder, or remove held messages without starting them.
+
+The pencil on a queued row opens that message in the composer for editing. The original message
+stays in the queue until you save, and its row is highlighted while you edit. The message's
+attachments appear above the text with a remove control, and new images can be added the usual way.
+The checkmark saves the queued message in place; **Cancel** on its row leaves it unchanged. Whatever
+you had typed in the composer before starting the edit is restored afterwards. If the queued
+message starts or is removed while you are editing, the edit ends: changed content moves into the
+composer when it is empty, and is discarded otherwise.
+
+## Review external voice prompts
+
+On web and desktop, open **Prompts** from the sidebar. Prompts collects work from
+your voice source and from work queues on the servers you are connected to. It
+does not record audio. Choose a source from the header when more than one server
+has prompts. Pending and Queued show counts once their sources report. A `+`
+means the sample may hold more, and a `?` means a source could not be read.
+
+- **Pending** holds voice prompts before release. Select a prompt to see where it
+  is going and what you can do. Held prompts release after their countdown.
+  Pause a prompt when you need more time, and double-click its text or choose
+  **Edit** to change it. Editing holds release until you save or cancel; both
+  leave the prompt paused. Resume when you are ready, or use **Save and send**.
+- **Queued** lists released prompts and queue requests that have not been handed
+  to a thread yet. It is read-only. The queue sample says when it was read; use
+  **Refresh queue** for a newer one.
+- **Sent** lists prompts whose handoff to a thread is confirmed. Sent does not
+  mean the work is finished. This sample does not provide a full history.
+
+Search within the loaded sample or click a Workstream badge to filter. Open a
+row’s prompt link to share that prompt and stage. Workstream labels show whether
+the association came from the thread, a voice suggestion, or the queue.
+
+The progress list in each prompt shows only what was observed. Closing the page
+does not resume an edit hold. If a result is uncertain, check the current state
+before acting again; Prompts never retries it for you.
 
 ## Commands and skills
 

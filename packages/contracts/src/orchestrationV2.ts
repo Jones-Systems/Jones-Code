@@ -5,7 +5,10 @@ import {
   OptionalDispatchDeliveryEvidence,
   OptionalLaunchDeliveryEvidence,
 } from "./jones/deliveryEvidence.ts";
-import { QueuedSteerBatchCommand } from "./jones/queuedSteerBatch.ts";
+import {
+  QueuedSteerBatchCommand,
+  QueuedToolBoundaryFollowUpRunId,
+} from "./jones/queuedSteerBatch.ts";
 import { SettlementRestoreCommand } from "./jones/settlementRestore.ts";
 import { ThreadTurnDispatchGuard } from "./providerQueue.ts";
 import { RuntimeIdentityAttestation } from "./jones/providerRuntimeIdentity.ts";
@@ -903,6 +906,8 @@ export const OrchestrationV2Run = Schema.Struct({
   explicitQueue: Schema.optional(Schema.Literal(true)),
   /** Recorded queue admission; absent or false keeps separate-turn delivery. */
   queuedToolBoundaryEligible: Schema.optional(Schema.Boolean),
+  /** An inherited selection may steer this run at a safe boundary while retaining its next-turn pick. */
+  queuedToolBoundaryFollowUpOfRunId: QueuedToolBoundaryFollowUpRunId,
   steerWhenReadyRunId: Schema.optional(RunId),
   requestedAt: Schema.DateTimeUtc,
   startedAt: Schema.NullOr(Schema.DateTimeUtc),

@@ -1052,6 +1052,10 @@ function preserveRunRecordedFields(
     current.queuedToolBoundaryEligible !== undefined
       ? { queuedToolBoundaryEligible: current.queuedToolBoundaryEligible }
       : {}),
+    ...(next.queuedToolBoundaryFollowUpOfRunId === undefined &&
+    current.queuedToolBoundaryFollowUpOfRunId !== undefined
+      ? { queuedToolBoundaryFollowUpOfRunId: current.queuedToolBoundaryFollowUpOfRunId }
+      : {}),
     ...(next.delegatedCompletion === undefined && current.delegatedCompletion !== undefined
       ? { delegatedCompletion: current.delegatedCompletion }
       : {}),
@@ -2803,10 +2807,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 payload_json = ${keepRecordedQueueEligibility(
                   keepRecordedRunField(
                     keepRecordedRunField(
-                      keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
-                      "$.restartCancelledBackgroundWork",
+                      keepRecordedRunField(
+                        keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
+                        "$.restartCancelledBackgroundWork",
+                      ),
+                      "$.explicitQueue",
                     ),
-                    "$.explicitQueue",
+                    "$.queuedToolBoundaryFollowUpOfRunId",
                   ),
                 )}
             `;
