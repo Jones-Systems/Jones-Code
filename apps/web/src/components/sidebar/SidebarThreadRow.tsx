@@ -8,7 +8,7 @@ import { ThreadHoverCard, ThreadHoverCardTrigger } from "../ThreadHoverCard";
 import { ThreadTerminalStatusButton, ThreadWorktreeIndicator } from "../ThreadStatusIndicators";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { formatWorktreePathForDisplay } from "../../worktreeCleanup";
-import { contextMenuSourceOf } from "../../contextMenuSource";
+import { contextMenuSourceOf, openContextMenuFromKeyboard } from "../../contextMenuSource";
 import { requestCustomSnooze } from "../CustomSnoozeDialog";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { useDeadlinePassed } from "~/hooks/useDeadline";
@@ -454,6 +454,7 @@ function SnoozeMenuButton(props: {
               <button
                 type="button"
                 aria-label={gt("Snooze thread")}
+                onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
                 onDoubleClick={(event) => event.stopPropagation()}
                 className="inline-flex h-full cursor-pointer items-center gap-0.5 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
@@ -469,7 +470,8 @@ function SnoozeMenuButton(props: {
       >
         <ClockIcon className="size-3" />
       </SharedTooltipTrigger>
-      <MenuPopup side="bottom" align="end">
+      {/* The popup is portaled but its pointer events still bubble to the sortable row in React. */}
+      <MenuPopup side="bottom" align="end" onPointerDown={(event) => event.stopPropagation()}>
         {presets.map((preset) => (
           <MenuItem
             key={preset.id}
@@ -968,6 +970,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   };
   const handleKeyDown = (event: ReactKeyboardEvent) => {
     if (event.target !== event.currentTarget) return;
+    openContextMenuFromKeyboard(event);
     if (
       event.key === "F2" &&
       !isRenaming &&
@@ -1158,27 +1161,29 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   ) : (
     <span
       ref={isRegeneratingTitle ? observeVisibleAnimation : undefined}
+      data-jones-thread-title={titleTone}
+      data-jones-thread-title-branch={variant === "slim" ? "slim" : "card"}
       className={cn(
         "min-w-0 flex-1 text-start text-sm transition-opacity motion-reduce:transition-none",
-        shouldRecede ? "font-normal" : "font-medium",
+        titleTone === "receded" ? "font-normal" : "font-medium",
         isRegeneratingTitle
           ? "relative truncate text-muted-foreground"
           : variant !== "slim"
             ? cn(
                 "truncate",
-                shouldRecede
+                titleTone === "receded"
                   ? "text-foreground/75 group-hover/sidebar-row:text-foreground group-focus-visible/sidebar-row:text-foreground"
-                  : status === "failed" && !isUnread && !isWoke
+                  : titleTone === "failed-read"
                     ? "text-foreground/95"
                     : "text-foreground",
               )
             : cn(
                 "truncate group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
-                shouldRecede
+                titleTone === "receded"
                   ? "text-secondary-label"
-                  : props.isActive || isWoke || status === "input" || status === "request"
+                  : titleTone === "primary"
                     ? "text-foreground"
-                    : isUnread
+                    : titleTone === "unread"
                       ? "text-muted-foreground"
                       : "text-secondary-label/70",
               ),
@@ -1621,6 +1626,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             tabIndex={0}
             data-sidebar-row={threadKey}
             data-sidebar-parent={props.navigationParent}
+            data-jones-sidebar-card-surface=""
             aria-label={accessibility.label + deviceSuffix}
             aria-current={accessibility.current}
             data-testid="sidebar-row-card"
@@ -1637,12 +1643,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         }
       >
         <div
+          data-jones-sidebar-card-content=""
           className={cn(
             "relative z-10 h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
             metaLineEmpty && "h-auto",
           )}
         >
-          <div className="flex h-5 min-w-0 items-center gap-1.5">
+          <div data-jones-sidebar-card-topline className="flex h-5 min-w-0 items-center gap-1.5">
             {draftIndicator}
             {props.project ? (
               <ProjectFavicon project={props.project} className="size-4 shrink-0" />

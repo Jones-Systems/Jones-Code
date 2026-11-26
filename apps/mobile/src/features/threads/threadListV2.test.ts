@@ -1759,7 +1759,12 @@ describe("mobile Workstream projection", () => {
     expect(
       result.filter((item) => item.type === "v2-thread").map((item) => key(item.item.thread)),
     ).toEqual([key(first), key(second), key(otherEnvironment)]);
-    expect(threadJumpTarget(result, "thread.jump.2")).toBe(second);
+    const shortcut = threadJumpTarget(result, "thread.jump.2");
+    expect(shortcut?.type === "v2-thread" ? shortcut.item.thread : null).toBe(second);
+    const otherShortcut = threadJumpTarget(result, "thread.jump.3");
+    expect(otherShortcut?.type === "v2-thread" ? otherShortcut.item.thread : null).toBe(
+      otherEnvironment,
+    );
     expect(
       result.find((item) => item.type === "v2-thread" && item.item.thread === first),
     ).toMatchObject({ secondaryWorkstreamLabel: "Related" });

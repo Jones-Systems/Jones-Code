@@ -326,7 +326,12 @@ it.effect.each(["decode", "write"] as const)(
       const message = queuedMessage();
       expect(message.attachments[0]?.uploadedAttachmentId).toBe("pending-1");
       yield* Effect.promise(() => enqueueThreadOutboxMessage(message));
-      const prepared = yield* prepareQueuedMessageAttachments(message);
+      const queued = appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)[
+        draftKey
+      ]?.[0];
+      expect(queued).toEqual(message);
+      if (!queued) throw new Error("Expected the durable queued upload");
+      const prepared = yield* prepareQueuedMessageAttachments(queued);
       expect(prepared.status).toBe("ready");
       if (prepared.status !== "ready") throw new Error("Outbox preparation abandoned");
       expect(prepared.prepared.pendingAttachmentIds).toEqual(["pending-1"]);

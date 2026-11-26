@@ -264,6 +264,7 @@ const harness = Effect.fn("ConnectDiagnosticTest.harness")(function* (scenario: 
       );
     },
   });
+  const credentials = ConnectionCredentialStore.layerMemory();
   // Keep the authorization service's renewal scope alive for the whole test.
   const authorizationContext = yield* Layer.build(
     Authorization.layer.pipe(
@@ -271,6 +272,7 @@ const harness = Effect.fn("ConnectDiagnosticTest.harness")(function* (scenario: 
         Layer.mergeAll(
           httpLayer,
           relay,
+          credentials,
           Layer.succeed(Relay.ManagedRelayDpopSigner, signer),
           Layer.succeed(Capabilities.CloudSession, {
             identity: Effect.succeedSome({ accountId: "synthetic-account" }),
@@ -306,7 +308,7 @@ const harness = Effect.fn("ConnectDiagnosticTest.harness")(function* (scenario: 
             Layer.succeed(HttpClient.HttpClient, http),
             Layer.succeed(RpcSession.RpcSessionFactory, sessions),
             Layer.succeed(Authorization.RemoteEnvironmentAuthorization, authorization),
-            ConnectionCredentialStore.layerMemory(),
+            credentials,
             Layer.mock(Resolver.ConnectionResolver)({
               prepare: (entry) =>
                 authorization

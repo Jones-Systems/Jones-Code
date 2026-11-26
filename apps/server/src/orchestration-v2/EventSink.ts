@@ -2193,7 +2193,6 @@ const layerBase: Layer.Layer<
               commandId: input.commandId,
               authorityRevision: planDigests(ordinary.plan).authority,
             },
-        ordinary !== undefined,
       );
       return {
         receipt: result.receipt,
@@ -2205,6 +2204,7 @@ const layerBase: Layer.Layer<
 
     const commitLegacyPreflight: EventSinkV2Shape["commitLegacyPreflight"] = (input) =>
       commitThenPublish(
+        [input.event.threadId],
         Effect.gen(function* () {
           const writer = yield* legacyStorage.forTransaction;
           return yield* writer.commitPreflight(input);
@@ -2220,6 +2220,7 @@ const layerBase: Layer.Layer<
       "orchestrationV2.EventSink.commitRejectedCommand",
     )(function* (input: Parameters<EventSinkV2Shape["commitRejectedCommand"]>[0]) {
       const result = yield* commitThenPublish(
+        [input.threadId, ...projectedThreadIds(input.legacyGuardRejection?.events ?? [])],
         Effect.gen(function* () {
           if (input.legacyGuardRejection === undefined)
             yield* legacyStorage.assertUnreserved(input.commandId);
@@ -2577,6 +2578,7 @@ const layerBase: Layer.Layer<
       E,
       R,
     >(
+      threadIds: ReadonlyArray<ThreadId>,
       transaction: Effect.Effect<A, E, R>,
       publish: (committed: A) => Effect.Effect<void>,
       local?: {
@@ -2584,7 +2586,6 @@ const layerBase: Layer.Layer<
         readonly commandId: CommandId;
         readonly authorityRevision: string;
       },
-      preserveFiber = false,
     ) {
       const batch = yield* CurrentProviderBatch;
       if (batch !== undefined) {
@@ -2599,11 +2600,11 @@ const layerBase: Layer.Layer<
       // A savepoint cannot acknowledge a command before somebody else's outer COMMIT.
       if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
         return yield* new CheckoutError({ reason: "unavailable" });
-      if (preserveFiber) {
-        yield* coordinator.barrier(Effect.void);
-        return yield* commitThenPublishNow(transaction, publish, local);
-      }
-      return yield* coordinator.barrier(commitThenPublishNow(transaction, publish, local));
+      // The barrier waits for these threads' snapshots and keeps checkout custody on this fiber.
+      return yield* coordinator.barrier(
+        commitThenPublishNow(transaction, publish, local),
+        threadIds,
+      );
     });
 
     const withProviderBatch: EventSinkV2Shape["withProviderBatch"] = Effect.fn(
@@ -2615,7 +2616,12 @@ const layerBase: Layer.Layer<
           eventCount: 0,
           cause: new CheckoutError({ reason: "unavailable" }),
         });
-      const batch: ProviderBatchPublication = { publish: [], eventCount: 0 };
+      const batch: ProviderBatchPublication = {
+        publish: [],
+        eventCount: 0,
+        projection: { nodeReads: new Map(), threadTouches: new Map() },
+        projectedSequence: undefined,
+      };
       let started = false;
       const result = yield* commitThenPublishNow(
         Effect.sync(() => {
@@ -2706,6 +2712,7 @@ const layerBase: Layer.Layer<
       supersededTerminalTrace,
       writeHistoricalTerminal: (input) => {
         const attempt = commitThenPublish(
+          [input.threadId],
           Effect.gen(function* () {
             const committed = yield* historicalTerminals.readCommitted(input);
             if (committed === "unavailable")
@@ -3085,20 +3092,19 @@ const layerBase: Layer.Layer<
 );
 
 /** Share the worker's outbox instance: enqueue wakeups are in-memory. */
-export const layerFromStores = layerBase;
+export const layerFromStores = layerBase.pipe(Layer.provide(ThreadViewers.layer));
 
 export const layer: Layer.Layer<
   EventSinkV2,
   never,
   EventStore.EventStoreV2 | ProjectionStore.ProjectionStoreV2 | SqlClient.SqlClient
-> = layerBase.pipe(
+> = layerFromStores.pipe(
   Layer.provide(
     Layer.mergeAll(
       CommandReceiptStore.layer,
       EffectOutbox.layer,
       ProjectStore.layer,
       TurnItemPositionStore.layer,
-      ThreadViewers.layer,
     ),
   ),
 );

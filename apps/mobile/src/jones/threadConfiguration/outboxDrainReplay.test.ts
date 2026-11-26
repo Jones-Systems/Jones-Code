@@ -127,6 +127,9 @@ vi.mock("../../state/git", () => ({
 }));
 vi.mock("../../lib/modelOptions", () => ({ isModelSelectionUnavailable: state.validate }));
 vi.mock("../../lib/attachmentUpload", () => ({ prepareTurnAttachments: state.upload }));
+vi.mock("../../state/composer-attachment-uploads", () => ({
+  uploadComposerAttachmentShared: vi.fn(),
+}));
 vi.mock("../../lib/uuid", () => ({
   randomHex: () => {
     throw new Error("Replay allocated a branch");
@@ -186,6 +189,8 @@ vi.mock("../../state/thread-outbox", async () => {
       state.manager.confirmQueued(message),
     updateThreadOutboxMessage: (message: QueuedThreadMessage, revision?: number) =>
       state.manager.update(message, revision),
+    modifyThreadOutboxMessage: (...args: Parameters<typeof state.manager.modify>) =>
+      state.manager.modify(...args),
   };
 });
 vi.mock("../../state/thread-outbox-removal", () => ({
@@ -215,13 +220,13 @@ vi.mock("../../state/use-composer-drafts", async () => {
     composerDraftsAtom: Atom.make({}),
     removeDeliveredCloudQueuedMessage: async () => {},
     appendComposerDraftAttachments: vi.fn(),
-    flushComposerDrafts: vi.fn(),
+    flushComposerDrafts: vi.fn(async () => {}),
     getComposerDraftSnapshot: vi.fn(() => ({ text: "", attachments: [] })),
-    mergeComposerDraftContent: vi.fn(),
+    mergeComposerDraftContent: vi.fn(async () => ({ skippedAttachmentCount: 0 })),
     replaceComposerDraftAttachments: vi.fn(),
-    undoComposerDraftMerge: vi.fn(),
+    undoComposerDraftMerge: vi.fn(async () => {}),
     updateComposerDraftSettings: vi.fn(),
-    waitForComposerDraftsLoaded: vi.fn(),
+    waitForComposerDraftsLoaded: vi.fn(async () => {}),
   };
 });
 

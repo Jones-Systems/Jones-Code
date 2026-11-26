@@ -1323,6 +1323,24 @@ export class EnvironmentConversationLibraryHttpApi extends ConversationLibraryHt
 export class EnvironmentWorkQueueMetadataHttpApi extends WorkQueueMetadataHttpApi {}
 export class EnvironmentSettlementOriginsHttpApi extends SettlementOriginsHttpApi {}
 class EnvironmentSettlementRestoreHttpApi extends SettlementRestoreHttpApi {}
+
+/**
+ * What a linking environment asks of this one over its link, outside `/mcp`. The handler accepts
+ * only a peer link's own session, so no agent's tool list ever carries it.
+ */
+class EnvironmentPeerLinkHttpApi extends HttpApiGroup.make("peerLink").add(
+  HttpApiEndpoint.post("clientPairing", "/api/peer-link/client-pairing", {
+    headers: OptionalBearerHeaders,
+    payload: PeerLinkClientPairingRequest,
+    success: PeerLinkClientPairingCredential,
+    error: [
+      EnvironmentHttpUnauthorizedError,
+      EnvironmentHttpForbiddenError,
+      EnvironmentHttpInternalServerError,
+    ],
+  }),
+) {}
+
 // Path tokens and optional body signatures authenticate webhooks; read raw bytes to verify signatures.
 const WebhookParams = Schema.Struct({
   hookId: TrimmedNonEmptyString,
@@ -1370,4 +1388,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentPersonalWorkstreamsHttpApi)
   .add(EnvironmentImportedHistoryHttpApi)
   .add(EnvironmentPreviewCompanionHttpApi)
-  .add(EnvironmentWebhooksHttpApi) {}
+  .add(EnvironmentWebhooksHttpApi)
+  .add(EnvironmentPeerLinkHttpApi) {}

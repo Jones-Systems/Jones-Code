@@ -94,6 +94,10 @@ vi.mock("react", () => ({
     vi.fn(),
   ],
 }));
+vi.mock("gt-react-native", async (importOriginal) => {
+  const gt = await importOriginal<typeof import("gt-react-native")>();
+  return { ...gt, useMessages: () => gt.mFallback, useLocale: () => "en" };
+});
 vi.mock("expo-crypto", () => ({ randomUUID: () => "uuid" }));
 vi.mock("../jones/importedHistory/runtime", () => ({
   mobileImportedHistoryCommands: { prepare: state.prepareImportedHistory },

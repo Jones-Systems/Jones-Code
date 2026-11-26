@@ -607,10 +607,14 @@ export default defineConfig({
       {
         files: ["apps/web/src/**", "apps/mobile/src/**", "packages/client-runtime/src/**"],
         excludeFiles: [
-          "**/*.{test,spec,bench}.{ts,tsx}",
+          "**/*.{test,spec,bench,testkit,test-support}.{ts,tsx}",
           "**/{test,testkit,testing,fixtures}/**",
+          "**/*TestHarness.{ts,tsx}",
           "**/*.test-fixtures.ts",
-          "**/{test-fixtures,*TestFixtures}.ts",
+          "**/{test-fixtures,testFixtures,*TestFixtures}.ts",
+          // These modules supply synthetic copy to tests only.
+          "packages/client-runtime/src/jones/shellPublication/shellPublicationHarness.ts",
+          "packages/client-runtime/src/voiceReview/fixtures.ts",
           "apps/mobile/src/features/development/**",
           "packages/client-runtime/src/rpc/**",
         ],

@@ -24,6 +24,7 @@ const harness = vi.hoisted(() => ({
   persisted: new Map<string, unknown>(),
   remove: vi.fn(async () => {}),
   write: vi.fn(async () => {}),
+  writeDraft: vi.fn<(value: string) => void>(),
 }));
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
 vi.mock("expo-file-system", () => ({
@@ -39,6 +40,7 @@ vi.mock("expo-file-system", () => ({
       return harness.document;
     }
     write(value: string) {
+      harness.writeDraft(value);
       harness.document = value;
     }
   },
@@ -47,6 +49,9 @@ vi.mock("expo-file-system", () => ({
 vi.mock("../../lib/composerImages", () => ({ removePersistedComposerAttachmentFile: vi.fn() }));
 vi.mock("../../lib/uuid", () => ({ uuidv4: () => "c3-unique-draft", randomHex: () => "c3abcd" }));
 vi.mock("../../lib/attachmentUpload", () => ({ prepareTurnAttachments: vi.fn() }));
+vi.mock("../../state/composer-attachment-uploads", () => ({
+  uploadComposerAttachmentShared: vi.fn(),
+}));
 vi.mock("../../state/entities", () => ({
   useProjects: () => [],
   useServerConfigs: () => new Map(),
@@ -123,9 +128,10 @@ vi.mock("../../state/thread-outbox", async () => {
   }));
   return {
     threadOutboxManager: manager,
-    flushThreadOutbox: async () => {},
+    flushThreadOutbox: () => manager.serialize(async () => {}),
     confirmThreadOutboxMessageQueued: manager.confirmQueued,
     updateThreadOutboxMessage: manager.update,
+    modifyThreadOutboxMessage: manager.modify,
     threadOutboxRevision: manager.revisionOf,
   };
 });
@@ -265,6 +271,7 @@ beforeEach(async () => {
   await drafts.waitForComposerDraftsLoaded();
   harness.remove.mockReset().mockResolvedValue(undefined);
   harness.write.mockReset().mockResolvedValue(undefined);
+  harness.writeDraft.mockReset();
 });
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -552,6 +559,98 @@ describe("mobile evidence-aware editable recovery", () => {
       }
     },
   );
+
+  it("withdraws both recovery merges after acceptance while a late paste is saving", async () => {
+    const message = rejectedCreation(false);
+    const sourceKey = keyOf(message);
+    const targetKey = restoredNewTaskDraftKey(message.messageId);
+    drafts.setComposerDraftText(sourceKey, "Source recovery text");
+    drafts.setComposerDraftText(targetKey, "Original recovery draft");
+    const firstSaved = Promise.withResolvers<void>();
+    const resumeFirst = Promise.withResolvers<void>();
+    const pasteSaved = Promise.withResolvers<void>();
+    const resumePaste = Promise.withResolvers<void>();
+    const merge = drafts.mergeComposerDraftContent;
+    vi.spyOn(drafts, "mergeComposerDraftContent")
+      .mockImplementationOnce(async (...args) => {
+        const result = await merge(...args);
+        firstSaved.resolve();
+        await resumeFirst.promise;
+        return result;
+      })
+      .mockImplementationOnce(async (...args) => {
+        const result = await merge(...args);
+        pasteSaved.resolve();
+        await resumePaste.promise;
+        return result;
+      });
+    const recovering = recoverFailedThreadDraft(message);
+    try {
+      await firstSaved.promise;
+      drafts.appendComposerDraftAttachments(sourceKey, message.attachments, {
+        appendReference: true,
+      });
+      const sourceWithPaste = drafts.getComposerDraftSnapshot(sourceKey);
+      resumeFirst.resolve();
+      await pasteSaved.promise;
+      const targetWithPaste = drafts.getComposerDraftSnapshot(targetKey);
+      drafts.setComposerDraftText(targetKey, `${targetWithPaste.text}\n\nNewer editor text`);
+      observeQueuedThreadDelivery(message, acceptedQueuedThreadDelivery(message));
+      resumePaste.resolve();
+      await recovering;
+      expect(drafts.getComposerDraftSnapshot(sourceKey)).toEqual(sourceWithPaste);
+      expect(drafts.getComposerDraftSnapshot(targetKey)).toMatchObject({
+        text: "Original recovery draft\n\nNewer editor text",
+        attachments: [],
+      });
+    } finally {
+      resumeFirst.resolve();
+      resumePaste.resolve();
+      await recovering;
+    }
+  });
+
+  it("retries a failed late-paste save without duplicating the recovered text", async () => {
+    const message = rejectedCreation(false);
+    const sourceKey = keyOf(message);
+    const targetKey = restoredNewTaskDraftKey(message.messageId);
+    drafts.setComposerDraftText(sourceKey, "Source recovery text");
+    drafts.setComposerDraftText(targetKey, "Original recovery draft");
+    const copied = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const merge = drafts.mergeComposerDraftContent;
+    vi.spyOn(drafts, "mergeComposerDraftContent").mockImplementationOnce(async (...args) => {
+      const result = await merge(...args);
+      copied.resolve();
+      await release.promise;
+      return result;
+    });
+    const recovering = recoverFailedThreadDraft(message);
+    try {
+      await copied.promise;
+      drafts.appendComposerDraftAttachments(sourceKey, message.attachments, {
+        appendReference: true,
+      });
+      const sourceWithPaste = drafts.getComposerDraftSnapshot(sourceKey);
+      harness.writeDraft.mockImplementationOnce(() => {
+        throw new Error("disk full");
+      });
+      const failed = expect(recovering).rejects.toThrow("Composer draft persistence");
+      release.resolve();
+      await failed;
+      expect(drafts.getComposerDraftSnapshot(sourceKey)).toEqual(sourceWithPaste);
+
+      await recoverFailedThreadDraft(message);
+      expect(drafts.getComposerDraftSnapshot(targetKey)).toMatchObject({
+        text: `Original recovery draft\n\n${sourceWithPaste.text}`,
+        attachments: message.attachments,
+      });
+      expect(drafts.getComposerDraftSnapshot(sourceKey).text).toBe("");
+    } finally {
+      release.resolve();
+      await recovering.catch(() => {});
+    }
+  });
 
   it.each([false, true])(
     "consumes only the durable enqueue's picker identity (equal reselection: %s)",

@@ -58,7 +58,7 @@ import {
   retainComposerModelSelectionSnapshot,
   trackComposerModelSelectionInteractions,
 } from "../jones/threadConfiguration/outboxSelection";
-import { buildQueuedThreadCreationStartTurnInput as buildQueuedCreationInput } from "../jones/threadConfiguration/queuedCreation";
+import { buildQueuedThreadCreationStartTurnInput } from "../jones/threadConfiguration/queuedCreation";
 import { buildQueuedFollowUpStartTurnInput } from "../jones/threadConfiguration/queuedFollowUp";
 import { prepareTurnAttachments } from "../lib/attachmentUpload";
 import { changeRequestTermKind } from "../lib/changeRequestTerm";
@@ -135,36 +135,9 @@ import {
 import { clearThreadComposerError, setThreadComposerError } from "./thread-composer-error";
 import { workspaceConnections } from "./workspace";
 
-const threadOutboxDebug = createDebugLogger("thread-outbox");
+export { buildQueuedThreadCreationStartTurnInput };
 
-export function buildQueuedThreadCreationStartTurnInput(
-  input: Parameters<typeof buildQueuedCreationInput>[0],
-) {
-  const turn = buildQueuedCreationInput(input);
-  const { prepareWorktree } = turn.bootstrap;
-  const { repositories, startsFromRepositoryDefaults } = input.creation;
-  if (
-    prepareWorktree === undefined ||
-    (repositories === undefined && !startsFromRepositoryDefaults)
-  ) {
-    return turn;
-  }
-  return {
-    ...turn,
-    bootstrap: {
-      ...turn.bootstrap,
-      prepareWorktree: {
-        ...prepareWorktree,
-        ...(startsFromRepositoryDefaults && prepareWorktree.baseBranch === undefined
-          ? { baseBranch: "HEAD" }
-          : {}),
-        ...(repositories === undefined
-          ? {}
-          : { repositories: repositories.map((path) => ({ path })) }),
-      },
-    },
-  };
-}
+const threadOutboxDebug = createDebugLogger("thread-outbox");
 
 function isRpcClientDecodeDefect(error: unknown): boolean {
   if (

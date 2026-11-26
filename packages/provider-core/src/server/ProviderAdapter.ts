@@ -819,7 +819,12 @@ export interface ProviderAdapterV2TurnInput {
   /** Dispatch-only default; never changes durable requested model options. */
   readonly configuredReasoningEffort?: string;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
-  readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  readonly appContext?: ReadonlyArray<{
+    readonly key: string;
+    readonly text: string;
+    /** ISO time the note was last set, retained when the note is resent. */
+    readonly updatedAt?: string;
+  }>;
   /** Jones-owned recovery callbacks; user checkpoint data remains untrusted context. */
   readonly goalContinuityContext?: GoalContinuityContext;
 }
@@ -850,6 +855,8 @@ export interface ProviderAdapterV2SteerInput {
   readonly message: ProviderAdapterV2TurnMessage;
   /** The selection sent with the message when it differs from the running turn's. */
   readonly modelSelection?: ModelSelection;
+  /** The thread's MCP app notes. The adapter sends notes the agent has not seen yet. */
+  readonly appContext?: ProviderAdapterV2TurnInput["appContext"];
   /** Rechecks this steer’s control authority after asynchronous preparation. */
   readonly revalidateSteerAdmission?: Effect.Effect<void, ProviderAdapterV2Error>;
 }

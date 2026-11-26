@@ -114,9 +114,9 @@ const prepareDeletedLegacyThread = Effect.fn("prepareDeletedLegacyThread")(funct
 });
 
 it.effect.each([
-  ["populated foreign schema", "JonesForeignHistoryMaintenanceBlockedError"],
-  ["missing settlement proof", "JonesSettlementProofMigrationRequiredError"],
-] as const)("direct purge and sweep refuse %s before writing", (fixture, blocker) =>
+  { fixture: "populated foreign schema", blocker: "JonesForeignHistoryMaintenanceBlockedError" },
+  { fixture: "missing settlement proof", blocker: "JonesSettlementProofMigrationRequiredError" },
+] as const)("direct purge and sweep refuse $fixture before writing", ({ fixture, blocker }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;

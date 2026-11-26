@@ -543,7 +543,9 @@ it("offers single-thread actions from the header even when Workstream filters hi
         const previousCalls = assign.mock.calls.length;
         await userEvent.click(trigger, { button: "right", timeout: 3000 });
         await expect
-          .element(page.getByRole("menuitem", { name: "Mark unread" }), { timeout: 3000 })
+          .element(page.getByRole("menuitem", { name: "Rename thread", exact: true }), {
+            timeout: 3000,
+          })
           .toBeVisible();
         await userEvent.click(page.getByRole("menuitem", { name: "Assign thread" }), {
           timeout: 3000,

@@ -62,7 +62,6 @@ import * as ContextHandoffService from "../ContextHandoffService.ts";
 import * as EffectOutbox from "../EffectOutbox.ts";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as EventSink from "../EventSink.ts";
-import * as ThreadViewers from "../ThreadViewers.ts";
 import * as EventStore from "../EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Orchestrator from "../Orchestrator.ts";
@@ -516,6 +515,7 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
   | EffectWorker.OrchestrationEffectExecutorV2
   | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
+  | EventStore.EventStoreV2
   | CommandOutputRecorder.CommandOutputRecorder
   | ProviderSessionManager.ProviderSessionManagerV2,
   Error | ReplayInfrastructureError
@@ -535,6 +535,7 @@ export function layerWithRegistry<Error>(
   | EffectWorker.OrchestrationEffectExecutorV2
   | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
+  | EventStore.EventStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
   | CommandOutputRecorder.CommandOutputRecorder
   | ThreadCommandExecutor.ThreadCommandExecutor,
@@ -553,6 +554,7 @@ export function layerWithRegistry<Error>(
     ),
     Layer.effect(EffectOutbox.EffectOutboxV2, EffectOutbox.EffectOutboxV2),
     Layer.effect(EventSink.EventSinkV2, EventSink.EventSinkV2),
+    Layer.effect(EventStore.EventStoreV2, EventStore.EventStoreV2),
     Layer.effect(
       ProviderSessionManager.ProviderSessionManagerV2,
       ProviderSessionManager.ProviderSessionManagerV2,
@@ -624,6 +626,7 @@ export function layerWithRegistryAndServices<Error>(
   | EffectOutbox.EffectOutboxV2
   | EffectWorker.OrchestrationEffectWorkerV2
   | EventSink.EventSinkV2
+  | EventStore.EventStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
   | CommandOutputRecorder.CommandOutputRecorder
   | ThreadCommandExecutor.ThreadCommandExecutor,
@@ -1031,7 +1034,7 @@ export function layerWithRegistryAndServices<Error>(
         layerServerSettings,
         layerThreadManagementProvided,
         layerStores,
-        ProjectionMaintenance.layer.pipe(Layer.provide(layerDatabase)),
+        ProjectionMaintenance.layer.pipe(Layer.provide(layerStores)),
       ),
     ),
   );

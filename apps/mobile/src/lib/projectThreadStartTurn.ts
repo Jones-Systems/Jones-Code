@@ -40,6 +40,10 @@ export interface ProjectThreadStartTurnSpec {
   readonly startFromOrigin: boolean;
   readonly baseFreshness?: OrchestrationV2WorktreeBaseFreshness;
   readonly serverResolvesWorktreeBase?: boolean;
+  /** Tracked repositories a new worktree takes, by path. */
+  readonly worktreeRepositories?: ReadonlyArray<string>;
+  /** The project folder itself is not a repository. */
+  readonly startsFromRepositoryDefaults?: boolean;
   readonly worktreeBranchName: string;
 }
 
@@ -49,6 +53,8 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
     m,
   );
   const isWorktree = spec.workspaceMode === "worktree";
+  // For a plain project folder the launch ignores this ref and uses each repository's default.
+  const baseBranch = spec.branch ?? (spec.startsFromRepositoryDefaults ? "HEAD" : undefined);
   return {
     commandId: CommandId.make(spec.commandId),
     creationSource: "mobile" as const,
@@ -80,13 +86,16 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
         ? {
             prepareWorktree: {
               projectCwd: spec.projectCwd,
-              ...(spec.branch !== null ? { baseBranch: spec.branch } : {}),
+              ...(baseBranch === undefined ? {} : { baseBranch }),
               branch: spec.worktreeBranchName,
               ...(spec.baseFreshness !== undefined
                 ? { baseFreshness: spec.baseFreshness }
                 : spec.startFromOrigin
                   ? { startFromOrigin: true }
                   : {}),
+              ...(spec.worktreeRepositories === undefined
+                ? {}
+                : { repositories: spec.worktreeRepositories.map((path) => ({ path })) }),
             },
             runSetupScript: true,
           }

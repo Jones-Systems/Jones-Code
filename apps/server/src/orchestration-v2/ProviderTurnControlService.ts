@@ -513,6 +513,10 @@ export const layer: Layer.Layer<
             batchPayload = plan;
             capturedMessages = messages.map((row) => row!);
           }
+          const appContext = yield* McpAppModelContext.forProvider(
+            mcpAppModelContext,
+            input.threadId,
+          );
           const fresh = yield* projections.getProviderControlContext(input.threadId, input);
           const live = yield* sessions.get(input.providerSessionId, { touchActivity: false });
           const stopped =
@@ -564,10 +568,6 @@ export const layer: Layer.Layer<
                   ? "The captured steering target or persisted batch changed before dispatch."
                   : new GoalNotificationNotDelivered(),
             });
-          const appContext = yield* McpAppModelContext.forProvider(
-            mcpAppModelContext,
-            input.threadId,
-          );
           if (yield* eventSink.hasAttributedRuntimeStop(input.threadId, run.id)) {
             return yield* new ProviderTurnControlError({
               threadId: input.threadId,

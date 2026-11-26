@@ -913,7 +913,7 @@ it.effect("current independent Jones history needs no migration write transactio
 it.effect("Jones pending batch rollback leaves the completed upstream head durable", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 96 });
+    yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
     yield* runJonesMigrations(originals);
     const before = yield* readLedger;
     const failedBatch = runJonesMigrations([

@@ -1787,6 +1787,7 @@ export function mergeComposerDraftContentState(
   current: Record<string, ComposerDraft>,
   draftKey: string,
   content: ComposerDraftContent,
+  restoreAttachments = false,
 ): Record<string, ComposerDraft> {
   const existing = normalizeDraft(current[draftKey]);
   if (content.sourceShareId && existing.importedShareIds?.includes(content.sourceShareId)) {
@@ -1800,10 +1801,10 @@ export function mergeComposerDraftContentState(
     attachmentIds.add(attachment.id);
     return true;
   });
-  const attachments = [...existing.attachments, ...incomingAttachments].slice(
-    0,
-    PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  );
+  const combinedAttachments = [...existing.attachments, ...incomingAttachments];
+  const attachments = restoreAttachments
+    ? combinedAttachments
+    : combinedAttachments.slice(0, PROVIDER_SEND_TURN_MAX_ATTACHMENTS);
   const text = mergeComposerDraftText(existing.text, content.text);
   const context = mergeReferencedComposerContext(text, existing.context, content.context);
   const importedShareIds = content.sourceShareId
@@ -1840,7 +1841,11 @@ export function mergeComposerDraftContentState(
 export async function mergeComposerDraftContent(
   draftKey: string,
   content: ComposerDraftContent,
-  options?: { readonly onMerged?: (draft: ComposerDraft) => void },
+  options?: {
+    readonly onMerged?: (draft: ComposerDraft) => void;
+    /** Recovery preserves every file and leaves trimming to the editor. */
+    readonly restoreAttachments?: boolean;
+  },
 ): Promise<{ readonly skippedAttachmentCount: number }> {
   ensureComposerDraftsLoaded();
   if (loadPromise !== null) {
@@ -1851,7 +1856,12 @@ export async function mergeComposerDraftContent(
     persistTimer = null;
   }
   const current = appAtomRegistry.get(composerDraftsAtom);
-  const next = mergeComposerDraftContentState(current, draftKey, content);
+  const next = mergeComposerDraftContentState(
+    current,
+    draftKey,
+    content,
+    options?.restoreAttachments,
+  );
   const currentAttachmentIds = new Set(
     normalizeDraft(current[draftKey]).attachments.map((attachment) => attachment.id),
   );
@@ -1942,10 +1952,12 @@ export function undoComposerDraftMergeState(
   return withComposerDraft(current, draftKey, draft);
 }
 
+/** Withdraw a merge and any following recovery merge in one draft write. */
 export async function undoComposerDraftMerge(
   draftKey: string,
   snapshot: ComposerDraft,
   merged: ComposerDraft,
+  followingMerge?: { readonly before: ComposerDraft; readonly after: ComposerDraft },
 ): Promise<void> {
   ensureComposerDraftsLoaded();
   if (loadPromise !== null) {
@@ -1955,12 +1967,11 @@ export async function undoComposerDraftMerge(
     clearTimeout(persistTimer);
     persistTimer = null;
   }
-  const next = undoComposerDraftMergeState(
-    appAtomRegistry.get(composerDraftsAtom),
-    draftKey,
-    snapshot,
-    merged,
-  );
+  const current = appAtomRegistry.get(composerDraftsAtom);
+  const beforeFollowing = followingMerge
+    ? undoComposerDraftMergeState(current, draftKey, followingMerge.before, followingMerge.after)
+    : current;
+  const next = undoComposerDraftMergeState(beforeFollowing, draftKey, snapshot, merged);
   appAtomRegistry.set(composerDraftsAtom, next);
   await persistenceQueue.run(() =>
     writePersistedComposerState(next, appAtomRegistry.get(stickyComposerModelSelectionAtom)),

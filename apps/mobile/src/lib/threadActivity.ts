@@ -1506,6 +1506,7 @@ function latestRunsEqual(left: ThreadFeedLatestRun | null, right: ThreadFeedLate
       left.startedAt === right.startedAt &&
       left.completedAt === right.completedAt &&
       left.turnEnded === right.turnEnded &&
+      left.providerActivityStarted === right.providerActivityStarted &&
       left.providerStartingLabel === right.providerStartingLabel &&
       left.providerStartingLabelMsg === right.providerStartingLabelMsg &&
       left.providerStarting?.driver === right.providerStarting?.driver)
@@ -2009,13 +2010,18 @@ export function deriveThreadFeedPresentation(
         activeWorkStartedAt,
         activeRunId,
         waitingOn > 0
-          ? waitingOnSubagentsLabel(waitingOn)
+          ? waitingOnSubagentsLabel(waitingOn, resolve)
           : activityLabel === "Thinking"
             ? zen
               ? liveAnswerPreview(feed)
               : null
-            : activityLabel,
-        latestRun?.providerStartingLabel,
+            : activityLabel === "Starting"
+              ? resolve(msg("Starting"))
+              : resolve(msg("Connecting")),
+        latestRun?.providerStartingLabelMsg === undefined
+          ? latestRun?.providerStartingLabel
+          : resolve(latestRun.providerStartingLabelMsg),
+        latestRun?.providerStarting?.driver,
       ),
     );
   }

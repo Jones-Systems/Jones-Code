@@ -174,6 +174,7 @@ describe("project thread title", () => {
       worktreePath: null,
       startFromOrigin: false,
       worktreeRepositories: ["/workspace/api"],
+      startsFromRepositoryDefaults: true,
       worktreeBranchName: "t3/new",
     });
 

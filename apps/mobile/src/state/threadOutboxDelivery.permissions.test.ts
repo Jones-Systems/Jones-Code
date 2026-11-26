@@ -239,7 +239,7 @@ vi.mock("./use-composer-drafts", async () => {
         ...settings,
       }),
     ),
-    waitForComposerDraftsLoaded: vi.fn(),
+    waitForComposerDraftsLoaded: vi.fn(async () => {}),
   };
 });
 
@@ -348,10 +348,19 @@ beforeEach(() => {
                   worktree !== undefined
                     ? {
                         type: "worktree",
-                        baseRef: worktree.baseBranch,
-                        branch: worktree.branch,
-                        baseFreshness: worktree.baseFreshness,
-                        startFromOrigin: worktree.startFromOrigin,
+                        ...(worktree.baseBranch === undefined
+                          ? {}
+                          : { baseRef: worktree.baseBranch }),
+                        ...(worktree.branch === undefined ? {} : { branch: worktree.branch }),
+                        ...(worktree.baseFreshness === undefined
+                          ? {}
+                          : { baseFreshness: worktree.baseFreshness }),
+                        ...(worktree.startFromOrigin === undefined
+                          ? {}
+                          : { startFromOrigin: worktree.startFromOrigin }),
+                        ...(worktree.repositories === undefined
+                          ? {}
+                          : { repositories: worktree.repositories }),
                       }
                     : creation.worktreePath
                       ? {
@@ -851,6 +860,7 @@ describe("issued request persistence", () => {
       });
       await runDrain();
       const accepted = state.start.mock.calls[0]?.[0].input;
+      expect(accepted).toBeDefined();
       if (kind === "follow-up") {
         expect(accepted.payload).toMatchObject({
           modelSelection: state.thread.modelSelection,

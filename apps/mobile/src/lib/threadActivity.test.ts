@@ -1377,7 +1377,13 @@ describe("buildThreadFeed", () => {
       result: null,
     });
     const startedAt = "2026-06-20T00:00:01.000Z";
-    const latestRun = { runId, status: "running" as const, startedAt, completedAt: null };
+    const latestRun = {
+      runId,
+      status: "running" as const,
+      startedAt,
+      completedAt: null,
+      providerActivityStarted: true,
+    };
     const present = (tail: ReadonlyArray<OrchestrationV2TurnItem>) =>
       deriveThreadFeedPresentation(
         buildThreadFeed([

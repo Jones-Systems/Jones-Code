@@ -1064,7 +1064,7 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-    const completion =
+    const trackedCompletion =
       observedCompletion === undefined
         ? undefined
         : yield* Effect.cached(
@@ -1075,11 +1075,15 @@ export const make = Effect.gen(function* () {
                 )
               : observedCompletion,
           );
-    if (!owned && completion)
-      yield* completion.pipe(
+    if (!owned && trackedCompletion)
+      yield* trackedCompletion.pipe(
         Effect.catchCause(() => Effect.void),
         Effect.forkIn(lifetime),
       );
+    const completion =
+      !owned && observeRequested
+        ? trackedCompletion?.pipe(Effect.onInterrupt(() => cancelPendingWrite))
+        : trackedCompletion;
 
     return {
       status: "started",

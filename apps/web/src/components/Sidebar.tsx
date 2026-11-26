@@ -123,14 +123,7 @@ import {
   type OlderSettledScope,
 } from "@t3tools/client-runtime/state/threads";
 
-import {
-  CheckIcon,
-  ChevronDownIcon,
-  FolderIcon,
-  FolderPlusIcon,
-  PlusIcon,
-  SettingsIcon,
-} from "lucide-react";
+import { CheckIcon, ChevronDownIcon, FolderIcon, PlusIcon, SettingsIcon } from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
@@ -315,7 +308,6 @@ import {
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
-import { TooltipScrollDismissArea } from "./ui/tooltip";
 import {
   composerDraftHasUserContent,
   DraftId,
@@ -1633,16 +1625,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const traversalThreadKeys = workstreamsEnabled
     ? [...workstreamActiveThreads.traversal, ...orderedShelfThreads].map(threadShellKey)
     : fallbackOrderedThreadKeys;
-  const hiddenThreadNeighbor = useHiddenPersonalSidebarNeighbor(
-    workstreamsEnabled ? routeRowThreadKey : null,
-    traversalThreadKeys,
-    () =>
-      [
-        ...workstreamGrouping.ungrouped,
-        ...workstreamGrouping.groups.flatMap((group) => group.threads),
-        ...orderedShelfThreads,
-      ].map(threadShellKey),
-  );
   const threadByKey = orderedThreads
     ? new Map([
         ...fallbackThreadByKey,
@@ -1735,13 +1717,32 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     draftTerminalLabels,
     excludedEnvironmentIds,
   );
-  // Draft rows sit above the threads, so jumps and traversal reach them first.
-  // Search hides them, so they drop out while it is open.
-  const listedDraftIds = isSearchingThreads ? EMPTY_DRAFT_IDS : draftIds;
+  // Draft rows follow Workstreams when enabled and lead the list otherwise.
+  const listedDraftIds = statusFilter === "all" && !isSearchingThreads ? draftIds : EMPTY_DRAFT_IDS;
   const draftIdByRowKey = new Map<string, DraftId>(listedDraftIds.map((id) => [`draft:${id}`, id]));
-  const orderedRowKeys = [...draftIdByRowKey.keys(), ...orderedThreadKeys];
+  const draftRowKeys = [...draftIdByRowKey.keys()];
+  const orderedRowKeys = orderedThreadKeys.toSpliced(
+    workstreamsEnabled ? workstreamActiveThreads.visible.length : 0,
+    0,
+    ...draftRowKeys,
+  );
+  const traversalRowKeys = traversalThreadKeys.toSpliced(
+    workstreamsEnabled ? workstreamActiveThreads.traversal.length : 0,
+    0,
+    ...draftRowKeys,
+  );
   const routeDraftRowKey = `draft:${routeDraftIdForRows}`;
   const routeRowKey = draftIdByRowKey.has(routeDraftRowKey) ? routeDraftRowKey : routeRowThreadKey;
+  const hiddenRowNeighbor = useHiddenPersonalSidebarNeighbor(
+    workstreamsEnabled ? routeRowKey : null,
+    traversalRowKeys,
+    () => [
+      ...workstreamGrouping.ungrouped.map(threadShellKey),
+      ...workstreamGrouping.groups.flatMap((group) => group.threads.map(threadShellKey)),
+      ...draftRowKeys,
+      ...orderedShelfThreads.map(threadShellKey),
+    ],
+  );
 
   const jumpLabelByKey = (() => {
     const mapping = new Map<string, string>();
@@ -3512,10 +3513,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       if (traversalDirection !== null) {
         navigateToRowKey(
           resolveAdjacentThreadId({
-            threadIds: traversalThreadKeys,
-            currentThreadId: routeRowThreadKey,
+            threadIds: traversalRowKeys,
+            currentThreadId: routeRowKey,
             direction: traversalDirection,
-          }) ?? hiddenThreadNeighbor(traversalDirection),
+          }) ?? hiddenRowNeighbor(traversalDirection),
         );
         return;
       }
@@ -3526,15 +3527,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
   }, [
-    hiddenThreadNeighbor,
+    draftIdByRowKey,
+    hiddenRowNeighbor,
     keybindings,
     navigateToDraft,
     navigateToThread,
-    orderedThreadKeys,
-    traversalThreadKeys,
-    routeRowThreadKey,
+    orderedRowKeys,
+    routeRowKey,
     routeThreadRef,
     threadByKey,
+    traversalRowKeys,
   ]);
 
   const showJumpHints = useThreadJumpHintsVisible(keybindings, routeThreadRef);

@@ -1,6 +1,6 @@
 import { compareAndSetModelSelection } from "../jones/scheduledTasks/compareAndSetModelSelection.ts";
 import { makePendingWebhookRuns } from "../jones/scheduledTasks/webhookRunRecovery.ts";
-import { hasQueuedWake, queuedWakeSkipReason } from "../jones/scheduledTasks/queuedWake.ts";
+import { queuedWakeSkipReason } from "../jones/scheduledTasks/queuedWake.ts";
 import { makeFifoPermit, type FifoPermit } from "../jones/scheduledTasks/fifoPermit.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import { assertScheduledTarget } from "../jones/workspaceRetirement/ScheduledTaskAdmission.ts";
@@ -1086,22 +1086,20 @@ export const layer = Layer.effect(
           return { task: active, threadId: null, dispatchFailed: false };
         }
         // An unreadable queue fails closed, including for one-shot schedules.
-        if (
-          trigger === "scheduled" &&
-          active.schedule.type !== "once" &&
-          active.threadId !== null
-        ) {
+        if (trigger === "scheduled" && active.threadId !== null) {
           const occurrence = yield* queuedOccurrence(
             active.id,
             ThreadId.make(active.threadId),
-          ).pipe(Effect.orElseSucceed(() => null));
+          ).pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not check queued schedule task runs.", { taskId: active.id, cause }),
+            ),
+          );
           if (occurrence !== null) {
-            yield* rescheduleMissedRun(
-              active,
-              startedAt,
-              "previous occurrence still queued",
-              occurrence === "held" ? HELD_OCCURRENCE_ERROR : undefined,
-            );
+            yield* rescheduleMissedRun(active, startedAt, {
+              type: occurrence === "held" ? "held" : "skipped",
+              message: occurrence === "held" ? HELD_OCCURRENCE_ERROR : queuedWakeSkipReason,
+            });
             return { task: active, threadId: null, dispatchFailed: false };
           }
         }
@@ -1339,7 +1337,7 @@ export const layer = Layer.effect(
     const rescheduleMissedRun = Effect.fn("ScheduledTaskService.rescheduleMissedRun")(function* (
       task: ScheduledTask,
       now: DateTime.DateTime,
-      outcome: { readonly type: "skipped" | "missed"; readonly message: string },
+      outcome: { readonly type: "skipped" | "missed" | "held"; readonly message: string },
     ) {
       const next = nextRunAt(task, now);
       yield* Effect.logInfo("Skipping schedule task run", {
@@ -1352,17 +1350,14 @@ export const layer = Layer.effect(
       const updated = yield* sql`
         UPDATE scheduled_tasks
         SET next_run_at = ${next},
-            updated_at = ${iso(now)}
-            ${
-              runError === undefined
-                ? sql``
-                : sql`, last_run_status = CASE
-                    WHEN last_run_status IS ${task.lastRunStatus} AND last_run_error IS ${task.lastRunError}
-                    THEN 'failed' ELSE last_run_status END,
-                  last_run_error = CASE
-                    WHEN last_run_status IS ${task.lastRunStatus} AND last_run_error IS ${task.lastRunError}
-                    THEN ${runError} ELSE last_run_error END`
-            }
+            updated_at = ${iso(now)},
+            last_run_status = CASE
+              WHEN ${outcome.type !== "skipped"} AND last_run_status IS ${task.lastRunStatus}
+                AND last_run_error IS ${task.lastRunError}
+              THEN 'failed' ELSE last_run_status END,
+            last_run_error = CASE
+              WHEN last_run_status IS ${task.lastRunStatus} AND last_run_error IS ${task.lastRunError}
+              THEN ${outcome.message} ELSE last_run_error END
         WHERE task_id = ${task.id}
           AND next_run_at IS ${task.nextRunAt}
           AND last_run_at IS ${task.lastRunAt}
@@ -1411,12 +1406,11 @@ export const layer = Layer.effect(
           ({ task, dueAt }) =>
             Effect.suspend(() =>
               isMissedFixedTimeRun(task.schedule, dueAt, now)
-                ? rescheduleMissedRun(
-                    task,
-                    now,
-                    "missed",
-                    "Missed a scheduled run because the server was not running at that time.",
-                  )
+                ? rescheduleMissedRun(task, now, {
+                    type: "missed",
+                    message:
+                      "Missed a scheduled run because the server was not running at that time.",
+                  })
                 : runTask(task, "scheduled"),
             ).pipe(
               Effect.catch((cause) =>
@@ -2691,18 +2685,14 @@ export const layer = Layer.effect(
               outcome: "duplicate",
             } as const);
           }
-          yield* observe("accepted");
-          const permit = yield* webhookPermit(task.id);
-          yield* runWebhookDelivery(task, deliveryId, rendered.prompt).pipe(
-            permit.withPermits(1),
-            Effect.ensuring(release),
-            // A relay-delivered webhook is traced to the relay; the run it starts is local work
-            // whose spans carry workspace paths.
-            withLocalTracing,
-            Effect.forkIn(serviceScope),
-          );
-          // Dispatch owns the accepted delivery now; retries must keep its claim.
-          claimAcquired = false;
+          acceptedRun = { prompt: rendered.prompt, release };
+          yield* pendingWebhookRuns.record({
+            deliveryId,
+            taskId: task.id,
+            taskCreatedAt: task.createdAt,
+            receivedAt: iso(receivedAt),
+            prompt: rendered.prompt,
+          });
           return { _tag: "accepted" as const, deliveryId, outcome: "accepted" as const };
         }).pipe(
           (effect) =>
@@ -2724,6 +2714,8 @@ export const layer = Layer.effect(
                   yield* observe("accepted");
                   yield* runWebhookDelivery(task, deliveryId, acceptedRun.prompt).pipe(
                     Effect.ensuring(acceptedRun.release),
+                    // Relay admission and the local workspace run use separate trace contexts.
+                    withLocalTracing,
                     Effect.forkIn(serviceScope),
                   );
                 }
@@ -2830,7 +2822,14 @@ export const layer = Layer.effect(
                 if (taskJson !== null)
                   yield* sql`UPDATE scheduled_task_webhook_pending SET task_json = ${taskJson} WHERE delivery_id = ${entry.delivery_id}`;
                 yield* sql`UPDATE scheduled_task_webhook_deliveries SET outcome = 'accepted', error = NULL, rendered_prompt = ${loggedWebhookPrompt(rendered.prompt)}, missing_fields_json = ${encodeMissingFieldsJson(rendered.missing)} WHERE delivery_id = ${entry.delivery_id}`;
-                if (!(yield* runWebhookDelivery(task, entry.delivery_id, rendered.prompt))) return;
+                if (
+                  !(yield* runWebhookDeliveryWithPermitHeld(
+                    task,
+                    entry.delivery_id,
+                    rendered.prompt,
+                  ))
+                )
+                  return;
               }
               yield* remove;
             }

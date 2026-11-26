@@ -11385,6 +11385,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   const providerTurnId = activeTurn.providerTurnId;
                   const producer = currentProducer;
                   const codexInput = yield* toCodexInput(turnInput);
+                  // Steer has no additionalContext field, so send changed notes as quoted input.
+                  const sentContext = (yield* Ref.get(additionalContextByThread)).get(threadId);
+                  const unsentNotes = (turnInput.appContext ?? []).filter(
+                    (entry) => sentContext?.[entry.key]?.value !== entry.text,
+                  );
+                  const steerInput = [
+                    ...unsentNotes.map((entry) => ({
+                      type: "text" as const,
+                      text: `<external_${entry.key}>${entry.text}</external_${entry.key}>`,
+                    })),
+                    ...codexInput,
+                  ];
                   // The continuation's pending handoff resolves while registerRootTurn
                   // is still adopting it, before it enters activeTurns.
                   const adopting =
@@ -11420,11 +11432,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     producerScope: producer.scope,
                     send: Effect.suspend(() =>
                       currentTarget()
-                        ? producer.client.request("turn/steer", {
-                            expectedTurnId: capturedTurn.nativeTurnId,
-                            input: codexInput,
-                            threadId,
-                          })
+                        ? producer.client
+                            .request("turn/steer", {
+                              expectedTurnId: capturedTurn.nativeTurnId,
+                              input: steerInput,
+                              threadId,
+                            })
+                            .pipe(
+                              Effect.tap(() =>
+                                unsentNotes.length === 0
+                                  ? Effect.void
+                                  : Ref.update(additionalContextByThread, (current) =>
+                                      currentTarget()
+                                        ? new Map(current).set(threadId, {
+                                            ...current.get(threadId),
+                                            ...Object.fromEntries(
+                                              unsentNotes.map((entry) => [
+                                                entry.key,
+                                                { kind: "untrusted" as const, value: entry.text },
+                                              ]),
+                                            ),
+                                          })
+                                        : current,
+                                    ),
+                              ),
+                            )
                         : Effect.fail(
                             CodexErrors.CodexAppServerRequestError.invalidRequest(
                               "Codex steer target changed before dispatch.",

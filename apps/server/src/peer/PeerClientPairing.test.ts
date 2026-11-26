@@ -7,16 +7,20 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthRelayConfigureScope,
+  AuthSessionId,
   AuthStandardClientScopes,
   AuthTerminalOperateScope,
   type ExecutionEnvironmentDescriptor,
+  type PeerLink,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpBody from "effect/http/HttpBody";
@@ -297,4 +301,64 @@ it.effect("a linked environment from before client pairing is never asked", () =
       expect(yield* Ref.get(b.bearers)).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each(["during resolution", "before dispatch"] as const)(
+  "client pairing stays within the captured link generation when replaced %s",
+  (stage) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const url = "https://peer.invalid";
+      const link: PeerLink = {
+        environmentId: box.environmentId,
+        label: box.label,
+        urls: [url],
+        access: "full-access",
+        linkedAt: now,
+        expiresAt: DateTime.addDuration(now, "1 minute"),
+        lastReachedAt: null,
+        lastError: null,
+      };
+      const generation = yield* Ref.make("original-link");
+      const replaceLink = Ref.set(generation, "replacement-link");
+      const peerLinks = Layer.mock(PeerLinks.PeerLinks)({
+        enabled: Effect.succeed(true),
+        currentGeneration: () => Ref.get(generation).pipe(Effect.map(Option.some)),
+        get: () => Effect.succeedSome(link),
+        resolve: () =>
+          (stage === "during resolution" ? replaceLink : Effect.void).pipe(
+            Effect.andThen(Ref.get(generation)),
+            Effect.map((resolvedGeneration) => ({
+              link,
+              url,
+              token: "synthetic-link-token",
+              generation: resolvedGeneration,
+              capabilities: box.capabilities,
+            })),
+          ),
+      });
+      const auth = Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+        listClientSessions: () =>
+          (stage === "before dispatch" ? replaceLink : Effect.void).pipe(Effect.as([])),
+      });
+      const http = HttpClient.make(() =>
+        Effect.die("Pairing must stay within its link generation"),
+      );
+      const result = yield* PeerClientPairing.PeerClientPairing.use((pairing) =>
+        pairing.request(
+          { environmentId: link.environmentId },
+          { sessionId: AuthSessionId.make("synthetic-client"), scopes: AuthStandardClientScopes },
+        ),
+      ).pipe(
+        Effect.provide(
+          PeerClientPairing.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(peerLinks, auth, Layer.succeed(HttpClient.HttpClient, http)),
+            ),
+          ),
+        ),
+      );
+
+      expect(result).toMatchObject({ type: "unsupported", reason: "unreachable" });
+    }),
 );

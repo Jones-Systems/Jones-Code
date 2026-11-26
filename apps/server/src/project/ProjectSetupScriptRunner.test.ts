@@ -136,7 +136,7 @@ const makeHarness = Effect.fn(function* (options: {
     Effect.suspend(() =>
       Effect.forEach([...listeners], (listener) => listener(terminalEvent), { discard: true }),
     );
-  return { start, listeners, writes, outputLines, emit };
+  return { start, listeners, opens, openedSessions, writes, outputLines, emit };
 });
 
 const setup = Effect.fn(function* (
@@ -806,10 +806,11 @@ const runObservedSetup = Effect.fnUntraced(function* (command: string) {
   const { writes, outputLines, emit, completion } = yield* setup({ command, shell: observedShell });
   yield* emit({ ...event, type: "output", data: "\x1b[?2004h" });
   const submitted = yield* Queue.take(writes);
+  const shellInput = submitted.replace("\x1b[200~", "").replace("\x1b[201~", "");
 
   // Enter becomes a newline at the terminal boundary; transport assertions below
   // cover line-editor submissions and canonical TTY limits that bash -c bypasses.
-  const child = yield* runObservedShell(["-c", submitted.replaceAll("\r", "\n")]);
+  const child = yield* runObservedShell(["-c", shellInput.replaceAll("\r", "\n")]);
   yield* emit({ ...event, type: "output", data: submitted + "\n" });
   yield* emit({ ...event, type: "output", data: child.stdout + child.stderr });
   yield* emit({ ...event, type: "closed" });

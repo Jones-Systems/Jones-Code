@@ -17,6 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
@@ -184,6 +185,7 @@ const make = Effect.gen(function* () {
         message: PeerLinks.LINKED_ENVIRONMENTS_OFF,
       });
     }
+    const generation = yield* links.currentGeneration(input.environmentId);
     const stored = yield* links.get(input.environmentId);
     if (Option.isNone(stored)) {
       return yield* new PeerLinkError({
@@ -213,6 +215,9 @@ const make = Effect.gen(function* () {
     const resolved = yield* links.resolve(input.environmentId).pipe(Effect.option);
     if (Option.isNone(resolved)) return unsupported("unreachable");
     const peer = resolved.value;
+    if (Option.isNone(generation) || generation.value !== peer.generation) {
+      return unsupported("unreachable");
+    }
     const request = payload(yield* clientLabelOf(sessionId));
     if (
       peer.capabilities.linkClientPairing !== true ||
@@ -224,12 +229,19 @@ const make = Effect.gen(function* () {
     const api = yield* HttpApiClient.make(ClientPairingApi, { baseUrl: peer.url }).pipe(
       Effect.provideService(HttpClient.HttpClient, httpClient),
     );
+    // Only the link captured at the start can authorize this pairing request.
+    const current = yield* links.currentGeneration(environmentId);
+    if (Option.isNone(current) || current.value !== peer.generation) {
+      return unsupported("unreachable");
+    }
     return yield* api.peerLink
       .clientPairing({
         headers: { authorization: `Bearer ${peer.token}` },
         payload: request,
       })
       .pipe(
+        // Resolve verified this origin. A redirect has not proved its identity.
+        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
         Effect.timeout(PeerLinks.probeTimeout(peer.url)),
         Effect.map((issued): PeerLinkClientPairingResult => ({
           type: "credential",

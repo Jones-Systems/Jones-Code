@@ -24,9 +24,18 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
-import { useProjects, useServerConfigs, useQuietThreadShells } from "../state/entities";
+import {
+  readThreadShell,
+  useProjects,
+  useServerConfigs,
+  useQuietThreadShells,
+} from "../state/entities";
 import { useConnectedEnvironmentIds, usePrimaryEnvironmentId } from "../state/environments";
-import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
+import {
+  ensureEnvironmentScope,
+  readEnvironmentScope,
+  useEnvironmentScope,
+} from "../state/session";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { readLocalApi } from "../localApi";
@@ -41,6 +50,7 @@ vi.mock(import("../state/olderSettledShelf"), async (original) => {
   return { ...actual, useOlderSettledShelf: vi.fn(actual.useOlderSettledShelf) };
 });
 vi.mock("../state/entities", { spy: true });
+vi.mock("../state/environments", { spy: true });
 vi.mock("../jones/navigation/steadySidebar", () => ({
   useSteadySidebarThreads: () => useQuietThreadShells(),
   sidebarRowsAreHeld: () => false,
@@ -161,6 +171,8 @@ describe("sidebar project folder new thread", () => {
       environmentId: dev1,
       repositoryIdentity,
     };
+    stack.defer(() => vi.mocked(usePrimaryEnvironmentId).mockReset());
+    stack.defer(() => vi.mocked(useConnectedEnvironmentIds).mockReset());
     vi.mocked(usePrimaryEnvironmentId).mockReturnValue(primary);
     vi.mocked(useConnectedEnvironmentIds).mockReturnValue([primary, dev1]);
     vi.mocked(useProjects).mockReturnValue([primaryCopy, dev1Copy]);
@@ -459,11 +471,21 @@ describe("sidebar thread click", () => {
 
 describe("sidebar thread menu", () => {
   it("tells the menu whether the keyboard opened it", async () => {
+    using stack = new DisposableStack();
     const activeProject = project("active");
     const thread = threadShell(activeProject.id, 0);
     const threadRef = { environmentId: activeProject.environmentId, threadId: thread.id };
     const show = vi.fn().mockResolvedValue(null);
+    stack.defer(() => vi.mocked(readLocalApi).mockReset());
+    stack.defer(() => vi.mocked(readThreadShell).mockReset());
+    stack.defer(() => vi.mocked(ensureEnvironmentScope).mockReset());
     vi.mocked(readLocalApi).mockReturnValue({ contextMenu: { show } } as unknown as LocalApi);
+    vi.mocked(readThreadShell).mockImplementation((ref) =>
+      ref.environmentId === threadRef.environmentId && ref.threadId === threadRef.threadId
+        ? thread
+        : null,
+    );
+    vi.mocked(ensureEnvironmentScope).mockResolvedValue({ status: "granted" });
     vi.mocked(useProjects).mockReturnValue([activeProject]);
     vi.mocked(useQuietThreadShells).mockReturnValue([thread]);
     vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef });

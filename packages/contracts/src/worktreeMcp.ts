@@ -6,7 +6,7 @@ import { GitRefName, TrimmedNonEmptyString } from "./baseSchemas.ts";
 /** Uses the managed worktree folder; handoff detaches the provider, ending this turn and resuming there next run. */
 export const WorktreeMcpHandoffInput = Schema.Struct({
   clientRequestId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
-  branch: TrimmedNonEmptyString,
+  branch: GitRefName,
   baseRef: Schema.optional(
     GitRefName.annotate({
       description: "Default: checked-out branch.",
