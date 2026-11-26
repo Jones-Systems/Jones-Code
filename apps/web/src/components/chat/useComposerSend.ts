@@ -1099,22 +1099,9 @@ export function useComposerSend(input: ComposerSendInput) {
       dispatchMode: input.steeringBlockedByQuestion ? "queue" : dispatchMode,
       freshContext: freshArm !== undefined,
     });
-    const worktreePreparation = resolveFirstSendWorktreePreparation({
-      verifiedDefault: usesVerifiedDefault(
-        appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId),
-        activeProject.id,
-      ),
-      isFirstMessage: !sendQueuesBehindSetup && (!isServerThread || activeMessageCount === 0),
-      sendEnvMode: effectiveSendEnvMode,
-      worktreePath: activeThread.worktreePath,
-      projectCwd: activeProject.workspaceRoot,
-      projectIsGitRepo: isGitRepo,
-      tracksGitRepositories,
-      repositories: worktreeRepositories,
-      baseBranch: baseBranchForWorktree,
-      startFromOrigin,
-    });
-    const shouldCreateWorktree = worktreePreparation !== undefined;
+    const isFirstMessage = !sendQueuesBehindSetup && (!isServerThread || activeMessageCount === 0);
+    const shouldCreateWorktree =
+      isFirstMessage && effectiveSendEnvMode === "worktree" && activeThread.worktreePath === null;
     if (
       missingWorktreeBaseBranch &&
       appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
@@ -1126,6 +1113,7 @@ export function useComposerSend(input: ComposerSendInput) {
     // A project may set its worktrees up with its own commands, which run only once a person
     // has approved their text. Asking takes as long as the user does, so the draft is compared
     // across it like any other wait before a send.
+    let hasCustomLayout = false;
     if (shouldCreateWorktree || multipleModelSelections !== null) {
       const draftBeforeApproval = useComposerDraftStore
         .getState()
@@ -1167,7 +1155,24 @@ export function useComposerSend(input: ComposerSendInput) {
         );
         return;
       }
+      hasCustomLayout = layoutApproval.hasCustomLayout === true;
     }
+    const worktreePreparation = resolveFirstSendWorktreePreparation({
+      verifiedDefault: usesVerifiedDefault(
+        appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId),
+        activeProject.id,
+      ),
+      isFirstMessage,
+      sendEnvMode: effectiveSendEnvMode,
+      worktreePath: activeThread.worktreePath,
+      projectCwd: activeProject.workspaceRoot,
+      projectIsGitRepo: isGitRepo,
+      tracksGitRepositories,
+      hasCustomLayout,
+      repositories: worktreeRepositories,
+      baseBranch: baseBranchForWorktree,
+      startFromOrigin,
+    });
     // Records bind attachments by the id each side knows: the local id for the optimistic
     // row, the upload id (or local id on the data-URL path) on the wire; the server
     // rebinds them to the persisted id.
@@ -1582,6 +1587,7 @@ export function useComposerSend(input: ComposerSendInput) {
         threadId: threadIdForSend,
         project: activeProject,
         branch: activeThreadBranch,
+        hasCustomLayout,
         selections: multipleModelSelections,
         targets: multipleTargets,
         sendSnapshot,

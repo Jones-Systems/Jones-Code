@@ -88,7 +88,7 @@ describe("worktree layout approval dialog", () => {
     expect(state.approved).toEqual([]);
 
     await userEvent.click(page.getByRole("button", { name: "Approve and continue" }));
-    await expect(second).resolves.toEqual({ status: "proceed" });
+    await expect(second).resolves.toEqual({ status: "proceed", hasCustomLayout: true });
     expect(state.approved).toEqual([
       { projectId, approvals: [{ kind: "create", command: "./scripts/other.sh" }] },
     ]);

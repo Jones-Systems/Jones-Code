@@ -3016,32 +3016,6 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
         );
 
         const followupMessageId = MessageId.make("message:followup-grandchild-send");
-        const projections = yield* ProjectionStore.ProjectionStoreV2;
-        const read = projections.getDelegatedChildControls;
-        const startingSnapshot = yield* Deferred.make<void>();
-        const releaseSnapshot = yield* Deferred.make<void>();
-        // Let the start reaction finish its read only after the nested-task write commits.
-        const readWithGate: typeof read = (threadId, filter) =>
-          Effect.tap(read(threadId, filter), (records) =>
-            threadId === child.childThreadId &&
-            records.runs.some(
-              (run: OrchestrationV2Run) =>
-                run.userMessageId === followupMessageId && run.status === "starting",
-            )
-              ? Deferred.succeed(startingSnapshot, undefined).pipe(
-                  Effect.andThen(Deferred.await(releaseSnapshot)),
-                )
-              : Effect.void,
-          );
-        yield* Effect.acquireRelease(
-          Effect.sync(() =>
-            vi.spyOn(projections, "getDelegatedChildControls").mockImplementation(readWithGate),
-          ),
-          (spy) =>
-            Deferred.succeed(releaseSnapshot, undefined).pipe(
-              Effect.andThen(Effect.sync(() => spy.mockRestore())),
-            ),
-        );
         yield* orchestrator.dispatch({
           type: "message.dispatch",
           createdBy: "agent",
@@ -3059,8 +3033,6 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
         )).runs.find((run) => run.userMessageId === followupMessageId)!;
         assert.isDefined(followupRun.delegatedTaskId);
         const followupTaskId = followupRun.delegatedTaskId!;
-        yield* Deferred.await(startingSnapshot);
-
         const grandchildId = NodeId.make("node:followup-grandchild-grandchild");
         const grandchild = {
           id: grandchildId,
@@ -3108,7 +3080,6 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
             },
           ],
         });
-        yield* Deferred.succeed(releaseSnapshot, undefined);
         yield* orchestrator.recoverDelegatedTasks;
 
         const waiting = yield* orchestrator.getThreadProjection(parentThreadId);

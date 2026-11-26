@@ -705,6 +705,7 @@ export const PullRequestChecks = Schema.Struct({
   observedAt: Schema.optional(Schema.Finite),
   state: PullRequestState,
   checks: Schema.Array(PullRequestCheck),
+  workflowApprovalsRequired: Schema.optional(NonNegativeInt),
   jonesCheckObservation: Schema.optional(PullRequestCheckObservation),
 });
 export type PullRequestChecks = typeof PullRequestChecks.Type;

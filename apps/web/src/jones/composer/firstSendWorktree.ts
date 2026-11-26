@@ -21,6 +21,7 @@ export function resolveFirstSendWorktreePreparation(input: {
   projectCwd: string;
   projectIsGitRepo: boolean;
   tracksGitRepositories: boolean;
+  hasCustomLayout?: boolean;
   repositories?: ReadonlyArray<{ readonly path: string }> | undefined;
   baseBranch: string | null;
   startFromOrigin: boolean;
@@ -37,6 +38,7 @@ export function resolveFirstSendWorktreePreparation(input: {
     input.verifiedDefault &&
     input.projectIsGitRepo &&
     !input.tracksGitRepositories &&
+    !input.hasCustomLayout &&
     (input.repositories?.length ?? 0) === 0 &&
     input.baseBranch === null
   ) {

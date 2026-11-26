@@ -1969,6 +1969,13 @@ export async function waitInactive(rpc, threadId) {
   }
 }
 
+const verifierFailureStages = new Map([
+  ["Provider start admission refused", "admission"],
+  ["Provider session failed to open", "session-open"],
+  ["Provider turn failed to start", "turn-start"],
+  ["Turn failed to start", "start-retry-exhausted"],
+]);
+
 function verifierRunEvidence(projection, runId) {
   const run = projection?.runs.find((candidate) => candidate.id === runId);
   return run === undefined
@@ -1979,9 +1986,15 @@ function verifierRunEvidence(projection, runId) {
         status: run.status,
         started: run.startedAt !== null,
         completed: run.completedAt !== null,
+        attemptStates: projection.attempts
+          .filter((attempt) => attempt.runId === run.id)
+          .map((attempt) => attempt.status),
         nativeTurnStates: projection.providerTurns
           .filter((turn) => turn.runAttemptId === run.activeAttemptId)
           .map((turn) => turn.status),
+        failureStages: projection.turnItems
+          .filter((item) => item.runId === run.id && item.type === "error")
+          .map((item) => verifierFailureStages.get(item.title) ?? "other"),
       };
 }
 

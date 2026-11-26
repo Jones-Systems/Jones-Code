@@ -1080,8 +1080,12 @@ it.live.each(accountSwitchModes)(
           (thread) => thread.id === first.thread.activeProviderThreadId,
         )!;
         const targetSelection = { instanceId: targetId, model: "complete" };
-        if (mode === "separate-home") {
-          const error = yield* send("second", targetSelection).pipe(Effect.flip);
+        if (separateHome) {
+          const error = yield* send(
+            "second",
+            targetSelection,
+            active ? first.runs[0]!.id : undefined,
+          ).pipe(Effect.flip);
           assert.include(
             Cause.pretty(Cause.fail(error)),
             "the saved conversation is not compatible with the target account",
@@ -1090,6 +1094,9 @@ it.live.each(accountSwitchModes)(
           assert.equal(rejected.thread.activeProviderThreadId, originalThread.id);
           assert.deepEqual(rejected.thread.modelSelection, selection);
           assert.lengthOf(rejected.runs, 1);
+          assert.equal(rejected.runs[0]?.id, first.runs[0]?.id);
+          assert.equal(rejected.runs[0]?.status, first.runs[0]?.status);
+          assert.equal((yield* Ref.get(state)).closedSessionCount, 0);
           assert.isEmpty(rejected.contextHandoffs);
           assert.isEmpty(rejected.contextTransfers);
           assert.isEmpty(resumes);

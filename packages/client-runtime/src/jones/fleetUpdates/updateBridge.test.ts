@@ -1,3 +1,4 @@
+import { unusedAuthorization } from "../connection/unusedAuthorization.ts";
 import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import { normalizeDpopHtu } from "@t3tools/shared/dpopCommon";
@@ -146,6 +147,7 @@ describe("qualified update-only connection", () => {
         rejectedAccessToken?: string;
       }> = [];
       const authorization = RemoteEnvironmentAuthorization.of({
+        ...unusedAuthorization,
         renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
         rememberCheckedDescriptor: () => Effect.void,
         authorizeBearer: () => Effect.die("Unexpected bearer authorization"),

@@ -1165,6 +1165,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             readonly pid: number | undefined;
             readonly command: string;
             readonly stop: () => void;
+            retiring: boolean;
             awaited: boolean;
           }
         >();
@@ -1298,6 +1299,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               pid: shell.pid,
               command: shell.command,
               stop: shell.stop,
+              retiring: false,
               awaited: false,
             });
             return yield* publishBackgroundShells(providerThreadId, agent);
@@ -1347,11 +1349,19 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           });
         });
 
-        const stopBackgroundShells = (providerThreadId?: OrchestrationV2ProviderThread["id"]) =>
+        const stopBackgroundShells = (
+          providerThreadId?: OrchestrationV2ProviderThread["id"],
+          owner?: CursorLiveAgent,
+        ) =>
           Effect.sync(() => {
             wakeGeneration += 1;
             for (const shell of backgroundShells.values()) {
-              if (providerThreadId === undefined || shell.providerThreadId === providerThreadId) {
+              if (
+                !shell.retiring &&
+                (providerThreadId === undefined || shell.providerThreadId === providerThreadId) &&
+                (owner === undefined || shell.agent === owner)
+              ) {
+                shell.retiring = true;
                 shell.stop();
               }
             }
@@ -1363,7 +1373,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         ) {
           const run = agent.lastTurn?.input;
           if (run?.providerThread.id === providerThreadId) stoppedRuns.add(run.runId);
-          yield* stopBackgroundShells(providerThreadId);
+          yield* stopBackgroundShells(providerThreadId, agent);
         });
 
         const resolveItemOrdinal = (context: ActiveCursorTurn, nativeItemId: string) =>
@@ -2906,7 +2916,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               const close = Effect.suspend(() => {
                 if (closeStarted) return Effect.void;
                 closeStarted = true;
-                return agent.session.close.pipe(
+                // The worker drains Stop requests before close and drops its listeners afterward.
+                return stopBackgroundShells(undefined, agent).pipe(
+                  Effect.andThen(agent.session.close),
                   Effect.andThen(
                     missingRunWitness
                       ? Effect.fail(
@@ -2941,6 +2953,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                   Effect.andThen(
                     Effect.gen(function* () {
                       agent.eventProducer.retire();
+                      for (const [id, shell] of backgroundShells) {
+                        if (shell.agent === agent) backgroundShells.delete(id);
+                      }
                       if (agent.runtimeGeneration !== undefined) {
                         retiredGenerations.add(agent.runtimeGeneration);
                       }
@@ -3175,7 +3190,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               return yield* openUnknown;
             }
             const now = yield* DateTime.now;
-            const providerThread: OrchestrationV2ProviderThread =
+            const providerThread = withBackgroundShells(
               openInput.providerThread === undefined
                 ? makeProviderThread({
                     idAllocator,
@@ -3203,7 +3218,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                     },
                     status: "idle",
                     updatedAt: now,
-                  };
+                  },
+            );
             if (lifecycle === undefined || agent.runtimeGeneration === undefined) {
               return { agent, providerThread };
             }

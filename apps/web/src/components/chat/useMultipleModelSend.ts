@@ -108,6 +108,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     threadId,
     project,
     branch,
+    hasCustomLayout,
     selections,
     targets,
     sendSnapshot,
@@ -124,6 +125,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     readonly threadId: ThreadId;
     readonly project: EnvironmentProject;
     readonly branch: string | null;
+    readonly hasCustomLayout: boolean;
     readonly submittedComposerDraft: ComposerThreadDraftState | null;
     readonly selections: ReadonlyArray<ModelSelection>;
     readonly targets: ReadonlyArray<MultipleModelTarget>;
@@ -278,6 +280,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                         projectCwd: project.workspaceRoot,
                         projectIsGitRepo,
                         tracksGitRepositories,
+                        hasCustomLayout,
                         repositories: worktreeRepositories,
                         baseBranch: branch,
                         startFromOrigin,

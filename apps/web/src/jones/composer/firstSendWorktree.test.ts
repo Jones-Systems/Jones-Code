@@ -61,6 +61,24 @@ describe("first-send Git freshness", () => {
     });
   });
 
+  it("leaves freshness to the server for a custom layout with no tracked repositories", () => {
+    for (const startFromOrigin of [false, true]) {
+      expect(
+        resolveFirstSendWorktreePreparation({
+          ...draft,
+          verifiedDefault: true,
+          hasCustomLayout: true,
+          repositories: [],
+          startFromOrigin,
+        }),
+      ).toEqual({
+        projectCwd: "/repo",
+        repositories: [],
+        ...(startFromOrigin ? { startFromOrigin: true } : {}),
+      });
+    }
+  });
+
   it("passes the plain workspace's base choice and empty repository selection", () => {
     for (const baseBranch of ["HEAD", "work/parent"]) {
       expect(

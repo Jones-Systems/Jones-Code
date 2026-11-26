@@ -821,8 +821,11 @@ describe("V2 environment commands", () => {
     },
   ] as const;
 
+  type TurnSend = (typeof turnSends)[number];
+  type TurnSendEffect = ReturnType<TurnSend["send"]>;
+
   const sendFailingFirstAttempt = Effect.fn("TestEnvironmentCommands.sendFailingFirstAttempt")(
-    function* (turnSend: (typeof turnSends)[number], failure: Effect.Effect<never, Refused>) {
+    function* (turnSend: TurnSend, failure: Effect.Effect<never, Refused>) {
       const supervisor = yield* makeSupervisor({
         commands: [],
         projects: [],
@@ -853,12 +856,15 @@ describe("V2 environment commands", () => {
         supervisor.session,
         Option.some({ ...healthySession, client: failingClient }),
       );
-      const sendFiber = yield* turnSend
-        .send(CommandId.make("command-turn-send"))
-        .pipe(
-          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-          Effect.forkChild,
-        );
+      const send: Effect.Effect<
+        Effect.Success<TurnSendEffect>,
+        Effect.Error<TurnSendEffect>,
+        Effect.Services<TurnSendEffect>
+      > = turnSend.send(CommandId.make("command-turn-send"));
+      const sendFiber = yield* send.pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.forkChild,
+      );
       yield* Deferred.await(firstAttemptFailed);
       yield* SubscriptionRef.set(
         supervisor.session,

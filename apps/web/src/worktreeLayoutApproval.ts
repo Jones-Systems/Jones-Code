@@ -76,7 +76,7 @@ function requestWorktreeLayoutApproval(
 
 export type WorktreeLayoutApprovalOutcome =
   /** Nothing is left to ask here; the server decides. */
-  | { readonly status: "proceed" }
+  | { readonly status: "proceed"; readonly hasCustomLayout?: true }
   | { readonly status: "cancelled" }
   | { readonly status: "blocked"; readonly message: string };
 
@@ -99,14 +99,18 @@ export async function ensureWorktreeLayoutApproved(input: {
     { reportFailure: false, reportDefect: false },
   );
   if (read._tag !== "Success") return { status: "proceed" };
+  // A custom layout always declares a create command, even without tracked repositories.
+  const proceed = {
+    status: "proceed" as const,
+    ...(read.value.commands.length > 0 ? { hasCustomLayout: true as const } : {}),
+  };
   const commands = read.value.commands.filter((command) => !command.approved);
-  if (commands.length === 0) return { status: "proceed" };
+  if (commands.length === 0) return proceed;
   // An approval would change nothing; the server's refusal names the policy.
   const policy = appAtomRegistry
     .get(environmentPresentations.serverConfigsAtom)
     .get(environmentId)?.managedPolicy;
-  if (managedCapabilityDenial(policy, "worktreeLayoutCommands", m) !== undefined)
-    return { status: "proceed" };
+  if (managedCapabilityDenial(policy, "worktreeLayoutCommands", m) !== undefined) return proceed;
   if (!readEnvironmentScope(environmentId, AuthTerminalOperateScope)) {
     return {
       status: "blocked",
@@ -142,5 +146,5 @@ export async function ensureWorktreeLayoutApproved(input: {
           : m(msg("Could not approve the worktree layout command.")),
     };
   }
-  return { status: "proceed" };
+  return proceed;
 }

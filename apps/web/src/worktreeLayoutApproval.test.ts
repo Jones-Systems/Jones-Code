@@ -110,7 +110,7 @@ describe("worktree layout approval before a worktree thread starts", () => {
     expect(state.approved).toEqual([]);
 
     respond(true);
-    await expect(outcome).resolves.toEqual({ status: "proceed" });
+    await expect(outcome).resolves.toEqual({ status: "proceed", hasCustomLayout: true });
     expect(state.approved).toEqual([
       {
         projectId,
@@ -175,7 +175,7 @@ describe("worktree layout approval before a worktree thread starts", () => {
 
   it("does not ask when every command is approved, or the project declares none", async () => {
     state.commands = [{ ...create, approved: true }];
-    await expect(ensure()).resolves.toEqual({ status: "proceed" });
+    await expect(ensure()).resolves.toEqual({ status: "proceed", hasCustomLayout: true });
     state.commands = [];
     await expect(ensure()).resolves.toEqual({ status: "proceed" });
     expect(readWorktreeLayoutApprovalState().open).toBe(false);
@@ -197,7 +197,7 @@ describe("worktree layout approval before a worktree thread starts", () => {
       lockedSettings: [],
       limits: { worktreeLayoutCommands: false },
     };
-    await expect(ensure()).resolves.toEqual({ status: "proceed" });
+    await expect(ensure()).resolves.toEqual({ status: "proceed", hasCustomLayout: true });
     state.scopes = new Set([AuthTerminalOperateScope]);
     state.policy = undefined;
     await expect(ensure()).resolves.toEqual({ status: "proceed" });

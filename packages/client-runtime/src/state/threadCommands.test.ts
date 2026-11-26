@@ -545,20 +545,22 @@ describe("remote thread lifecycle commands", () => {
           ],
         };
         h.registry.set(source, initial);
+        const command = h.commands[action].run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: {
+            threadId: THREAD_ID,
+            commandId: CommandId.make(action),
+            reason: "user",
+            enabled: false,
+            orderKey: "a",
+            snoozedUntil: "2099-01-01T00:00:00.000Z",
+            ...input,
+          },
+        });
+        type Command = typeof command;
         const result = yield* Effect.forkChild(
-          Effect.exit(
-            h.commands[action].run(h.registry, {
-              environmentId: ENVIRONMENT_ID,
-              input: {
-                threadId: THREAD_ID,
-                commandId: CommandId.make(action),
-                reason: "user",
-                enabled: false,
-                orderKey: "a",
-                snoozedUntil: "2099-01-01T00:00:00.000Z",
-                ...input,
-              },
-            }),
+          Effect.exit<Effect.Success<Command>, Effect.Error<Command>, Effect.Services<Command>>(
+            command,
           ),
           { startImmediately: true },
         );

@@ -3020,6 +3020,8 @@ describe("CursorAdapterV2", () => {
         });
         const wakes: Array<ProviderContinuationRequests.ProviderContinuationRequest> = [];
         const stopped: Array<string> = [];
+        const retired: Array<{ agentId: string; stopped: ReadonlyArray<string> }> = [];
+        let opens = 0;
         let report: (
           event: CursorAgentSdk.CursorBackgroundShellEvent,
         ) => Effect.Effect<void> = () => Effect.void;
@@ -3030,11 +3032,12 @@ describe("CursorAdapterV2", () => {
         }).pipe(
           Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
             assertComplete: Effect.void,
-            open: () =>
-              Effect.succeed({
-                agentId: "native-cursor-background",
+            open: () => {
+              const agentId = `native-cursor-background-${++opens}`;
+              return Effect.succeed({
+                agentId,
                 listMessages: Effect.succeed([]),
-                close: Effect.void,
+                close: Effect.sync(() => void retired.push({ agentId, stopped: [...stopped] })),
                 send: (input) =>
                   Effect.gen(function* () {
                     report = input.onBackgroundShell!;
@@ -3054,7 +3057,7 @@ describe("CursorAdapterV2", () => {
                       durationMs: 1,
                     });
                     return {
-                      agentId: "native-cursor-background",
+                      agentId,
                       runId: "native-cursor-run",
                       nativeWait: nativeResult,
                       // Shell 6 exits after the agent's turn ended, before the run settles.
@@ -3072,7 +3075,8 @@ describe("CursorAdapterV2", () => {
                       cancel: Effect.void,
                     };
                   }),
-              }),
+              });
+            },
           }),
           Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
             offer: (request) => Effect.sync(() => wakes.push(request)),
@@ -3193,7 +3197,7 @@ describe("CursorAdapterV2", () => {
         assert.deepStrictEqual(yield* nextUpdate, [{ tasks: ["7 awaited"], sessionScoped: true }]);
 
         // Rolling back stops what the discarded runs left running, so it cannot wake the thread.
-        yield* runtime.rollbackThread({
+        const rollback = yield* runtime.rollbackThread({
           providerThread,
           target: {
             type: "thread_start",
@@ -3203,6 +3207,15 @@ describe("CursorAdapterV2", () => {
           providerThreadTurns: [],
         });
         assert.deepStrictEqual(stopped, ["7"]);
+        assert.deepStrictEqual(retired, [
+          { agentId: providerThread.nativeThreadRef!.nativeId, stopped: ["7"] },
+        ]);
+        assert.notEqual(
+          rollback.providerThread.nativeThreadRef?.nativeId,
+          providerThread.nativeThreadRef?.nativeId,
+        );
+        assert.deepStrictEqual(rollback.providerThread.pendingBackgroundTasks, []);
+        assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
         // A wake still queued when the rollback landed is dropped.
         assert.deepStrictEqual(
           yield* wakes[0]!.dispatchIfCurrent!(Effect.succeed("woken")),
@@ -3215,7 +3228,6 @@ describe("CursorAdapterV2", () => {
           exitCode: undefined,
           outputPath: undefined,
         });
-        assert.deepStrictEqual(yield* nextUpdate, [{ tasks: [], sessionScoped: true }]);
 
         const terminal = events.find((event) => event.type === "turn.terminal");
         assert.ok(terminal?.type === "turn.terminal");
@@ -3225,6 +3237,7 @@ describe("CursorAdapterV2", () => {
           requestRuntimeRestart: true,
         });
         assert.deepStrictEqual(stopped, ["7"]);
+        assert.lengthOf(retired, 1);
         // A shell of the stopped run that is reported late is stopped, not kept.
         yield* report({ ...shell("9"), type: "started", stop: () => stopped.push("9") });
         assert.deepStrictEqual(stopped, ["7", "9"]);
