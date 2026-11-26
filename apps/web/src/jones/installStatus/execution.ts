@@ -4,6 +4,8 @@ import {
   type JonesExecutionResult,
   type JonesExecutorHost,
 } from "@t3tools/client-runtime/jones/updates/executor";
+import { isSettledOperationReceipt } from "@t3tools/client-runtime/jones/install-plan";
+import { resolveJonesExactSourceAction } from "@t3tools/client-runtime/jones/updates";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import type {
   JonesActionDuty,
@@ -71,9 +73,35 @@ function sameAuthority(
   );
 }
 
+/** This prepares an enrolled host through Install status. Its policy still gates all host requests. */
+export function canPrepareFollowerMatch(
+  environmentId: EnvironmentId,
+  targetSource: string,
+  host: ReturnType<JonesExecutorHost["readLatest"]>,
+) {
+  const state = host.observation.state;
+  if (
+    typeof window === "undefined" ||
+    window.desktopBridge?.installPlan === undefined ||
+    state?.environmentId !== environmentId ||
+    state.installedSource === undefined ||
+    state.capability.operations !== 1 ||
+    state.capability.exactSource !== true ||
+    !state.capability.download ||
+    !state.capability.install ||
+    (state.operation !== undefined && !isSettledOperationReceipt(state.operation))
+  )
+    return false;
+  const result = resolveJonesExactSourceAction({ environmentId, targetSource, ...host });
+  return result.status === "unavailable" && result.reason === "follows-laptop";
+}
+
 export function createWebJonesExecutor(journal: JonesActionJournal) {
   return async (
-    input: Parameters<typeof executeJonesAction>[0] & { readonly matchRunningGeneration?: string },
+    input: Parameters<typeof executeJonesAction>[0] & {
+      readonly matchRunningGeneration?: string;
+      readonly prepareFollowerMatch?: true;
+    },
   ): Promise<JonesExecutionResult> => {
     try {
       await journal.load();
@@ -109,9 +137,48 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
         canOperate: canClaim,
         send: (request) => requestInstallPlan(request, binding),
       });
+    const hasNativePlan =
+      typeof window !== "undefined" && window.desktopBridge?.installPlan !== undefined;
+    if (input.matchRunningGeneration !== undefined && !hasNativePlan)
+      return {
+        kind: "refused",
+        message: "The Laptop's native verification is unavailable. Check again.",
+      };
     let connections: ReturnType<typeof connectionsPlanDispatch> | undefined;
     try {
-      if (typeof window !== "undefined" && window.desktopBridge?.installPlan !== undefined) {
+      if (input.prepareFollowerMatch) {
+        const canPrepare = () =>
+          !input.cancelled?.() &&
+          canHandOff() &&
+          canPrepareFollowerMatch(input.environmentId, input.targetSource, input.host.readLatest());
+        if (
+          input.matchRunningGeneration === undefined ||
+          input.action.kind !== "download-exact" ||
+          input.action.targetSource !== input.targetSource ||
+          !canPrepare()
+        )
+          return {
+            kind: "refused",
+            message: "The verified Laptop target or host status changed. Check again.",
+          };
+        const { planGate } = connectionsPlanDispatch(
+          binding,
+          input.action,
+          undefined,
+          native,
+          canPrepare,
+          input.matchRunningGeneration,
+          true,
+        );
+        const result = await planGate(input.environmentId, input.targetSource);
+        return result.kind === "handled"
+          ? { kind: "accepted", message: result.message }
+          : {
+              kind: "refused",
+              message: result.kind === "refused" ? result.message : "Open Install status.",
+            };
+      }
+      if (hasNativePlan) {
         const local = await routeNativeLaptopAction(
           input.environmentId,
           input.targetSource,
@@ -374,8 +441,13 @@ async function replacementAuthorityIssue(
   targetSource: string,
   environmentId: EnvironmentId,
   reviewed: LegacyConnectionsAuthority,
+  matchRunningGeneration?: string,
 ) {
-  const current = await readLegacyConnectionsAuthority(targetSource, environmentId);
+  const current = await readLegacyConnectionsAuthority(
+    targetSource,
+    environmentId,
+    matchRunningGeneration,
+  );
   if (typeof current === "string") return current;
   if (
     current.kind !== reviewed.kind ||
@@ -383,7 +455,11 @@ async function replacementAuthorityIssue(
       reviewed.kind === "verified-plan" &&
       (current.binding !== reviewed.binding ||
         current.planId !== reviewed.planId ||
-        current.revision !== reviewed.revision))
+        current.revision !== reviewed.revision)) ||
+    (current.kind === "verified-running" &&
+      reviewed.kind === "verified-running" &&
+      (current.binding !== reviewed.binding ||
+        JSON.stringify(current.evidence) !== JSON.stringify(reviewed.evidence)))
   )
     return "The verified Laptop plan changed. Review the replacement again.";
   return null;
@@ -396,6 +472,7 @@ export async function executeWebJonesReplacement(
     readonly targetSource: string;
     readonly stagedHandle: string;
     readonly authority: LegacyConnectionsAuthority;
+    readonly matchRunningGeneration?: string;
     readonly host: Pick<JonesExecutorHost, "readLatest">;
     readonly canDispatch: () => boolean;
     readonly send: () => Promise<boolean>;
@@ -408,6 +485,7 @@ export async function executeWebJonesReplacement(
     input.targetSource,
     input.environmentId,
     input.authority,
+    input.matchRunningGeneration,
   );
   if (gate !== null) throw new Error(gate);
   if (
@@ -428,6 +506,7 @@ export async function executeWebJonesReplacement(
     input.targetSource,
     input.environmentId,
     input.authority,
+    input.matchRunningGeneration,
   ).catch(() => "Native plan status is unavailable.");
   if (
     stillAllowed !== null ||

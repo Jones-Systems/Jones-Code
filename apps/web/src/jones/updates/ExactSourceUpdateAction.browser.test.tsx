@@ -50,9 +50,12 @@ vi.mock("@t3tools/client-runtime/jones/updates/action-journal", async (original)
 });
 import { webJonesJournal } from "../installStatus/executionJournal";
 import { bindInstallPlanServices } from "../installStatus/services";
-import { createInstallStatusStore } from "../installStatus/panelUi";
+import { createInstallStatusStore, type InstallStatusDevice } from "../installStatus/panelUi";
 import { startPlan } from "@t3tools/client-runtime/jones/install-plan";
-import type { JonesInstallPlanResult } from "@t3tools/contracts/jones/installPlan";
+import type {
+  JonesInstallPlanRequest,
+  JonesInstallPlanResult,
+} from "@t3tools/contracts/jones/installPlan";
 
 let environmentId = EnvironmentId.make("exact-source-host");
 let sequence = 0;
@@ -670,6 +673,185 @@ describe("exact-source action", () => {
       }
     },
   );
+
+  it.each([
+    "replace",
+    "running-changed",
+    "follower",
+    "follower-staged",
+    "no-directive",
+    "ordinary-follower",
+  ] as const)("uses verified Match laptop authority with no current plan (%s)", async (mode) => {
+    await using _fixture = await setupFixture1();
+    const laptop = EnvironmentId.make("match-laptop");
+    const now = "2026-11-26T17:00:00.000Z";
+    const generation = "a".repeat(64);
+    const enrollmentId = "11111111-1111-4111-8111-111111111111";
+    const enrolled =
+      mode === "follower" ||
+      mode === "follower-staged" ||
+      mode === "no-directive" ||
+      mode === "ordinary-follower";
+    const result: JonesInstallPlanResult = {
+      state: {
+        schema: 1,
+        current: null,
+        last: null,
+        clientCommands: 1,
+        view: { complete: false, matchRunningLaptop: 1 },
+        laptop: {
+          environmentId: laptop,
+          observedAt: now,
+          activationBlocked: false,
+          committedTransactionId: "committed",
+          activeGeneration: generation,
+          activeSource: target,
+          activeTree: target,
+          activeVersion: currentVersion,
+        },
+      },
+    };
+    let changeGeneration = false;
+    const installPlan = vi.fn(
+      async (_request: JonesInstallPlanRequest): Promise<JonesInstallPlanResult> =>
+        changeGeneration
+          ? {
+              state: {
+                ...result.state,
+                laptop: { ...result.state.laptop, activeGeneration: "b".repeat(64) },
+              },
+            }
+          : result,
+    );
+    const unexpected = vi.fn(async () => {
+      throw new Error("Unexpected direct host dispatch");
+    });
+    const world = createHost(
+      hostState({
+        capability: {
+          check: true,
+          download: true,
+          install: true,
+          exactSource: true,
+          replaceStaged: true,
+          operations: 1,
+        },
+        ...(mode !== "follower" && mode !== "no-directive"
+          ? { phase: "staged", stagedHandle: "old-handle" }
+          : {}),
+        ...(enrolled ? { policy: { role: "follower", leaderSource: other } } : {}),
+      }),
+    );
+    const device: InstallStatusDevice = {
+      ...world.host.snapshot,
+      environmentId,
+      label: "Server",
+      fleetStatus: enrolled
+        ? {
+            environmentId,
+            operationProtocol: 1 as const,
+            ...(mode === "no-directive" ? {} : { planDirectiveProtocol: 1 as const }),
+            operation: null,
+            update: world.host.snapshot.observation.state,
+            enrollment: {
+              environmentId,
+              enrollmentId,
+              enabled: true,
+              continueRunningThreads: false,
+            },
+          }
+        : null,
+    };
+    const bridge = { installPlan, getUpdateState: unexpected, onUpdateState: () => () => {} };
+    vi.stubGlobal("desktopBridge", bridge);
+    const unbind = bindInstallPlanServices(
+      {
+        bridge,
+        devices: () => [device],
+        observe: async () => device,
+        legacy: unexpected,
+        operation: unexpected,
+        stop: unexpected,
+        host: unexpected,
+        confirm: unexpected,
+        chooseRecovery: unexpected,
+        now: () => Date.parse(now),
+      },
+      createInstallStatusStore(),
+    );
+    try {
+      await mount(world, {
+        allowReplace: true,
+        allowInstall: false,
+        buttonLabel: "Match laptop",
+        ...(mode === "ordinary-follower" ? {} : { matchRunningGeneration: generation }),
+      });
+      world.handlers.dialog = async () => {
+        changeGeneration = mode === "running-changed";
+        return true;
+      };
+      world.handlers.run = async () => AsyncResult.success(stagedTarget());
+      await click("Match laptop");
+      const mutations = installPlan.mock.calls
+        .map(([request]) => request)
+        .filter((r) => r.type !== "read");
+      if (mode === "replace") {
+        expect(world.dialogs).toHaveLength(1);
+        expect(world.requests).toEqual([
+          {
+            action: "downloadExact",
+            input: {
+              targetSource: target,
+              replace: {
+                stagedHandle: "old-handle",
+                sourceSha: other,
+                environmentId,
+                currentVersion,
+                expectedInstalledSource: "e".repeat(40),
+                operationId: expect.any(String),
+              },
+            },
+          },
+        ]);
+        expect(mutations).toEqual([]);
+      } else {
+        expect(world.requests).toEqual([]);
+        expect(world.dialogs).toHaveLength(mode === "running-changed" ? 1 : 0);
+        if (mode === "follower" || mode === "follower-staged") {
+          expect(mutations).toEqual([
+            expect.objectContaining({
+              type: "start",
+              expectedRunningGeneration: generation,
+              target: {
+                repository: "Jones-Systems/Jones-Code",
+                sourceSha: target,
+                sourceTree: target,
+                version: currentVersion,
+              },
+              select: [
+                { environmentId, label: "Server", route: "follower-operations", enrollmentId },
+              ],
+            }),
+          ]);
+        } else {
+          expect(mutations).toEqual([]);
+          await expect
+            .poll(status)
+            .toContain(
+              mode === "ordinary-follower"
+                ? "follows its laptop"
+                : mode === "no-directive"
+                  ? "needs plan directive support"
+                  : "verified running build changed",
+            );
+        }
+      }
+      expect(unexpected).not.toHaveBeenCalled();
+    } finally {
+      unbind();
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("keeps Match laptop visible and guards activation when state or replacement capability is unavailable", async () => {
     await using _fixture = await setupFixture1();
