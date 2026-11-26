@@ -362,7 +362,11 @@ export async function handOffJonesTargets(
   targets: readonly JonesHandoffTarget[],
   dispatch?: NativeJonesDispatch,
   reviewedBuild?: JonesUpdateProvenance,
-  match?: { readonly sourceSha: string; readonly generation: string },
+  match?: {
+    readonly sourceSha: string;
+    readonly generation: string;
+    readonly requireFollower?: boolean;
+  },
 ): Promise<readonly JonesHandoffResult[]> {
   const binding = installPlanServices();
   if (binding?.services.bridge.installPlan === undefined) {
@@ -464,6 +468,12 @@ export async function handOffJonesTargets(
           handedOff: false,
           message: `Update from Connections after Laptop is verified: ${!device.canOperate ? "no permission" : route.selectable ? "unavailable" : route.reason}`,
         });
+      } else if (match?.requireFollower && selection.route !== "follower-operations") {
+        results.push({
+          ...entry,
+          handedOff: false,
+          message: "This host’s Auto-update enrollment changed. Check its status and try again.",
+        });
       } else {
         selections.push(selection);
         results.push({ ...entry, handedOff: true, message: "Handed to Install status" });
@@ -556,6 +566,11 @@ function retainedRecoveryIssue(
 export type LegacyConnectionsAuthority =
   | { readonly kind: "without-native-plan" }
   | {
+      readonly kind: "verified-running";
+      readonly binding: InstallPlanBinding;
+      readonly evidence: NonNullable<ReturnType<typeof verifiedRunningLaptop>>;
+    }
+  | {
       readonly kind: "verified-plan";
       readonly binding: InstallPlanBinding;
       readonly planId: string;
@@ -565,10 +580,13 @@ export type LegacyConnectionsAuthority =
 export async function readLegacyConnectionsAuthority(
   targetSource: string,
   environmentId: EnvironmentId,
+  matchRunningGeneration?: string,
 ): Promise<LegacyConnectionsAuthority | string> {
   const binding = installPlanServices();
   if (typeof window === "undefined" || window.desktopBridge?.installPlan === undefined)
-    return { kind: "without-native-plan" };
+    return matchRunningGeneration === undefined
+      ? { kind: "without-native-plan" }
+      : "The Laptop's native verification is unavailable. Check again.";
   if (binding === undefined) return "Open Install status on Laptop first.";
   const result = await requestInstallPlan({ type: "read" }, binding);
   const problem = nativePlanIssue(result);
@@ -580,7 +598,29 @@ export async function readLegacyConnectionsAuthority(
   }
   const overlap = retainedRecoveryIssue(result.state, environmentId);
   if (overlap !== undefined) return overlap;
-  const plan = result.state.current ?? result.state.last;
+  const { current, laptop } = result.state;
+  if (matchRunningGeneration !== undefined) {
+    const running = verifiedRunningLaptop(laptop, laptop.environmentId, binding.services.now());
+    if (
+      result.state.view.matchRunningLaptop !== 1 ||
+      running === undefined ||
+      running.environmentId === environmentId ||
+      running.target.sourceSha !== targetSource ||
+      running.generation !== matchRunningGeneration
+    )
+      return "The Laptop's verified running build changed or is unavailable. Check again.";
+    const laptopOverlap = retainedRecoveryIssue(result.state, running.environmentId);
+    if (laptopOverlap !== undefined) return laptopOverlap;
+    if (current === null) return { kind: "verified-running", binding, evidence: running };
+    if (
+      planHasLaptopRecoveryDuty(current) ||
+      current.devices.some(
+        (device) => device.environmentId === environmentId && deviceHasRecoveryDuty(device),
+      )
+    )
+      return "Review this device's outstanding work in Install status first.";
+  }
+  const plan = current ?? result.state.last;
   return plan?.target.sourceSha === targetSource &&
     plan.laptop.gate !== undefined &&
     plan.laptop.gateClosed === undefined &&
@@ -625,6 +665,7 @@ export function connectionsPlanDispatch(
   dispatch: (canClaim?: () => boolean) => NativeJonesDispatch,
   canOperate: () => boolean,
   matchRunningGeneration?: string,
+  requireFollower?: boolean,
 ) {
   let canStart = (_request: JonesOperationStartInput): boolean => false;
   const planGate: NonNullable<JonesExecutorHost["planGate"]> = async (
@@ -637,9 +678,13 @@ export function connectionsPlanDispatch(
       const device = binding.services.devices().find((d) => d.environmentId === environmentId);
       const [result] = await handOffJonesTargets(
         [{ environmentId, label: device?.label ?? "Device" }],
-        dispatch(),
+        dispatch(canOperate),
         undefined,
-        { sourceSha: targetSource, generation: matchRunningGeneration },
+        {
+          sourceSha: targetSource,
+          generation: matchRunningGeneration,
+          ...(requireFollower ? { requireFollower } : {}),
+        },
       );
       return result?.handedOff
         ? { kind: "handled", message: result.message }
