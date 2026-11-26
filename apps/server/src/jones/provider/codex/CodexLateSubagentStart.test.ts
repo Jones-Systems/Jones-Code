@@ -105,11 +105,17 @@ const transcript = decodeCodexTranscript(
       outbound({ method: "initialized" }),
       outbound({
         id: 2,
+        method: "config/read",
+        params: { cwd: "/workspace", includeLayers: false },
+      }),
+      inbound({ id: 2, result: { config: {}, origins: {} } }),
+      outbound({
+        id: 3,
         method: "thread/start",
         params: { config: CodexAdapterV2.CODEX_THREAD_CONFIG },
       }),
       inbound({
-        id: 2,
+        id: 3,
         result: {
           thread: {
             id: rootThread,
@@ -144,13 +150,19 @@ const transcript = decodeCodexTranscript(
         },
       }),
       outbound({
-        id: 3,
+        id: 4,
+        method: "thread/name/set",
+        params: { threadId: rootThread, name: "Reader progress" },
+      }),
+      inbound({ id: 4, result: {} }),
+      outbound({
+        id: 5,
         method: "config/read",
         params: { cwd: "/workspace", includeLayers: false },
       }),
-      inbound({ id: 3, result: { config: {}, origins: {} } }),
+      inbound({ id: 5, result: { config: {}, origins: {} } }),
       outbound({
-        id: 4,
+        id: 6,
         method: "turn/start",
         params: {
           threadId: rootThread,
@@ -172,7 +184,7 @@ const transcript = decodeCodexTranscript(
           summary: "auto",
         },
       }),
-      inbound({ id: 4, result: { turn: turn(rootTurn, "inProgress") } }),
+      inbound({ id: 6, result: { turn: turn(rootTurn, "inProgress") } }),
       inbound(
         {
           method: "item/completed",
@@ -204,18 +216,18 @@ const transcript = decodeCodexTranscript(
         params: { threadId: rootThread, turn: turn(rootTurn, "interrupted") },
       }),
       // This read stays pending while the late notification and interrupt arrive.
-      outbound({ id: 5, method: "model/list", params: {} }),
+      outbound({ id: 7, method: "model/list", params: {} }),
       inbound({
         method: "turn/started",
         params: { threadId: childThread, turn: turn(lateTurn, "inProgress") },
       }),
       outbound({
-        id: 6,
+        id: 8,
         method: "turn/interrupt",
         params: { threadId: childThread, turnId: lateTurn },
       }),
-      inbound({ id: 6, result: {} }),
-      inbound({ id: 5, result: { data: [], nextCursor: null } }),
+      inbound({ id: 8, result: {} }),
+      inbound({ id: 7, result: { data: [], nextCursor: null } }),
     ],
   }),
 );

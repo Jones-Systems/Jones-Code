@@ -7390,10 +7390,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // The run reads as running until its provider stops, but a steer accepted
     // after Stop never reaches the agent.
     if (yield* stopReachedRun(input.command, input.command.threadId, targetRun.id)) {
+      const reason = `Target run ${targetRun.id} is stopping and cannot be steered.`;
       return yield* new OrchestratorDispatchError({
         commandId: input.command.commandId,
         commandType: input.command.type,
-        cause: `Target run ${targetRun.id} is stopping and cannot be steered.`,
+        cause:
+          input.command.type === "queued-message.promote-to-steer"
+            ? new QueuedAction.QueuedSteerTargetStopping(reason)
+            : reason,
       });
     }
     const providerThread = input.projection.providerThreads.find(
@@ -9296,11 +9300,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // selection, while a later saved default still wins.
     // Buffered provider wakes drain output their own provider already produced.
     const incomingMessage = { ...command, delegatedCompletion };
-    // A message that names no model follows the thread unless it goes ahead of queued picks.
+    // An implicit queued send can follow the thread. Ordinary system work keeps its captured selection.
     const followsThreadSelection =
       command.modelSelection === undefined &&
       (command.scheduledTaskId !== undefined ||
         (shouldQueue &&
+          command.createdBy !== "system" &&
           queuedRunStop === undefined &&
           !followsCurrentConversation(incomingMessage) &&
           !isBufferedProviderNotification(incomingMessage)));
@@ -13936,12 +13941,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
     });
 
+    // Automatic delivery and scheduled inputs can inherit the thread selection. Manual
+    // promotion uses the active selection unless the owner has authorized a transition.
     yield* dispatchSteerIntoRun({
       command,
       events,
       effects,
       projection,
-      ...(queuedMessage.followsThreadSelection === true
+      ...(queuedMessage.followsThreadSelection === true &&
+      (automatic !== undefined || queuedMessage.scheduledTaskId !== undefined)
         ? { modelSelection }
         : ownerPromoteSelection({
             ingress: yield* OwnerSelectionIngress,
@@ -20048,6 +20056,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             cause._tag === "OrchestratorRuntimeModeAboveCeilingError"
           ) {
             return yield* cause;
+          }
+          // Like the commit-time queue guard, a Stop observed during planning leaves no receipt.
+          if (
+            cause._tag === "OrchestratorDispatchError" &&
+            cause.cause instanceof QueuedAction.QueuedSteerTargetStopping
+          ) {
+            return yield* new OrchestratorDispatchError({
+              commandId: cause.commandId,
+              commandType: cause.commandType,
+              cause: cause.cause.message,
+            });
           }
           // Resolving a turn's policy refuses the same way, from inside the decision.
           const ceiling = runtimePolicyCeilingCause(cause);

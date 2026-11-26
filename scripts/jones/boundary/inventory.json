@@ -8,6 +8,10 @@
   "baseline": "36816d26be2d862440d6412d62332a10c4d896ff",
   "paths": {
     "apps/web/src/components/WorktreeLayoutApprovalDialogHost.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/settings/AddEnvironmentDialog.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/settings/AddEnvironmentDialog.tsx": "accepted-shared",
+    "apps/web/src/components/settings/LabsSettingsPanel.scope.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/sidebar/SidebarUpdatePill.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/worktreeLayoutApproval.test.ts": "jones-tests-in-upstream",
     "apps/web/src/worktreeLayoutApproval.ts": "accepted-shared",
     "apps/desktop/scripts/build-apple-speech.mjs": "accepted-shared",

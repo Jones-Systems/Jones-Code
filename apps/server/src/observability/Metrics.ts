@@ -111,6 +111,7 @@ export const gitCommandDuration = Metric.timer("t3_git_command_duration", {
 
 export const terminalRestartsTotal = Metric.counter("t3_terminal_restarts_total", {
   description: "Total terminal restart requests handled.",
+  incremental: true,
 });
 
 export const terminalSessionsTotal = Metric.counter("t3_terminal_sessions_total", {

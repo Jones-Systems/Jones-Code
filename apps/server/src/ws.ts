@@ -54,6 +54,7 @@ import {
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
   AuthOrchestrationOperateScope,
+  AuthProvidersManageScope,
   AuthSourceControlWriteScope,
   type AuthEnvironmentScope,
   ProviderDriverKind,
@@ -2250,6 +2251,10 @@ export const layerWsRpc = (
                                 creationSource:
                                   "creationSource" in command ? command.creationSource : "web",
                               }),
+                              {
+                                managesProviders:
+                                  currentSession.scopes.includes(AuthProvidersManageScope),
+                              },
                             )
                         ).pipe(Effect.provide(intakeContext), withOwnerSelectionIngress),
                       )
@@ -2258,8 +2263,11 @@ export const layerWsRpc = (
                           result.replayed ? Effect.void : recordClientCommandAnalytics(command),
                         ),
                         Effect.map((result) => ({ sequence: result.sequence })),
-                        Effect.catch((cause) =>
-                          threadManagement.getDispatchDeliveryEvidence(command).pipe(
+                        Effect.catch((cause) => {
+                          if (cause._tag === "EnvironmentAuthorizationError") {
+                            return Effect.fail(cause);
+                          }
+                          return threadManagement.getDispatchDeliveryEvidence(command).pipe(
                             Effect.flatMap((deliveryEvidence) => {
                               const detail = userFacingDispatchErrorMessage(cause);
                               return Effect.fail(
@@ -2273,8 +2281,8 @@ export const layerWsRpc = (
                                 }),
                               );
                             }),
-                          ),
-                        ),
+                          );
+                        }),
                       ),
                   ),
                 ),

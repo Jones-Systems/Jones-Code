@@ -98,6 +98,7 @@ it.effect.each(["stopped", "missing-target", "unknown-native-outcome"] as const)
       });
       const sink = Layer.mock(Sink.EventSinkV2)({
         supersededTerminalTrace: SupersededTerminalTrace.make(),
+        hasAttributedRuntimeStop: () => Effect.succeed(false),
       });
       const result = yield* Effect.gen(function* () {
         const controls = yield* Controls.ProviderTurnControlServiceV2;

@@ -157,6 +157,7 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
     Layer.mock(TerminalManager.TerminalManager)({
       closeIdle: () => Effect.void,
       closeOnSettle: () => Effect.void,
+      hasActiveSubprocess: () => Effect.succeed(false),
     }),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
       runForThread: () => Effect.succeed({ status: "no-script" } as const),

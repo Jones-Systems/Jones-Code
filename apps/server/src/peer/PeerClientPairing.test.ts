@@ -3,6 +3,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   AuthAccessWriteScope,
   type AuthEnvironmentScope,
+  AuthFilesystemReadScope,
   type AuthMcpClientAccess,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -113,10 +114,11 @@ it.effect(
         const b = yield* serveBox();
         const a = yield* makeLaptop;
         yield* linkTo(a.links, b, "full-access");
-        // Holds less than a pairing code grants, and one scope no pairing code grants.
+        // Holds a subset of standard scopes and two administrative scopes.
         const held = [
           AuthOrchestrationReadScope,
           AuthOrchestrationOperateScope,
+          AuthFilesystemReadScope,
           AuthAccessWriteScope,
           AuthRelayConfigureScope,
         ];
@@ -141,7 +143,7 @@ it.effect(
           new Set([
             AuthOrchestrationReadScope,
             AuthOrchestrationOperateScope,
-            AuthAccessWriteScope,
+            AuthFilesystemReadScope,
           ]),
         );
         expect(session.scope).not.toContain(AuthTerminalOperateScope);

@@ -740,6 +740,7 @@ export function layerWithRegistryAndServices<Error>(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
           getInstance: () => Effect.undefined,
           getCatalogSource: () => undefined,
+          ...options.providerInstances,
         }),
         layerStores,
         layerEventSinkProvided,

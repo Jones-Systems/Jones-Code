@@ -54,6 +54,8 @@ export interface Planning {
   automaticBatchDelivery?: boolean;
 }
 
+export class QueuedSteerTargetStopping extends Error {}
+
 export const read = <A extends QueueRecords, E>(
   sql: SqlClient.SqlClient,
   stops: StopFences,

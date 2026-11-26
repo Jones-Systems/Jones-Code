@@ -13,6 +13,7 @@ import * as Fiber from "effect/Fiber";
 import {
   CursorOrchestratorReplayHarness,
   CursorReplayFrameMismatchError,
+  layer as cursorReplayLayer,
   makeCursorAgentSdkReplayRunner,
   type CursorAgentSdkReplayTranscript,
 } from "../Adapters/CursorAdapterV2.testkit.ts";
@@ -209,7 +210,40 @@ describe("Cursor replay fixtures", () => {
             import.meta.url,
           ),
         },
-        harness: CursorOrchestratorReplayHarness,
+        harness: {
+          ...CursorOrchestratorReplayHarness,
+          makeProviderAdapterRegistryLayer: (transcript) => {
+            const cancelled = transcript.entries.find(
+              (entry) =>
+                entry.type === "expect_outbound" &&
+                (entry.frame as CursorReplayFrame).type === "run.cancel",
+            );
+            const frame =
+              cancelled?.type === "expect_outbound"
+                ? (cancelled.frame as CursorReplayFrame)
+                : undefined;
+            if (frame?.type !== "run.cancel")
+              throw new Error("Replay is missing its Cancel frame.");
+            const runner = makeCursorAgentSdkReplayRunner(transcript);
+            return cursorReplayLayer(transcript, {
+              runner: {
+                ...runner,
+                open: (input) =>
+                  runner.open(input).pipe(
+                    Effect.map((session) => ({
+                      ...session,
+                      runCheckpointed: (runId) =>
+                        Effect.sync(() => {
+                          // The original cancelled turn in this recording had no checkpoint.
+                          assert.equal(runId, frame.runId);
+                          return false;
+                        }),
+                    })),
+                  ),
+              },
+            });
+          },
+        },
         transformTranscript: withCursorRetirementBoundaries,
       }),
     );

@@ -1,4 +1,4 @@
-import { AuthAdministrativeScopes } from "@t3tools/contracts";
+import { AuthAdministrativeClientScopes } from "@t3tools/contracts";
 import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -205,6 +205,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
         ),
       );
       expect(current.method).toBe("desktop-bootstrap");
+      expect(current.scopes).toEqual(AuthAdministrativeClientScopes);
 
       const staleToken = yield* currentDesktopBootstrapToken(
         "desktop-secret",
@@ -283,7 +284,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
       const third = yield* bootstrapCredentials.consume("desktop-bootstrap-token");
 
       expect(first.method).toBe("desktop-bootstrap");
-      expect(first.scopes).toEqual(AuthAdministrativeScopes);
+      expect(first.scopes).toEqual(AuthAdministrativeClientScopes);
       expect(first.subject).toBe("desktop-bootstrap");
       expect(second.method).toBe("desktop-bootstrap");
       expect(third.method).toBe("desktop-bootstrap");

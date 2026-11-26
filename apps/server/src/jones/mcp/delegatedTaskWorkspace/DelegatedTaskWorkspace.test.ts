@@ -34,7 +34,6 @@ import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdap
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
-import { layerNoTaskFolders } from "../../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
@@ -50,6 +49,7 @@ import * as TerminalManager from "../../../terminal/Manager.ts";
 import * as CheckpointStore from "../../../checkpointing/CheckpointStore.ts";
 import * as TextGeneration from "../../../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
+import * as TaskFolders from "../../../workspace/TaskFolders.ts";
 import {
   resolveDelegatedTaskProject,
   resolveExplicitDelegatedTaskWorkspace,
@@ -406,7 +406,11 @@ function makeHarness(
       Deferred.succeed(terminalClosed, undefined).pipe(Effect.asVoid),
   );
   const externalServices = Layer.mergeAll(
-    layerNoTaskFolders,
+    Layer.mock(TaskFolders.TaskFolders)({
+      plan: () => Effect.succeed(null),
+      find: () => Effect.succeed(null),
+      removeForProjectFolder: (input) => removeWorktree(input),
+    }),
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: closeTerminal }),

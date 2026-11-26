@@ -215,10 +215,13 @@ const scenario = <E>(
         Layer.mock(Providers.ProviderRegistry)({
           getProviders: Ref.get(catalog),
           refreshInstance: () => Ref.get(catalog),
+          refreshWorkspaceSnapshot: () => Ref.get(catalog),
         }),
         Layer.mock(Launch.ThreadLaunchService)({}),
         Layer.mock(Git.GitVcsDriver)({}),
-        Layer.mock(Projects.ProjectService)({}),
+        Layer.mock(Projects.ProjectService)({
+          workspaceScanDirectory: (path) => Effect.succeed(path),
+        }),
         Layer.mock(Scheduled.ScheduledTaskService)({}),
         Layer.mock(Secrets.SecretRequests)({}),
         Layer.mock(Remote.RemoteDelegation)({}),

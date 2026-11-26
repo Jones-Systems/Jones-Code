@@ -35,7 +35,13 @@ const settingsWith = (patch: Partial<ServerSettings>): ServerSettings => ({
 // Mirrors the hook in ProviderSessionManager: fixed thread tools plus each
 // optional capability the resolved settings grant.
 const grantFor = (decisionSnapshot: boolean) => {
-  const grant = new Set<McpCapability>(["orchestration", "worktree", "pull-requests", "preview"]);
+  const grant = new Set<McpCapability>([
+    "orchestration",
+    "worktree",
+    "pull-requests",
+    "issues",
+    "preview",
+  ]);
   if (decisionSnapshot) grant.add(DECISION_SNAPSHOT_CAPABILITY);
   return grant;
 };

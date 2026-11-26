@@ -25,7 +25,10 @@ import { HttpBody, HttpClient, HttpRouter } from "effect/http";
 
 import * as ServerEnvironment from "../../../../../environment/ServerEnvironment.ts";
 import * as FeedbackStore from "../../../../../feedback/FeedbackStore.ts";
+import * as GitManager from "../../../../../git/GitManager.ts";
 import * as GitWorkflowService from "../../../../../git/GitWorkflowService.ts";
+import * as IssueService from "../../../../../issue/IssueService.ts";
+import * as MilestoneHub from "../../../../../milestones/MilestoneHub.ts";
 import * as ProviderAdapterRegistry from "../../../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderSessionManager from "../../../../../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagementService from "../../../../../orchestration-v2/ThreadManagementService.ts";
@@ -49,6 +52,7 @@ import * as ServerSecretStore from "../../../../../auth/ServerSecretStore.ts";
 import * as AssetSigner from "../../../../../assets/AssetSigner.ts";
 import * as ManagedProjectFolders from "../../../../../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../../../../../orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadIssueService from "../../../../../orchestration-v2/ThreadIssueService.ts";
 import * as ThreadSearch from "../../../../../orchestration-v2/ThreadSearch.ts";
 import * as PreviewManager from "../../../../../preview/Manager.ts";
 import * as SourceControlRepositoryService from "../../../../../sourceControl/SourceControlRepositoryService.ts";
@@ -68,6 +72,7 @@ type TurnAttachment = Parameters<
 >[0];
 const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
   Layer.mergeAll(
+    MilestoneHub.layer,
     Layer.mock(ReceiverInspection.ReceiverInspection)({}),
     Layer.mock(ReceiverProtocol.ReceiverPeerProtocol)({}),
     Layer.mock(ConversationPolicy.ConversationPolicy)({
@@ -82,7 +87,7 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
     Layer.mock(EventSink.EventSinkV2)({ supersededTerminalTrace: SupersededTerminalTrace.make() }),
     Layer.mock(Orchestrator.OrchestratorV2)({ ...unusedCorePorts() }),
-    Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThreadShell: () => Effect.succeed(null) }),
     Layer.mock(DeviceService.DeviceService)({}),
     Layer.mock(FeedbackStore.FeedbackStore)({}),
     Layer.mock(ThreadManagementService.ThreadManagementService)({}),
@@ -107,7 +112,10 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.mock(EnvironmentTheme.EnvironmentThemeService)({}),
     ServerSettings.layerTest({}),
     Layer.mock(StorageCleanup.StorageCleanup)({}),
+    Layer.mock(GitManager.GitManager)({}),
     Layer.mock(GitWorkflowService.GitWorkflowService)({}),
+    Layer.mock(IssueService.IssueService)({}),
+    Layer.mock(ThreadIssueService.ThreadIssueService)({}),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
     Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
     Layer.mock(GitVcsDriver.GitVcsDriver)({}),

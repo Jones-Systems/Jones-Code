@@ -61,7 +61,14 @@ const makeQueuedProviderFixture = ({
 }) =>
   Effect.gen(function* () {
     const instanceId = modelSelection.instanceId;
-    const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+    const eventsByThread = new Map<ThreadId, Queue.Queue<ProviderAdapter.ProviderAdapterV2Event>>();
+    const emitForThread = (threadId: ThreadId, event: ProviderAdapter.ProviderAdapterV2Event) =>
+      Effect.suspend(() => {
+        const events = eventsByThread.get(threadId);
+        return events === undefined
+          ? Effect.die(new Error(`No synthetic provider session for ${threadId}`))
+          : Queue.offer(events, event);
+      });
     const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
     const steered: ProviderAdapter.ProviderAdapterV2TurnMessage[] = [];
     const interrupted: ProviderAdapter.ProviderAdapterV2InterruptInput[] = [];
@@ -79,6 +86,7 @@ const makeQueuedProviderFixture = ({
             return yield* Effect.die("Synthetic adapter requires the manager's actual lifecycle");
           const runtimeGeneration = yield* lifecycle.reserve(input.threadId);
           yield* lifecycle.admit({ runtimeGeneration, threadId: input.threadId });
+          const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
           const bindThread = (providerThread: OrchestrationV2ProviderThread) =>
             lifecycle.bind({
               providerThread,
@@ -132,6 +140,7 @@ const makeQueuedProviderFixture = ({
               Effect.gen(function* () {
                 assert.isDefined(turn.revalidateStartAdmission);
                 yield* turn.revalidateStartAdmission!;
+                eventsByThread.set(turn.threadId, events);
                 started.push(turn);
                 const now = yield* DateTime.now;
                 yield* Queue.offer(events, {
@@ -183,7 +192,7 @@ const makeQueuedProviderFixture = ({
           };
         }),
     };
-    return { adapter, events, started, steered, interrupted };
+    return { adapter, emitForThread, started, steered, interrupted };
   });
 
 it.effect("replay start requires the original worker claim and accepted command receipt", () =>
@@ -599,10 +608,19 @@ it.effect.each([
         const pending = yield* orchestrator
           .dispatch(command)
           .pipe(Effect.result, Effect.forkScoped);
-        const queuedCommit = yield* Deferred.await(planned);
+        // A Stop recorded before planning can reject without building a commit.
+        // Wait for either outcome while keeping the later Stop cases at the commit barrier.
+        const earlyResult = stopFirst
+          ? yield* Effect.raceFirst(
+              Deferred.await(planned).pipe(Effect.as(null)),
+              Fiber.join(pending),
+            )
+          : null;
+        const queuedCommit = earlyResult === null ? yield* Deferred.await(planned) : null;
         if (intervening === "receipt") {
           // The same receipt is accepted by another writer after dispatch checked for replay.
-          const accepted = yield* commit(queuedCommit);
+          assert.isNotNull(queuedCommit);
+          const accepted = yield* commit(queuedCommit!);
           assert.isTrue(accepted.committed);
           yield* openRequest;
           const acceptedState = yield* read;
@@ -657,7 +675,7 @@ it.effect.each([
           WHERE thread_id = ${threadId} ORDER BY run_id`;
         const heldBefore = yield* readHolds;
         yield* Deferred.succeed(release, undefined);
-        const result = yield* Fiber.join(pending);
+        const result = earlyResult ?? (yield* Fiber.join(pending));
         const after = yield* read;
         if (intervening === "unrelated edit") {
           assert.equal(result._tag, "Success");
@@ -1301,9 +1319,8 @@ it.effect.each(["codex", "cursor"] as const)(
         const instanceId = ProviderInstanceId.make(driverName);
         const modelSelection = { instanceId, model: "test-model" };
         const cwd = yield* checkpointWorkspace(`monitor-queue-optout-${driverName}`);
-        const { adapter, events, started, steered, interrupted } = yield* makeQueuedProviderFixture(
-          { cwd, driver, modelSelection },
-        );
+        const { adapter, emitForThread, started, steered, interrupted } =
+          yield* makeQueuedProviderFixture({ cwd, driver, modelSelection });
         const database = SqlitePersistence.layerMemory;
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -1437,7 +1454,7 @@ it.effect.each(["codex", "cursor"] as const)(
                   Stream.runDrain,
                   Effect.forkScoped,
                 );
-                yield* Queue.offer(events, {
+                yield* emitForThread(id, {
                   type: "node.updated",
                   driver,
                   node: { ...tool, status, completedAt: status === "completed" ? now : null },
@@ -1530,13 +1547,13 @@ it.effect.each(["codex", "cursor"] as const)(
           assert.equal(started.filter((turn) => turn.threadId === threadId).length, 1);
           assert.equal((yield* orchestrator.dispatch(monitorCommand)).sequence, accepted.sequence);
 
-          const waiting = yield* orchestrator.streamDomainEvents.pipe(
+          const completed = yield* orchestrator.streamDomainEvents.pipe(
             Stream.filter(
               (event) =>
                 event.threadId === threadId &&
                 event.type === "run.updated" &&
                 event.payload.id === activeRun.id &&
-                event.payload.status === "waiting",
+                event.payload.status === "completed",
             ),
             Stream.take(1),
             Stream.runDrain,
@@ -1567,7 +1584,7 @@ it.effect.each(["codex", "cursor"] as const)(
             Effect.forkScoped,
           );
           const now = yield* DateTime.now;
-          yield* Queue.offer(events, {
+          yield* emitForThread(threadId, {
             type: "turn.terminal",
             driver,
             providerThreadId: originalTurn.providerThreadId,
@@ -1578,7 +1595,7 @@ it.effect.each(["codex", "cursor"] as const)(
             failure: null,
             threadDisposition: "reusable",
           });
-          yield* Fiber.join(waiting);
+          yield* Fiber.join(completed);
           yield* worker.drain();
           yield* Fiber.join(queuedStarting);
           yield* worker.drain();
