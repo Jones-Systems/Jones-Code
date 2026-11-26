@@ -7,7 +7,7 @@ import {
   SettingsSection,
   SettingResetButton,
 } from "../../components/settings/settingsLayout";
-import { searchableSetting } from "../../components/settings/settingsSearch";
+import { useSearchableSetting } from "../../components/settings/settingsSearch";
 import {
   Select,
   SelectItem,
@@ -32,6 +32,7 @@ const labels: Record<SidebarProjectSortOrder, string> = {
 };
 
 export function PresentationOrderSettings() {
+  const searchableSetting = useSearchableSetting();
   const sortOrder = useClientSettings((settings) => settings.sidebarProjectSortOrder);
   const projectOrder = useUiStateStore((state) => state.projectOrder);
   const environmentOrder = useUiStateStore((state) => state.environmentOrder);

@@ -11,7 +11,6 @@ import {
 } from "@t3tools/shared/composerContextReferences";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
-  buildPendingUserInputAnswers,
   normalizeSelectedOptionValues,
   resolvePendingUserInputAnswer,
   type PendingUserInputAnswer,
@@ -128,18 +127,6 @@ export function withdrawDisplacedCustomAnswerFromPrompt(
   return after.length === 0 ? before.slice(0, -DISPLACED_ANSWER_SEPARATOR.length) : before + after;
 }
 
-function countAnsweredPendingUserInputQuestions(
-  questions: ReadonlyArray<UserInputQuestion>,
-  draftAnswers: Record<string, PendingUserInputDraftAnswer>,
-  options: { notes?: boolean } = {},
-): number {
-  return questions.reduce((count, question) => {
-    return resolvePendingUserInputAnswer(question, draftAnswers[question.id], options) !== null
-      ? count + 1
-      : count;
-  }, 0);
-}
-
 export function derivePendingUserInputProgress<Q extends UserInputQuestion>(
   questions: ReadonlyArray<Q>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
@@ -150,16 +137,19 @@ export function derivePendingUserInputProgress<Q extends UserInputQuestion>(
     questions.length === 0 ? 0 : Math.max(0, Math.min(questionIndex, questions.length - 1));
   const activeQuestion = questions[normalizedQuestionIndex] ?? null;
   const activeDraft = activeQuestion ? draftAnswers[activeQuestion.id] : undefined;
-  const resolvedAnswer = activeQuestion
-    ? resolvePendingUserInputAnswer(activeQuestion, activeDraft, options)
-    : null;
+  const questionProgress = questions.map((question) => {
+    const draft = draftAnswers[question.id];
+    const answer = resolvePendingUserInputAnswer(question, draft, options);
+    return {
+      answer,
+      canAdvance: answer !== null || (question.required === false && !draft?.attachmentsBlocked),
+    };
+  });
+  const activeProgress = questionProgress[normalizedQuestionIndex];
+  const answeredByIndex = questionProgress.map(({ answer }) => answer !== null);
+  const firstUnansweredIndex = questionProgress.findIndex(({ canAdvance }) => !canAdvance);
   const customAnswer =
     activeQuestion?.allowCustomAnswer === false ? "" : (activeDraft?.customAnswer ?? "");
-  const answeredQuestionCount = countAnsweredPendingUserInputQuestions(
-    questions,
-    draftAnswers,
-    options,
-  );
   const isLastQuestion =
     questions.length === 0 ? true : normalizedQuestionIndex >= questions.length - 1;
 
@@ -171,21 +161,15 @@ export function derivePendingUserInputProgress<Q extends UserInputQuestion>(
       ? normalizeSelectedOptionValues(activeQuestion, activeDraft?.selectedOptionValues)
       : [],
     customAnswer,
-    resolvedAnswer,
+    resolvedAnswer: activeProgress?.answer ?? null,
     usingCustomAnswer:
       (activeQuestion?.initialAnswer !== undefined ? customAnswer : customAnswer.trim()).length > 0,
-    answeredQuestionCount,
-    answeredByIndex: questions.map(
-      (question) =>
-        resolvePendingUserInputAnswer(question, draftAnswers[question.id], options) !== null,
-    ),
-    firstUnansweredIndex: questions.findIndex(
-      (question) =>
-        resolvePendingUserInputAnswer(question, draftAnswers[question.id], options) === null,
-    ),
+    answeredQuestionCount: answeredByIndex.filter(Boolean).length,
+    answeredByIndex,
+    firstUnansweredIndex,
     isLastQuestion,
-    isComplete: buildPendingUserInputAnswers(questions, draftAnswers, options) !== null,
-    canAdvance: resolvedAnswer !== null,
+    isComplete: firstUnansweredIndex === -1,
+    canAdvance: activeProgress?.canAdvance ?? false,
   };
 }
 

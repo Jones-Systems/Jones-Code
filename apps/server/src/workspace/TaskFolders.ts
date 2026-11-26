@@ -41,6 +41,7 @@ import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as TaskFolderTeardown from "../jones/taskFolderTeardown/Teardown.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -493,6 +494,52 @@ const make = Effect.gen(function* () {
   );
   // One at a time per project: the commands share the project folder, and its workspace files.
   const layoutLocks = yield* KeyedLock.make<string>();
+  const layoutShell = onWindows ? windowsSystem32Path(hostEnvironment, "cmd.exe") : "sh";
+  const recheckLayoutCommand = Effect.fnUntraced(function* (
+    operation: TaskFolderError["operation"],
+    command: ClearedLayoutCommand,
+  ) {
+    const now = yield* command.recheck;
+    if (now === null || !("command" in now) || now.command.text !== command.text) {
+      return yield* new TaskFolderError({
+        operation,
+        detail: layoutRefusedDetail(
+          now !== null && "refusal" in now
+            ? now.refusal
+            : "which changed while this request waited for its turn. Try again.",
+        ),
+      });
+    }
+    return now.command;
+  });
+  const invokeLayoutCommand = (
+    operation: TaskFolderError["operation"],
+    command: ClearedLayoutCommand,
+    taskFolder: Pick<TaskFolder, "root" | "projectRoot" | "projectPath">,
+    branch: string,
+    baseBranch: string | undefined,
+    repositories: ReadonlyArray<string>,
+  ) =>
+    processes
+      .run({
+        operation: "TaskFolders.worktreeLayout",
+        command: layoutShell,
+        args: onWindows ? ["/d", "/s", "/c", command.text] : ["-c", command.text],
+        cwd: taskFolder.projectRoot,
+        env: {
+          ...hostEnvironment,
+          // A `GIT_DIR` the server inherited would point the command's Git at another repository.
+          ...VcsProcess.unsetInheritedRepositoryEnv(hostEnvironment, hostPlatform),
+          T3_PROJECT_ROOT: taskFolder.projectRoot,
+          T3_WORKTREE_ROOT: taskFolder.root,
+          T3_WORKTREE_PROJECT_PATH: taskFolder.projectPath,
+          T3_WORKTREE_BRANCH: branch,
+          T3_WORKTREE_BASE: baseBranch ?? "",
+          T3_WORKTREE_REPOSITORIES: repositories.join("\n"),
+        },
+        timeoutMs: LAYOUT_COMMAND_TIMEOUT_MS,
+      })
+      .pipe(Effect.mapError(fail(operation, "The project's worktree layout command failed")));
   const runLayoutCommand = (
     operation: TaskFolderError["operation"],
     command: ClearedLayoutCommand,
@@ -512,41 +559,17 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const noteStart = yield* inItsTurn;
         if (noteStart === null) return null;
-        // The wait for a turn can be long: who asked, the file and the approval are read again
-        // once it comes, and only the text that passes then is run. Nothing else comes between
-        // this check and the command's start, so no other work can outlast what it read.
-        const now = yield* command.recheck;
-        if (now === null || !("command" in now) || now.command.text !== command.text) {
-          return yield* new TaskFolderError({
-            operation,
-            detail: layoutRefusedDetail(
-              now !== null && "refusal" in now
-                ? now.refusal
-                : "which changed while this request waited for its turn. Try again.",
-            ),
-          });
-        }
+        // The wait for a turn can be long. Recheck the caller, file, and approval in its turn.
+        const now = yield* recheckLayoutCommand(operation, command);
         noteStart();
-        return yield* processes
-          .run({
-            operation: "TaskFolders.worktreeLayout",
-            command: onWindows ? windowsSystem32Path(hostEnvironment, "cmd.exe") : "sh",
-            args: onWindows ? ["/d", "/s", "/c", now.command.text] : ["-c", now.command.text],
-            cwd: taskFolder.projectRoot,
-            env: {
-              ...hostEnvironment,
-              // A `GIT_DIR` the server inherited would point the command's Git at another repository.
-              ...VcsProcess.unsetInheritedRepositoryEnv(hostEnvironment, hostPlatform),
-              T3_PROJECT_ROOT: taskFolder.projectRoot,
-              T3_WORKTREE_ROOT: taskFolder.root,
-              T3_WORKTREE_PROJECT_PATH: taskFolder.projectPath,
-              T3_WORKTREE_BRANCH: branch,
-              T3_WORKTREE_BASE: baseBranch ?? "",
-              T3_WORKTREE_REPOSITORIES: repositories.join("\n"),
-            },
-            timeoutMs: LAYOUT_COMMAND_TIMEOUT_MS,
-          })
-          .pipe(Effect.mapError(fail(operation, "The project's worktree layout command failed")));
+        return yield* invokeLayoutCommand(
+          operation,
+          now,
+          taskFolder,
+          branch,
+          baseBranch,
+          repositories,
+        );
       }),
     );
 
@@ -1051,6 +1074,26 @@ const make = Effect.gen(function* () {
       force: false,
     });
   });
+  const hasWorktreeRegistration = Effect.fnUntraced(function* (checkout: TaskFolderCheckout) {
+    const real = yield* canonicalLocation(checkout.worktreePath);
+    for (const registered of yield* gitDriver.listWorktreePaths(checkout.repositoryPath)) {
+      if (samePath(yield* canonicalLocation(path.resolve(registered)), real)) return true;
+    }
+    return false;
+  });
+
+  const teardownReceipts = store.teardownReceipts;
+  const teardown = yield* TaskFolderTeardown.make({
+    receipts: teardownReceipts,
+    linkedGitDir,
+    commonGitDir,
+    canonicalLocation,
+    assertDestination: (root, target) => assertDestination(root, target, "remove"),
+    hasRegistration: (checkout) =>
+      hasWorktreeRegistration(checkout).pipe(
+        Effect.mapError(fail("remove", "Could not verify the worktree registration")),
+      ),
+  });
 
   // A failed creation confers no authority to run the project's teardown command.
   const neverLaidOut = new Set<string>();
@@ -1088,14 +1131,43 @@ const make = Effect.gen(function* () {
         const keep = input.inspect === undefined ? null : (yield* input.inspect(checkout)).keep;
         return keep ?? (yield* checkoutRemovalReason(checkout));
       });
-      // A layout command can touch the entire folder. Read the bindings, links, and member
-      // state again in its turn. Unowned files or an unresolved previous layout keep it unrun.
-      const layout = laidOut
-        ? yield* layoutCommand(taskFolder, "remove", input.projectCommands)
-        : null;
-      if (layout !== null && "command" in layout && checkouts.length > 0) {
-        const allGo = Effect.gen(function* () {
+      const plan = yield* teardown.prepare({
+        folder: taskFolder,
+        checkouts,
+        ownerThreadId: input.ownerThreadId,
+        expectedBranch,
+        inTurn: (effect) => layoutLocks.withLock(taskFolder.projectRoot, effect),
+        approvedCommand: Effect.gen(function* () {
+          if (!laidOut || checkouts.length === 0) return null;
+          const layout = yield* layoutCommand(taskFolder, "remove", input.projectCommands);
+          if (layout === null || "refusal" in layout) return null;
+          const recheck = recheckLayoutCommand("remove", layout.command);
+          const branch = input.deleteBranch ?? "";
+          return {
+            commandHash: yield* LayoutCommandApprovals.commandHash(digest, layout.command.text),
+            shell: layoutShell,
+            branch,
+            recheck,
+            run: recheck.pipe(
+              Effect.flatMap((now) =>
+                invokeLayoutCommand(
+                  "remove",
+                  now,
+                  taskFolder,
+                  branch,
+                  undefined,
+                  taskFolder.repositories.map((repository) => repository.repositoryPath),
+                ),
+              ),
+              Effect.map((result) => result.exitCode),
+            ),
+          };
+        }),
+        // A layout command can touch the entire folder. Recheck custody, the links and
+        // every checkout after any wait, before the command is allowed to start.
+        allGo: Effect.gen(function* () {
           if ((yield* removalBlocked(taskFolder.root, input.ownerThreadId)) !== null) return false;
+          yield* assertDestination(taskFolder.root, taskFolder.projectPath, "remove");
           const checked = new Set<string>();
           for (const checkout of checkouts) {
             yield* assertDestination(taskFolder.root, checkout.worktreePath, "remove");
@@ -1104,42 +1176,34 @@ const make = Effect.gen(function* () {
             checked.add(checkout.worktreePath);
           }
           return yield* holdsOnlyLinks(taskFolder, taskFolder.root, checked);
-        }).pipe(Effect.orElseSucceed(() => false));
-        if (yield* allGo) {
-          const result = yield* runLayoutCommand(
-            "remove",
-            layout.command,
-            taskFolder,
-            input.deleteBranch ?? "",
-            undefined,
-            taskFolder.repositories.map((repository) => repository.repositoryPath),
-            Effect.map(allGo, (go) => (go ? () => {} : null)),
-          ).pipe(Effect.result);
-          if (result._tag === "Failure")
-            return holdFolder("layout teardown outcome requires reconciliation");
-        }
-      }
+        }).pipe(Effect.orElseSucceed(() => false)),
+      });
+      if ("held" in plan) return holdFolder(plan.held);
+      const captured = plan.capture;
+      const verifyCleanupOwner =
+        captured === null
+          ? Effect.void
+          : teardown.assertOwner(captured, input.ownerThreadId, "cleanup");
 
       const removeOne = Effect.fnUntraced(function* (checkout: TaskFolderCheckout) {
         const target = checkout.worktreePath;
         return yield* Effect.gen(function* () {
           yield* assertDestination(taskFolder.root, target, "remove");
+          const original = captured?.checkouts.find((entry) => entry.worktreePath === target);
+          if (captured !== null && original === undefined)
+            return yield* TaskFolderTeardown.ownerChanged();
           if ((yield* lstatIfPresent(target)) === null) {
             // An absent path is not a receipt for an absent Git registration.
-            for (const registered of yield* gitDriver.listWorktreePaths(checkout.repositoryPath)) {
-              if (
-                samePath(
-                  yield* canonicalLocation(path.resolve(registered)),
-                  yield* canonicalLocation(target),
-                )
-              ) {
-                kept.push({
-                  path: target,
-                  reason: "worktree registration requires reconciliation",
-                });
-                return false;
-              }
+            if (original !== undefined && (yield* teardown.assertCheckout(original, true)))
+              return yield* TaskFolderTeardown.ownerChanged();
+            if (yield* hasWorktreeRegistration(checkout)) {
+              kept.push({
+                path: target,
+                reason: "worktree registration requires reconciliation",
+              });
+              return false;
             }
+            yield* verifyCleanupOwner;
             return true;
           }
           const keep =
@@ -1157,6 +1221,8 @@ const make = Effect.gen(function* () {
             kept.push({ path: target, reason: "the worktree branch changed" });
             return false;
           }
+          yield* verifyCleanupOwner;
+          if (original !== undefined) yield* teardown.assertCheckout(original, false);
           yield* removeCheckout(checkout);
           if ((yield* lstatIfPresent(target)) !== null) {
             kept.push({ path: target, reason: "files remain after Git removed the worktree" });
@@ -1202,6 +1268,7 @@ const make = Effect.gen(function* () {
       } else if (!projectHoldsKept) {
         const blockedNow = yield* removalBlocked(taskFolder.root, input.ownerThreadId);
         if (blockedNow !== null) return holdFolder(blockedNow);
+        yield* verifyCleanupOwner;
         const projectGone = yield* holdsOnlyLinks(taskFolder, projectPath, new Set()).pipe(
           Effect.flatMap((onlyLinks) =>
             onlyLinks ? removeLinks(taskFolder, projectPath) : Effect.succeed(false),
@@ -1214,6 +1281,7 @@ const make = Effect.gen(function* () {
       if (kept.length === 0) {
         const blockedNow = yield* removalBlocked(taskFolder.root, input.ownerThreadId);
         if (blockedNow !== null) return holdFolder(blockedNow);
+        yield* verifyCleanupOwner;
         const rootGone = yield* removeLinks(taskFolder, taskFolder.root).pipe(
           Effect.orElseSucceed(() => false),
         );
@@ -1777,20 +1845,21 @@ const make = Effect.gen(function* () {
   const remove: TaskFolders["Service"]["remove"] = Effect.fnUntraced(function* (input) {
     const taskFolder = yield* store.findContaining(input.root);
     if (taskFolder === null || taskFolder.root !== input.root) return { removed: [], kept: [] };
+    const owner = yield* teardownReceipts.readOwner(input.root);
+    const changed = () =>
+      new TaskFolderError({
+        operation: "remove",
+        detail: "The task folder binding changed.",
+      });
+    if (owner === null || !TaskFolderTeardown.sameFolder(owner.folder, taskFolder))
+      return yield* changed();
     return yield* locked(
       taskFolder,
       Effect.gen(function* () {
-        const current = yield* store.findContaining(input.root);
-        if (
-          current === null ||
-          current.root !== input.root ||
-          current.projectPath !== taskFolder.projectPath
-        )
-          return yield* new TaskFolderError({
-            operation: "remove",
-            detail: "The task folder binding changed.",
-          });
-        return yield* removeLocked(current, input);
+        const current = yield* teardownReceipts.readOwner(input.root);
+        if (current === null || !TaskFolderTeardown.sameOwner(owner, current))
+          return yield* changed();
+        return yield* removeLocked(current.folder, input);
       }),
     );
   });

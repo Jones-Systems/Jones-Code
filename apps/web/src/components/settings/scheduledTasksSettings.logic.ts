@@ -341,7 +341,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     baseRef:
       task.workspaceStrategy.type === "worktree" || task.workspaceStrategy.type === "auto"
         ? (task.workspaceStrategy.baseRef ?? "")
-        : "main",
+        : "",
     startFromOrigin:
       task.workspaceStrategy.type === "worktree"
         ? (task.workspaceStrategy.startFromOrigin ?? false)

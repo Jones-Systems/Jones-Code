@@ -9,6 +9,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 
+import * as TeardownReceipts from "../jones/taskFolderTeardown/ReceiptStore.ts";
+
 /**
  * The record of each task folder. Reads live here so the services that only need to know where a
  * thread works do not depend on Git; `TaskFolders` owns every change.
@@ -21,6 +23,7 @@ export class TaskFolderStore extends Context.Service<
     readonly list: Effect.Effect<ReadonlyArray<TaskFolder>, TaskFolderError>;
     readonly put: (taskFolder: TaskFolder) => Effect.Effect<void, TaskFolderError>;
     readonly remove: (root: string) => Effect.Effect<void, TaskFolderError>;
+    readonly teardownReceipts: TeardownReceipts.ReceiptStore;
   }
 >()("t3/workspace/TaskFolderStore") {}
 
@@ -92,6 +95,7 @@ const make = Effect.gen(function* () {
   const encodeRepositories = Schema.encodeEffect(
     Schema.fromJsonString(Schema.Array(TaskFolderRepository)),
   );
+  const teardownReceipts = TeardownReceipts.make(sql);
 
   const findContaining: TaskFolderStore["Service"]["findContaining"] = Effect.fn(
     "TaskFolderStore.findContaining",
@@ -132,9 +136,13 @@ const make = Effect.gen(function* () {
     findContaining,
     list: listRows(undefined).pipe(Effect.mapError(failed)),
     put,
-    remove: Effect.fn("TaskFolderStore.remove")(function* (root) {
-      yield* sql`DELETE FROM task_folders WHERE root = ${root}`.pipe(Effect.mapError(failed));
-    }),
+    remove: Effect.fn("TaskFolderStore.remove")((root) =>
+      teardownReceipts.forget(
+        root,
+        sql`DELETE FROM task_folders WHERE root = ${root}`.pipe(Effect.asVoid),
+      ),
+    ),
+    teardownReceipts,
   });
 });
 

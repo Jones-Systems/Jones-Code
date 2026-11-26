@@ -6,7 +6,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "~/components/settings/settingsLayout";
-import { searchableSetting } from "~/components/settings/settingsSearch";
+import { useSearchableSetting } from "~/components/settings/settingsSearch";
 import { useSettingsScope } from "~/components/settings/SettingsScopeContext";
 import {
   useScopedSettings,
@@ -22,6 +22,7 @@ const SETTING_KEYS = ["enableAgentDecisionSnapshotAccess"] as const;
  * issued under the previous value is rotated rather than reused.
  */
 export function DecisionSnapshotAccessSettings() {
+  const searchableSetting = useSearchableSetting();
   const { scope } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();

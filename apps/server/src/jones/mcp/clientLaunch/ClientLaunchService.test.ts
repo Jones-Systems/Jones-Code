@@ -274,6 +274,27 @@ it.effect(
     }).pipe(Effect.provide(makeHarness().layer)),
 );
 
+it.effect("a keyed launch carries structured output and rejects a changed schema", () =>
+  Effect.gen(function* () {
+    const context = yield* caller;
+    const outputSchema = { type: "object", properties: { count: { type: "integer" } } };
+    const request = { ...input, outputSchema };
+    const first = yield* ClientLaunch.launch(request, context, modes, gate);
+    const replay = yield* ClientLaunch.launch(request, context, modes, gate);
+    assert.equal(replay.threadId, first.threadId);
+    const rejected = yield* ClientLaunch.launch(
+      { ...request, outputSchema: { ...outputSchema, required: ["count"] } },
+      context,
+      modes,
+      gate,
+    ).pipe(Effect.flip);
+    assert.equal(rejected.code, "request_conflict");
+    const projection = yield* context.threads.getThreadProjection(first.threadId);
+    assert.lengthOf(projection.runs, 1);
+    assert.deepEqual(projection.runs[0]?.outputSchema, outputSchema);
+  }).pipe(Effect.provide(makeHarness().layer)),
+);
+
 it.effect.each(["claim", "thread", "message"] as const)(
   "T5/T7/T12: reconciles interruption after %s",
   (step) =>

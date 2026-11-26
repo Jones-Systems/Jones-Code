@@ -73,6 +73,14 @@ describe("desktop update button state", () => {
     };
     expect(resolveDesktopUpdateButtonAction(state)).toBe("install");
     expect(getDesktopUpdateButtonTooltip(state)).toBe("Install failed for 1.1.0. Click to retry.");
+    expect(
+      getDesktopUpdateButtonTooltip({
+        ...state,
+        errorContext: null,
+        message: null,
+        canRetry: false,
+      }),
+    ).toBe("Update 1.1.0 downloaded. Click to restart and install.");
   });
 
   it("reports an install the desktop refuses after accepting it", async () => {

@@ -29,14 +29,17 @@ import * as Tool from "effect/ai/Tool";
 import type * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import {
+  providerOptionDescriptors,
   resolveInteractionMode,
   resolveRuntimeMode,
   taskPrompt,
+  withoutAgentModePicks,
 } from "../../mcp/delegatedTaskModes.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../../serverActivation.ts";
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
@@ -77,6 +80,7 @@ export const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const projects = yield* ProjectService.ProjectService;
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const random = yield* SecureRandom.SecureRandom;
   const digest = yield* Digest.Digest;
@@ -310,11 +314,10 @@ export const make = Effect.gen(function* () {
           message: "Pass target.model from orchestrator_capabilities with this environmentId.",
         });
       }
-      const options =
-        target.options ??
-        (instanceId === inherited.instanceId && model === inherited.model
+      const inheritedOptions =
+        instanceId === inherited.instanceId && model === inherited.model
           ? inherited.options
-          : undefined);
+          : undefined;
       // Modes asked for are checked against this thread. Omitted ones are left
       // to the other side, which inherits this thread's modes capped by the
       // link's access, so a narrower link still takes the task.
@@ -348,6 +351,23 @@ export const make = Effect.gen(function* () {
           code: "invalid_request",
           message: "The destination is not linked.",
         });
+      // A narrower destination cannot grant the provider's inherited native mode.
+      let options = target.options ?? inheritedOptions;
+      if (
+        target.options === undefined &&
+        inheritedOptions !== undefined &&
+        (parent.thread.runtimeMode !== "full-access" || link.access !== "full-access")
+      ) {
+        const providers = Option.isSome(providerRegistry)
+          ? yield* providerRegistry.value.getProviders
+          : [];
+        options = withoutAgentModePicks(
+          inheritedOptions,
+          providerOptionDescriptors(
+            providers.find((provider) => provider.instanceId === instanceId),
+          ),
+        );
+      }
       const modelSelection = { instanceId, model, ...(options === undefined ? {} : { options }) };
       return yield* lifecycle.submit(commandId, input, {
         scope: {

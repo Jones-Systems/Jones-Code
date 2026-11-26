@@ -261,7 +261,8 @@ export async function installLocalUpdate(
   bridge: Pick<
     DesktopBridge,
     "getUpdateState" | "installUpdate" | "openExternal" | "fleetUpdates" | "installPlan"
-  >,
+  > &
+    Partial<Pick<DesktopBridge, "onUpdateState">>,
   reportError: ReportLocalUpdateError = toastUpdateError,
   expectedVersion?: string,
 ): Promise<boolean> {
@@ -272,9 +273,7 @@ export async function installLocalUpdate(
     const result =
       current.jones !== undefined
         ? await installLocalDesktopUpdate(bridge, current)
-        : expectedVersion === undefined
-          ? await bridge.installUpdate()
-          : await bridge.installUpdate(expectedVersion);
+        : await installDesktopUpdate(bridge, expectedVersion);
     const actionError = getDesktopUpdateActionError(result);
     if (actionError) {
       reportError("Could not install update", actionError);
@@ -533,7 +532,7 @@ function SidebarUpdateControl() {
         setIsActionPending(false);
         return;
       }
-      void installLocalDesktopUpdate(bridge, state)
+      void (state.jones ? installLocalDesktopUpdate(bridge, state) : installDesktopUpdate(bridge))
         .then((result) => {
           if (!shouldToastDesktopUpdateActionResult(result)) return;
           const actionError = getDesktopUpdateActionError(result);

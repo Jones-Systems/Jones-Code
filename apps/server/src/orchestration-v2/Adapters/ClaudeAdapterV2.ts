@@ -4136,7 +4136,7 @@ export const resolveClaudeModeAvailability = Effect.fn("ClaudeAdapterV2.resolveM
  * What a thread shows when it was asked for Auto and Claude is not running in it. The row shows
  * one line, so the consequence and the reason come first.
  */
-export function claudeAutoModeUnavailableNotice(
+function claudeAutoModeUnavailableNotice(
   reason: ProviderRuntimeModeLimitReason | undefined,
 ): string {
   const switchMode = "Switch this thread to Supervised or Auto-accept edits";

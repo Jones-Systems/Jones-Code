@@ -15,6 +15,7 @@ import * as Receipts from "../../../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../../../orchestration-v2/EventSink.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import { outputRequestProblem } from "../../../orchestration-v2/runOutput.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as Git from "../../../vcs/GitVcsDriver.ts";
 import type { Caller } from "../../../mcp/threadAccess.ts";
@@ -217,6 +218,18 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
         "Keyed launches require a project, no scratch or attachments, and a message for a new worktree.",
     });
   }
+  if (input.generateTitle === true && !input.message?.trim())
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "Title generation requires a message. No thread was created.",
+    });
+  if (input.outputSchema !== undefined) {
+    const problem = input.message?.trim()
+      ? outputRequestProblem(input.outputSchema, { text: input.message })
+      : "outputSchema needs a message that asks for the result.";
+    if (problem !== null)
+      return yield* new OrchestratorMcpFailure({ code: "invalid_request", message: problem });
+  }
   const projectId = input.projectId ?? caller.caller!.projectId;
   const ids = clientLaunchIds(caller.scope.requestNamespace, input.clientRequestId);
   const digest = yield* Effect.try({
@@ -244,6 +257,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
             messageId: ids.messageId,
             text: input.message,
             attachments: [],
+            ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
             ...(caller.caller === undefined ? {} : { senderThreadId: caller.caller.id }),
           },
         };
@@ -253,6 +267,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
     threadId: ids.threadId,
     projectId,
     title: input.title.trim(),
+    ...(input.generateTitle === true ? { generateTitle: true } : {}),
     workspaceStrategy,
     ...initialMessage,
     createdBy: "agent" as const,

@@ -21,6 +21,22 @@ export class WorkflowAgentError extends Schema.TaggedError<WorkflowAgentError>()
   }
 }
 
+export class WorkflowAgentMutationUncertain extends Schema.TaggedError<WorkflowAgentMutationUncertain>()(
+  "WorkflowAgentMutationUncertain",
+  {
+    environment: Schema.String,
+    operation: Schema.String,
+    requestId: Schema.optional(Schema.String),
+    threadId: Schema.optional(Schema.String),
+  },
+) {
+  override get message(): string {
+    const thread = this.threadId === undefined ? "" : ` for thread ${this.threadId}`;
+    const key = this.requestId === undefined ? "" : ` with request key ${this.requestId}`;
+    return `Cannot confirm ${this.operation}${thread} in linked environment ${this.environment}${key}. Inspect the original operation in that environment before continuing the workflow. The workflow will not resend it.`;
+  }
+}
+
 export interface AgentModel {
   readonly instanceId: string;
   readonly model: string;
@@ -71,11 +87,14 @@ export const launchOnContinue = new WorkflowAgentError({
 export const isProjectPath = (project: string) =>
   project.startsWith("/") || isWindowsDrivePath(project);
 
+/** An agent step opened with the linked-write journal in place. */
+export const linkedStepMarker = (step: string) => `workflow-agent/step/v1/${step}`;
+
 /** Where agent steps run. The server implements it with threads; tests stand in for it. */
 export class WorkflowAgents extends Context.Service<
   WorkflowAgents,
   {
-    /** Start a turn. The same `key` is the same turn, however often it is asked for. */
+    /** Start a turn. A replay uses the original turn or reports that its outcome is uncertain. */
     readonly start: (input: {
       readonly key: string;
       /** The run and step this turn is for, which a new thread is marked with. */
@@ -94,7 +113,7 @@ export class WorkflowAgents extends Context.Service<
       readonly issue?: IssueAddress | undefined;
       /** How a new thread starts. Refused with `thread`, which keeps how it started. */
       readonly launch?: AgentLaunch | undefined;
-    }) => Effect.Effect<AgentTurn, WorkflowAgentError>;
+    }) => Effect.Effect<AgentTurn, WorkflowAgentError | WorkflowAgentMutationUncertain>;
     /**
      * Wait for the turn to end and return what it produced. With `quiet`, a turn that ended
      * without the output it owes is waited past: its agent may be waiting to be woken, and
@@ -114,6 +133,8 @@ export class WorkflowAgents extends Context.Service<
       readonly environment?: string | undefined;
       /** The step's own turn. With it, a turn of someone else's on the same thread is left alone. */
       readonly turnId?: string | undefined;
-    }) => Effect.Effect<"stopped" | "ended", WorkflowAgentError>;
+      /** The origin run owning the durable interrupt intent for a linked turn. */
+      readonly workflowRunId?: string | undefined;
+    }) => Effect.Effect<"stopped" | "ended", WorkflowAgentError | WorkflowAgentMutationUncertain>;
   }
 >()("t3/workflows/WorkflowAgents") {}

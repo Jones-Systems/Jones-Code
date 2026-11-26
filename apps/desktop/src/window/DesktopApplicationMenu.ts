@@ -321,7 +321,7 @@ export const make = Effect.gen(function* () {
           },
           { role: "delete", label: m(msg("Delete", { $context: "Edit menu item" })) },
           { type: "separator" },
-          { role: "selectAll" },
+          { role: "selectAll", label: m(msg("Select All", { $context: "Edit menu item" })) },
           { type: "separator" },
           {
             label: "Find in Panel…",

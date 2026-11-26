@@ -42,6 +42,7 @@ import {
 } from "./methods/sshEnvironment.ts";
 import {
   getAppBranding,
+  getDatabaseMigrationProgress,
   getPreviewAutomationRuntimeIdentity,
   getLocalEnvironmentBootstraps,
   getLocalEnvironmentBearerToken,
@@ -109,6 +110,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handleSync(takeLegacyLocalStorage);
   yield* ipc.handle(completeLegacyLocalStorage);
   yield* ipc.handleSync(getAppBranding);
+  yield* ipc.handle(getDatabaseMigrationProgress);
   yield* ipc.handle(getPreviewAutomationRuntimeIdentity);
   yield* installRelayTelemetryEnabled();
   yield* ipc.handleSync(getSystemLocale);

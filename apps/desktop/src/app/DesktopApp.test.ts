@@ -1,6 +1,8 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -24,6 +26,12 @@ vi.mock("../ipc/DesktopIpcHandlers.ts", () => ({
 }));
 vi.mock("../updates/DesktopRemoteUpdates.ts", () => ({ listen: Effect.void }));
 vi.mock("./DesktopStartupRecovery.ts", () => ({ listen: Effect.void }));
+vi.mock("../backend/DesktopBackendRecoveryProcess.ts", () => ({
+  make: () => ({ recover: () => Promise.resolve() }),
+}));
+vi.mock("../backend/DesktopHomeOwner.ts", () => ({
+  awaitHomeOwnershipRelease: () => Effect.succeed(true),
+}));
 
 import * as DesktopApp from "./DesktopApp.ts";
 import * as DesktopAppActivation from "./DesktopAppActivation.ts";
@@ -51,6 +59,7 @@ import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
+import * as CompanionConfig from "../jones/previewCompanion/CompanionConfig.ts";
 
 import * as BrowserImport from "../preview/BrowserImport/BrowserImport.ts";
 import * as DesktopBackendConfiguration from "../backend/DesktopBackendConfiguration.ts";
@@ -83,7 +92,9 @@ interface StubbedDesktop {
   readonly record: (event: string) => Effect.Effect<void>;
   readonly windowStarted: Deferred.Deferred<void>;
   readonly registerLinuxUrlHandler: Effect.Effect<void>;
-  readonly backends?: ReadonlyArray<{ readonly stop: () => Effect.Effect<void> }>;
+  readonly backends?: ReadonlyArray<
+    Pick<DesktopBackendPool.DesktopBackendInstance, "id" | "snapshot" | "stop">
+  >;
   readonly flushRendererHistory?: Effect.Effect<void>;
   readonly tokenRequested?: Deferred.Deferred<void>;
   readonly activationStarted?: Deferred.Deferred<void>;
@@ -95,6 +106,7 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
     const runApp = DesktopApp.program
       .pipe(
         Effect.provide(NodeCrypto.layer),
+        Effect.provideService(HostProcess.Environment, {}),
         Effect.provideService(DesktopAppIdentity.DesktopAppIdentity, {
           resolveUserDataPath: Effect.succeed("/isolated/userdata"),
           configure: stub.record("identity"),
@@ -110,6 +122,7 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
           platform: "linux",
           isDevelopment: false,
           isPackaged: true,
+          appDataDirectory: "/isolated/app-data",
           stateDir: "/isolated/userdata",
           configuredBackendPort: Option.some(3773),
           defaultDesktopSettings: { serverExposureMode: "local-only" },
@@ -205,8 +218,17 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
         Layer.mergeAll(
           Layer.mock(BrowserImport.BrowserImport, {}),
           Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {}),
+          Layer.mock(CompanionConfig.CompanionConfig, {
+            get: Effect.succeed({
+              enabled: false,
+              environmentId: null,
+              hostId: "fixture",
+              label: "Fixture",
+              browserOnly: false,
+            }),
+          }),
           Layer.mock(DesktopBackendConfiguration.DesktopBackendConfiguration, {}),
-          Layer.mock(DesktopCliCommand.DesktopCliCommand, {}),
+          Layer.mock(DesktopCliCommand.DesktopCliCommand, { installOnFirstLaunch: Effect.void }),
           Layer.mock(DesktopClientSettings.DesktopClientSettings, {}),
           Layer.mock(DesktopConnectionCatalogStore.DesktopConnectionCatalogStore, {}),
           Layer.mock(DesktopIpc.DesktopIpc, {}),
@@ -264,11 +286,21 @@ it.effect.each([false, true])(
       const windowStarted = yield* Deferred.make<void>();
       const firstStopStarted = yield* Deferred.make<void>();
       const secondStopStarted = yield* Deferred.make<void>();
-      const releaseStops = yield* Deferred.make<void>();
+      const releaseFirstStop = yield* Deferred.make<void>();
+      const releaseSecondStop = yield* Deferred.make<void>();
+      const firstStopFinished = yield* Deferred.make<void>();
+      const secondStopFinished = yield* Deferred.make<void>();
       const historyStarted = yield* Deferred.make<void>();
       const releaseHistory = yield* Deferred.make<void>();
       const tokenRequested = yield* Deferred.make<void>();
       const events: string[] = [];
+      const snapshot: DesktopBackendPool.DesktopBackendInstance["snapshot"] = Effect.succeed({
+        desiredRunning: true,
+        ready: false,
+        activePid: Option.none(),
+        restartAttempt: 0,
+        restartScheduled: false,
+      });
       const app = yield* runStubbedDesktop({
         localEnvironmentEnabled: true,
         environment: {},
@@ -285,16 +317,24 @@ it.effect.each([false, true])(
         ),
         backends: [
           {
+            id: DesktopBackendPool.PRIMARY_INSTANCE_ID,
+            snapshot,
             stop: () =>
               Deferred.succeed(firstStopStarted, undefined).pipe(
-                Effect.andThen(Deferred.await(releaseStops)),
+                Effect.andThen(Deferred.await(releaseFirstStop)),
                 Effect.andThen(stopDefect ? Effect.die("stop defect") : Effect.void),
+                Effect.ensuring(Deferred.succeed(firstStopFinished, undefined)),
               ),
           },
           {
+            id: DesktopBackendPool.BackendInstanceId("second"),
+            snapshot,
             stop: () =>
               Deferred.succeed(secondStopStarted, undefined).pipe(
-                Effect.andThen(Deferred.await(releaseStops)),
+                Effect.andThen(Deferred.await(releaseSecondStop)),
+                Effect.andThen(Deferred.succeed(secondStopFinished, undefined)),
+                Effect.asVoid,
+                Effect.interruptible,
               ),
           },
         ],
@@ -303,6 +343,13 @@ it.effect.each([false, true])(
           Effect.asVoid,
         ),
       });
+      yield* Effect.addFinalizer(() =>
+        Effect.forEach(
+          [releaseFirstStop, releaseSecondStop, releaseHistory],
+          (gate) => Deferred.succeed(gate, undefined),
+          { discard: true },
+        ),
+      );
       yield* Deferred.await(registrationStarted);
       yield* Deferred.await(windowStarted);
       yield* Deferred.await(tokenRequested);
@@ -319,12 +366,18 @@ it.effect.each([false, true])(
       yield* Deferred.await(secondStopStarted);
       assert.isFalse(yield* Deferred.isDone(historyStarted));
       assert.isFalse(yield* shutdown.isComplete);
-      yield* Deferred.succeed(releaseStops, undefined);
+      yield* Deferred.succeed(releaseFirstStop, undefined);
+      yield* Deferred.await(firstStopFinished);
+      yield* Effect.yieldNow;
+      assert.isFalse(yield* Deferred.isDone(historyStarted));
+      yield* Deferred.succeed(releaseSecondStop, undefined);
       yield* Deferred.await(historyStarted);
+      assert.isTrue(yield* Deferred.isDone(secondStopFinished));
       assert.isFalse(yield* shutdown.isComplete);
       yield* Deferred.succeed(releaseHistory, undefined);
       const result = yield* Fiber.await(app);
       assert.equal(Exit.isFailure(result), stopDefect);
+      if (Exit.isFailure(result)) assert.include(Cause.pretty(result.cause), "stop defect");
       assert.isTrue(yield* shutdown.isComplete);
       assert.isTrue(yield* Deferred.isDone(registrationStopped));
     }).pipe(Effect.provide(DesktopShutdown.layer)),
@@ -363,6 +416,7 @@ it.effect(
         environment: {
           path,
           baseDir,
+          stateDir: path.join(baseDir, "userdata"),
           serverRoot: path.join(baseDir, "resources", "app.asar"),
           appImagePath: Option.some(updatedAppImage),
         },
@@ -372,6 +426,7 @@ it.effect(
         registerLinuxUrlHandler: Effect.void,
       });
       yield* Deferred.await(windowStarted);
+      yield* Deferred.await(activationStarted);
       yield* (yield* DesktopShutdown.DesktopShutdown).request;
       yield* Fiber.join(app);
 

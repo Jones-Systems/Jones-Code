@@ -19,14 +19,13 @@ import {
   Trash2Icon,
 } from "lucide-react";
 
-import { useThreadActionMenu } from "../hooks/useThreadActionMenu";
+import { type ThreadActionMenuSelection, useThreadActionMenu } from "../hooks/useThreadActionMenu";
 import {
   ADDON_ICON_CLASS,
   ITEM_ICON_CLASS,
   type CommandPaletteActionItem,
   type CommandPaletteSubmenuItem,
 } from "./CommandPalette.logic";
-import type { ThreadActionMenuId } from "./threadActionMenu.logic";
 
 const ICONS: Record<string, LucideIcon> = {
   archive: ArchiveIcon,
@@ -48,9 +47,9 @@ const ICONS: Record<string, LucideIcon> = {
 };
 
 // The palette has its own rows for these, and no inline title editor for rename.
-const SKIPPED: ReadonlySet<ThreadActionMenuId> = new Set(["rename", "project-settings"]);
+const SKIPPED: ReadonlySet<ThreadActionMenuSelection> = new Set(["rename", "project-settings"]);
 
-const SHORTCUTS: Partial<Record<ThreadActionMenuId, KeybindingCommand>> = {
+const SHORTCUTS: Partial<Record<ThreadActionMenuSelection, KeybindingCommand>> = {
   settle: "thread.settle",
   unsettle: "thread.settle",
   pin: "thread.pin",
@@ -68,7 +67,7 @@ export function useCommandPaletteThreadActions(input: {
   if (!menu) return [];
 
   const toPaletteItem = (
-    item: ContextMenuItem<ThreadActionMenuId>,
+    item: ContextMenuItem<ThreadActionMenuSelection>,
   ): CommandPaletteActionItem | CommandPaletteSubmenuItem | null => {
     if (SKIPPED.has(item.id)) return null;
     const Icon = item.icon ? ICONS[item.icon] : undefined;

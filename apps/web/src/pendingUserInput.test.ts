@@ -180,10 +180,12 @@ describe("pending user input question progress", () => {
     expect(derivePendingUserInputProgress(mixed, {}, 0)).toMatchObject({
       canAdvance: true,
       isComplete: false,
+      firstUnansweredIndex: 1,
+      resolvedAnswer: null,
     });
     expect(
       derivePendingUserInputProgress(mixed, { extras: { attachmentsBlocked: true } }, 0),
-    ).toMatchObject({ canAdvance: false });
+    ).toMatchObject({ canAdvance: false, firstUnansweredIndex: 0, isComplete: false });
     expect(derivePendingUserInputProgress(mixed, {}, 1)).toMatchObject({ canAdvance: false });
     expect(
       derivePendingUserInputProgress(
@@ -191,7 +193,13 @@ describe("pending user input question progress", () => {
         { scope: { selectedOptionValues: ["Orchestration-first"] } },
         1,
       ),
-    ).toMatchObject({ canAdvance: true, isComplete: true });
+    ).toMatchObject({
+      canAdvance: true,
+      isComplete: true,
+      firstUnansweredIndex: -1,
+      answeredByIndex: [false, true],
+      answeredQuestionCount: 1,
+    });
   });
 });
 

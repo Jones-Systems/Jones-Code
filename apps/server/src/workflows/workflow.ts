@@ -14,6 +14,8 @@ import * as SchemaAST from "effect/SchemaAST";
 import * as SqlClient from "effect/sql/SqlClient";
 import { Activity, DurableClock, DurableDeferred, Workflow, WorkflowEngine } from "effect/workflow";
 
+import { UpdateAdmissionFence } from "../jones/updates/UpdateAdmissionFence.ts";
+import { workflowAdmission } from "../jones/updates/workflowAdmission.ts";
 import { checkOptions, durationOf } from "./options.ts";
 import {
   EngineLink,
@@ -188,16 +190,24 @@ const untypedResult = (value: unknown): Effect.Effect<Schema.Json> => {
   );
 };
 
-/**
- * One journaled action of the step `name`: it happens once, and a replay returns what it stored.
- * A failure marks the step failed and pauses the run here; resuming the run executes it again.
- */
-export const journaled = <A, I, E>(
+// Guard the activity body, so a replay can still read a result already in the journal.
+const admitActivity = <A, E>(run: RunContext["Service"], work: Effect.Effect<A, E>) =>
+  Effect.flatMap(Effect.serviceOption(UpdateAdmissionFence), (fence) =>
+    workflowAdmission(fence).hold(
+      Effect.flatMap(run.store.run(run.runId), (row) =>
+        row?.status === "cancelled"
+          ? Effect.flatMap(WorkflowEngine.WorkflowInstance, Workflow.suspend)
+          : work,
+      ),
+    ),
+  );
+
+const journalActivity = <A, I, E, R>(
   run: RunContext["Service"],
   name: string,
   action: string,
   returns: Schema.Codec<A, I>,
-  execute: Effect.Effect<A, E>,
+  execute: Effect.Effect<A, E, R>,
   // The run waits for a person after this fails, not for `resumeAfter`.
   held = false,
 ) => {
@@ -235,6 +245,19 @@ export const journaled = <A, I, E>(
     ),
   });
 };
+
+/**
+ * One journaled action of the step `name`: it happens once, and a replay returns what it stored.
+ * A failure marks the step failed and pauses the run here; resuming the run executes it again.
+ */
+export const journaled = <A, I, E>(
+  run: RunContext["Service"],
+  name: string,
+  action: string,
+  returns: Schema.Codec<A, I>,
+  execute: Effect.Effect<A, E>,
+  held = false,
+) => journalActivity(run, name, action, returns, admitActivity(run, execute), held);
 
 /** How an invoked run ended, as its parent's wait receives it. */
 export const ChildEnd = Schema.Struct({
@@ -329,11 +352,14 @@ const stepAs = <A, I, X, E>(
     const resultCodec = Schema.toCodecJson(options.returns);
     const encodeResult = Schema.encodeEffect(resultCodec);
     // Made per try, so a retry numbers its signals from the start again and counts as an attempt.
-    const execute = Effect.andThen(
-      run.store.stepStarted(run.runId, name, "step"),
-      Effect.suspend(() => Effect.provideContext(code, run.forStep(name))),
+    const execute = admitActivity(
+      run,
+      Effect.andThen(
+        run.store.stepStarted(run.runId, name, "step"),
+        Effect.suspend(() => Effect.provideContext(code, run.forStep(name))),
+      ),
     );
-    return journaled(
+    return journalActivity(
       run,
       name,
       `step/${name}`,
@@ -1092,19 +1118,27 @@ export const layerDefinition = (definition: WorkflowDefinition, engine: EngineWo
       const keyValues = yield* KeyValues;
       const link = yield* EngineLink;
       const forge = Option.getOrElse(yield* Effect.serviceOption(WorkflowForge), () => unavailable);
+      const admission = workflowAdmission(yield* Effect.serviceOption(UpdateAdmissionFence));
       yield* Activity.make({
         name: "run/begin",
-        execute: store.runStarted({
-          runId,
-          workflow: definition.name,
-          version: definition.version,
-          engineTag: engineTag(definition),
-          idempotencyKey: payload.idempotencyKey,
-          input: payload.input,
-        }),
+        execute: admission.hold(
+          store.runStarted({
+            runId,
+            workflow: definition.name,
+            version: definition.version,
+            engineTag: engineTag(definition),
+            idempotencyKey: payload.idempotencyKey,
+            input: payload.input,
+          }),
+        ),
       });
-      const input = (yield* Effect.orDie(decodePayload(payload.input))) as never;
-      const body = definition.body(input, { id: runId });
+      const { input, body } = yield* admission.hold(
+        Effect.map(Effect.orDie(decodePayload(payload.input)), (value) => {
+          const input = value as never;
+          return { input, body: definition.body(input, { id: runId }) };
+        }),
+      );
+      const onEnd = definition.onEnd;
       const outcome = yield* (
         definition.concurrency === undefined
           ? body
@@ -1117,17 +1151,21 @@ export const layerDefinition = (definition: WorkflowDefinition, engine: EngineWo
             )
       ).pipe(
         Effect.flatMap((value) =>
-          definition.returns === ANY_JSON
-            ? untypedResult(value)
-            : encodeResult(value).pipe(
-                Effect.mapError(
-                  (error) =>
-                    new Error(
-                      `The run's result does not fit its returns: ${encodeFailure("the run's result", error, value)}`,
+          admission.hold(
+            Effect.suspend(() =>
+              definition.returns === ANY_JSON
+                ? untypedResult(value)
+                : encodeResult(value).pipe(
+                    Effect.mapError(
+                      (error) =>
+                        new Error(
+                          `The run's result does not fit its returns: ${encodeFailure("the run's result", error, value)}`,
+                        ),
                     ),
-                ),
-                Effect.orDie,
-              ),
+                    Effect.orDie,
+                  ),
+            ),
+          ),
         ),
         Effect.map((value): typeof Outcome.Type => ({
           outcome: "completed",
@@ -1143,18 +1181,20 @@ export const layerDefinition = (definition: WorkflowDefinition, engine: EngineWo
         }),
         // A step like any other: a cleanup that fails pauses the run, and resuming tries it again.
         Effect.tap((ended) =>
-          definition.onEnd === undefined
+          onEnd === undefined
             ? Effect.void
             : stepAs(
                 claim(END_STEP, true),
                 END_STEP,
                 // A cleanup is safe to run again, and has nobody else to try it.
                 { returns: Schema.Void, retry: END_RETRY },
-                definition.onEnd(input, {
-                  id: runId,
-                  outcome: ended.outcome,
-                  reason: ended.reason,
-                }),
+                Effect.suspend(() =>
+                  onEnd(input, {
+                    id: runId,
+                    outcome: ended.outcome,
+                    reason: ended.reason,
+                  }),
+                ),
               ),
         ),
         Effect.provideService(

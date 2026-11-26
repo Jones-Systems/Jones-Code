@@ -26,6 +26,7 @@ import {
   type AgentModel,
   AgentResult,
   AgentTurn,
+  linkedStepMarker,
   WorkflowAgents,
 } from "./WorkflowAgents.ts";
 import * as WorkflowStore from "./WorkflowStore.ts";
@@ -100,6 +101,7 @@ export const TurnWatch = Schema.Struct({
   agent: Schema.Struct({
     step: Schema.String,
     turn: AgentTurn,
+    workflowRunId: Schema.optional(Schema.String),
     startedAt: Schema.optional(Schema.Number),
     timeoutMs: Schema.optional(Schema.Number),
     quietMs: Schema.optional(Schema.Number),
@@ -112,7 +114,7 @@ export type TurnWatch = typeof TurnWatch.Type;
 /** How a watched turn ended: its result, or why it could not be read, which pauses the run. */
 export const TurnEnd = Schema.Union([
   Schema.Struct({ result: AgentResult }),
-  Schema.Struct({ lost: Schema.String }),
+  Schema.Struct({ lost: Schema.String, held: Schema.optional(Schema.Boolean) }),
 ]);
 export type TurnEnd = typeof TurnEnd.Type;
 
@@ -143,14 +145,16 @@ export const settleTurn = Effect.fn("workflow.agent.settle")(function* ({
       Effect.timeoutOption(Duration.millis(Math.max(0, left))),
     );
     if (Option.isSome(result)) return result.value;
-    // A stop that still fails pauses the run, so resuming tries the stop again. A step that
-    // returns its failure says the turn may still be running.
+    // Linked stops have a durable intent shared with cancellation. An unknown stop holds
+    // the workflow even when the step normally returns failures to its caller.
     const stopping = agents
-      .interrupt({ ...threadOf, turnId: turn.turnId })
-      .pipe(Effect.retry({ times: 2 }));
+      .interrupt({ ...threadOf, turnId: turn.turnId, workflowRunId: watch.workflowRunId })
+      .pipe(turn.environment === undefined ? Effect.retry({ times: 2 }) : identity);
     const stop: "stopped" | "ended" | "failed" = yield* watch.onFailure === "pause"
       ? stopping
-      : stopping.pipe(Effect.orElseSucceed(() => "failed" as const));
+      : stopping.pipe(
+          Effect.catchTags({ WorkflowAgentError: () => Effect.succeed("failed" as const) }),
+        );
     const late = `it was not done after ${Duration.format(limit)}`;
     if (stop === "ended") {
       // The turn ended before it could be stopped, maybe long ago, as a run that resumes late
@@ -174,7 +178,13 @@ export const settleTurn = Effect.fn("workflow.agent.settle")(function* ({
   });
   return yield* settled.pipe(
     Effect.map((result): TurnEnd => ({ result })),
-    Effect.catch((error) => Effect.succeed<TurnEnd>({ lost: text(error) })),
+    Effect.catch((error) =>
+      Effect.succeed<TurnEnd>(
+        error._tag === "WorkflowAgentMutationUncertain"
+          ? { lost: text(error), held: true }
+          : { lost: text(error) },
+      ),
+    ),
   );
 });
 
@@ -235,6 +245,14 @@ const attempt = Effect.fn("workflow.agent")(function* <A, I>(
         };
   // What the agent's thread touches, its issue and the pull requests it links, is this step's.
   const touches = stepReferences(run.store, run.runId, name);
+  const linked = (options.thread?.environment ?? options.environment) !== undefined;
+  const stepStarted = Effect.gen(function* () {
+    // A step already opened by an older build may have issued a write without recording it.
+    if (linked && !(yield* run.store.steps(run.runId)).some((step) => step.name === name)) {
+      yield* run.store.mark(run.runId, linkedStepMarker(name));
+    }
+    yield* run.store.stepStarted(run.runId, name, "agent");
+  });
   const start = (key: string, prompt: string, thread: AgentThread | undefined) =>
     agents
       .start({
@@ -268,9 +286,10 @@ const attempt = Effect.fn("workflow.agent")(function* <A, I>(
         // No machine, no project, no link: for a step that takes failure as an answer, that is one.
         onFailure === "pause"
           ? identity
-          : Effect.catch((error) =>
-              Effect.succeed<AgentTurn>({ threadId: "", turnId: "", failed: text(error) }),
-            ),
+          : Effect.catchTags({
+              WorkflowAgentError: (error) =>
+                Effect.succeed<AgentTurn>({ threadId: "", turnId: "", failed: text(error) }),
+            }),
       );
   /**
    * The turn's result. The engine watches the turn outside the run and wakes the run once it
@@ -287,6 +306,7 @@ const attempt = Effect.fn("workflow.agent")(function* <A, I>(
         agent: {
           step: name,
           turn,
+          workflowRunId: run.runId,
           startedAt,
           timeoutMs,
           quietMs: quiet === undefined ? undefined : Duration.toMillis(quiet),
@@ -337,6 +357,7 @@ const attempt = Effect.fn("workflow.agent")(function* <A, I>(
         Effect.flatMap(run.store.mark(run.runId, `${at}/lost`), (arrivals) =>
           arrivals > 1 ? Effect.void : Effect.fail(end.lost),
         ),
+        end.held,
       );
     }
   });
@@ -362,10 +383,8 @@ const attempt = Effect.fn("workflow.agent")(function* <A, I>(
       name,
       `agent/${name}/${round}/start`,
       AgentTurn,
-      Effect.andThen(
-        run.store.stepStarted(run.runId, name, "agent"),
-        start(`${round}`, options.brief, options.thread),
-      ),
+      Effect.andThen(stepStarted, start(`${round}`, options.brief, options.thread)),
+      linked,
     );
     // Counted from the step's first turn, so corrections do not buy more time.
     const startedAt = turn.startedAt;
@@ -412,6 +431,7 @@ const attempt = Effect.fn("workflow.agent")(function* <A, I>(
             : `The result you submitted does not fit: ${misfit}\nDo not redo the work: call \`t3_submit_output\` again with a corrected result.`,
           threadOf(turn),
         ),
+        turn.environment !== undefined,
       );
       if (corrected.failed !== undefined) {
         problem = `${problem}, and it could not be asked again: ${corrected.failed}`;
@@ -430,12 +450,15 @@ const attempt = Effect.fn("workflow.agent")(function* <A, I>(
         `agent/${name}/${round}/stop`,
         Schema.Boolean,
         agents
-          .interrupt({ ...threadOf(lost), turnId: lost.turnId })
+          .interrupt({ ...threadOf(lost), turnId: lost.turnId, workflowRunId: run.runId })
           .pipe(
-            Effect.retry({ times: 2 }),
+            lost.environment === undefined ? Effect.retry({ times: 2 }) : identity,
             Effect.as(true),
-            onFailure === "pause" ? identity : Effect.catch(() => Effect.succeed(false)),
+            onFailure === "pause"
+              ? identity
+              : Effect.catchTags({ WorkflowAgentError: () => Effect.succeed(false) }),
           ),
+        lost.environment !== undefined,
       ));
       if (lingers) problem = `${problem}; its turn could not be stopped`;
     }

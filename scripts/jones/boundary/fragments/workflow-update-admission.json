@@ -1,0 +1,50 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workflow-update-admission",
+  "jonesOwnedPaths": ["apps/server/src/jones/updates/workflowAdmission.ts"],
+  "hookPaths": [
+    "apps/server/src/workflows/WorkflowAgentLinks.ts",
+    "apps/server/src/workflows/WorkflowEngine.ts",
+    "apps/server/src/workflows/WorkflowRuntime.ts",
+    "apps/server/src/workflows/workflow.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/workflows/WorkflowAgentLinks.ts",
+      "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
+    },
+    {
+      "from": "apps/server/src/workflows/WorkflowAgentLinks.ts",
+      "to": "apps/server/src/jones/remoteDelegation/shared.ts"
+    },
+    {
+      "from": "apps/server/src/workflows/WorkflowEngine.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/workflows/WorkflowEngine.ts",
+      "to": "apps/server/src/jones/updates/workflowAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/workflows/WorkflowRuntime.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/workflows/WorkflowRuntime.ts",
+      "to": "apps/server/src/jones/updates/workflowAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/workflows/WorkflowRuntime.test.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/workflows/workflow.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/workflows/workflow.ts",
+      "to": "apps/server/src/jones/updates/workflowAdmission.ts"
+    }
+  ]
+}

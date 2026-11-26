@@ -107,6 +107,8 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  getDatabaseMigrationProgress: () =>
+    ipcRenderer.invoke(IpcChannels.GET_DATABASE_MIGRATION_PROGRESS_CHANNEL),
   ...(process.isMainFrame && process.argv.includes("--jones-thread-monitor-publisher")
     ? { threadMonitor: createThreadMonitorMainBridge() }
     : {}),

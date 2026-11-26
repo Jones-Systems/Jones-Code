@@ -1,29 +1,69 @@
 import { EnvironmentId, OrchestratorMcpFailure } from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { assert, it } from "@effect/vitest";
+import * as Digest from "effect/crypto/Digest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+import WorkflowsMigration from "../persistence/Migrations/110_Workflows.ts";
 import * as WorkflowAgentLinks from "./WorkflowAgentLinks.ts";
+import { linkedStepMarker } from "./WorkflowAgents.ts";
+import * as WorkflowStore from "./WorkflowStore.ts";
 
 const isFailure = Schema.is(OrchestratorMcpFailure);
+const here = EnvironmentId.make("env-a");
+const journal = (filename: string) =>
+  NodeSqliteClient.layer({
+    filename,
+    readerWorker: false,
+    writerWorker: false,
+    checkpointWorker: false,
+  });
+const migratedJournal = (filename: string, prepared = true) =>
+  Layer.effectDiscard(
+    prepared
+      ? WorkflowsMigration.pipe(
+          Effect.andThen(WorkflowStore.make),
+          Effect.flatMap((store) => store.mark("run-1", linkedStepMarker("write"))),
+        )
+      : WorkflowsMigration,
+  ).pipe(Layer.provideMerge(journal(filename)));
+
+const journalFile = <A, E, R>(use: (filename: string) => Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workflow-agent-links-" });
+    return yield* use(path.join(directory, "journal.sqlite"));
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
 interface Call {
   readonly environmentId: string;
   readonly tool: string;
   readonly arguments: Record<string, unknown>;
   readonly runtimeMode: string;
+  readonly expectedGeneration: string | undefined;
+  readonly origin: { readonly environmentId: string } | undefined;
 }
 
 /** The other environment, played by the test: each tool answers from a list, in order. */
-const peer = (answers: Record<string, ReadonlyArray<unknown>>, enabled = true) => {
+const peer = (
+  answers: Record<string, ReadonlyArray<unknown>>,
+  options: { readonly enabled?: boolean; readonly prepared?: boolean } = {},
+) => {
   const calls: Array<Call> = [];
   const left = new Map(Object.entries(answers).map(([tool, list]) => [tool, [...list]]));
-  const layer = Layer.merge(
+  let generation = "generation-1";
+  const peerLayer = Layer.mergeAll(
     Layer.succeed(
       PeerMcpClient.PeerMcpClient,
       PeerMcpClient.PeerMcpClient.of({
@@ -34,15 +74,37 @@ const peer = (answers: Record<string, ReadonlyArray<unknown>>, enabled = true) =
               tool: input.tool,
               arguments: input.arguments,
               runtimeMode: input.limits.runtimeMode,
+              expectedGeneration: input.expectedGeneration,
+              origin: input.origin,
             });
+            if (input.expectedGeneration !== undefined && input.expectedGeneration !== generation)
+              return Effect.fail(
+                new OrchestratorMcpFailure({ code: "invalid_request", message: "Link changed" }),
+              );
             const answer = left.get(input.tool)?.shift();
+            assert.isDefined(answer, `Unexpected call to ${input.tool}`);
             return isFailure(answer) ? Effect.fail(answer) : Effect.succeed(answer as never);
           }),
       }),
     ),
-    Layer.mock(PeerLinks.PeerLinks)({ enabled: Effect.succeed(enabled) }),
+    Layer.mock(PeerLinks.PeerLinks)({
+      enabled: Effect.succeed(options.enabled ?? true),
+      currentGeneration: () => Effect.sync(() => Option.some(generation)),
+    }),
+    Digest.layerWebCrypto,
   );
-  return { calls, layer };
+  return {
+    calls,
+    layer: Layer.merge(peerLayer, migratedJournal(":memory:", options.prepared)),
+    // The file is retained by the test's scope; each use opens and closes its own SQLite client.
+    restart: (filename: string, nextGeneration: string, initialize = false) => {
+      generation = nextGeneration;
+      return Layer.merge(
+        peerLayer,
+        initialize ? migratedJournal(filename, options.prepared) : journal(filename),
+      );
+    },
+  };
 };
 
 const input = {
@@ -58,6 +120,33 @@ const input = {
 };
 const run = (status: string) => ({ recentRuns: [{ runId: "turn-1", status }], items: [] });
 const waited = { threadId: "thread-1", runId: "turn-1", status: "idle" };
+const timeout = new OrchestratorMcpFailure({
+  code: "orchestration_error",
+  message: "The linked environment timed out.",
+});
+const sent = {
+  threadId: "thread-1",
+  messageId: "message-1",
+  runId: "turn-1",
+  status: "queued",
+  delivery: "queued",
+};
+const sentTurn = { threadId: "thread-1", turnId: "turn-1", environment: "env-b" };
+const continueThread = Effect.flatMap(WorkflowAgentLinks.make, (links) =>
+  links.start(
+    { ...input, thread: "thread-1", prompt: "  Write the fix.\n" },
+    "env-b",
+    "workflow:send",
+    here,
+  ),
+);
+const stopTurn = Effect.flatMap(WorkflowAgentLinks.make, (links) =>
+  links.interrupt({ ...sentTurn, workflowRunId: "run-1" }, "env-b"),
+);
+const launchInProject = Effect.flatMap(WorkflowAgentLinks.make, (links) =>
+  links.start({ ...input, project: "p-app" }, "env-b", "workflow:launch", here),
+);
+const launched = { threadId: "thread-1", runId: "turn-1" };
 
 const assistant = (position: number, runId: string, text: string) => ({
   type: "assistant_message",
@@ -131,7 +220,7 @@ it.effect("starts a thread there by the project's folder, with the step's key as
       there.layer,
     );
     assert.deepStrictEqual(turn, { threadId: "thread-1", turnId: "turn-1", environment: "env-b" });
-    assert.include(continued.reason, "A continued `thread` keeps how it started");
+    assert.include(continued.message, "A continued `thread` keeps how it started");
     const launch = there.calls.at(-1);
     assert.deepStrictEqual(launch?.arguments, {
       projectId: "p-app",
@@ -145,6 +234,10 @@ it.effect("starts a thread there by the project's folder, with the step's key as
     });
     // The link's own access is the ceiling, not a mode narrower than it.
     assert.equal(launch?.runtimeMode, "full-access");
+    assert.deepStrictEqual(
+      there.calls.map((call) => call.expectedGeneration),
+      ["generation-1", "generation-1", "generation-1"],
+    );
   }),
 );
 
@@ -203,14 +296,193 @@ it.effect("finds a Windows folder there however its separators are written", () 
 
 it.effect("does not start anything while linked environments is off", () =>
   Effect.gen(function* () {
-    const there = peer({}, false);
+    const there = peer({}, { enabled: false });
     const error = yield* Effect.provide(
       Effect.flatMap(WorkflowAgentLinks.make, (links) =>
         links.start(input, "env-b", "workflow:k", EnvironmentId.make("env-a")),
       ),
       there.layer,
     ).pipe(Effect.flip);
-    assert.match(error.reason, /Linked environments is off/);
+    assert.match(error.message, /Linked environments is off/);
+    assert.deepStrictEqual(there.calls, []);
+  }),
+);
+
+it.effect("sends a queued structured request with its captured link and authenticated origin", () =>
+  Effect.gen(function* () {
+    const there = peer({ t3_thread_send: [sent] });
+    assert.deepStrictEqual(yield* continueThread.pipe(Effect.provide(there.layer)), sentTurn);
+    assert.deepStrictEqual(there.calls, [
+      {
+        environmentId: "env-b",
+        tool: "t3_thread_send",
+        expectedGeneration: "generation-1",
+        origin: { schemaVersion: "t3.linked-message-origin/v1", environmentId: "env-a" },
+        runtimeMode: "full-access",
+        arguments: {
+          threadId: "thread-1",
+          message: "Write the fix.",
+          mode: "queue",
+          outputSchema: { type: "object" },
+          clientRequestId: "workflow:send",
+        },
+      },
+    ]);
+  }),
+);
+
+it.effect("recovers the exact SEND receipt after reopening the journal without sending again", () =>
+  journalFile((filename) =>
+    Effect.gen(function* () {
+      const requestDigest = "0e70f82f53200a18ea303e414ce4c8adcaf1a095312a612c0455869d77fcf24a";
+      const receipt = {
+        version: "jones.remote-followup-receipt/v1",
+        environmentId: "env-b",
+        threadId: "thread-1",
+        clientRequestId: "workflow:send",
+        requestDigest,
+      };
+      const there = peer({
+        t3_thread_send: [timeout],
+        t3_thread_send_receipt_lookup: [
+          { ...receipt, outcome: "unknown", sent: null },
+          { ...receipt, outcome: "accepted", sent },
+        ],
+      });
+      const lost = yield* continueThread.pipe(
+        Effect.provide(there.restart(filename, "generation-1", true)),
+        Effect.flip,
+      );
+      assert.equal(lost._tag, "WorkflowAgentMutationUncertain");
+      assert.include(lost.message, "Inspect the original operation");
+      // A new generation cannot read the old namespace, even if the key is unchanged.
+      const replaced = yield* continueThread.pipe(
+        Effect.provide(there.restart(filename, "generation-2")),
+        Effect.flip,
+      );
+      assert.equal(replaced._tag, "WorkflowAgentMutationUncertain");
+      const replacedAgain = yield* continueThread.pipe(
+        Effect.provide(there.restart(filename, "generation-2")),
+        Effect.flip,
+      );
+      assert.equal(replacedAgain._tag, "WorkflowAgentMutationUncertain");
+      assert.lengthOf(there.calls, 2);
+      assert.deepStrictEqual(
+        yield* continueThread.pipe(Effect.provide(there.restart(filename, "generation-1"))),
+        sentTurn,
+      );
+      assert.deepStrictEqual(
+        there.calls.map(({ tool, expectedGeneration }) => [tool, expectedGeneration]),
+        [
+          ["t3_thread_send", "generation-1"],
+          ["t3_thread_send_receipt_lookup", "generation-1"],
+          ["t3_thread_send_receipt_lookup", "generation-1"],
+        ],
+      );
+      assert.deepStrictEqual(there.calls.at(-1)?.arguments, {
+        threadId: "thread-1",
+        clientRequestId: "workflow:send",
+        requestDigest,
+      });
+    }),
+  ),
+);
+
+it.effect("holds a lost launch across re-pairing and a reopened journal", () =>
+  journalFile((filename) =>
+    Effect.gen(function* () {
+      const there = peer({ t3_thread_launch: [timeout] });
+      const lost = yield* launchInProject.pipe(
+        Effect.provide(there.restart(filename, "generation-1", true)),
+        Effect.flip,
+      );
+      assert.equal(lost._tag, "WorkflowAgentMutationUncertain");
+      assert.include(lost.message, "workflow:launch");
+      const replay = yield* launchInProject.pipe(
+        Effect.provide(there.restart(filename, "generation-2")),
+        Effect.flip,
+      );
+      assert.equal(replay._tag, "WorkflowAgentMutationUncertain");
+      assert.deepStrictEqual(
+        there.calls.map(({ tool, expectedGeneration }) => [tool, expectedGeneration]),
+        [["t3_thread_launch", "generation-1"]],
+      );
+    }),
+  ),
+);
+
+it.effect("holds an unconfirmed project registration even when the folder later appears", () =>
+  journalFile((filename) =>
+    Effect.gen(function* () {
+      const there = peer({
+        t3_project_list: [
+          { projects: [], nextCursor: null },
+          { projects: [{ id: "p-new", workspaceRoot: "/work/app" }], nextCursor: null },
+        ],
+        t3_project_create: [timeout],
+      });
+      const start = Effect.flatMap(WorkflowAgentLinks.make, (links) =>
+        links.start(input, "env-b", "workflow:register", here),
+      );
+      const lost = yield* start.pipe(
+        Effect.provide(there.restart(filename, "generation-1", true)),
+        Effect.flip,
+      );
+      assert.include(lost.message, "project registration at /work/app");
+      const replay = yield* start.pipe(
+        Effect.provide(there.restart(filename, "generation-2")),
+        Effect.flip,
+      );
+      assert.equal(replay._tag, "WorkflowAgentMutationUncertain");
+      assert.deepStrictEqual(
+        there.calls.map(({ tool, expectedGeneration }) => [tool, expectedGeneration]),
+        [
+          ["t3_project_list", "generation-1"],
+          ["t3_project_create", "generation-1"],
+          ["t3_project_list", "generation-2"],
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("holds a lost turn interruption across re-pairing and a reopened journal", () =>
+  journalFile((filename) =>
+    Effect.gen(function* () {
+      const there = peer({ t3_thread_launch: [launched], t3_thread_interrupt: [timeout] });
+      const lost = yield* launchInProject.pipe(
+        Effect.andThen(stopTurn),
+        Effect.provide(there.restart(filename, "generation-1", true)),
+        Effect.flip,
+      );
+      assert.equal(lost._tag, "WorkflowAgentMutationUncertain");
+      assert.include(lost.message, "turn turn-1");
+      const replay = yield* stopTurn.pipe(
+        Effect.provide(there.restart(filename, "generation-2")),
+        Effect.flip,
+      );
+      assert.equal(replay._tag, "WorkflowAgentMutationUncertain");
+      assert.lengthOf(there.calls, 2);
+      assert.deepInclude(there.calls[1], {
+        tool: "t3_thread_interrupt",
+        expectedGeneration: "generation-1",
+      });
+      assert.deepInclude(there.calls[1]?.arguments, { threadId: "thread-1", runId: "turn-1" });
+    }),
+  ),
+);
+
+it.effect("holds a legacy step or turn when the original write evidence was never journaled", () =>
+  Effect.gen(function* () {
+    const there = peer({}, { prepared: false });
+    const errors = yield* Effect.all([
+      launchInProject.pipe(Effect.flip),
+      stopTurn.pipe(Effect.flip),
+    ]).pipe(Effect.provide(there.layer));
+    assert.deepStrictEqual(
+      errors.map(({ _tag }) => _tag),
+      ["WorkflowAgentMutationUncertain", "WorkflowAgentMutationUncertain"],
+    );
     assert.deepStrictEqual(there.calls, []);
   }),
 );
@@ -338,6 +610,7 @@ it.effect("a turn someone stopped there is stopped, and a refused link fails at 
     const stopped = peer({
       t3_thread_wait: [{ ...waited, timedOut: false }],
       t3_thread_read: [run("interrupted")],
+      t3_thread_launch: [launched],
       t3_thread_interrupt: [{ threadId: "thread-1", runId: "turn-1", status: "interrupted" }],
     });
     const result = yield* Effect.provide(
@@ -348,12 +621,11 @@ it.effect("a turn someone stopped there is stopped, and a refused link fails at 
     );
     assert.deepStrictEqual(result, { ending: "stopped", detail: "interrupted", reply: "" });
     // Stopping names the step's turn, so a person's turn on that thread keeps going.
-    yield* Effect.provide(
-      Effect.flatMap(WorkflowAgentLinks.make, (links) =>
-        links.interrupt("thread-1", "env-b", "turn-1"),
-      ),
+    const interrupted = yield* Effect.provide(
+      Effect.andThen(launchInProject, stopTurn),
       stopped.layer,
     );
+    assert.equal(interrupted, "ended");
     assert.deepInclude(stopped.calls.at(-1)?.arguments, { threadId: "thread-1", runId: "turn-1" });
 
     const revoked = peer({

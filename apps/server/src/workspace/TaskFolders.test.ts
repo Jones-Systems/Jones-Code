@@ -1247,14 +1247,18 @@ const layoutProject = Effect.gen(function* () {
   const { fileSystem, path, tmp, run, repository } = yield* fixture;
   const project = yield* repository("project");
   const ran = (name: string) => fileSystem.exists(path.join(tmp, name));
-  const writeLayout = (create: string, remove: string) =>
+  const writeLayout = (
+    create: string,
+    remove: string,
+    removeCommand = `touch "${path.join(tmp, remove)}"`,
+  ) =>
     fileSystem.writeFileString(
       path.join(project, "t3.json"),
       JSON.stringify({
         worktreeLayout: {
           // Restore runs it again, when the branch is already there.
           create: `touch "${path.join(tmp, create)}" && (git worktree add -q "$T3_WORKTREE_PROJECT_PATH" "$T3_WORKTREE_BRANCH" 2>/dev/null || git worktree add -q -b "$T3_WORKTREE_BRANCH" "$T3_WORKTREE_PROJECT_PATH")`,
-          remove: `touch "${path.join(tmp, remove)}"`,
+          remove: removeCommand,
         },
       }),
     );
@@ -1350,6 +1354,167 @@ it.live("holds missing checkout recovery and skips teardown with stale approval"
       assert.include((yield* restore.pipe(Effect.flip)).detail, "recovery is held");
       assert.isFalse(yield* ran("create-2"));
       assert.isFalse(yield* fileSystem.exists(kept!.worktree.path));
+    }),
+  ),
+);
+
+it.live("holds a failed teardown across retries and later changes to layout permission", () =>
+  withState((state) =>
+    Effect.gen(function* () {
+      const { fileSystem, path, project, writeLayout, createFor } = yield* layoutProject;
+      const attempts = path.join(project, "teardown-attempts");
+      yield* writeLayout(
+        "create",
+        "remove",
+        'printf "attempt\\n" >> "$T3_PROJECT_ROOT/teardown-attempts"; exit 4',
+      );
+      state.workspaceRoot = project;
+      yield* approveLayoutCommands;
+      const made = yield* createFor("one");
+      const taskFolders = yield* TaskFolders.TaskFolders;
+      const folder = (yield* taskFolders.find(made!.worktree.path))!;
+      const remove = (projectCommands: TaskFolders.ProjectCommandsNow) =>
+        taskFolders.remove({ root: folder.root, force: true, forget: true, projectCommands });
+      const hold = {
+        removed: [],
+        kept: [{ path: folder.root, reason: "layout teardown outcome requires reconciliation" }],
+      };
+
+      assert.deepEqual(yield* remove("permitted"), hold);
+      assert.deepEqual(yield* remove("permitted"), hold);
+      yield* writeLayout("create", "changed");
+      assert.deepEqual(yield* remove("request-not-permitted"), hold);
+      assert.equal(yield* fileSystem.readFileString(attempts), "attempt\n");
+      assert.isTrue(yield* fileSystem.exists(folder.projectPath));
+      assert.deepEqual(yield* taskFolders.find(folder.root), folder);
+    }),
+  ),
+);
+
+it.live("keeps the first teardown claim when its caller is interrupted at launch", () =>
+  withState((state) =>
+    Effect.gen(function* () {
+      const { fileSystem, project, ran, writeLayout, createFor } = yield* layoutProject;
+      yield* writeLayout("create", "remove");
+      state.workspaceRoot = project;
+      yield* approveLayoutCommands;
+      const made = yield* createFor("one");
+      const taskFolders = yield* TaskFolders.TaskFolders;
+      const folder = (yield* taskFolders.find(made!.worktree.path))!;
+      const remove = taskFolders.remove({
+        root: folder.root,
+        force: false,
+        forget: true,
+        projectCommands: "permitted",
+      });
+      const starting = yield* Deferred.make<void>();
+      state.onLayoutCommand = Deferred.succeed(starting, undefined).pipe(
+        Effect.andThen(Effect.never),
+      );
+      const first = yield* remove.pipe(Effect.forkScoped);
+      yield* Deferred.await(starting);
+      yield* Fiber.interrupt(first);
+      delete state.onLayoutCommand;
+
+      assert.deepEqual(yield* remove, {
+        removed: [],
+        kept: [{ path: folder.root, reason: "layout teardown outcome requires reconciliation" }],
+      });
+      assert.isFalse(yield* ran("remove"));
+      assert.isTrue(yield* fileSystem.exists(folder.projectPath));
+    }),
+  ),
+);
+
+it.live("continues cleanup after a successful teardown without running it again", () =>
+  withState((state) =>
+    Effect.gen(function* () {
+      const { fileSystem, path, project, writeLayout, createFor } = yield* layoutProject;
+      const attempts = path.join(project, "teardown-attempts");
+      yield* writeLayout(
+        "create",
+        "remove",
+        'printf "attempt\\n" >> "$T3_PROJECT_ROOT/teardown-attempts"',
+      );
+      state.workspaceRoot = project;
+      yield* approveLayoutCommands;
+      const made = yield* createFor("one");
+      const taskFolders = yield* TaskFolders.TaskFolders;
+      const folder = (yield* taskFolders.find(made!.worktree.path))!;
+      const removal = {
+        root: folder.root,
+        force: false,
+        forget: true,
+        projectCommands: "permitted",
+      } as const;
+
+      const first = yield* taskFolders.remove({
+        ...removal,
+        inspect: () =>
+          fileSystem.exists(attempts).pipe(
+            Effect.orElseSucceed(() => false),
+            Effect.map((ran) => ({ keep: ran ? "retain after teardown" : null, force: false })),
+          ),
+      });
+      assert.deepInclude(first.kept, { path: folder.projectPath, reason: "retain after teardown" });
+
+      assert.isTrue(yield* fileSystem.exists(folder.projectPath));
+      const finished = yield* taskFolders.remove(removal);
+      assert.deepEqual(finished.kept, []);
+      assert.equal(yield* fileSystem.readFileString(attempts), "attempt\n");
+      assert.isFalse(yield* fileSystem.exists(folder.projectPath));
+      assert.isNull(yield* taskFolders.find(folder.root));
+    }),
+  ),
+);
+
+it.live("holds a replacement member even after the original layout teardown succeeded", () =>
+  withState((state) =>
+    Effect.gen(function* () {
+      const { fileSystem, path, tmp, run, repository } = yield* fixture;
+      const project = path.join(tmp, "project");
+      const source = yield* repository("project/api");
+      const attempts = path.join(project, "teardown-attempts");
+      yield* fileSystem.writeFileString(
+        path.join(project, "t3.json"),
+        JSON.stringify({
+          worktreeLayout: {
+            create:
+              'git -C "$T3_PROJECT_ROOT/api" worktree add -q -b "$T3_WORKTREE_BRANCH" "$T3_WORKTREE_PROJECT_PATH/api"',
+            remove: 'printf "attempt\\n" >> "$T3_PROJECT_ROOT/teardown-attempts"',
+          },
+        }),
+      );
+      state.workspaceRoot = project;
+      state.trackedFolders = tracked(source);
+      yield* approveLayoutCommands;
+      const { taskFolder } = yield* create("one");
+      const target = taskFolder.repositories[0]!.worktreePath;
+      const taskFolders = yield* TaskFolders.TaskFolders;
+      const removal = {
+        root: taskFolder.root,
+        force: false,
+        forget: true,
+        projectCommands: "permitted",
+      } as const;
+      const kept = yield* taskFolders.remove({
+        ...removal,
+        inspect: () =>
+          fileSystem.exists(attempts).pipe(
+            Effect.orElseSucceed(() => false),
+            Effect.map((ran) => ({ keep: ran ? "retain after teardown" : null, force: false })),
+          ),
+      });
+      assert.deepInclude(kept.kept, { path: target, reason: "retain after teardown" });
+      yield* run(source, "worktree", "remove", target);
+      yield* run(source, "worktree", "add", "-q", target, "one");
+
+      assert.deepEqual(yield* taskFolders.remove(removal), {
+        removed: [],
+        kept: [{ path: taskFolder.root, reason: "layout teardown owner changed" }],
+      });
+      assert.equal(yield* fileSystem.readFileString(attempts), "attempt\n");
+      assert.isTrue(yield* fileSystem.exists(target));
     }),
   ),
 );

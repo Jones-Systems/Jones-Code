@@ -165,6 +165,26 @@ it("requires fresh exact request readback after the owner connection changes", a
 
 it("selects cards into the real pane, keeps exact request and thread links separate, and submits duration only on approval", async () => {
   const f = setup("review-browser-exact");
+  const record = f.item.record;
+  f.item.record = {
+    ...record,
+    envelope: {
+      ...record.envelope,
+      payload: {
+        params: {
+          title: "Inspect synthetic project",
+          message: [
+            "## Review notes",
+            "",
+            "[**Open evidence**](t3-file://v1/synthetic/report.txt)",
+            "",
+            "> [!NOTE]",
+            "> Read the synthetic workspace and explain the change.",
+          ].join("\n"),
+        },
+      },
+    },
+  };
   await using screen = await render(
     <TooltipProvider>
       <ReviewPage environmentId={f.environmentId} label="Laptop" />
@@ -188,6 +208,13 @@ it("selects cards into the real pane, keeps exact request and thread links separ
       .find((button) => button.textContent?.includes("Inspect synthetic project"))!
       .click(),
   );
+  await expect.element(screen.getByText("Review notes", { exact: true })).toBeVisible();
+  const preview = screen.container.querySelector(".chat-markdown")!;
+  expect(preview.querySelector("p.font-semibold")?.textContent).toBe("Review notes");
+  expect(preview.querySelector("strong")?.textContent).toBe("Open evidence");
+  expect(preview.textContent).toContain("Open evidence (t3-file://v1/synthetic/report.txt)");
+  expect(preview.querySelector("blockquote")?.textContent).toContain("[!NOTE]");
+  expect(preview.querySelector("a,img,input,button")).toBeNull();
   expect(f.client.mutate).not.toHaveBeenCalled();
   expect(screen.container.textContent).toContain("1 day");
   await act(() =>

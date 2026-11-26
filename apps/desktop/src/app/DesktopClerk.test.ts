@@ -13,9 +13,11 @@ import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import { afterAll, beforeEach, vi } from "vite-plus/test";
 
-const clerkStateDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-clerk-"));
+const fixtureRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-clerk-"));
+const clerkStateDir = NodePath.join(fixtureRoot, "userdata");
+const appDataDirectory = NodePath.join(fixtureRoot, "app-data");
 afterAll(() => {
-  NodeFS.rmSync(clerkStateDir, { recursive: true, force: true });
+  NodeFS.rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
 const { createClerkBridgeMock, requestSingleInstanceLockMock, storageAdapter, storageMock } =
@@ -71,7 +73,7 @@ const layerDesktopClerk = (
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir,
     isDevelopment,
-    appDataDirectory: "/tmp/app-data",
+    appDataDirectory,
     platform,
     userDataDirectoryOverride,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
@@ -126,25 +128,25 @@ describe("DesktopClerk", () => {
       name: "packaged macOS",
       isDevelopment: false,
       platform: "darwin" as const,
-      userData: "/tmp/app-data/t3code-v2",
+      userData: NodePath.posix.join(appDataDirectory, "t3code-v2"),
     },
     {
       name: "packaged Linux",
       isDevelopment: false,
       platform: "linux" as const,
-      userData: "/tmp/app-data/t3code-v2",
+      userData: NodePath.posix.join(appDataDirectory, "t3code-v2"),
     },
     {
       name: "packaged Windows",
       isDevelopment: false,
       platform: "win32" as const,
-      userData: "/tmp/app-data/t3code-v2",
+      userData: NodePath.posix.join(appDataDirectory, "t3code-v2"),
     },
     {
       name: "development",
       isDevelopment: true,
       platform: "win32" as const,
-      userData: "/tmp/app-data/t3code-dev",
+      userData: NodePath.posix.join(appDataDirectory, "t3code-dev"),
     },
   ])(
     "creates the bridge before startup can yield to the event loop ($name)",
@@ -172,7 +174,7 @@ describe("DesktopClerk", () => {
         "createClerkBridge",
       ]);
       assert.deepEqual(storageMock.mock.calls, [
-        [{ path: NodePath.join(NodePath.resolve(clerkStateDir), "clerk") }],
+        [{ path: NodePath.posix.resolve(clerkStateDir, "clerk") }],
       ]);
       assert.strictEqual(createClerkBridgeMock.mock.calls[0]?.[0]?.storage, storageAdapter);
     },
@@ -184,7 +186,7 @@ describe("DesktopClerk", () => {
 
     return Effect.sync(() => {
       assert.deepEqual(storageMock.mock.calls, [
-        [{ path: NodePath.resolve("relative-state", "clerk") }],
+        [{ path: NodePath.posix.resolve("relative-state", "clerk") }],
       ]);
     }).pipe(
       Effect.provide(
@@ -312,7 +314,7 @@ describe("DesktopClerk", () => {
 
         assert.isTrue(Exit.hasInterrupts(exit));
         assert.deepEqual(events, [
-          "setPath:userData:/tmp/app-data/t3code-v2",
+          `setPath:userData:${NodePath.posix.join(appDataDirectory, "t3code-v2")}`,
           "requestSingleInstanceLock",
           "quit",
         ]);
@@ -364,14 +366,20 @@ describe("DesktopClerk", () => {
           "on:open-url",
           "createClerkBridge",
         ]);
+        assert.deepEqual(storageMock.mock.calls, [
+          [{ path: NodePath.posix.resolve(clerkStateDir, "clerk") }],
+        ]);
       });
     },
   );
 });
 
-it.effect(
-  "provider auth deep links navigate and reveal the running desktop without handling Clerk URLs",
-  () => {
+it.effect.each([
+  { name: "packaged macOS", isDevelopment: false, scheme: "t3code", otherScheme: "t3code-dev" },
+  { name: "development", isDevelopment: true, scheme: "t3code-dev", otherScheme: "t3code" },
+])(
+  "provider auth deep links reveal the running desktop and leave Clerk URLs alone ($name)",
+  ({ isDevelopment, scheme, otherScheme }) => {
     storageMock.mockReturnValue(storageAdapter);
     createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
     const listeners = new Map<string, (...args: unknown[]) => void>();
@@ -392,23 +400,26 @@ it.effect(
       const clerk = yield* DesktopClerk.DesktopClerk;
       yield* clerk.configure;
       const event = { preventDefault: vi.fn() };
-      listeners.get("open-url")!(event, "t3code-dev://app/auth/callback?code=clerk-code");
-      listeners.get("open-url")!(event, "t3code://app/welcome");
+      listeners.get("open-url")!(event, `${scheme}://app/auth/callback?code=clerk-code`);
+      listeners.get("open-url")!(event, `${otherScheme}://app/welcome`);
       assert.equal(loadURL.mock.calls.length, 0);
       assert.equal(event.preventDefault.mock.calls.length, 0);
       listeners.get("second-instance")!({}, [
         "t3",
-        "t3code-dev://app/settings/providers?instanceId=work&code=never-forward",
+        `${scheme}://app/settings/providers?instanceId=work&code=never-forward`,
       ]);
       yield* Effect.promise(() => revealed.promise);
       assert.deepEqual(loadURL.mock.calls, [
-        ["t3code-dev://app/settings/providers?instanceId=work"],
+        [`${scheme}://app/settings/providers?instanceId=work`],
       ]);
-      listeners.get("open-url")!(event, "t3code-dev://app/welcome#agents:machine-id");
+      listeners.get("open-url")!(event, `${scheme}://app/welcome#agents:machine-id`);
       assert.equal(event.preventDefault.mock.calls.length, 1);
     }).pipe(
       Effect.scoped,
-      Effect.provide(layerDesktopClerk(true, [], "darwin", undefined, undefined, listeners)),
+      Effect.provide(
+        layerDesktopClerk(isDevelopment, [], "darwin", undefined, undefined, listeners),
+      ),
+      Effect.provideService(HostProcess.Arguments, ["t3"]),
       Effect.provideService(ElectronApp.ElectronApp, electronApp),
       Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
       Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),

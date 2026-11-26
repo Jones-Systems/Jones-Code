@@ -39,6 +39,7 @@ export const CLI_COMMAND_INSTALL_CHANNEL = "desktop:cli-command-install";
 export const CLI_COMMAND_UNINSTALL_CHANNEL = "desktop:cli-command-uninstall";
 export const CLI_COMMAND_ADD_TO_PATH_CHANNEL = "desktop:cli-command-add-to-path";
 export const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
+export const GET_DATABASE_MIGRATION_PROGRESS_CHANNEL = "desktop:get-database-migration-progress";
 export const GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL =
   "desktop:get-preview-automation-runtime-identity";
 export const GET_RELAY_TELEMETRY_ENABLED_CHANNEL = "desktop:get-relay-telemetry-enabled";

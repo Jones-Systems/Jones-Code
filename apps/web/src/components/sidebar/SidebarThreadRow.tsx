@@ -5,7 +5,7 @@ import { useSidebarDevicePresentation } from "../../jones/sidebarAppearance/useS
 import { useEnvironment } from "../../state/environments";
 import { asLaunchingThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { ThreadHoverCard, ThreadHoverCardTrigger } from "../ThreadHoverCard";
-import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
+import { ThreadTerminalStatusButton, ThreadWorktreeIndicator } from "../ThreadStatusIndicators";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { formatWorktreePathForDisplay } from "../../worktreeCleanup";
 import { contextMenuSourceOf } from "../../contextMenuSource";

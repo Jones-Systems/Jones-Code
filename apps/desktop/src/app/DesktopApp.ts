@@ -166,8 +166,13 @@ const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances")(
   function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool> {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
     const instances = yield* pool.list;
-    // Preparation is bounded separately; stopping still waits for captured backend teardown.
-    yield* Effect.forEach(instances, (instance) => instance.stop(), { concurrency: "unbounded" });
+    // Wait for each captured backend teardown before reporting a stop defect.
+    const stops = yield* Effect.forEach(
+      instances,
+      (instance) => Effect.exit(Effect.suspend(() => instance.stop())),
+      { concurrency: "unbounded" },
+    );
+    for (const stop of stops) yield* stop;
   },
 );
 
@@ -176,7 +181,7 @@ export const prepareAndStopAllPoolInstances = Effect.fn(
 )(() => prepareLocalBackendsForQuit().pipe(Effect.ensuring(stopAllPoolInstances())));
 
 const restartOnFeatureFlagChange = Effect.fn("desktop.restartOnFeatureFlagChange")(function* (
-  backend: DesktopBackendManager.DesktopBackendInstance,
+  backend: DesktopBackendPool.DesktopBackendInstance,
 ) {
   const state = yield* DesktopState.DesktopState;
   const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
@@ -199,8 +204,9 @@ const restartOnFeatureFlagChange = Effect.fn("desktop.restartOnFeatureFlagChange
 });
 
 // Spawns the local backend as soon as the protocol, IPC, and legacy storage that every window needs exist.
-export const startLocalBackend = Effect.fn("desktop.startLocalBackend")(function* <E, R>(
+export const startLocalBackend = Effect.fn("desktop.startLocalBackend")(function* <E, R, RRecovery>(
   registerIpc: Effect.Effect<void, E, R>,
+  listenForBackendStartup: Effect.Effect<void, never, RRecovery>,
 ) {
   const state = yield* DesktopState.DesktopState;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -255,6 +261,7 @@ export const startLocalBackend = Effect.fn("desktop.startLocalBackend")(function
     return false;
   }
 
+  yield* listenForBackendStartup;
   const backendPortSelection = yield* resolveDesktopBackendPort(environment.configuredBackendPort);
   const backendPort = backendPortSelection.port;
   yield* logBootstrapInfo(
@@ -314,17 +321,24 @@ export const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarte
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
-  const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
   const settings = yield* desktopSettings.get;
-  const startAppActivation = appActivation.start.pipe(
-    Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
-    Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
-  );
-  if (settings.localEnvironmentEnabled && (!backendStarted || (yield* Ref.get(state.quitting)))) {
+  if ((yield* Ref.get(state.quitting)) || (settings.localEnvironmentEnabled && !backendStarted)) {
     return;
   }
 
   yield* snapShot.initialize;
+  if (yield* CompanionConfig.isBrowserOnly) {
+    if (!(yield* Ref.get(state.quitting))) {
+      yield* desktopWindow.createMainIfBackendReady;
+    }
+    return;
+  }
+
+  const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
+  const startAppActivation = appActivation.start.pipe(
+    Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
+    Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
+  );
   // Only the user's own login shell PATH shows every t3 a new terminal runs; a fresh install has
   // no cached one. Without it, the command is left to Settings.
   const installCli = (yield* DesktopCliCommand.DesktopCliCommand).installOnFirstLaunch;
@@ -341,9 +355,8 @@ export const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarte
   if (!settings.localEnvironmentEnabled) {
     // The backend config refreshes the launcher when the local environment runs; an update may move the app.
     yield* DesktopCliShim.install;
-    if (!(yield* Ref.get(state.quitting))) {
-      yield* desktopWindow.createMainIfBackendReady;
-    }
+    if (yield* Ref.get(state.quitting)) return;
+    yield* desktopWindow.createMainIfBackendReady;
     // `t3 <dir>` still reaches the renderer, which opens it on this machine's connected service.
     yield* startAppActivation;
     return;
@@ -435,10 +448,10 @@ const startup = Effect.gen(function* () {
   // Sets canInstallUpdates, which the backend bootstrap payload reads.
   yield* updates.configure;
   yield* DesktopRemoteUpdates.listen;
-  yield* DesktopStartupRecovery.listen;
-  const backendStarted = yield* startLocalBackend(installDesktopIpcHandlers()).pipe(
-    Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)),
-  );
+  const backendStarted = yield* startLocalBackend(
+    installDesktopIpcHandlers(),
+    DesktopStartupRecovery.listen,
+  ).pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
   yield* previewPasskeys.configure;
   yield* applicationMenu.configure;
   // Portal identity is prepared pre-ready; MIME helpers must not gate the backend or window.

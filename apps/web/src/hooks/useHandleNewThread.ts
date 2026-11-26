@@ -215,6 +215,11 @@ export function createNewThreadHandler(router: AnyRouter) {
       });
     const envModeFor = (projectFile: T3ProjectFile | null): DraftThreadEnvMode =>
       resolveNewThreadEnvMode({
+        preferConversation:
+          targetServerConfig?.environment.capabilities.conversationWorkspace === true &&
+          targetServerSettings.defaultThreadEnvMode === null &&
+          projectSettings.overrides.defaultThreadEnvMode === undefined &&
+          projectFile?.defaultThreadEnvMode === undefined,
         projectSettings: resolveProjectSettings(
           targetServerSettings,
           project?.id ?? null,
@@ -222,7 +227,7 @@ export function createNewThreadHandler(router: AnyRouter) {
           projectFile,
         ),
         workspaceRoot: project?.workspaceRoot ?? null,
-        newProjectsRoot: environmentServerConfigs.get(projectRef.environmentId)?.newProjectsRoot,
+        newProjectsRoot: targetServerConfig?.newProjectsRoot,
         projectHasThreads:
           readThreadShells().some(
             (thread) =>

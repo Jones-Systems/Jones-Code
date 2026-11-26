@@ -122,6 +122,14 @@ export const layer = HttpApiBuilder.group(
           })
           .pipe(Effect.result);
         if (Result.isFailure(started)) {
+          if (
+            started.failure._tag === "UpdateAdmissionRefused" ||
+            started.failure._tag === "WorkflowStartingError"
+          ) {
+            return json(503, { error: "delivery_not_recorded" }, "unavailable", {
+              "retry-after": "1",
+            });
+          }
           if (started.failure._tag === "WorkflowInputError") {
             return json(
               400,

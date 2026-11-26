@@ -40,6 +40,10 @@ import { threadTriagePermitted, useOrchestrationCommand } from "../state/use-orc
 import { readEnvironmentScope } from "../state/session";
 import {
   readEnvironmentSupportsAutoSettleOptOut,
+  readEnvironmentSupportsPinning,
+  readEnvironmentSupportsSettlement,
+  readEnvironmentSupportsSnooze,
+  readEnvironmentSupportsTitleRegeneration,
   readThreadShell,
   useProjects,
 } from "../state/entities";
@@ -58,7 +62,8 @@ import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { canTurnThreadIntoProject, useThreadActions } from "./useThreadActions";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { readEnvironmentServerConfigLoaded } from "../state/entities";
+
+export type ThreadActionMenuSelection = ThreadActionMenuId | typeof SETTLEMENT_RESTORE_MENU_ID;
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -132,13 +137,12 @@ export function useThreadActionMenu(input: {
     const thread = readThreadShell(threadRef);
     if (!thread) return null;
     const now = new Date();
-    const configLoaded = readEnvironmentServerConfigLoaded(threadRef.environmentId);
     const supports = {
-      settlement: configLoaded,
+      settlement: readEnvironmentSupportsSettlement(threadRef.environmentId),
       autoSettleOptOut: readEnvironmentSupportsAutoSettleOptOut(threadRef.environmentId),
-      snooze: configLoaded,
-      pinning: configLoaded,
-      titleRegeneration: configLoaded,
+      snooze: readEnvironmentSupportsSnooze(threadRef.environmentId),
+      pinning: readEnvironmentSupportsPinning(threadRef.environmentId),
+      titleRegeneration: readEnvironmentSupportsTitleRegeneration(threadRef.environmentId),
     };
     const isRegeneratingTitle = thread.titleRegeneration != null;
     const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
@@ -162,7 +166,7 @@ export function useThreadActionMenu(input: {
       canShareWithGuest,
       canTurnIntoProject: canTurnThreadIntoProject(threadRef),
     });
-    const run = async (action: ThreadActionMenuId | typeof SETTLEMENT_RESTORE_MENU_ID) => {
+    const run = async (action: ThreadActionMenuSelection) => {
       const api = readLocalApi();
       if (!api) return;
       const thread = readThreadShell(threadRef);

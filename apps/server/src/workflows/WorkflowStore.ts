@@ -150,6 +150,7 @@ type WorkflowMilestoneNews = WorkflowMilestone extends infer Event
   : never;
 // A wake is one write away from its claim. A claim this old without its run moving had none.
 const WAKE_REDONE_AFTER = Duration.seconds(30);
+const UNCONFIRMED_STOP_PREFIX = "workflow-cancellation/unconfirmed-linked-stop/";
 // Long enough for a sender's retries, short enough that the table stays small.
 // Enough to read what a step said; the page that shows it is not a place for a whole report.
 const STEP_RESULT_KEPT = 8_000;
@@ -247,6 +248,7 @@ export class WorkflowStore extends Context.Service<
       name: string,
       status: "completed" | "failed",
       detail: string | null,
+      options?: { readonly unconfirmedLinkedStop: true },
     ) => Effect.Effect<void>;
     readonly waitOpened: (wait: {
       readonly runId: string;
@@ -344,11 +346,13 @@ export class WorkflowStore extends Context.Service<
     /** The threads of agent steps still running in this run, with each step's own turn. */
     readonly runningThreads: (runId: string) => Effect.Effect<
       ReadonlyArray<{
+        readonly stepName: string;
         readonly threadId: string;
         readonly environment?: string;
         readonly turnId?: string;
       }>
     >;
+    readonly hasUnconfirmedStop: (runId: string) => Effect.Effect<boolean>;
     readonly waitAt: (address: SignalAddress) => Effect.Effect<WaitRow | undefined>;
     /** Every open wait on `key`, in one workflow or in all of them. */
     readonly waitsOn: (
@@ -928,29 +932,40 @@ export const make = Effect.gen(function* () {
       yield* PubSub.publish(changes, runId);
       return Number(rows[0]?.attempts ?? 1);
     }),
-    stepEnded: Effect.fn("WorkflowStore.stepEnded")(function* (runId, name, status, detail) {
-      const at = yield* now;
-      yield* write(
-        runId,
-        sql.withTransaction(
-          Effect.andThen(
-            sql`
+    stepEnded: Effect.fn("WorkflowStore.stepEnded")(
+      function* (runId, name, status, detail, options) {
+        const at = yield* now;
+        const stopMark = `${UNCONFIRMED_STOP_PREFIX}${name}`;
+        const recordOutcome = options?.unconfirmedLinkedStop
+          ? sql`
+            INSERT INTO workflow_marks (run_id, name, count) VALUES (${runId}, ${stopMark}, 1)
+            ON CONFLICT (run_id, name) DO NOTHING
+          `
+          : status === "completed"
+            ? // Only a step outside a pause resets the run's consecutive pauses.
+              sql`
+              UPDATE workflow_runs SET pauses = 0
+              WHERE run_id = ${runId} AND ended_at IS NULL AND status != 'paused'
+            `
+            : Effect.void;
+        yield* write(
+          runId,
+          sql.withTransaction(
+            Effect.andThen(
+              sql`
               UPDATE workflow_steps
               SET status = ${status}, detail = ${detail === null ? null : detailCut(detail)}, ended_at = ${at}
               WHERE run_id = ${runId} AND name = ${name}
+                AND NOT EXISTS (
+                  SELECT 1 FROM workflow_marks WHERE run_id = ${runId} AND name = ${stopMark}
+                )
             `,
-            // A step that finished is progress: the next pause is the first in a row again.
-            status === "completed"
-              ? // Not while paused: a step beside the one that failed is no progress past it.
-                sql`
-                  UPDATE workflow_runs SET pauses = 0
-                  WHERE run_id = ${runId} AND ended_at IS NULL AND status != 'paused'
-                `
-              : Effect.void,
+              recordOutcome,
+            ),
           ),
-        ),
-      );
-    }),
+        );
+      },
+    ),
     waitOpened: Effect.fn("WorkflowStore.waitOpened")(function* (wait) {
       const at = yield* now;
       const opened = yield* sql`
@@ -1245,18 +1260,28 @@ export const make = Effect.gen(function* () {
     ),
     runningThreads: Effect.fn("WorkflowStore.runningThreads")(function* (runId) {
       const rows = yield* sql<{
+        name: string;
         thread_id: string;
         environment_id: string | null;
         turn_id: string | null;
       }>`
-        SELECT thread_id, environment_id, turn_id FROM workflow_steps
+        SELECT name, thread_id, environment_id, turn_id FROM workflow_steps
         WHERE run_id = ${runId} AND status = 'running' AND thread_id IS NOT NULL
       `.pipe(Effect.orDie);
       return rows.map((row) => ({
+        stepName: row.name,
         threadId: row.thread_id,
         ...(row.environment_id === null ? {} : { environment: row.environment_id }),
         ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
       }));
+    }),
+    hasUnconfirmedStop: Effect.fn("WorkflowStore.hasUnconfirmedStop")(function* (runId) {
+      const rows = yield* sql`
+        SELECT 1 FROM workflow_marks
+        WHERE run_id = ${runId} AND name LIKE ${`${UNCONFIRMED_STOP_PREFIX}%`}
+        LIMIT 1
+      `.pipe(Effect.orDie);
+      return rows.length > 0;
     }),
     waitAt: Effect.fn("WorkflowStore.waitAt")(function* (address) {
       const rows = yield* (

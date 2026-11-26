@@ -91,8 +91,12 @@ export function buildPendingUserInputAnswers(
 ): Record<string, PendingUserInputAnswer> | null {
   const answers: Record<string, PendingUserInputAnswer> = {};
   for (const question of questions) {
-    const answer = resolvePendingUserInputAnswer(question, drafts[question.id], options);
-    if (answer === null) return null;
+    const draft = drafts[question.id];
+    const answer = resolvePendingUserInputAnswer(question, draft, options);
+    if (answer === null) {
+      if (question.required === false && !draft?.attachmentsBlocked) continue;
+      return null;
+    }
     answers[question.id] = answer;
   }
   return answers;

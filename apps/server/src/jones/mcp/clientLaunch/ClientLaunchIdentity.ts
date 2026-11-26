@@ -9,17 +9,22 @@ import {
   type ProviderInteractionMode,
   type RuntimeMode,
 } from "@t3tools/contracts";
-import type { ThreadLaunchWorkspaceStrategy } from "../../../orchestration-v2/ThreadLaunchService.ts";
+import type {
+  ThreadLaunchInitialMessage,
+  ThreadLaunchWorkspaceStrategy,
+} from "../../../orchestration-v2/ThreadLaunchService.ts";
 
 export interface ClientLaunchRequest {
   readonly clientRequestId: string;
   readonly projectId?: ProjectId | undefined;
   readonly title: string;
+  readonly generateTitle?: boolean | undefined;
   readonly modelSelection?: ModelSelection | undefined;
   readonly runtimeMode?: RuntimeMode | undefined;
   readonly interactionMode?: ProviderInteractionMode | undefined;
   readonly workspaceStrategy?: ThreadLaunchWorkspaceStrategy | undefined;
   readonly message?: string | undefined;
+  readonly outputSchema?: ThreadLaunchInitialMessage["outputSchema"];
   readonly scratch?: boolean | undefined;
   readonly attachments?: ReadonlyArray<unknown> | undefined;
 }
@@ -74,6 +79,9 @@ export function clientLaunchDigest(input: ClientLaunchRequest, projectId: Projec
               baseRef: strategy.baseRef ?? null,
               branch: strategy.branch ?? null,
               startFromOrigin: strategy.startFromOrigin ?? false,
+              ...(strategy.repositories === undefined
+                ? {}
+                : { repositories: strategy.repositories }),
             }
           : {
               type: strategy.type,
@@ -86,11 +94,13 @@ export function clientLaunchDigest(input: ClientLaunchRequest, projectId: Projec
       op: "thread-launch",
       projectId,
       title: input.title.trim(),
+      ...(input.generateTitle === true ? { generateTitle: true } : {}),
       modelSelection: input.modelSelection ?? null,
       runtimeMode: input.runtimeMode ?? null,
       interactionMode: input.interactionMode ?? null,
       workspaceStrategy,
       message: input.message ?? null,
+      ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
     }),
   );
 }

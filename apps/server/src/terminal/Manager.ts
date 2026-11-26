@@ -1651,7 +1651,7 @@ function snapshotHistory(session: TerminalSessionState, supportsSnapshotSequence
     : { history: closedHistory, historySequenceState: state };
 }
 
-export function sanitizeTerminalHistoryChunk(
+function sanitizeTerminalHistoryChunk(
   pendingControlSequence: string,
   data: string,
 ): { visibleText: string; pendingControlSequence: string } {

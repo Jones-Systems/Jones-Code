@@ -33,6 +33,10 @@ export class CompanionConfig extends Context.Service<
 
 export const browserOnlyStartup = (config: DesktopCompanionConfig): boolean => config.browserOnly;
 
+export const isBrowserOnly = Effect.flatMap(CompanionConfig, (config) =>
+  Effect.map(config.get, browserOnlyStartup),
+);
+
 const CompanionConfigJson = Schema.fromJsonString(DesktopCompanionConfig);
 const encodeConfig = Schema.encodeEffect(CompanionConfigJson);
 const decodeConfigJson = Schema.decodeEffect(CompanionConfigJson);
@@ -120,8 +124,7 @@ const make = Effect.gen(function* () {
 export const layer = Layer.effect(CompanionConfig, make);
 
 export const prepareStartup = Effect.gen(function* () {
-  const config = yield* CompanionConfig;
-  if (browserOnlyStartup(yield* config.get)) {
+  if (yield* isBrowserOnly) {
     yield* (yield* DesktopAppSettings.DesktopAppSettings).setLocalEnvironmentEnabled(false);
   }
 });

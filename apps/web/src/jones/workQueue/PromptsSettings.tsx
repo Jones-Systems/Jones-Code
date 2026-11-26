@@ -2,7 +2,7 @@ import { ThreadActivitySettings } from "../threadStatusFilter/ThreadActivitySett
 import { PresentationOrderSettings } from "../presentationOrder/PresentationOrderSettings";
 import { persistClientSettingsPatch, useClientSettings } from "../../hooks/useSettings";
 import { SettingsRow, SettingsSection } from "../../components/settings/settingsLayout";
-import { searchableSetting } from "../../components/settings/settingsSearch";
+import { useSearchableSetting } from "../../components/settings/settingsSearch";
 import {
   Select,
   SelectItem,
@@ -14,6 +14,7 @@ import {
 const stageLabels = { pending: "Pending", queued: "Queued", sent: "Sent" } as const;
 
 export function PromptsSettings() {
+  const searchableSetting = useSearchableSetting();
   const stage = useClientSettings((settings) => settings.promptsDefaultStage);
   return (
     <>

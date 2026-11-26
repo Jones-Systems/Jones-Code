@@ -328,13 +328,26 @@ parentPort.on("message", (request) => {
 });
 `;
 
-interface WorkerRequest {
+interface WorkerStatement {
   readonly sql: string;
   readonly params: ReadonlyArray<unknown>;
   readonly cached: boolean;
   readonly values: boolean;
   readonly raw: boolean;
 }
+
+interface WorkerRequest extends WorkerStatement {
+  readonly id: number;
+  readonly safeIntegers: boolean;
+  readonly received: Int32Array;
+  readonly savepoints: ReadonlyArray<string>;
+}
+
+const postWorkerRequest = (worker: NodeWorkerThreads.Worker, request: WorkerRequest) => {
+  const cached = request.cached && !hasLargeBinding(request.params);
+  // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Node workers do not accept a target origin.
+  worker.postMessage({ ...request, cached });
+};
 
 interface WorkerFailure {
   readonly message: string;
@@ -503,7 +516,7 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
     worker.on("error", (cause) => stop(`${label} failed: ${cause.message}`));
     worker.on("exit", (code) => stop(`${label} exited with code ${code}`));
 
-    const request = (input: WorkerRequest) =>
+    const request = (input: WorkerStatement) =>
       Effect.withFiber<ReadonlyArray<any>, SqlError>((fiber) => {
         // A COMMIT that never reached a writer must fail; only its ROLLBACK is moot.
         const endsTransaction = readOnly
@@ -530,17 +543,13 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
               ),
           });
           if (pending.size === 1) worker.ref();
-          const cached = input.cached && !hasLargeBinding(input.params);
-          const message = {
+          postWorkerRequest(worker, {
+            ...input,
             id,
             safeIntegers,
-            ...input,
-            cached,
             received,
             savepoints: [...pendingSavepoints],
-          };
-          // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Node workers do not accept a target origin.
-          worker.postMessage(message);
+          });
           // An unsent savepoint must stay queued, or its rollback would target an older sibling's.
           pendingSavepoints.length = 0;
         });
@@ -885,7 +894,7 @@ const makeJonesReader = Effect.fnUntraced(function* (
       }
     });
 
-    const request = (input: WorkerRequest) =>
+    const request = (input: WorkerStatement) =>
       Effect.withFiber<ReadonlyArray<any>, SqlError>((fiber) => {
         const endsTransaction = endsReadTransaction(input.sql);
         if (stoppedMessage !== undefined) {
@@ -960,10 +969,9 @@ const makeJonesReader = Effect.fnUntraced(function* (
               },
             });
             if (pending.size === 1) worker.ref();
-            const cached = input.cached && !hasLargeBinding(input.params);
             try {
-              // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Node workers do not accept a target origin.
-              worker.postMessage({ id, safeIntegers, ...input, cached, received });
+              // Read transactions send their savepoint controls directly on the leased connection.
+              postWorkerRequest(worker, { ...input, id, safeIntegers, received, savepoints: [] });
             } catch (cause) {
               pending.delete(id);
               notifySettled();
@@ -2113,6 +2121,9 @@ const make = Effect.fn("makeWithDatabase")(function* (
                 if (arrays) statement.setReturnArrays(true);
                 return statement.all(...(params as any));
               }
+              // run() reports the connection's last insert rowid even for BEGIN. Converting
+              // an unsafe rowid to a number can throw after the statement has taken effect.
+              if (mode !== "raw") statement.setReadBigInts(true);
               const result = statement.run(...(params as any));
               return mode === "raw" ? (result as unknown as ReadonlyArray<unknown>) : [];
             });

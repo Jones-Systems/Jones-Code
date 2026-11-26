@@ -17,13 +17,19 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import * as UpdateAdmission from "../jones/updates/UpdateAdmissionFence.ts";
 import WorkflowsMigration from "../persistence/Migrations/110_Workflows.ts";
 import WorkflowSkippedRunsMigration from "../persistence/Migrations/113_WorkflowSkippedRuns.ts";
 import WorkflowRunTagsMigration from "../persistence/Migrations/115_WorkflowRunTags.ts";
 import WorkflowMailSenderMigration from "../persistence/Migrations/117_WorkflowMailSender.ts";
 import WorkflowPoolsMigration from "../persistence/Migrations/118_WorkflowPools.ts";
 import WorkflowRunSubjectMigration from "../persistence/Migrations/119_WorkflowRunSubject.ts";
-import { type AgentResult, WorkflowAgents } from "./WorkflowAgents.ts";
+import { ServerActivation } from "../serverActivation.ts";
+import {
+  type AgentResult,
+  WorkflowAgentMutationUncertain,
+  WorkflowAgents,
+} from "./WorkflowAgents.ts";
 import * as WorkflowEngine from "./WorkflowEngine.ts";
 import * as WorkflowRuntime from "./WorkflowRuntime.ts";
 import { engineTag, type WorkflowDefinition } from "./workflow.ts";
@@ -339,6 +345,7 @@ it.effect("a file that never finishes loading is given up on, and later files st
     yield* fileSystem.writeFileString(at("stuck.ts"), "await new Promise(() => {});\n");
     yield* fileSystem.writeFileString(at("greet.ts"), greet("hi"));
     const stuck = yield* WorkflowRuntime.loadDefinitions(at("stuck.ts"), 0, 50).pipe(Effect.flip);
+    if (stuck._tag !== "WorkflowDefinitionsLoadError") return assert.fail(stuck.message);
     assert.include(String(stuck.cause), "did not finish loading");
     const loaded = yield* WorkflowRuntime.loadDefinitions(at("greet.ts"));
     assert.deepStrictEqual(
@@ -367,6 +374,7 @@ workflow("sorter", { version: 1, payload: Schema.Struct({})${asks} }, () =>
     }
     yield* fileSystem.writeFileString(at("sorter.ts"), sorter(', asks: { feature: "" }'));
     const refused = yield* WorkflowRuntime.loadDefinitions(at("sorter.ts"), 1).pipe(Effect.flip);
+    if (refused._tag !== "WorkflowDefinitionsLoadError") return assert.fail(refused.message);
     assert.include(String(refused.cause), 'asks gives the kind "feature" no label');
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
@@ -566,5 +574,260 @@ it.effect(
         const freed = yield* workflows.waitFor(held.runId, (run) => run.status === "completed");
         assert.equal(freed.result, "go on");
       }).pipe(Effect.scoped, Effect.raceFirst(Effect.forever(TestClock.adjust("1 second"))));
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.live(
+  "parks definition evaluation, watching and engine startup behind activation and an update",
+  () =>
+    Effect.gen(function* () {
+      const activation = yield* Deferred.make<void>();
+      const refused = yield* Deferred.make<void>();
+      const watching = yield* Deferred.make<void>();
+      const fence = yield* UpdateAdmission.make;
+      const ticket = yield* fence.raise("manual");
+      const globals = globalThis as typeof globalThis & { t3ActivationLoads?: number };
+      yield* Effect.addFinalizer(() => Effect.sync(() => delete globals.t3ActivationLoads));
+      let engines = 0;
+      const { at, directory, fileSystem, made } = yield* setup(
+        (fs) => ({
+          ...fs,
+          watch: () =>
+            Stream.unwrap(Deferred.succeed(watching, undefined).pipe(Effect.as(Stream.never))),
+        }),
+        () =>
+          Layer.sync(Workflows.Workflows, () => {
+            engines++;
+            return Workflows.disabled;
+          }),
+      );
+      yield* fileSystem.writeFileString(
+        at("activation.ts"),
+        "globalThis.t3ActivationLoads = (globalThis.t3ActivationLoads ?? 0) + 1;\nexport default [];\n",
+      );
+      const gated = yield* WorkflowRuntime.gate(made, directory, {
+        enabled: Effect.succeed(true),
+        subscribe: Effect.succeed(Stream.empty),
+      }).pipe(
+        Effect.provideService(ServerActivation, Deferred.await(activation)),
+        Effect.provideService(UpdateAdmission.UpdateAdmissionFence, {
+          ...fence,
+          nativeUse: fence.nativeUse.pipe(
+            Effect.tapError(() => Deferred.succeed(refused, undefined)),
+          ),
+        }),
+      );
+      const workflows = Context.get(gated.context, Workflows.Workflows);
+      const deliver = workflows.deliver({
+        hookId: "wf-hold.in",
+        token: "synthetic",
+        request: { method: "POST", headers: {}, query: "", body: "" },
+      });
+      assert.equal((yield* Effect.flip(deliver))._tag, "WorkflowStartingError");
+      assert.isFalse(yield* Deferred.isDone(refused));
+      assert.isFalse(yield* Deferred.isDone(watching));
+      assert.isUndefined(globals.t3ActivationLoads);
+      assert.equal(engines, 0);
+
+      yield* Deferred.succeed(activation, undefined);
+      yield* Deferred.await(refused);
+      assert.equal((yield* Effect.flip(deliver))._tag, "WorkflowStartingError");
+      assert.isFalse(yield* Deferred.isDone(watching));
+      assert.isUndefined(globals.t3ActivationLoads);
+      assert.equal(engines, 0);
+
+      yield* ticket.release;
+      yield* Deferred.await(watching);
+      assert.equal(globals.t3ActivationLoads, 1);
+      assert.equal(engines, 1);
+      assert.isTrue(Option.isNone(yield* deliver));
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.live(
+  "refuses workflow webhook ingress before its key or receipt and drains only admitted steps",
+  () =>
+    Effect.gen(function* () {
+      const firstStarted = Promise.withResolvers<void>();
+      const finishFirst = Promise.withResolvers<void>();
+      const observed = {
+        keys: 0,
+        first: 0,
+        second: 0,
+        firstStarted: firstStarted.resolve,
+        finishFirst: finishFirst.promise,
+      };
+      const globals = globalThis as typeof globalThis & { t3FencedWorkflow?: typeof observed };
+      const fence = yield* UpdateAdmission.make;
+      const { at, fileSystem, runtime } = yield* setup();
+      yield* fileSystem.writeFileString(
+        at("fenced.ts"),
+        `const observed = globalThis.t3FencedWorkflow;
+T3.workflow("fenced", {
+  version: 1,
+  payload: T3.WebhookRequest,
+  triggers: [T3.webhook("in", { key: (request) => {
+    observed.keys++;
+    return request.headers["webhook-id"];
+  } })],
+}, () => Effect.gen(function* () {
+  yield* T3.step("first", { returns: Schema.Void }, Effect.promise(() => {
+    observed.first++;
+    observed.firstStarted();
+    return observed.finishFirst;
+  }));
+  yield* T3.step("second", { returns: Schema.Void }, Effect.sync(() => { observed.second++; }));
+}));
+`,
+      );
+      globals.t3FencedWorkflow = observed;
+      yield* Effect.gen(function* () {
+        const workflows = yield* Workflows.Workflows;
+        const hook = (yield* workflows.hooks).find((candidate) => candidate.workflow === "fenced");
+        if (hook === undefined) return assert.fail("The fixture hook was not registered.");
+        const deliver = workflows.deliver({
+          hookId: Workflows.hookId("fenced", "in"),
+          token: hook.path.split("/").at(-1)!,
+          request: { method: "POST", headers: { "webhook-id": "original" }, query: "", body: "" },
+          deliveryId: "relay:original",
+        });
+        const firstFence = yield* fence.raise("automatic");
+        assert.equal((yield* Effect.flip(deliver))._tag, "UpdateAdmissionRefused");
+        assert.equal(observed.keys, 0);
+        assert.deepStrictEqual(yield* workflows.list(), []);
+        assert.equal(
+          (yield* Effect.flip(workflows.storeSet("during-update", true)))._tag,
+          "WorkflowInputError",
+        );
+        yield* firstFence.release;
+
+        const { runId } = Option.getOrThrow(yield* deliver);
+        yield* Effect.promise(() => firstStarted.promise);
+        const secondFence = yield* fence.raise("manual");
+        const handingOff = yield* Effect.forkChild(secondFence.handOff, { startImmediately: true });
+        assert.isUndefined(handingOff.pollUnsafe());
+        finishFirst.resolve();
+        assert.isTrue(yield* Fiber.join(handingOff));
+        assert.equal(observed.first, 1);
+        assert.equal(observed.second, 0);
+
+        yield* secondFence.release;
+        yield* workflows.waitFor(runId, (run) => run.status === "completed");
+        assert.equal(Option.getOrThrow(yield* deliver).runId, runId);
+        assert.equal(observed.first, 1);
+        assert.equal(observed.second, 1);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            finishFirst.resolve();
+            delete globals.t3FencedWorkflow;
+          }),
+        ),
+        Effect.provide(runtime),
+        Effect.provideService(UpdateAdmission.UpdateAdmissionFence, fence),
+        Effect.scoped,
+      );
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.live("handoff waits for a timed-out definition import to actually settle", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const fence = yield* UpdateAdmission.make;
+    const directory = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-workflow-import-" });
+    const file = path.join(directory, "late.ts");
+    const resume = Promise.withResolvers<void>();
+    const globals = globalThis as typeof globalThis & { t3ImportMayFinish?: Promise<void> };
+    globals.t3ImportMayFinish = resume.promise;
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        resume.resolve();
+        delete globals.t3ImportMayFinish;
+      }),
+    );
+    yield* fileSystem.writeFileString(
+      file,
+      "await globalThis.t3ImportMayFinish;\nexport default [];\n",
+    );
+    const timedOut = yield* WorkflowRuntime.loadDefinitions(file, 0, 50).pipe(
+      Effect.provideService(UpdateAdmission.UpdateAdmissionFence, fence),
+      Effect.flip,
+    );
+    if (timedOut._tag !== "WorkflowDefinitionsLoadError") return assert.fail(timedOut.message);
+    assert.include(String(timedOut.cause), "did not finish loading");
+    const ticket = yield* fence.raise("manual");
+    const handingOff = yield* Effect.forkChild(ticket.handOff, { startImmediately: true });
+    assert.isUndefined(handingOff.pollUnsafe());
+    resume.resolve();
+    assert.isTrue(yield* Fiber.join(handingOff));
+    yield* ticket.release;
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.live(
+  "records an unconfirmed Stop on the exact agent step and holds cleanup through reload",
+  () =>
+    Effect.gen(function* () {
+      const interrupted: Array<Parameters<WorkflowAgents["Service"]["interrupt"]>[0]> = [];
+      const globals = globalThis as typeof globalThis & { t3CancelledCleanupCalls?: number };
+      yield* Effect.addFinalizer(() => Effect.sync(() => delete globals.t3CancelledCleanupCalls));
+      const { at, fileSystem, runtime } = yield* setup(undefined, undefined, {
+        start: () =>
+          Effect.succeed({ threadId: "peer-thread", environment: "peer", turnId: "peer-turn" }),
+        result: () => Effect.never,
+        interrupt: (target) =>
+          Effect.sync(() => interrupted.push(target)).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new WorkflowAgentMutationUncertain({
+                  environment: "peer",
+                  operation: "interruption of turn peer-turn",
+                  threadId: "peer-thread",
+                  requestId: "original-stop",
+                }),
+              ),
+            ),
+          ),
+      });
+      yield* fileSystem.writeFileString(
+        at("tracked.ts"),
+        `T3.workflow("tracked", {
+  version: 1,
+  payload: Schema.Struct({}),
+  onEnd: () => Effect.sync(() => {
+    globalThis.t3CancelledCleanupCalls = (globalThis.t3CancelledCleanupCalls ?? 0) + 1;
+  }),
+}, () => T3.agent("remote", { brief: "Work", environment: "peer" }));
+`,
+      );
+      yield* Effect.gen(function* () {
+        const workflows = yield* Workflows.Workflows;
+        const definitions = yield* WorkflowRuntime.WorkflowDefinitions;
+        const { runId } = yield* workflows.start("tracked", {}, { idempotencyKey: "cancel" });
+        yield* workflows.waitFor(runId, (run) => run.status === "waiting");
+        yield* workflows.cancel(runId, "cancelled by fixture");
+
+        const cancelled = yield* workflows.get(runId);
+        assert.equal(cancelled.run.status, "cancelled");
+        const step = cancelled.steps.find((candidate) => candidate.name === "remote");
+        assert.equal(step?.status, "failed");
+        assert.include(step?.detail ?? "", "original-stop");
+        assert.equal(step?.threadId, "peer-thread");
+        assert.equal(step?.environmentId, "peer");
+
+        assert.isTrue((yield* definitions.save("extra.ts", greet("extra"))).changed);
+        yield* workflows.sweep;
+        assert.deepStrictEqual(interrupted, [
+          {
+            workflowRunId: runId,
+            threadId: "peer-thread",
+            environment: "peer",
+            turnId: "peer-turn",
+          },
+        ]);
+        assert.deepStrictEqual((yield* workflows.get(runId)).steps, cancelled.steps);
+        assert.isUndefined(globals.t3CancelledCleanupCalls);
+      }).pipe(Effect.provide(runtime), Effect.scoped);
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );

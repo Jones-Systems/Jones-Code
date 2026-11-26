@@ -100,7 +100,7 @@ export const DELETED_THREAD_TITLE = "Deleted thread";
 // Every thread_id table that holds conversation text. The thread row stays as the tombstone, and
 // the metadata that storage cleanup and usage history still read (checkpoints, provider sessions,
 // provider turns, run attempts, context transfers) stays with it.
-export const DELETED_THREAD_CONTENT_TABLES = [
+const DELETED_THREAD_CONTENT_TABLES = [
   "orchestration_v2_turn_item_positions",
   "orchestration_v2_projection_turn_items",
   "orchestration_v2_projection_messages",

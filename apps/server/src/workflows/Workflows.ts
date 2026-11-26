@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import type { UpdateAdmissionRefused } from "../jones/updates/UpdateAdmissionFence.ts";
 import type { WebhookRequest } from "./triggers.ts";
 import type * as WorkflowStore from "./WorkflowStore.ts";
 
@@ -64,6 +65,16 @@ export class WorkflowHookBusyError extends Schema.TaggedError<WorkflowHookBusyEr
 ) {
   override get message(): string {
     return `Hook ${this.hook} has started as many runs as it may in a minute.`;
+  }
+}
+
+/** A delivery made while the server is still bringing its workflow runtime up. */
+export class WorkflowStartingError extends Schema.TaggedError<WorkflowStartingError>()(
+  "WorkflowStartingError",
+  {},
+) {
+  override get message(): string {
+    return "Workflows are still starting on this server. Try again in a moment.";
   }
 }
 
@@ -181,7 +192,10 @@ export class Workflows extends Context.Service<
       readonly token: string;
       readonly request: WebhookRequest;
       readonly deliveryId?: string;
-    }) => Effect.Effect<Option.Option<{ readonly runId: string }>, WorkflowError>;
+    }) => Effect.Effect<
+      Option.Option<{ readonly runId: string }>,
+      WorkflowError | WorkflowStartingError | UpdateAdmissionRefused
+    >;
     /** What workflows keep in the store under keys starting with `prefix`, for a person to see. */
     readonly stored: (
       prefix: string,

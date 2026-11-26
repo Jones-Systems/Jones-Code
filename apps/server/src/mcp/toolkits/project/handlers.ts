@@ -272,11 +272,6 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
     input.clientRequestId !== undefined &&
     modes.linkOrigin === undefined
   ) {
-    if (input.generateTitle === true || input.outputSchema !== undefined)
-      return yield* new OrchestratorMcpFailure({
-        code: "invalid_request",
-        message: "Title generation and structured output are unavailable for a local keyed launch.",
-      });
     if (
       input.modelSelection?.options?.length &&
       keyedCaller.limits.runtimeMode !== "full-access" &&

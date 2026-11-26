@@ -1674,7 +1674,7 @@ it.effect.each([2, 3] as const)(
                   yield* sql`PRAGMA cache_size = 321`;
                   yield* Deferred.succeed(snapshot, undefined);
                   yield* Deferred.await(committed);
-                  yield* sql
+                  const failure = yield* sql
                     .withTransaction(
                       Effect.gen(function* () {
                         assert.equal(yield* countEntries(sql), 1);
@@ -1683,6 +1683,7 @@ it.effect.each([2, 3] as const)(
                       }),
                     )
                     .pipe(Effect.flip);
+                  assert.equal(failure, "rollback-savepoint");
                   assert.equal(yield* countEntries(sql), 1);
                 }),
               )
@@ -2080,14 +2081,16 @@ it.effect("Jones pooled reads retain every ordered bigint across upstream chunk 
     (sql) =>
       Effect.gen(function* () {
         yield* sql`PRAGMA journal_mode = WAL`;
+        const base = 9_007_199_254_740_992n;
         const rows = yield* sql<{ ordinal: bigint; payload: string }>`
         WITH RECURSIVE sequence(value) AS (
           SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 33000
-        ) SELECT value AS ordinal, printf('%08d', value) AS payload FROM sequence ORDER BY value
+        ) SELECT value + ${base} AS ordinal, printf('%08d', value) AS payload
+          FROM sequence ORDER BY value
       `.pipe(Effect.provideService(SqlClient.SafeIntegers, true), SqliteClient.readOnly);
         assert.equal(rows.length, 33000);
         for (let index = 0; index < rows.length; index++) {
-          assert.equal(rows[index]!.ordinal, BigInt(index + 1));
+          assert.equal(rows[index]!.ordinal, base + BigInt(index + 1));
           assert.equal(rows[index]!.payload, String(index + 1).padStart(8, "0"));
         }
         assert.deepEqual(yield* sql`SELECT 7 AS value`.pipe(SqliteClient.readOnly), [{ value: 7 }]);

@@ -42,6 +42,7 @@ const testState = vi.hoisted(() => {
       href: `/draft/${request.params.draftId}`,
     }),
   };
+  const readT3ProjectFile = vi.fn(() => projectFileRead);
   const draftStore = {
     getComposerDraft: vi.fn((draftId: string) => ({ draftId })),
     getDraftSessionByLogicalProjectKey: vi.fn(() => storedDraft),
@@ -81,6 +82,7 @@ const testState = vi.hoisted(() => {
       draftSession = { ...draftSession, environmentId: "environment-primary" };
     },
     draftStore,
+    readT3ProjectFile,
     get projectFileRead() {
       return projectFileRead;
     },
@@ -139,6 +141,7 @@ const testState = vi.hoisted(() => {
       draftStore.setLogicalProjectDraftThreadId.mockClear();
       draftStore.setNewThreadWorkstream.mockClear();
       draftStore.setPrompt.mockClear();
+      readT3ProjectFile.mockClear();
       projectFileRead = new Promise<ProjectFile>((resolve) => {
         completeProjectFileRead = resolve;
       });
@@ -153,16 +156,14 @@ const testState = vi.hoisted(() => {
   };
 });
 
-const testEnvironment = (environmentId: string) => ({
+const testEnvironment = (environmentId: string, conversationWorkspace?: boolean) => ({
   environmentId,
   label: "Synthetic environment",
   platform: { os: "darwin", arch: "arm64" },
   serverVersion: "0.0.0-test",
   capabilities: {
     repositoryIdentity: false,
-    ...(testState.conversationWorkspace === undefined
-      ? {}
-      : { conversationWorkspace: testState.conversationWorkspace }),
+    ...(conversationWorkspace === undefined ? {} : { conversationWorkspace }),
   },
 });
 
@@ -181,7 +182,7 @@ const testServerConfigs = () =>
     [
       "environment-ssh",
       {
-        environment: testEnvironment("environment-ssh"),
+        environment: testEnvironment("environment-ssh", testState.conversationWorkspace),
         settings: testState.targetSettings,
       },
     ],
@@ -265,7 +266,7 @@ vi.mock("../providerInstances", () => ({
   resolveProjectDefaultProviderModelSelection: () => null,
 }));
 vi.mock("../lib/t3ProjectFileDefaults", () => ({
-  readT3ProjectFile: () => testState.projectFileRead,
+  readT3ProjectFile: testState.readT3ProjectFile,
   peekT3ProjectFile: () => undefined,
 }));
 vi.mock("../lib/utils", () => ({
@@ -504,6 +505,7 @@ describe("useNewThreadHandler", () => {
 
       expect(opened).toEqual({ draftId: "draft-delayed", threadId: "thread-delayed" });
       expect(testState.router.navigate).toHaveBeenCalledOnce();
+      expect(testState.readT3ProjectFile).not.toHaveBeenCalled();
       expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
         "remote-project",
         { environmentId: "environment-ssh", projectId: "project-remote" },
@@ -512,6 +514,25 @@ describe("useNewThreadHandler", () => {
       );
     },
   );
+
+  it("keeps an explicit worktree default on an offline host that supports automatic allocation", async () => {
+    testState.reset(null, { envMode: "worktree", startFromOrigin: true });
+    testState.setConversationCapability(true, "on-write");
+    testState.disconnect("environment-ssh");
+
+    const opened = await useNewThreadHandler()({
+      environmentId: "environment-ssh",
+      projectId: "project-remote",
+    } as never);
+
+    expect(testState.readT3ProjectFile).not.toHaveBeenCalled();
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      "remote-project",
+      expect.anything(),
+      opened?.draftId,
+      expect.objectContaining({ envMode: "worktree", startFromOrigin: true }),
+    );
+  });
 });
 
 describe("default project selection", () => {

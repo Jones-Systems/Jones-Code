@@ -115,6 +115,21 @@ const CATALOG_FAILURE = {
   encode: msg("Could not encode the local connection catalog: {cause}"),
   load: msg("Could not load the local connection catalog: {cause}"),
   save: msg("Could not save the local connection catalog: {cause}"),
+  "read snapshot from": msg("Could not read the local connection catalog snapshot: {cause}"),
+  "open compatibility hints": msg(
+    "Could not open the connection compatibility hint store: {cause}",
+  ),
+  "read compatibility hints": msg("Could not read connection compatibility hints: {cause}"),
+  "read compatibility hints from": msg(
+    "Could not read connection compatibility hints from desktop storage: {cause}",
+  ),
+  "save compatibility hints in": msg(
+    "Could not save connection compatibility hints in desktop storage: {cause}",
+  ),
+  "write compatibility hints": msg("Could not write connection compatibility hints: {cause}"),
+  "validate compatibility hint": msg(
+    "Could not validate the connection compatibility hint: {cause}",
+  ),
   "save pull request routing permissions in": msg(
     "Could not save pull request routing permissions in the local connection catalog: {cause}",
   ),

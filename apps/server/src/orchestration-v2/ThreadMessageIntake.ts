@@ -97,7 +97,7 @@ const withGuestAttachments = Effect.fn("ThreadMessageIntake.withGuestAttachments
  * ones, so `/logout` signs out only when the queued message has none. The edit goes on with
  * the files read here, so an edit racing this one cannot strip them afterwards.
  */
-export const withQueuedAttachmentsOnSignOutText = Effect.fn(
+const withQueuedAttachmentsOnSignOutText = Effect.fn(
   "ThreadMessageIntake.withQueuedAttachmentsOnSignOutText",
 )(function* (command: Extract<OrchestrationV2Command, { readonly type: "queued-run.edit" }>) {
   if (

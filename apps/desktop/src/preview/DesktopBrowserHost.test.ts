@@ -114,6 +114,12 @@ const makeDebuggee = (
   let destroyed = false;
   let nativeCaptures = 0;
   const webContents = Object.assign(new NodeEvents.EventEmitter(), {
+    capturePage: () => {
+      nativeCaptures += 1;
+      if (options.capturesStall?.()) return new Promise(() => {});
+      if (options.drawsOnlyWhenCaptured?.()) pending.splice(0).forEach((resolve) => resolve());
+      return Promise.resolve({});
+    },
     focusedFrame: options.focusedFrame ? {} : null,
     getURL: () => "http://localhost/",
     getTitle: () => "Page",

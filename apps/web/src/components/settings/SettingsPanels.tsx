@@ -45,6 +45,7 @@ import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDisabledReason,
   getDesktopUpdateInstallConfirmationMessage,
+  installDesktopUpdate,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
 } from "../../components/desktopUpdate.logic";
@@ -276,7 +277,11 @@ export function AboutVersionSection() {
         setIsUpdateActionPending(false);
         return;
       }
-      void installLocalDesktopUpdate(bridge, updateState)
+      void (
+        updateState?.jones
+          ? installLocalDesktopUpdate(bridge, updateState)
+          : installDesktopUpdate(bridge)
+      )
         .then((result) => {
           const message = getDesktopUpdateActionError(result);
           if (!message) return;

@@ -427,6 +427,7 @@ const PersistedDraftThreadState = Schema.Struct({
   checkoutPullRequest: Schema.optionalKey(
     Schema.Struct({ url: Schema.String, branch: Schema.String }),
   ),
+  worktreeRepositories: Schema.optionalKey(Schema.Array(Schema.String)),
   newThreadWorkstreamId: Schema.optionalKey(Schema.String),
   promotedTo: Schema.optionalKey(
     Schema.NullOr(
@@ -528,6 +529,8 @@ export interface DraftSessionState {
   workspaceExplicit?: true;
   /** Linked to the thread when the draft is sent on this branch. */
   checkoutPullRequest?: DraftCheckoutPullRequest;
+  /** Tracked repository paths selected for this draft. Absence uses the project's default. */
+  worktreeRepositories?: ReadonlyArray<string>;
   newThreadWorkstreamId?: string;
   promotedTo?: ScopedThreadRef | null;
 }
@@ -1810,6 +1813,9 @@ function createDraftThreadState(
       ? { workspaceExplicit: true as const }
       : {}),
     ...(checkoutPullRequest ? { checkoutPullRequest } : {}),
+    ...(!projectChanged && existingThread?.worktreeRepositories !== undefined
+      ? { worktreeRepositories: existingThread.worktreeRepositories }
+      : {}),
     ...(existingThread?.newThreadWorkstreamId
       ? { newThreadWorkstreamId: existingThread.newThreadWorkstreamId }
       : {}),
@@ -1875,6 +1881,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.startFromOrigin === right.startFromOrigin &&
     left.workspaceExplicit === right.workspaceExplicit &&
     checkoutPullRequestsEqual(left.checkoutPullRequest, right.checkoutPullRequest) &&
+    worktreeRepositoriesEqual(left.worktreeRepositories, right.worktreeRepositories) &&
     left.newThreadWorkstreamId === right.newThreadWorkstreamId &&
     scopedThreadRefsEqual(left.promotedTo, right.promotedTo)
   );
@@ -2038,6 +2045,7 @@ function normalizePersistedDraftThreads(
         worktreePath: normalizedWorktreePath,
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
         startFromOrigin,
+        ...(candidateDraftThread.workspaceExplicit === true ? { workspaceExplicit: true } : {}),
         ...(typeof candidateDraftThread.newThreadWorkstreamId === "string" &&
         candidateDraftThread.newThreadWorkstreamId.length > 0
           ? { newThreadWorkstreamId: candidateDraftThread.newThreadWorkstreamId }
@@ -2831,6 +2839,7 @@ function toHydratedDraftThreadState(
     worktreePath: persistedDraftThread.worktreePath,
     envMode: persistedDraftThread.envMode,
     startFromOrigin: persistedDraftThread.startFromOrigin,
+    ...(persistedDraftThread.workspaceExplicit ? { workspaceExplicit: true } : {}),
     ...(persistedDraftThread.newThreadWorkstreamId
       ? { newThreadWorkstreamId: persistedDraftThread.newThreadWorkstreamId }
       : {}),
@@ -3146,6 +3155,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 ? { workspaceExplicit: true as const }
                 : {}),
               ...(checkoutPullRequest ? { checkoutPullRequest } : {}),
+              ...(worktreeRepositories !== undefined ? { worktreeRepositories } : {}),
               ...(existing.newThreadWorkstreamId
                 ? { newThreadWorkstreamId: existing.newThreadWorkstreamId }
                 : {}),

@@ -33,6 +33,8 @@ import {
   workflowQuestionKey,
 } from "@t3tools/contracts";
 
+import { UpdateAdmissionFence } from "../jones/updates/UpdateAdmissionFence.ts";
+import { workflowAdmission } from "../jones/updates/workflowAdmission.ts";
 import { checkOutput, rejectionText } from "../orchestration-v2/runOutput.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { isMissedFixedTimeRun, nextScheduledRunAt } from "../scheduledTasks/Schedule.ts";
@@ -67,6 +69,7 @@ import {
 } from "./WorkflowForge.ts";
 import {
   hookId as hookIdOf,
+  type WorkflowError,
   WorkflowHookBusyError,
   WorkflowInputError,
   WorkflowNotRegisteredError,
@@ -123,6 +126,19 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
   const messages = yield* Effect.serviceOption(MessageStorage.MessageStorage);
   const sharding = yield* Effect.serviceOption(Sharding.Sharding);
   const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+  const admission = workflowAdmission(yield* Effect.serviceOption(UpdateAdmissionFence));
+  // Cancels under way, whose slow part the sweep must not take for one cut short.
+  const cancelling = new Set<string>();
+  const ownerMutation = <A, E extends WorkflowError>(effect: Effect.Effect<A, E>) =>
+    admission
+      .run(effect)
+      .pipe(
+        Effect.mapError((error) =>
+          error._tag === "UpdateAdmissionRefused"
+            ? new WorkflowInputError({ problem: error.message })
+            : error,
+        ),
+      );
   // The engine reads its own tables as BigInts. The rest of the server's queries must not.
   const plain =
     <Args extends ReadonlyArray<unknown>, A, E>(call: (...args: Args) => Effect.Effect<A, E>) =>
@@ -146,6 +162,12 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
   const scope = yield* Scope.Scope;
   const agents = yield* WorkflowAgents;
   const stopTurn = plain(agents.interrupt);
+  const observingAgents = WorkflowAgents.of({
+    ...agents,
+    result: (...input) => admission.observe(Effect.suspend(() => agents.result(...input))),
+    // A watch can time out while fenced. The interrupt is a separate, bounded action.
+    interrupt: (target) => admission.hold(Effect.suspend(() => agents.interrupt(target))),
+  });
   const random = yield* SecureRandom.SecureRandom;
   const digest = yield* Digest.Digest;
   const context = yield* Effect.context<WorkflowEngine.WorkflowEngine>();
@@ -252,7 +274,7 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
           if (yield* store.waitSignalled(wait.run_id, wait.name, woke)) yield* wake(wait, woke);
         }),
       ),
-      Effect.provideService(WorkflowAgents, agents),
+      Effect.provideService(WorkflowAgents, observingAgents),
       Effect.provideContext(stepReferences(store, wait.run_id, watch.value.agent.step)),
       Effect.provideService(SqlClient.SafeIntegers, false),
       Effect.catchCause((cause) =>
@@ -411,19 +433,21 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
           if (DateTime.isLessThan(now, dueAt)) continue;
           if (!isMissedFixedTimeRun(trigger.schedule, dueAt, now)) {
             // The key is the time it was due, so a crash before the next line starts no second run.
-            const started = yield* start(
-              definition.name,
-              { scheduledAt: due },
-              { idempotencyKey: `trigger:${id}:${due}` },
-            ).pipe(
-              Effect.as(true),
-              Effect.catch((error) =>
-                Effect.as(
-                  Effect.logWarning("A scheduled workflow run did not start", {
-                    trigger: id,
-                    error,
-                  }),
-                  false,
+            const started = yield* admission.run(
+              start(
+                definition.name,
+                { scheduledAt: due },
+                { idempotencyKey: `trigger:${id}:${due}` },
+              ).pipe(
+                Effect.as(true),
+                Effect.catch((error) =>
+                  Effect.as(
+                    Effect.logWarning("A scheduled workflow run did not start", {
+                      trigger: id,
+                      error,
+                    }),
+                    false,
+                  ),
                 ),
               ),
             );
@@ -463,7 +487,6 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
         const last = lookedAt.get(id);
         const at = DateTime.toEpochMillis(now);
         if (last !== undefined && at - last < Duration.toMillis(LOOK_EVERY)) continue;
-        lookedAt.set(id, at);
         const found =
           trigger.kind === "issues"
             ? forge.issues.list({
@@ -482,64 +505,83 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
                 query: trigger.query,
               });
         const sinceMillis = millisOf(since) ?? at;
-        yield* found.pipe(
-          Effect.flatMap(
-            Effect.fnUntraced(function* (entries: ReadonlyArray<Issue | PullRequest>) {
-              // From the mark on, not after it: two items can share a moment. As times, since a
-              // host writes them in its own format and the mark is ours.
-              const fresh = entries
-                .flatMap((entry) => {
-                  const created = millisOf(entry.createdAt);
-                  return created === undefined || created < sinceMillis ? [] : [{ entry, created }];
-                })
-                .toSorted((a, b) => a.created - b.created);
-              if (entries.length >= LOOK_AT_MOST && fresh.length === entries.length) {
-                yield* Effect.logWarning(
-                  "More new items than one look reads; older ones among them start no run",
-                  { trigger: id, read: entries.length },
-                );
-              }
-              for (const { entry, created } of fresh) {
-                // The key is the address, so an issue seen twice is still one run. One the
-                // workflow turns down is passed over, so it does not hold back the ones after it.
-                const key = `trigger:${id}:${entry.url}`;
-                if (
-                  !turnedDown.has(key) &&
-                  (yield* store.runByKey(definition.name, key)) === undefined
-                ) {
-                  yield* start(definition.name, entry, { idempotencyKey: key }).pipe(
-                    // What started the run is the first thing it touched.
-                    Effect.flatMap(({ runId }) =>
-                      noteFor(
-                        store,
-                        runId,
-                        null,
-                        "tracker" in entry
-                          ? issueReference(entry, entry)
-                          : pullRequestReferenceOf(entry, entry),
-                      ),
-                    ),
-                    Effect.catchTags({
-                      WorkflowInputError: (error) =>
-                        Effect.andThen(
-                          Effect.sync(() => turnedDown.add(key)),
-                          Effect.logWarning("A workflow turned down an item it was started on", {
-                            trigger: id,
-                            item: entry.url,
-                            error,
-                          }),
-                        ),
-                    }),
+        yield* admission
+          .run(
+            Effect.andThen(
+              Effect.sync(() => lookedAt.set(id, at)),
+              found,
+            ),
+          )
+          .pipe(
+            Effect.flatMap(
+              Effect.fnUntraced(function* (entries: ReadonlyArray<Issue | PullRequest>) {
+                // From the mark on, not after it: two items can share a moment. As times, since a
+                // host writes them in its own format and the mark is ours.
+                const fresh = entries
+                  .flatMap((entry) => {
+                    const created = millisOf(entry.createdAt);
+                    return created === undefined || created < sinceMillis
+                      ? []
+                      : [{ entry, created }];
+                  })
+                  .toSorted((a, b) => a.created - b.created);
+                if (entries.length >= LOOK_AT_MOST && fresh.length === entries.length) {
+                  yield* Effect.logWarning(
+                    "More new items than one look reads; older ones among them start no run",
+                    { trigger: id, read: entries.length },
                   );
                 }
-                yield* store.triggerSet(id, DateTime.formatIso(DateTime.makeUnsafe(created)));
-              }
-            }),
-          ),
-          Effect.catch((error) =>
-            Effect.logWarning("A workflow could not look for new work", { trigger: id, error }),
-          ),
-        );
+                for (const { entry, created } of fresh) {
+                  // The key is the address, so an issue seen twice is still one run. One the
+                  // workflow turns down is passed over, so it does not hold back the ones after it.
+                  const key = `trigger:${id}:${entry.url}`;
+                  if (
+                    !turnedDown.has(key) &&
+                    (yield* store.runByKey(definition.name, key)) === undefined
+                  ) {
+                    yield* admission
+                      .run(start(definition.name, entry, { idempotencyKey: key }))
+                      .pipe(
+                        // What started the run is the first thing it touched.
+                        Effect.flatMap(({ runId }) =>
+                          noteFor(
+                            store,
+                            runId,
+                            null,
+                            "tracker" in entry
+                              ? issueReference(entry, entry)
+                              : pullRequestReferenceOf(entry, entry),
+                          ),
+                        ),
+                        Effect.catchTags({
+                          WorkflowInputError: (error) =>
+                            Effect.andThen(
+                              Effect.sync(() => turnedDown.add(key)),
+                              Effect.logWarning(
+                                "A workflow turned down an item it was started on",
+                                {
+                                  trigger: id,
+                                  item: entry.url,
+                                  error,
+                                },
+                              ),
+                            ),
+                        }),
+                      );
+                  }
+                  yield* store.triggerSet(id, DateTime.formatIso(DateTime.makeUnsafe(created)));
+                }
+              }),
+            ),
+            Effect.catch((error) =>
+              error._tag === "UpdateAdmissionRefused"
+                ? Effect.fail(error)
+                : Effect.logWarning("A workflow could not look for new work", {
+                    trigger: id,
+                    error,
+                  }),
+            ),
+          );
       }
     }
   }).pipe(Effect.withSpan("Workflows.fireOpened"));
@@ -558,30 +600,33 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
       const id = `watch:${wait.run_id}/${wait.name}`;
       const last = lookedAt.get(id);
       if (last !== undefined && now - last < Duration.toMillis(LOOK_EVERY)) continue;
-      lookedAt.set(id, now);
       const watch = watched as unknown as PullRequestWatch;
-      yield* forge.pullRequests.read(watch.pullRequest as PullRequestAddress).pipe(
-        // Each look keeps where the pull request stands on the wait's own step.
-        Effect.provideContext(stepReferences(store, wait.run_id, wait.name)),
-        Effect.flatMap(
-          Effect.fnUntraced(function* (detail) {
-            const standing = standingOf(detail);
-            // How long the host has listed no checks, not how long the wait is open: a push can
-            // clear the list for a moment in the middle of a long wait.
-            if (standing.checks !== "none") noChecksSince.delete(id);
-            else if (!noChecksSince.has(id)) noChecksSince.set(id, now);
-            const without = now - (noChecksSince.get(id) ?? now);
-            if (!isSettled(watch.until, standing, without)) return;
-            const woke = { expired: false, value: standing };
-            if (!(yield* store.waitSignalled(wait.run_id, wait.name, woke))) return;
-            lookedAt.delete(id);
-            noChecksSince.delete(id);
-            yield* wake(wait, woke);
-          }),
-        ),
-        // The wait's own timeout is what ends a wait on something that cannot be read.
-        Effect.catch((error) =>
-          Effect.logWarning("A workflow could not look at a pull request", { wait: id, error }),
+      yield* admission.run(
+        Effect.andThen(
+          Effect.sync(() => lookedAt.set(id, now)),
+          forge.pullRequests.read(watch.pullRequest as PullRequestAddress),
+        ).pipe(
+          // Each look keeps where the pull request stands on the wait's own step.
+          Effect.provideContext(stepReferences(store, wait.run_id, wait.name)),
+          Effect.flatMap(
+            Effect.fnUntraced(function* (detail) {
+              const standing = standingOf(detail);
+              // A push can briefly clear the checks. Count how long the host has listed none.
+              if (standing.checks !== "none") noChecksSince.delete(id);
+              else if (!noChecksSince.has(id)) noChecksSince.set(id, now);
+              const without = now - (noChecksSince.get(id) ?? now);
+              if (!isSettled(watch.until, standing, without)) return;
+              const woke = { expired: false, value: standing };
+              if (!(yield* store.waitSignalled(wait.run_id, wait.name, woke))) return;
+              lookedAt.delete(id);
+              noChecksSince.delete(id);
+              yield* wake(wait, woke);
+            }),
+          ),
+          // The wait's own timeout is what ends a wait on something that cannot be read.
+          Effect.catch((error) =>
+            Effect.logWarning("A workflow could not look at a pull request", { wait: id, error }),
+          ),
         ),
       );
     }
@@ -607,44 +652,44 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
     }),
   );
   const hookStarts = new Map<string, ReadonlyArray<number>>();
-  const deliver: Workflows["Service"]["deliver"] = Effect.fn("Workflows.deliver")(
-    function* (delivery) {
-      const hook = hooks.find((candidate) => candidate.hookId === delivery.hookId);
-      // A wrong token reads the same as an unknown hook, so the URL does not say which exist.
-      const known =
-        hook !== undefined &&
-        (yield* constantTimeEquals(delivery.token, hook.token).pipe(
-          Effect.provideService(Digest.Digest, digest),
-          Effect.orElseSucceed(() => false),
-        ));
-      if (!known) return Option.none();
-      const authored = yield* Effect.try({
-        try: () => hook.trigger.key?.(delivery.request),
-        catch: (error) =>
-          new WorkflowInputError({
-            problem: `The key of hook ${hook.name} could not be read from the request: ${text(error)}`,
-          }),
-      });
-      // A sender's own delivery id is kept on its retry, so the retry is the same run.
-      const sent = DELIVERY_HEADERS.find((header) => delivery.request.headers[header]);
-      const key =
-        authored ??
-        (sent === undefined ? undefined : `${sent}:${delivery.request.headers[sent]}`) ??
-        delivery.deliveryId ??
-        (yield* random.uuidV4());
-      const idempotencyKey = `hook:${hook.hookId}:${key}`;
-      // A retry of a run that exists starts nothing, so it takes none of the minute.
-      if ((yield* store.runByKey(hook.workflow, idempotencyKey)) === undefined) {
-        const now = DateTime.toEpochMillis(yield* DateTime.now);
-        const recent = (hookStarts.get(hook.hookId) ?? []).filter((at) => now - at < 60_000);
-        if (recent.length >= HOOK_RUNS_PER_MINUTE) {
-          return yield* new WorkflowHookBusyError({ hook: hook.name });
-        }
-        hookStarts.set(hook.hookId, [...recent, now]);
+  const deliver: Workflows["Service"]["deliver"] = Effect.fn("Workflows.deliver")(function* (
+    delivery,
+  ) {
+    const hook = hooks.find((candidate) => candidate.hookId === delivery.hookId);
+    // A wrong token reads the same as an unknown hook, so the URL does not say which exist.
+    const known =
+      hook !== undefined &&
+      (yield* constantTimeEquals(delivery.token, hook.token).pipe(
+        Effect.provideService(Digest.Digest, digest),
+        Effect.orElseSucceed(() => false),
+      ));
+    if (!known) return Option.none();
+    const authored = yield* Effect.try({
+      try: () => hook.trigger.key?.(delivery.request),
+      catch: (error) =>
+        new WorkflowInputError({
+          problem: `The key of hook ${hook.name} could not be read from the request: ${text(error)}`,
+        }),
+    });
+    // A sender's own delivery id is kept on its retry, so the retry is the same run.
+    const sent = DELIVERY_HEADERS.find((header) => delivery.request.headers[header]);
+    const key =
+      authored ??
+      (sent === undefined ? undefined : `${sent}:${delivery.request.headers[sent]}`) ??
+      delivery.deliveryId ??
+      (yield* random.uuidV4());
+    const idempotencyKey = `hook:${hook.hookId}:${key}`;
+    // A retry of a run that exists starts nothing, so it takes none of the minute.
+    if ((yield* store.runByKey(hook.workflow, idempotencyKey)) === undefined) {
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const recent = (hookStarts.get(hook.hookId) ?? []).filter((at) => now - at < 60_000);
+      if (recent.length >= HOOK_RUNS_PER_MINUTE) {
+        return yield* new WorkflowHookBusyError({ hook: hook.name });
       }
-      return Option.some(yield* start(hook.workflow, delivery.request, { idempotencyKey }));
-    },
-  );
+      hookStarts.set(hook.hookId, [...recent, now]);
+    }
+    return Option.some(yield* start(hook.workflow, delivery.request, { idempotencyKey }));
+  }, admission.run);
 
   // A place given to a queued step wakes its wait. A place given back to a resumed run, once it
   // has all it gave up, resumes it, apart from whatever handed the place out.
@@ -749,37 +794,43 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
     if (definition?.onEnd === undefined || ending.has(row.run_id)) return;
     const onEnd = definition.onEnd;
     ending.add(row.run_id);
-    // A step still running would race the cleanup: a machine deleted before it is made.
-    yield* link.inFlight.settled(row.run_id);
-    // The body may have run its own `onEnd` just as the run was cancelled: once is enough.
-    const steps = yield* store.steps(row.run_id);
-    if (steps.some((step) => step.name === END_STEP && step.status === "completed")) {
-      ending.delete(row.run_id);
-      return;
-    }
-    yield* store.stepStarted(row.run_id, END_STEP, "step");
-    const payloadCodec = Schema.toCodecJson(definition.payload);
-    const decode = Schema.decodeEffect(payloadCodec);
-    yield* decode(row.input_json === null ? null : WorkflowStore.jsonValue(row.input_json)).pipe(
-      Effect.flatMap((input) =>
-        withoutRoutineSpans(
-          onEnd(input as never, {
-            id: row.run_id,
-            outcome: "cancelled",
-            reason: row.detail ?? undefined,
-          }),
+    const cleanup = Effect.gen(function* () {
+      // A linked turn may still be working. Its unconfirmed stop is recorded before cleanup.
+      if (yield* store.hasUnconfirmedStop(row.run_id)) return;
+      // The body may have finished its own onEnd just as the run was cancelled.
+      const steps = yield* store.steps(row.run_id);
+      if (steps.some((step) => step.name === END_STEP && step.status === "completed")) return;
+      yield* store.stepStarted(row.run_id, END_STEP, "step");
+      const decode = Schema.decodeEffect(Schema.toCodecJson(definition.payload));
+      yield* decode(row.input_json === null ? null : WorkflowStore.jsonValue(row.input_json)).pipe(
+        Effect.flatMap((input) =>
+          withoutRoutineSpans(
+            onEnd(input as never, {
+              id: row.run_id,
+              outcome: "cancelled",
+              reason: row.detail ?? undefined,
+            }),
+          ),
         ),
-      ),
-      Effect.provideContext(forStep(store, keyValues, link, forge, row.run_id, END_STEP)),
-      // The sweep that runs it reads the engine's BigInts; the cleanup's own code must not.
-      Effect.provideService(SqlClient.SafeIntegers, false),
-      Effect.matchCauseEffect({
-        onSuccess: () => store.stepEnded(row.run_id, END_STEP, "completed", null),
-        onFailure: (cause) =>
-          store.stepEnded(row.run_id, END_STEP, "failed", text(Cause.squash(cause))),
-      }),
-      Effect.ensuring(Effect.sync(() => ending.delete(row.run_id))),
-    );
+        Effect.provideContext(forStep(store, keyValues, link, forge, row.run_id, END_STEP)),
+        // The sweep that runs it reads the engine's BigInts; the cleanup's own code must not.
+        Effect.provideService(SqlClient.SafeIntegers, false),
+        Effect.matchCauseEffect({
+          onSuccess: () => store.stepEnded(row.run_id, END_STEP, "completed", null),
+          onFailure: (cause) =>
+            store.stepEnded(row.run_id, END_STEP, "failed", text(Cause.squash(cause))),
+        }),
+      );
+    });
+    // Wait for the run's active step outside admission. A refused cleanup is still owed and
+    // the next sweep can try it without spending one of the cleanup's failure attempts.
+    yield* link.inFlight
+      .settled(row.run_id)
+      .pipe(
+        Effect.andThen(admission.run(cleanup)),
+        Effect.catchTags({ UpdateAdmissionRefused: () => Effect.void }),
+        Effect.ensuring(Effect.sync(() => ending.delete(row.run_id))),
+      );
   });
 
   const prune = Effect.fn("WorkflowEngine.prune")(function* (at: DateTime.Utc) {
@@ -815,7 +866,7 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
     yield* store.pruneSkipped(kept, SKIPPED_PRUNE_BATCH);
   });
 
-  const sweep: Workflows["Service"]["sweep"] = Effect.gen(function* () {
+  const sweepOnce = Effect.gen(function* () {
     for (const wait of yield* store.waitsPastDeadline) {
       const woke = { expired: true, value: null };
       if (yield* store.waitSignalled(wait.run_id, wait.name, woke)) yield* wake(wait, woke);
@@ -830,7 +881,9 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
     yield* placesTaken(yield* store.placesUnwoken);
     // A cancel that was cut short before it reached what the run had invoked.
     for (const child of yield* store.orphans) {
-      yield* Effect.ignore(cancel(child.run_id, "the run that invoked it was cancelled"));
+      yield* admission.run(
+        Effect.ignore(cancel(child.run_id, "the run that invoked it was cancelled")),
+      );
     }
     // A cancel cut short after the run was ended: what it had not stopped yet is stopped here.
     for (const row of yield* store.cancelsCutShort(END_STEP)) {
@@ -856,17 +909,25 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
         );
         if (DateTime.isLessThan(at, due)) continue;
       }
-      if (!link.inFlight.busy(row.run_id)) yield* endCancelled(row);
+      if (!cancelling.has(row.run_id) && !link.inFlight.busy(row.run_id)) {
+        yield* endCancelled(row);
+      }
     }
     for (const row of yield* store.everyRun("running")) yield* reconcile(row);
     for (const row of yield* store.everyRun("waiting")) yield* reconcile(row);
     for (const row of yield* store.everyRun("paused")) {
       const due = resumesAt(row);
       if (due === undefined || DateTime.isLessThan(at, due)) continue;
-      yield* Effect.ignore(resumeRun(row.run_id, row));
+      yield* admission.run(Effect.ignore(resumeRun(row.run_id, row)));
     }
     yield* prune(at);
-  }).pipe(Effect.withSpan("Workflows.sweep"));
+  });
+  const sweep: Workflows["Service"]["sweep"] = admission
+    .run(sweepOnce)
+    .pipe(
+      Effect.catchTags({ UpdateAdmissionRefused: () => Effect.void }),
+      Effect.withSpan("Workflows.sweep"),
+    );
 
   // With nothing registered there is nothing to resume, end or start: only history to read.
   if (registered.length > 0) {
@@ -1191,16 +1252,28 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
   /** A step in flight cannot be interrupted, so the agent it waits on is stopped instead. */
   const stopSteps = Effect.fn("WorkflowEngine.stopSteps")(function* (
     runId: string,
-    threads: ReadonlyArray<Parameters<typeof stopTurn>[0]>,
+    threads: Effect.Success<ReturnType<typeof store.runningThreads>>,
   ) {
-    yield* Effect.forEach(threads, (thread) => Effect.ignore(stopTurn(thread)), {
-      discard: true,
-    });
+    yield* Effect.forEach(
+      threads,
+      ({ stepName, ...turn }) =>
+        admission.run(
+          stopTurn({ ...turn, workflowRunId: runId }).pipe(
+            Effect.asVoid,
+            Effect.catchTags({
+              WorkflowAgentError: () => Effect.void,
+              WorkflowAgentMutationUncertain: (error) =>
+                store.stepEnded(runId, stepName, "failed", text(error), {
+                  unconfirmedLinkedStop: true,
+                }),
+            }),
+          ),
+        ),
+      { discard: true },
+    );
     yield* store.stepsCancelled(runId, END_STEP);
   });
 
-  // Cancels under way, whose slow part the sweep must not take for one cut short.
-  const cancelling = new Set<string>();
   const cancel: Workflows["Service"]["cancel"] = Effect.fn("Workflows.cancel")(
     function* (runId, reason) {
       const row = yield* requireRun(runId);
@@ -1222,7 +1295,12 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
           }),
         );
         if (!cancelled) return;
-        yield* stopSteps(runId, threads);
+        const stopped = yield* stopSteps(runId, threads).pipe(
+          Effect.as(true),
+          Effect.catchTags({ UpdateAdmissionRefused: () => Effect.succeed(false) }),
+        );
+        // The cancel is already recorded. Keep the unfinished stops and cleanup for the sweep.
+        if (!stopped) return;
         // What this run invoked was part of it.
         yield* Effect.forEach(
           yield* store.children(runId),
@@ -1277,7 +1355,7 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
   };
 
   return Workflows.of({
-    start,
+    start: (...input) => ownerMutation(start(...input)),
     hooks: Effect.succeed(hooks.map(({ workflow, name, path }) => ({ workflow, name, path }))),
     // A cancelled run whose cleanup has not worked yet still needs its version to run it.
     unfinished: Effect.map(
@@ -1290,11 +1368,11 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
       ],
     ),
     deliver,
-    signal,
-    answer,
-    resume,
-    cancel,
-    withdraw,
+    signal: (...input) => ownerMutation(signal(...input)),
+    answer: (...input) => ownerMutation(answer(...input)),
+    resume: (...input) => ownerMutation(resume(...input)),
+    cancel: (...input) => ownerMutation(cancel(...input)),
+    withdraw: (...input) => ownerMutation(withdraw(...input)),
     get: Effect.fn("Workflows.get")(function* (runId) {
       const row = yield* requireRun(runId);
       const steps = yield* store.steps(runId);
@@ -1371,10 +1449,10 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
     }),
     storeSet: Effect.fn("Workflows.storeSet")(function* (key, value) {
       yield* keyValues.set(key, WorkflowStore.jsonText(value));
-    }),
+    }, ownerMutation),
     storeDelete: Effect.fn("Workflows.storeDelete")(function* (key) {
       yield* keyValues.delete(key);
-    }),
+    }, ownerMutation),
     watch,
     sweep,
   });

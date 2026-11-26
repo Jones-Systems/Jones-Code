@@ -198,9 +198,16 @@ describe("editing scheduled task branch settings", () => {
     expect(draft.startFromOrigin).toBe(false);
   });
 
-  it("leaves the base automatic when a task without a worktree switches to one", () => {
-    const draft = taskToDraft({ ...legacyTask, workspaceStrategy: { type: "root" } });
+  it.each<ScheduledTask["workspaceStrategy"]>([
+    { type: "root" },
+    { type: "existing_worktree", worktreePath: "/checkouts/current" },
+  ])("uses the automatic base when changing $type to a new worktree", (workspaceStrategy) => {
+    const draft = taskToDraft({ ...legacyTask, workspaceStrategy });
     expect(draft.baseRef).toBe("");
+    expect(workspaceStrategyFromDraft({ ...draft, workspaceMode: "worktree" })).toEqual({
+      type: "worktree",
+      startFromOrigin: true,
+    });
   });
 });
 

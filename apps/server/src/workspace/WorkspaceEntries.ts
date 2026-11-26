@@ -224,7 +224,7 @@ export const make = Effect.gen(function* () {
         if ((yield* Clock.currentTimeMillis) - searchedAt >= indexIdleMillis) {
           lastSearchedAt.delete(indexKey);
           yield* workspaceSearchIndexes.invalidate(indexKey);
-          continue;
+          return;
         }
         const recoverRefreshFailure = Effect.fn("WorkspaceEntries.recoverRefreshFailure")(
           function* (

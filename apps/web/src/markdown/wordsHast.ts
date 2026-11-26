@@ -1297,12 +1297,13 @@ function directiveLabel(written: string): string {
  */
 export function markdownTree(
   markdown: string,
-  options: { skipHtml?: boolean; singleTilde?: boolean; math?: boolean } = {},
+  options: { skipHtml?: boolean; escapeHtml?: boolean; singleTilde?: boolean; math?: boolean } = {},
 ): Root {
   return parse(markdown, {
     windowsPaths: true,
     autolinkBoundaries: true,
     skipHtml: options.skipHtml === true,
+    escapeHtml: options.escapeHtml === true,
     singleTilde: options.singleTilde !== false,
     math: options.math === true,
     texDelimiters: options.math === true,

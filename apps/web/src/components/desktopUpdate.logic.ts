@@ -156,16 +156,24 @@ export function getDesktopUpdateButtonTooltip(
         )
       : resolve(msg("Downloading update"));
   }
-  if (state.status === "downloaded") {
-    return `Update ${desktopUpdateVersionLabel(state, state.downloadedVersion ?? state.availableVersion ?? "ready")} downloaded. Click to restart and install.`;
+  if (state.status === "downloaded" || (state.status === "error" && state.downloadedVersion)) {
+    if (state.errorContext === "install" && state.downloadedVersion) {
+      return resolve(
+        msg("Install failed for {version}. Click to retry.", {
+          version: desktopUpdateVersionLabel(state, state.downloadedVersion),
+        }),
+      );
+    }
+    const version = getDesktopUpdateDownloadedVersion(state);
+    return version === null
+      ? resolve(msg("Update ready downloaded. Click to restart and install."))
+      : resolve(
+          msg("Update {version} downloaded. Click to restart and install.", {
+            version: desktopUpdateVersionLabel(state, version),
+          }),
+        );
   }
   if (state.status === "error") {
-    if (state.errorContext === "install" && state.downloadedVersion) {
-      return `Install failed for ${desktopUpdateVersionLabel(state, state.downloadedVersion)}. Click to retry.`;
-    }
-    if (state.downloadedVersion) {
-      return `Update ${desktopUpdateVersionLabel(state, state.downloadedVersion)} downloaded. Click to restart and install.`;
-    }
     if (state.trackMismatch !== undefined) {
       return resolve(
         desktopTrackMismatchText({
@@ -226,7 +234,7 @@ export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): 
  * later state with errorContext "install". Success quits the app, so this never resolves then.
  */
 export async function installDesktopUpdate(
-  bridge: Pick<DesktopBridge, "installUpdate" | "onUpdateState">,
+  bridge: Pick<DesktopBridge, "installUpdate"> & Partial<Pick<DesktopBridge, "onUpdateState">>,
   expectedVersion?: string,
 ): Promise<DesktopUpdateActionResult> {
   let awaitingFailure = false;
@@ -234,18 +242,26 @@ export async function installDesktopUpdate(
   const failure = new Promise<DesktopUpdateState>((resolve) => {
     reportFailure = resolve;
   });
-  const unsubscribe = bridge.onUpdateState((state) => {
+  const unsubscribe = bridge.onUpdateState?.((state) => {
     if (awaitingFailure && state.errorContext === "install") reportFailure(state);
   });
   try {
-    const result = await bridge.installUpdate(expectedVersion);
-    if (!result.accepted || result.completed || getDesktopUpdateActionError(result) !== null) {
+    const result =
+      expectedVersion === undefined
+        ? await bridge.installUpdate()
+        : await bridge.installUpdate(expectedVersion);
+    if (
+      unsubscribe === undefined ||
+      !result.accepted ||
+      result.completed ||
+      getDesktopUpdateActionError(result) !== null
+    ) {
       return result;
     }
     awaitingFailure = true;
     return { ...result, state: await failure };
   } finally {
-    unsubscribe();
+    unsubscribe?.();
   }
 }
 

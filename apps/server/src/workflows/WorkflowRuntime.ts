@@ -31,6 +31,12 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as ServerConfig from "../config.ts";
+import {
+  UpdateAdmissionFence,
+  type UpdateAdmissionRefused,
+} from "../jones/updates/UpdateAdmissionFence.ts";
+import { workflowAdmission } from "../jones/updates/workflowAdmission.ts";
+import * as ServerActivation from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { engineTag, text, type WorkflowDefinition } from "./workflow.ts";
 import type * as WorkflowEngine from "./WorkflowEngine.ts";
@@ -191,29 +197,72 @@ export const loadDefinitions = Effect.fn("WorkflowRuntime.loadDefinitions")(func
   deadlineMs = LOAD_DEADLINE_MS,
 ) {
   const path = yield* Path.Path;
+  const fence = yield* Effect.serviceOption(UpdateAdmissionFence);
+  const admission = workflowAdmission(fence);
   const file = path.resolve(module);
   const url = NodeURL.pathToFileURL(file).href + (load === 0 ? "" : `?${load}`);
-  const definitions = yield* Effect.tryPromise({
-    try: () => {
-      const evaluation: Evaluation = { registered: [], open: true };
+  const start = () => {
+    const evaluation: Evaluation = { registered: [], open: true };
+    forget(file);
+    const evaluated = evaluate(url, evaluation).then((definitions) => {
+      if (!definitions.every(isDefinition)) {
+        throw new Error(
+          "Something it exports is not a workflow. Export only what `T3.workflow` returned.",
+        );
+      }
+      return definitions;
+    });
+    const result = within(evaluated, deadlineMs).finally(() => {
+      evaluation.open = false;
       forget(file);
-      return within(evaluate(url, evaluation), deadlineMs).finally(() => {
-        evaluation.open = false;
-        forget(file);
-      });
-    },
-    catch: (cause) => new WorkflowDefinitionsLoadError({ module, cause }),
-  }).pipe(loading.withPermits(1));
+    });
+    return { evaluated, result };
+  };
+  const read = (result: Promise<ReadonlyArray<WorkflowDefinition> | undefined>) =>
+    Effect.tryPromise({
+      try: () => result,
+      catch: (cause) => new WorkflowDefinitionsLoadError({ module, cause }),
+    });
+  const definitions = yield* loading.withPermits(1)(
+    Option.isNone(fence)
+      ? Effect.suspend(() => read(start().result))
+      : Effect.gen(function* () {
+          const reported = yield* Deferred.make<
+            ReadonlyArray<WorkflowDefinition> | undefined,
+            WorkflowDefinitionsLoadError | UpdateAdmissionRefused
+          >();
+          // Node cannot cancel an import. Its timeout still frees the loader to look at other
+          // files, but handoff must drain the import even if the loader has stopped waiting.
+          yield* admission
+            .run(
+              Effect.suspend(() => {
+                const { evaluated, result } = start();
+                return Deferred.complete(reported, read(result)).pipe(
+                  Effect.andThen(
+                    Effect.promise(() =>
+                      evaluated.then(
+                        () => undefined,
+                        () => undefined,
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            )
+            .pipe(
+              Effect.onExit((exit) =>
+                Exit.isFailure(exit) ? Deferred.done(reported, exit) : Effect.void,
+              ),
+              ServerActivation.withoutParentSpan,
+              Effect.forkDetach({ startImmediately: true }),
+            );
+          return yield* Deferred.await(reported);
+        }),
+  );
   if (definitions === undefined) {
     return yield* new WorkflowDefinitionsLoadError({
       module,
       cause: `It did not finish loading within ${deadlineMs / 1000} seconds. Something at the top of the file waits for good.`,
-    });
-  }
-  if (!definitions.every(isDefinition)) {
-    return yield* new WorkflowDefinitionsLoadError({
-      module,
-      cause: "Something it exports is not a workflow. Export only what `T3.workflow` returned.",
     });
   }
   return definitions;
@@ -302,13 +351,18 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
   const target = path.resolve(where);
   const single = DEFINITION_FILE.test(path.basename(target));
   const directory = single ? path.dirname(target) : target;
-  yield* Effect.ignore(fileSystem.makeDirectory(directory, { recursive: true }));
   const outer = yield* Scope.Scope;
+  const fence = yield* Effect.serviceOption(UpdateAdmissionFence);
+  const admission = workflowAdmission(fence);
   const services = yield* Effect.context<R | Path.Path>();
 
   // One reload at a time, and callers during one wait for the engine that comes out of it.
   const lock = yield* Semaphore.make(1);
   let ready = Deferred.makeUnsafe<Workflows.Workflows["Service"]>();
+  yield* Scope.addFinalizer(
+    outer,
+    Effect.suspend(() => Deferred.succeed(ready, Workflows.disabled)),
+  );
   let engineScope: Scope.Closeable | undefined;
   let running: ReadonlyArray<WorkflowDefinition> = [];
   let imported = false;
@@ -359,11 +413,14 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
     definitions: ReadonlyArray<WorkflowDefinition>,
   ) {
     const scope = yield* Scope.fork(outer);
-    const layerEngine = yield* engine;
-    imported = true;
-    const built = yield* Effect.suspend(() =>
-      Layer.buildWithScope(layerEngine(definitions), scope),
-    ).pipe(Effect.provideContext(services), Effect.exit);
+    const built = yield* engine.pipe(
+      Effect.flatMap((layerEngine) => {
+        imported = true;
+        return Layer.buildWithScope(layerEngine(definitions), scope);
+      }),
+      Effect.provideContext(services),
+      Effect.exit,
+    );
     if (Exit.isFailure(built)) yield* Scope.close(scope, Exit.void);
     else engineScope = scope;
     return built;
@@ -415,13 +472,15 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
   );
   /** The workflows the file at `from` defines, or what is wrong with it as the file `name`. */
   const load = Effect.fn("WorkflowRuntime.load")(function* (from: string, name: string) {
-    const definitions = yield* loadDefinitions(from, ++loads).pipe(
+    const loaded = yield* loadDefinitions(from, ++loads).pipe(
       Effect.provideContext(services),
-      Effect.result,
+      Effect.map((definitions) => ({ definitions }) as const),
+      Effect.catchTags({
+        WorkflowDefinitionsLoadError: (error) =>
+          Effect.succeed({ problem: loadProblem(error, from, name) } as const),
+      }),
     );
-    return definitions._tag === "Failure"
-      ? ({ problem: loadProblem(definitions.failure, from, name) } as const)
-      : ({ definitions: definitions.success } as const);
+    return loaded;
   });
   /** What would run with these files, in the folder's order. */
   const gathered = (files: ReadonlyMap<string, ReadonlyArray<WorkflowDefinition>>) =>
@@ -433,6 +492,7 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
   let retryLater: Effect.Effect<void> = Effect.void;
   /** Take in what changed in the folder, and run the result unless something is wrong with it. */
   const reload = Effect.fn("WorkflowRuntime.reload")(function* () {
+    yield* admission.run(Effect.void);
     const listed = yield* Effect.option(entries);
     if (Option.isNone(listed)) {
       yield* Effect.logWarning(
@@ -463,10 +523,10 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
       const file = path.join(directory, name);
       const source = yield* fileSystem.readFileString(file).pipe(Effect.option);
       if (Option.isNone(source) || seen.get(name) === source.value) continue;
+      const loaded = yield* load(file, name);
       seen.set(name, source.value);
       changed = true;
-      const loaded = yield* load(file, name);
-      if (loaded.definitions === undefined) {
+      if ("problem" in loaded) {
         broken.set(name, loaded.problem);
         pending.delete(name);
         yield* Effect.logWarning("A workflow definitions file was not loaded", loaded.problem);
@@ -482,7 +542,7 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
       changed = true;
     }
     // Asked again while something stands between files: the runs that held a version may be over.
-    if (!changed && between.length === 0 && held.size === 0) {
+    if (!changed && between.length === 0 && held.size === 0 && pending.size === 0 && !unstarted) {
       if (renamed) yield* report;
       return true;
     }
@@ -530,14 +590,23 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
       yield* report;
       return true;
     }
+    const failed = yield* admission.run(boot(gathered(next).flatMap((file) => file.definitions)));
     good.clear();
     for (const [name, definitions] of next) good.set(name, definitions);
     for (const name of taking) pending.delete(name);
-    const failed = yield* boot(gathered(next).flatMap((file) => file.definitions));
     unstarted = failed !== null;
     between = failed === null ? standing : [...standing, { message: failed }];
     yield* report;
     return true;
+  });
+
+  const reloadWhenOpen = Effect.gen(function* () {
+    for (;;) {
+      const reloaded = yield* lock.withPermits(1)(reload()).pipe(Effect.result);
+      if (reloaded._tag === "Success") return;
+      // Keep partial file results, but let an edit or shutdown take the lock while we wait.
+      yield* admission.hold(Effect.void);
+    }
   });
 
   retryLater = Effect.suspend(() => {
@@ -545,7 +614,7 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
     retrying = true;
     return Effect.suspend(() => {
       retrying = false;
-      return lock.withPermits(1)(reload());
+      return reloadWhenOpen;
     }).pipe(
       Effect.delay(LIST_RETRY),
       Effect.catchCause((cause) =>
@@ -556,40 +625,77 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
     );
   });
 
-  yield* lock.withPermits(1)(reload());
-  // No file defines anything yet, though runs kept from before may still be read.
-  if (!(yield* Deferred.isDone(ready))) yield* boot([]);
+  const initialize = Effect.gen(function* () {
+    yield* admission.hold(Effect.ignore(fileSystem.makeDirectory(directory, { recursive: true })));
+    yield* reloadWhenOpen;
+    // No file defines anything yet, though runs kept from before may still be read.
+    if (!(yield* Deferred.isDone(ready))) yield* admission.hold(boot([]));
 
-  // The folder, not a file: an editor that saves by renaming replaces the file it was watching.
-  yield* fileSystem.watch(directory).pipe(
-    Stream.debounce(RELOAD_SETTLE),
-    Stream.runForEach(() =>
-      lock
-        .withPermits(1)(reload())
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Reloading workflow definitions failed", Cause.pretty(cause)),
+    // Watch the folder, so a save by rename does not replace the watched file.
+    yield* admission.hold(
+      Effect.suspend(() =>
+        fileSystem.watch(directory).pipe(
+          Stream.debounce(RELOAD_SETTLE),
+          Stream.runForEach(() =>
+            reloadWhenOpen.pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Reloading workflow definitions failed", Cause.pretty(cause)),
+              ),
+            ),
           ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning(
+              "Workflow definitions are not watched for changes",
+              Cause.pretty(cause),
+            ),
+          ),
+          Effect.forkIn(outer, { startImmediately: true }),
         ),
-    ),
-    Effect.catchCause((cause) =>
-      Effect.logWarning("Workflow definitions are not watched for changes", Cause.pretty(cause)),
-    ),
-    Effect.forkIn(outer),
-  );
+      ),
+    );
+    yield* Effect.sleep(HELD_RETRY).pipe(
+      Effect.andThen(Effect.suspend(() => (held.size > 0 ? reloadWhenOpen : Effect.void))),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Reloading workflow definitions failed", Cause.pretty(cause)),
+      ),
+      Effect.forever,
+      Effect.forkIn(outer),
+    );
+  });
 
-  yield* Effect.sleep(HELD_RETRY).pipe(
-    Effect.andThen(
-      Effect.suspend(() => (held.size > 0 ? lock.withPermits(1)(reload()) : Effect.void)),
-    ),
-    Effect.catchCause((cause) =>
-      Effect.logWarning("Reloading workflow definitions failed", Cause.pretty(cause)),
-    ),
-    Effect.forever,
-    Effect.forkIn(outer),
-  );
+  if (Option.isNone(fence)) {
+    yield* initialize;
+  } else {
+    yield* initialize.pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.void
+          : Effect.gen(function* () {
+              yield* Deferred.succeed(ready, Workflows.disabled);
+              between = [
+                { message: `The workflow runtime did not start: ${text(Cause.squash(cause))}` },
+              ];
+              yield* report;
+              yield* Effect.logWarning("Workflows did not start", Cause.pretty(cause));
+            }),
+      ),
+      ServerActivation.withoutParentSpan,
+      Effect.forkIn(outer),
+    );
+  }
 
   const current = Effect.suspend(() => Deferred.await(ready));
+  const readyForWrite = Effect.suspend(() => {
+    const engine = ready;
+    return Deferred.isDone(engine).pipe(
+      Effect.flatMap((done) =>
+        done ? Deferred.await(engine) : Effect.fail(new Workflows.WorkflowStartingError()),
+      ),
+    );
+  });
+  const writable = readyForWrite.pipe(
+    Effect.mapError((error) => new Workflows.WorkflowInputError({ problem: error.message })),
+  );
   // A watcher outlives the engine it began on: each reload hands it the next one's stream.
   const followed = <A>(pick: (service: Workflows.Workflows["Service"]) => Stream.Stream<A>) =>
     SubscriptionRef.changes(state).pipe(
@@ -599,22 +705,22 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
     );
   const service = Workflows.Workflows.of({
     start: Effect.fn("Workflows.start")(function* (...input) {
-      return yield* (yield* current).start(...input);
+      return yield* (yield* writable).start(...input);
     }),
     signal: Effect.fn("Workflows.signal")(function* (...input) {
-      return yield* (yield* current).signal(...input);
+      return yield* (yield* writable).signal(...input);
     }),
     answer: Effect.fn("Workflows.answer")(function* (...input) {
-      return yield* (yield* current).answer(...input);
+      return yield* (yield* writable).answer(...input);
     }),
     resume: Effect.fn("Workflows.resume")(function* (...input) {
-      return yield* (yield* current).resume(...input);
+      return yield* (yield* writable).resume(...input);
     }),
     cancel: Effect.fn("Workflows.cancel")(function* (...input) {
-      return yield* (yield* current).cancel(...input);
+      return yield* (yield* writable).cancel(...input);
     }),
     withdraw: Effect.fn("Workflows.withdraw")(function* (...input) {
-      return yield* (yield* current).withdraw(...input);
+      return yield* (yield* writable).withdraw(...input);
     }),
     get: Effect.fn("Workflows.get")(function* (...input) {
       return yield* (yield* current).get(...input);
@@ -645,16 +751,16 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
     unfinished: Effect.flatMap(current, (live) => live.unfinished),
     hooks: Effect.flatMap(current, (live) => live.hooks),
     deliver: Effect.fn("Workflows.deliver")(function* (...input) {
-      return yield* (yield* current).deliver(...input);
+      return yield* (yield* readyForWrite).deliver(...input);
     }),
     stored: Effect.fn("Workflows.stored")(function* (...input) {
       return yield* (yield* current).stored(...input);
     }),
     storeSet: Effect.fn("Workflows.storeSet")(function* (...input) {
-      return yield* (yield* current).storeSet(...input);
+      return yield* (yield* writable).storeSet(...input);
     }),
     storeDelete: Effect.fn("Workflows.storeDelete")(function* (...input) {
-      return yield* (yield* current).storeDelete(...input);
+      return yield* (yield* writable).storeDelete(...input);
     }),
     // Every reload starts a watcher over on a whole list, which is where the definition rides.
     watch: followed((live) => live.watch).pipe(
@@ -689,7 +795,16 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
   });
   /** What keeps a change to the file `name` from running, once it is made on disk. */
   const taken = Effect.fn("WorkflowRuntime.taken")(function* (name: string) {
-    const listed = yield* reload();
+    const listed = yield* reload().pipe(
+      Effect.catchTags({
+        UpdateAdmissionRefused: () =>
+          Effect.as(
+            retryLater,
+            "The file changed on disk. The workflow runtime will reload it after update admission reopens.",
+          ),
+      }),
+    );
+    if (typeof listed === "string") return { changed: true, problems: [{ message: listed }] };
     const problem = broken.get(name);
     return {
       changed: true,
@@ -719,7 +834,9 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
     const definitions = checked.definitions;
     const problems = yield* wouldBreak((files) => files.set(name, definitions));
     if (problems.length > 0) return refusal(problems);
-    const written = yield* fileSystem.writeFileString(file, source).pipe(Effect.result);
+    const written = yield* admission.run(
+      fileSystem.writeFileString(file, source).pipe(Effect.result),
+    );
     if (written._tag === "Failure") {
       return refusal([{ message: `Could not write ${file}: ${text(written.failure)}` }]);
     }
@@ -731,12 +848,24 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
     if (no !== undefined) return refusal([no]);
     const problems = yield* wouldBreak((files) => files.delete(name));
     if (problems.length > 0) return refusal(problems);
-    const removed = yield* fileSystem.remove(path.join(directory, name)).pipe(Effect.result);
+    const removed = yield* admission.run(
+      fileSystem.remove(path.join(directory, name)).pipe(Effect.result),
+    );
     if (removed._tag === "Failure") {
       return refusal([{ message: `Could not delete ${name}: ${text(removed.failure)}` }]);
     }
     return yield* taken(name);
   });
+
+  const edit = (change: Effect.Effect<WorkflowDefinitionChangeResult, UpdateAdmissionRefused>) =>
+    lock
+      .withPermits(1)(Effect.andThen(readyForWrite, admission.run(change)))
+      .pipe(
+        Effect.catchTags({
+          WorkflowStartingError: (error) => Effect.succeed(refusal([{ message: error.message }])),
+          UpdateAdmissionRefused: (error) => Effect.succeed(refusal([{ message: error.message }])),
+        }),
+      );
 
   return Context.make(Workflows.Workflows, service).pipe(
     Context.add(
@@ -770,10 +899,10 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
           return { directory, single, files, problems: [...misnamed, ...between, ...gone], ...at };
         }),
         save: Effect.fn("WorkflowDefinitions.save")(function* (name, source) {
-          return yield* lock.withPermits(1)(save(name, source));
+          return yield* edit(save(name, source));
         }),
         remove: Effect.fn("WorkflowDefinitions.remove")(function* (name) {
-          return yield* lock.withPermits(1)(remove(name));
+          return yield* edit(remove(name));
         }),
       }),
     ),
@@ -783,7 +912,8 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
 /**
  * Workflows behind the Labs switch. While off, `runtime` is not run: no definition file loads and
  * no engine runs, and every request is refused. Turning on runs it in a scope of its own, which
- * turning off closes; runs stay stored and go on once it is on again. `where` is as for `make`.
+ * turning off closes; runs stay stored and go on once it is on again. Production follows
+ * settings only after server activation. `where` is as for `make`.
  */
 export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
   runtime: Effect.Effect<
@@ -792,6 +922,10 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
     R | Scope.Scope
   >,
   where: string,
+  settings?: {
+    readonly enabled: Effect.Effect<boolean>;
+    readonly subscribe: Effect.Effect<Stream.Stream<boolean>, never, Scope.Scope>;
+  },
 ) {
   const path = yield* Path.Path;
   const outer = yield* Scope.Scope;
@@ -799,6 +933,7 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
   const target = path.resolve(where);
   const single = DEFINITION_FILE.test(path.basename(target));
   const off = { message: Workflows.OFF };
+  const startup = new Workflows.WorkflowStartingError();
   const offDefinitions = WorkflowDefinitions.of({
     read: Effect.succeed({
       directory: single ? path.dirname(target) : target,
@@ -823,6 +958,7 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
   let ready = Deferred.makeUnsafe<Context.Context<Workflows.Workflows | WorkflowDefinitions>>();
   Deferred.doneUnsafe(ready, Exit.succeed(offContext));
   let scope: Scope.Closeable | undefined;
+  let starting = false;
   const turns = yield* SubscriptionRef.make(0);
 
   const turn = Effect.fn("WorkflowRuntime.turn")(
@@ -860,6 +996,10 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
   const live = Effect.suspend(() => Deferred.await(ready));
   const current = Effect.map(live, Context.get(Workflows.Workflows));
   const definitions = Effect.map(live, Context.get(WorkflowDefinitions));
+  const started = Effect.suspend(() => (starting ? Effect.fail(startup) : Effect.void));
+  const writable = Effect.andThen(started, current).pipe(
+    Effect.mapError((error) => new Workflows.WorkflowInputError({ problem: error.message })),
+  );
   // A watcher outlives a turn: each one hands it the next service's stream.
   const followed = <A>(pick: (service: Workflows.Workflows["Service"]) => Stream.Stream<A>) =>
     SubscriptionRef.changes(turns).pipe(
@@ -867,22 +1007,22 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
     );
   const service = Workflows.Workflows.of({
     start: Effect.fn("Workflows.start")(function* (...input) {
-      return yield* (yield* current).start(...input);
+      return yield* (yield* writable).start(...input);
     }),
     signal: Effect.fn("Workflows.signal")(function* (...input) {
-      return yield* (yield* current).signal(...input);
+      return yield* (yield* writable).signal(...input);
     }),
     answer: Effect.fn("Workflows.answer")(function* (...input) {
-      return yield* (yield* current).answer(...input);
+      return yield* (yield* writable).answer(...input);
     }),
     resume: Effect.fn("Workflows.resume")(function* (...input) {
-      return yield* (yield* current).resume(...input);
+      return yield* (yield* writable).resume(...input);
     }),
     cancel: Effect.fn("Workflows.cancel")(function* (...input) {
-      return yield* (yield* current).cancel(...input);
+      return yield* (yield* writable).cancel(...input);
     }),
     withdraw: Effect.fn("Workflows.withdraw")(function* (...input) {
-      return yield* (yield* current).withdraw(...input);
+      return yield* (yield* writable).withdraw(...input);
     }),
     get: Effect.fn("Workflows.get")(function* (...input) {
       return yield* (yield* current).get(...input);
@@ -912,21 +1052,37 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
     unfinished: Effect.flatMap(current, (service) => service.unfinished),
     hooks: Effect.flatMap(current, (service) => service.hooks),
     deliver: Effect.fn("Workflows.deliver")(function* (...input) {
+      yield* started;
       return yield* (yield* current).deliver(...input);
     }),
     stored: Effect.fn("Workflows.stored")(function* (...input) {
       return yield* (yield* current).stored(...input);
     }),
     storeSet: Effect.fn("Workflows.storeSet")(function* (...input) {
-      return yield* (yield* current).storeSet(...input);
+      return yield* (yield* writable).storeSet(...input);
     }),
     storeDelete: Effect.fn("Workflows.storeDelete")(function* (...input) {
-      return yield* (yield* current).storeDelete(...input);
+      return yield* (yield* writable).storeDelete(...input);
     }),
     watch: followed((service) => service.watch),
     counts: followed((service) => service.counts),
     sweep: Effect.flatMap(current, (service) => service.sweep),
   });
+
+  if (settings !== undefined) {
+    const followSettings = Effect.gen(function* () {
+      const changes = yield* settings.subscribe;
+      yield* turn(yield* settings.enabled);
+      starting = false;
+      yield* changes.pipe(Stream.changes, Stream.runForEach(turn), Effect.forkScoped);
+    });
+    if ((yield* ServerActivation.ServerActivation) === undefined) {
+      yield* followSettings;
+    } else {
+      starting = yield* settings.enabled;
+      yield* ServerActivation.forkParked(followSettings);
+    }
+  }
 
   return {
     turn,
@@ -934,11 +1090,20 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
       Context.add(
         WorkflowDefinitions,
         WorkflowDefinitions.of({
-          read: Effect.flatMap(definitions, (files) => files.read),
+          read: Effect.suspend(() =>
+            starting
+              ? Effect.map(offDefinitions.read, (files) => ({
+                  ...files,
+                  problems: [{ message: startup.message }],
+                }))
+              : Effect.flatMap(definitions, (files) => files.read),
+          ),
           save: Effect.fn("WorkflowDefinitions.save")(function* (name, source) {
+            if (starting) return { changed: false, problems: [{ message: startup.message }] };
             return yield* (yield* definitions).save(name, source);
           }),
           remove: Effect.fn("WorkflowDefinitions.remove")(function* (name) {
+            if (starting) return { changed: false, problems: [{ message: startup.message }] };
             return yield* (yield* definitions).remove(name);
           }),
         }),
@@ -960,7 +1125,6 @@ export const layer = Layer.effectContext(
     const sql = yield* SqlClient.SqlClient;
     const settings = yield* ServerSettings.ServerSettingsService;
     const where = Option.getOrElse(override, () => config.workflowsDir);
-    const changes = yield* settings.subscribeChanges;
     const gated = yield* gate(
       make(
         Effect.map(
@@ -977,16 +1141,15 @@ export const layer = Layer.effectContext(
         ),
       ),
       where,
-    );
-    const enabled = yield* settings.getSettings.pipe(
-      Effect.map((current) => current.workflowsEnabled),
-      Effect.orElseSucceed(() => false),
-    );
-    yield* gated.turn(enabled);
-    yield* changes.pipe(
-      Stream.map((current) => current.workflowsEnabled),
-      Stream.runForEach(gated.turn),
-      Effect.forkScoped,
+      {
+        enabled: settings.getSettings.pipe(
+          Effect.map((current) => current.workflowsEnabled),
+          Effect.orElseSucceed(() => false),
+        ),
+        subscribe: settings.subscribeChanges.pipe(
+          Effect.map((changes) => changes.pipe(Stream.map((current) => current.workflowsEnabled))),
+        ),
+      },
     );
     return gated.context;
   }),
