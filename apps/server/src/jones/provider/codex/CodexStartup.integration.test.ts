@@ -1311,6 +1311,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         }
         const recovered = yield* orchestrator.getThreadProjection(threadId);
         const replayState = yield* Ref.get(replay.state);
+        assert.isNull(replayState.failure, `Native replay stopped at entry ${replayState.cursor}`);
         assert.equal(recovered.runs[0]?.status, "failed");
         assert.equal(
           recovered.runs[finalOrdinal - 1]?.status,
@@ -1369,7 +1370,6 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
             ),
           );
         }
-        assert.isNull(replayState.failure);
         assert.equal(replayState.cursor, replay.transcript.entries.length);
       }).pipe(
         Effect.provide(

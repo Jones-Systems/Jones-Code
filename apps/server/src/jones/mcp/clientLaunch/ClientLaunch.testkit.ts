@@ -190,7 +190,7 @@ export function makeClientLaunchHarness(options: ClientLaunchHarnessOptions = {}
                 : Option.none(),
           )),
       getByWorkspaceRoot: () => Effect.succeedSome(project),
-      workspaceScanDirectory: () => Effect.die("unused"),
+      workspaceScanDirectory: Effect.succeed,
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),

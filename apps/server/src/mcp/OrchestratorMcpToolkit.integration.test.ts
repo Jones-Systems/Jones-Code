@@ -75,6 +75,7 @@ import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as GitManager from "../git/GitManager.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -646,6 +647,7 @@ describe("orchestrator MCP toolkit", () => {
         sleep: (duration) => liveClock.sleep(duration),
       });
       const replayHeader = `**T3M** · From [MCP replay parent](t3-thread://v1/${parentThreadId}) · Sent: 10/20 10:50:`;
+      const upstreamReplayHeader = `[T3 Code: the agent in T3 thread "${parentThreadId}" sent this message, not the user.]`;
       const decodeRecord = decodeUnknownEffectRecordStringUnknown;
       const entries = yield* Effect.forEach(rawTranscript.entries, (entry) =>
         Effect.gen(function* () {
@@ -659,7 +661,9 @@ describe("orchestrator MCP toolkit", () => {
           if (body === undefined) return entry;
           const frame = yield* decodeRecord(entry.frame);
           const params = yield* decodeRecord(frame.params);
-          expect(params.input).toEqual([{ text: body, type: "text" }]);
+          expect(params.input).toEqual([
+            { text: `${upstreamReplayHeader}\n\n${body}`, type: "text" },
+          ]);
           return {
             ...entry,
             frame: {
@@ -1518,6 +1522,7 @@ describe("orchestrator MCP toolkit", () => {
             ),
             // The watch tool is registered but never called here.
             Layer.provide(Layer.mock(PullRequestService.PullRequestService)({})),
+            Layer.provide(Layer.mock(GitManager.GitManager)({})),
             Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
             Layer.provideMerge(layerOrchestration),
             Layer.provide(layerRegistry),

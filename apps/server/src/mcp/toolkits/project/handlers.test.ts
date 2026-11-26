@@ -902,7 +902,7 @@ it.effect(
           skills: [],
         },
       ];
-      const { projectId, dependencies } = clientLaunchHarness({
+      const { projectId, dependencies } = yield* clientLaunchHarness({
         runtimeModeCeiling: "auto",
         launched,
         providers,
@@ -954,7 +954,7 @@ it.effect("only a full-access client may pick the agent's own mode at launch", (
     const launchAs = (runtimeModeCeiling: "approval-required" | "full-access") =>
       Effect.gen(function* () {
         const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
-        const { projectId, dependencies } = clientLaunchHarness({
+        const { projectId, dependencies } = yield* clientLaunchHarness({
           runtimeModeCeiling,
           launched,
           providers: [
@@ -1244,7 +1244,7 @@ it.effect("a launch binds only an existing checkout that is one of the project's
       projectId,
     });
     expect((yield* launchInto(outside, "existing-checkout")).at(-1)?.result).toMatchObject({
-      code: "invalid_request",
+      code: "request_conflict",
     });
     expect((yield* launchInto(repo)).at(-1)?.result).toMatchObject({ projectId });
     for (const elsewhere of [outside, path.join(worktree, "..", "outside"), "/"]) {
@@ -1275,17 +1275,29 @@ it.effect("a launch into a new worktree creates nothing when its base ref has no
     const { projectId, dependencies } = yield* clientLaunchHarness({
       runtimeModeCeiling: "auto",
       launched,
-      checkWorktreeBase: ({ projectId, workspaceStrategy }) =>
-        workspaceStrategy.type === "worktree" && workspaceStrategy.baseRef === "t3/renamed"
-          ? Effect.fail(
-              new ThreadLaunch.ThreadLaunchBaseRefError({
-                projectId,
-                projectTitle: "Client target",
-                workspaceRoot: "/projects/client-target",
-                baseRef: workspaceStrategy.baseRef ?? "HEAD",
-              }),
-            )
-          : Effect.void,
+      checkWorktreeBase: ({ projectId, workspaceStrategy }) => {
+        if (workspaceStrategy.type !== "worktree") return Effect.void;
+        if (workspaceStrategy.baseRef === "t3/renamed") {
+          return Effect.fail(
+            new ThreadLaunch.ThreadLaunchBaseRefError({
+              projectId,
+              projectTitle: "Client target",
+              workspaceRoot: "/projects/client-target",
+              baseRef: workspaceStrategy.baseRef,
+            }),
+          );
+        }
+        if (workspaceStrategy.branch === "feature/taken") {
+          return Effect.fail(
+            new ThreadLaunch.ThreadLaunchBranchExistsError({
+              projectId,
+              projectTitle: "Client target",
+              branch: workspaceStrategy.branch,
+            }),
+          );
+        }
+        return Effect.void;
+      },
     });
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
@@ -1374,7 +1386,7 @@ it.effect("a launch that omits its workspace follows the new-threads-in-a-worktr
     for (const source of ["setting", "t3.json"] as const) {
       const repo = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-launch-env-mode-" });
       const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
-      const { projectId, dependencies } = clientLaunchHarness({
+      const { projectId, dependencies } = yield* clientLaunchHarness({
         runtimeModeCeiling: "auto",
         launched,
         workspaceRoot: repo,
@@ -1429,7 +1441,7 @@ it.effect("a defaulted worktree launch stays shared only when Git says HEAD has 
     ] as const) {
       const repo = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-launch-head-" });
       const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
-      const { projectId, dependencies } = clientLaunchHarness({
+      const { projectId, dependencies } = yield* clientLaunchHarness({
         runtimeModeCeiling: "auto",
         launched,
         workspaceRoot: repo,
@@ -1697,7 +1709,7 @@ it.effect("a client launches with the fallback for an exhausted default", () =>
 
 it.effect("creating a project through MCP refuses a model default instead of dropping it", () =>
   Effect.gen(function* () {
-    const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched: [] });
+    const harness = yield* clientLaunchHarness({ runtimeModeCeiling: "full-access", launched: [] });
     const dependencies = Layer.merge(
       harness.dependencies,
       Layer.mock(Project.ProjectService)({

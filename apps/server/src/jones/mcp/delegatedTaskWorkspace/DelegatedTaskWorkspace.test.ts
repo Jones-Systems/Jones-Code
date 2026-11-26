@@ -34,6 +34,7 @@ import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdap
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import { layerNoTaskFolders } from "../../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
@@ -405,6 +406,7 @@ function makeHarness(
       Deferred.succeed(terminalClosed, undefined).pipe(Effect.asVoid),
   );
   const externalServices = Layer.mergeAll(
+    layerNoTaskFolders,
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: closeTerminal }),
