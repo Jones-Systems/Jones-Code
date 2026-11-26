@@ -1202,6 +1202,7 @@
     "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts": "hook",
     "apps/server/src/orchestration-v2/DispatchGuard.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/DelegatedChildTerminalRetry.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/EffectOutbox.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts": "hook",
