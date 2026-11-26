@@ -3283,35 +3283,54 @@ const make = Effect.gen(function* () {
                     ),
                   )
               : null;
-          const base =
-            recorded === null
-              ? yield* gitDriver
-                  .resolveCommit({
-                    cwd: parent.thread.worktreePath ?? project.workspaceRoot,
-                    revision: "HEAD",
-                  })
-                  .pipe(
-                    Effect.mapError(() =>
-                      failure("invalid_request", "Unable to resolve the parent checkout commit."),
+          if (recorded === null && (yield* threadLaunch.isNonGitProject(project.id))) {
+            // A plain project folder leaves each repository on its default branch.
+            workspaceStrategy = { type: "worktree", baseRef: "HEAD" };
+          } else {
+            const base =
+              recorded === null
+                ? yield* gitDriver
+                    .resolveCommit({
+                      cwd: parent.thread.worktreePath ?? project.workspaceRoot,
+                      revision: "HEAD",
+                    })
+                    .pipe(
+                      Effect.mapError(() =>
+                        failure("invalid_request", "Unable to resolve the parent checkout commit."),
+                      ),
+                    )
+                : { commitSha: recorded.commit };
+            // Worktree preparation resolves the base from the project root.
+            if (parent.thread.worktreePath !== null) {
+              yield* gitDriver
+                .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
+                .pipe(
+                  Effect.mapError(() =>
+                    failure(
+                      "invalid_request",
+                      `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
                     ),
-                  )
-              : { commitSha: recorded.commit };
-          // Launch preparation creates the worktree from the project root, so a
-          // parent checkout in another repository (such as a Git folder inside
-          // Scratch) would hand it a commit it cannot find.
-          if (parent.thread.worktreePath !== null) {
-            yield* gitDriver
-              .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
-              .pipe(
-                Effect.mapError(() =>
-                  failure(
-                    "invalid_request",
-                    `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
                   ),
-                ),
-              );
+                );
+            }
+            // Other repositories can match the parent's branch while it points at
+            // the checked-out commit. A recorded snapshot keeps its exact commit.
+            const branch = parent.thread.branch;
+            const branchAtBase =
+              recorded === null &&
+              branch !== null &&
+              (yield* gitDriver
+                .resolveCommit({ cwd: project.workspaceRoot, revision: `refs/heads/${branch}` })
+                .pipe(
+                  Effect.map((resolved) => resolved.commitSha === base.commitSha),
+                  Effect.orElseSucceed(() => false),
+                ));
+            workspaceStrategy = {
+              type: "worktree",
+              baseRef: branchAtBase ? branch : base.commitSha,
+              startFromOrigin: false,
+            };
           }
-          workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
         }
         // ThreadManagementService.dispatch is the chokepoint for this command
         // type's own enablement check, using the same command id and its
@@ -4498,7 +4517,10 @@ const make = Effect.gen(function* () {
             .pipe(Effect.mapError(threadManagementFailure))).runtimeRequests
         : [];
       const wakesCaller =
-        ownedTask && !childRequests.some((request) => request.status === "pending");
+        ownedTask &&
+        !childRequests.some(
+          (request) => request.status === "pending" && request.responseCapability.type === "live",
+        );
       const observationRunId = input.childProgressForRunId ?? input.runId ?? result.run?.id;
       // Progress only for a child-progress read; the wait's own wake carries the questions it saw.
       const remoteObservation =

@@ -2127,7 +2127,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         NodeServices.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          getCommandReceipt: () => Effect.succeedNone,
           assertProviderInstanceEnabled: () => Effect.void,
           isProviderInstanceEnabledForProject: () => Effect.succeed(true),
           getThreadRecords: (threadId) =>
@@ -2175,13 +2175,20 @@ describe("OrchestratorMcpService provider resolution", () => {
         const waiting = yield* service
           .delegateTask(scope, { task: "Review the change.", mode: "wait", timeoutMs: 500 })
           .pipe(Effect.forkChild);
-        yield* Deferred.await(subscribed);
+        const awaitMilestone = (milestone: Deferred.Deferred<void>, name: string) =>
+          Effect.raceFirst(
+            Deferred.await(milestone),
+            Fiber.join(waiting).pipe(
+              Effect.andThen(Effect.die(new Error(`Delegation ended before ${name}.`))),
+            ),
+          );
+        yield* awaitMilestone(subscribed, "subscribing to task events");
         yield* TestClock.adjust(Duration.millis(500));
-        yield* Deferred.await(upgrading);
+        yield* awaitMilestone(upgrading, "upgrading the completion wake");
         yield* Effect.sync(() => waiting.interruptUnsafe());
         task = { ...task, status: "completed", result: "Reviewed." };
         yield* Deferred.succeed(finishUpgrade, undefined);
-        yield* Fiber.await(waiting);
+        assert.isTrue(Exit.hasInterrupts(yield* Fiber.await(waiting)));
         assert.notInclude(
           (yield* Ref.get(dispatched)).map((command) => command.type),
           "delegated_task.completion-delivery.acknowledge",
@@ -2830,7 +2837,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         NodeServices.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          getCommandReceipt: () => Effect.succeedNone,
           getThreadRecords: (threadId) =>
             Effect.succeed(
               threadId === parentThreadId
@@ -2903,7 +2910,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         NodeServices.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          getCommandReceipt: () => Effect.succeedNone,
           getThreadRecords: (threadId) =>
             Effect.succeed(
               threadId === parentThreadId
@@ -2976,10 +2983,10 @@ describe("OrchestratorMcpService provider resolution", () => {
           Result.isSuccess(result),
           `worktree isolation was refused: ${Result.isFailure(result) ? result.failure.message : ""}`,
         );
-        assert.equal(
-          (commands[0] as { workspaceStrategy?: { type: string } }).workspaceStrategy?.type,
-          "worktree",
-        );
+        assert.deepEqual((commands[0] as { workspaceStrategy?: unknown }).workspaceStrategy, {
+          type: "worktree",
+          baseRef: "HEAD",
+        });
       }).pipe(Effect.provide(layerService));
     }),
   );
@@ -3018,7 +3025,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         };
         const dependencies = Layer.mergeAll(
           Layer.mock(ThreadManagementService.ThreadManagementService)({
-            hasReceipt: () => Effect.succeed(false),
+            getCommandReceipt: () => Effect.succeedNone,
             getThreadRecords: (threadId) =>
               Effect.succeed(
                 threadId === parentThreadId
@@ -3071,11 +3078,11 @@ describe("OrchestratorMcpService provider resolution", () => {
           });
           const workspaceStrategy = (commands[0] as { workspaceStrategy?: unknown })
             .workspaceStrategy;
-          assert.include(
-            JSON.stringify(workspaceStrategy),
-            "release",
-            "the child's workspace names only the parent's commit, so other repositories fall back to their default branch",
-          );
+          assert.deepEqual(workspaceStrategy, {
+            type: "worktree",
+            baseRef: "release",
+            startFromOrigin: false,
+          });
         }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
       }).pipe(
         Effect.provide(
@@ -3425,7 +3432,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           }),
         ]),
         adapterRegistryLayer([codexInstanceId]),
-        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -5600,7 +5607,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           NodeServices.layer,
           NodeCrypto.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
-            hasReceipt: () => Effect.succeed(false),
+            getCommandReceipt: () => Effect.succeedNone,
             assertProviderInstanceEnabled: () => Effect.void,
             getThreadRecords: (threadId) =>
               Effect.succeed(
@@ -5981,7 +5988,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             antigravityInstanceId,
             disabledAntigravityInstanceId,
           ]),
-          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -6134,7 +6141,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
         adapterRegistryLayer([codexInstanceId, claudeInstanceId]),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
       );
@@ -6296,7 +6303,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               }),
             ]),
             adapterRegistryLayer([codexInstanceId, codexAltInstanceId]),
-            Layer.mock(ProjectService.ProjectService)({}),
+            Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -6397,7 +6404,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               ServerSettings.layerTest(),
               providerRegistryLayer([]),
               adapterRegistryLayer([]),
-              Layer.mock(ProjectService.ProjectService)({}),
+              Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
               Layer.mock(SecretRequests.SecretRequests)({}),
               Layer.mock(RemoteDelegation.RemoteDelegation)({}),
               Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -6437,6 +6444,7 @@ describe("OrchestratorMcpService background work reads", () => {
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadShell: (threadId) =>
               Effect.succeed(shells.find((shell) => shell.id === threadId) ?? null),
+            getRunCount: () => Effect.succeed(0),
             getProjectThreadRecords: ({ threadId }) => {
               const shell = shells.find((shell) => shell.id === threadId);
               if (shell === undefined) return Effect.die("Unexpected thread");
