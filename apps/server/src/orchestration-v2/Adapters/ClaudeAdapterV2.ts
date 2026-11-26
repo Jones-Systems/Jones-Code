@@ -17065,6 +17065,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ...(rollbackInput.providerThread.nativeMetadata === null
                     ? {}
                     : { nativeMetadata }),
+                  ...(rollbackInput.providerThread.runtimeIdentity === undefined
+                    ? {}
+                    : {
+                        runtimeIdentity: {
+                          requested: rollbackInput.providerThread.runtimeIdentity.requested,
+                          observed: ProviderAdapter.unobservedRuntimeIdentity(),
+                          evidenceRevision:
+                            (rollbackInput.providerThread.runtimeIdentity.evidenceRevision ?? 0) + 1,
+                        },
+                      }),
                   providerSessionId: input.providerSessionId,
                   nativeConversationHeadRef:
                     resumeSessionAt === null

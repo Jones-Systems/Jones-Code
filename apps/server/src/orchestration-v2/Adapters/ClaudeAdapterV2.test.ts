@@ -19033,15 +19033,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const releaseClose = yield* Deferred.make<void>();
-        const replacementClosedOld = yield* Deferred.make<void>();
+        const closingOld = yield* Deferred.make<void>();
         let oldCloses = 0;
         const harness = yield* makeWakeHarnessWithOptions({
           // The held CLI never answers an interrupt; closure must not need one.
           interrupt: Effect.never,
           close: (sdkMessages) =>
-            Effect.suspend(() =>
-              ++oldCloses === 2 ? Deferred.succeed(replacementClosedOld, undefined) : Effect.void,
-            ).pipe(
+            Effect.sync(() => ++oldCloses).pipe(
+              Effect.andThen(Deferred.succeed(closingOld, undefined)),
               Effect.andThen(Deferred.await(releaseClose)),
               Effect.andThen(Queue.shutdown(sdkMessages)),
             ),
@@ -19076,6 +19075,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
         assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "failed");
+        yield* Deferred.await(closingOld);
 
         const attempted = yield* Deferred.make<void>();
         const followUp = yield* Deferred.succeed(attempted, undefined).pipe(
@@ -19088,12 +19088,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
           Effect.forkScoped,
         );
-        // Reusing the closing process would offer the prompt to it instead.
-        yield* Effect.raceFirst(
-          Deferred.await(replacementClosedOld),
-          harness.until(() => harness.offeredMessages.length >= 2),
-        );
-        assert.isTrue(yield* Deferred.isDone(replacementClosedOld));
+        // The successor must join the captured retirement before opening or sending.
         yield* Deferred.await(attempted);
         yield* TestClock.adjust("0 millis");
         assert.isUndefined(followUp.pollUnsafe());
@@ -19102,7 +19097,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Deferred.succeed(releaseClose, undefined);
         yield* Fiber.join(followUp);
         assert.equal(harness.processQueues.length, 2);
-        assert.equal(oldCloses, 2);
+        assert.equal(oldCloses, 1);
         yield* harness.offerAndWait(
           makeResultFrame({ uuid: "after-mod-pane-result", result: "Done." }),
         );
