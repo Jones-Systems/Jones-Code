@@ -825,6 +825,11 @@ it.effect.each(batchScenarios)(
           );
           for (let i = 0; i < count; i++) {
             if (automaticGoal && i === 1) {
+              const beforeSave = yield* orchestrator.getThreadProjection(threadId);
+              assert.deepEqual(
+                beforeSave.runs.find((run) => run.status === "queued")?.modelSelection,
+                modelSelection,
+              );
               yield* TestClock.adjust("1 millis");
               yield* saveSpeed();
             }
@@ -915,8 +920,8 @@ it.effect.each(batchScenarios)(
           if (automaticGoal) {
             assert.deepEqual(before.thread.modelSelection, savedSelection);
             const queued = before.runs.filter((run) => run.status === "queued");
-            for (const [index, run] of queued.entries()) {
-              assert.deepEqual(run.modelSelection, index === 0 ? modelSelection : savedSelection);
+            for (const run of queued) {
+              assert.deepEqual(run.modelSelection, savedSelection);
               assert.equal(run.queuedToolBoundaryFollowUpOfRunId, command.targetRunId);
             }
             assert.isFalse("error" in validateQueuedSteerBatch(before, command, true));

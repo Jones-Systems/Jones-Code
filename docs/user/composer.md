@@ -288,12 +288,11 @@ At a tool boundary, messages follow their selected queue order. Later messages w
 delivery to succeed, including any retries.
 On servers that support batch steering, compatible queued messages are delivered together in one
 provider input, within the server's message-size limits. Queued messages from other agents can use
-the same safe tool-boundary delivery. A follow-up with no explicit model choice can join the
-running Codex or Claude turn it was queued against after a same-account setting change. A message
-that waits in the queue until the next turn keeps its captured settings. Agents that need a
-separate turn can explicitly request `separate_turn`. Scheduled wakes still wait for a separate
-turn. Repeated fires of the
-same task keep at most one pending wake in that thread.
+the same safe tool-boundary delivery. An eligible peer message with no explicit model choice can
+join the running Codex or Claude turn it was queued against after a same-account setting change.
+Messages that wait for the next turn use their queued settings. Agents that need a separate turn
+can explicitly request `separate_turn`. Scheduled wakes still wait for a separate turn. Repeated
+fires of the same task keep at most one pending wake in that thread.
 Failed or interrupted tools do not release the queue on their own; it waits for the next
 qualifying tool completion or the end of the turn. Stopping the thread keeps its queue held.
 
