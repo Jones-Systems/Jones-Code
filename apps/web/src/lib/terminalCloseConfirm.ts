@@ -25,7 +25,7 @@ export async function confirmTerminalClose(
               .map((label) => `"${label}"`)
               .join(", ")}.`,
           ].join("\n"),
-      { variant: "destructive" },
+      { variant: "destructive", initialFocus: "confirm-destructive" },
     );
   } catch {
     return false;
