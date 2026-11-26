@@ -94,18 +94,22 @@ export function deriveQueuedSteerBatch(input: {
                   : active.rootNodeId === null ||
                       projection.thread.activeProviderThreadId !== providerThread?.id ||
                       projection.thread.providerInstanceId !== active.providerInstanceId ||
-                      projection.thread.modelSelection.instanceId !== active.modelSelection.instanceId
+                      projection.thread.modelSelection.instanceId !==
+                        active.modelSelection.instanceId
                     ? "The active provider changed. Wait for the thread to synchronize."
                     : !supportsExpandedBatch &&
-                        !modelSelectionsEqual(projection.thread.modelSelection, active.modelSelection)
+                        !modelSelectionsEqual(
+                          projection.thread.modelSelection,
+                          active.modelSelection,
+                        )
                       ? "This server requires the saved model settings to match the running turn."
                       : activeCommandBlocksBatch
                         ? "Wait for the current command to finish."
-                      : plan.count === 0
-                        ? plan.reason === "first_member_over_budget"
-                          ? "The first message exceeds the batch limit. Edit it or use its individual Steer action."
-                          : "The first queued message needs its own turn. Use its individual action."
-                        : null;
+                        : plan.count === 0
+                          ? plan.reason === "first_member_over_budget"
+                            ? "The first message exceeds the batch limit. Edit it or use its individual Steer action."
+                            : "The first queued message needs its own turn. Use its individual action."
+                          : null;
   const detail =
     plan.remainingCount > 0
       ? `${plan.remainingCount} still queued. ${plan.reason === "ineligible" ? "The next message needs its own turn" : "Batch size limit"}.`
