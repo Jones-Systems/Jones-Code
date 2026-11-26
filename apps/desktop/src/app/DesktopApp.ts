@@ -192,7 +192,12 @@ const restartOnFeatureFlagChange = Effect.fn("desktop.restartOnFeatureFlagChange
       Effect.fnUntraced(function* (snapshot) {
         const flags = snapshot.environment.T3CODE_FEATURE_FLAGS ?? undefined;
         if (flags === startedWith || (yield* Ref.get(state.quitting))) return;
-        yield* prepareLocalBackendsForQuit(backend);
+        // Prepare only the backend this restart will stop.
+        yield* Effect.updateService(
+          prepareLocalBackendsForQuit(),
+          DesktopBackendPool.DesktopBackendPool,
+          (pool) => ({ ...pool, list: Effect.succeed([backend]) }),
+        );
         if (yield* Ref.get(state.quitting)) return;
         startedWith = flags;
         yield* logBootstrapInfo("restarting backend for changed T3CODE_FEATURE_FLAGS");

@@ -60,6 +60,8 @@ import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 import * as CompanionConfig from "../jones/previewCompanion/CompanionConfig.ts";
+import * as CompanionUplink from "../jones/previewCompanion/CompanionUplink.ts";
+import * as DesktopDeviceMediaTunnel from "../jones/deviceMedia/DesktopDeviceMediaTunnel.ts";
 
 import * as BrowserImport from "../preview/BrowserImport/BrowserImport.ts";
 import * as DesktopBackendConfiguration from "../backend/DesktopBackendConfiguration.ts";
@@ -109,8 +111,15 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
         Effect.provideService(HostProcess.Environment, {}),
         Effect.provideService(DesktopAppIdentity.DesktopAppIdentity, {
           resolveUserDataPath: Effect.succeed("/isolated/userdata"),
+          previewAutomationRuntimeIdentity: Effect.succeed({
+            schemaVersion: 1,
+            runtimeKind: "electron",
+            runtimeInstanceId: "fixture",
+            appVersion: "1.0.0",
+            buildCommit: null,
+          }),
           configure: stub.record("identity"),
-        } as DesktopAppIdentity.DesktopAppIdentity["Service"]),
+        }),
         Effect.provideService(ElectronApp.ElectronApp, {
           setPath: () => Effect.void,
           whenReady: stub.record("ready"),
@@ -227,10 +236,12 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
               browserOnly: false,
             }),
           }),
+          Layer.mock(CompanionUplink.CompanionUplink, {}),
           Layer.mock(DesktopBackendConfiguration.DesktopBackendConfiguration, {}),
           Layer.mock(DesktopCliCommand.DesktopCliCommand, { installOnFirstLaunch: Effect.void }),
           Layer.mock(DesktopClientSettings.DesktopClientSettings, {}),
           Layer.mock(DesktopConnectionCatalogStore.DesktopConnectionCatalogStore, {}),
+          Layer.mock(DesktopDeviceMediaTunnel.DesktopDeviceMediaTunnel, {}),
           Layer.mock(DesktopIpc.DesktopIpc, {}),
           Layer.mock(DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth, {
             getBearerToken: stub

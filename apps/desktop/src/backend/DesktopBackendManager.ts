@@ -1299,6 +1299,7 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
                   yield* wslEnvironment.pruneRuntimes(
                     config.value.runningDistro,
                     config.value.wslRuntimeId,
+                    config.value.wslT3Home ?? null,
                   );
                 }
               }),

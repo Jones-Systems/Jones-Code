@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Cause from "effect/Cause";
@@ -71,6 +72,10 @@ function fixture(
   options: {
     readonly homeAvailable?: boolean;
     readonly settingsWriteError?: DesktopAppSettings.DesktopSettingsWriteError;
+    readonly shellUpdates?: DesktopShellEnvironment.DesktopShellEnvironment["Service"]["updates"];
+    readonly backends?: (
+      primary: DesktopBackendManager.DesktopBackendInstance,
+    ) => readonly DesktopBackendManager.DesktopBackendInstance[];
   } = {},
 ) {
   const events: string[] = [];
@@ -110,7 +115,7 @@ function fixture(
   vi.mocked(DesktopBackendRecoveryProcess.make).mockReturnValue({
     recover: () => {
       counts.recoverBackend++;
-      return Promise.resolve();
+      return Promise.resolve(undefined);
     },
     track: () => Promise.reject(new Error("Unexpected recovery worker tracking")),
   });
@@ -150,6 +155,7 @@ function fixture(
   const layer = Layer.mergeAll(
     DesktopState.layer,
     DesktopShutdown.layer,
+    NodeCrypto.layerMac,
     Layer.mock(ElectronApp.ElectronApp, { quit: count("quit") }),
     Layer.mock(ElectronDialog.ElectronDialog, { showErrorBox: () => count("dialog") }),
     Layer.mock(ElectronTheme.ElectronTheme, {}),
@@ -201,7 +207,7 @@ function fixture(
     Layer.mock(DesktopCliCommand.DesktopCliCommand, { installOnFirstLaunch: Effect.void }),
     Layer.mock(DesktopShellEnvironment.DesktopShellEnvironment, {
       awaitUserShellDiscovery: Effect.succeed(false),
-      updates: Stream.empty,
+      updates: options.shellUpdates ?? Stream.empty,
     }),
     Layer.mock(DesktopAppActivation.DesktopAppActivation, {
       start: count("appActivation"),
@@ -212,7 +218,7 @@ function fixture(
     Layer.mock(DesktopLegacyLocalStorage.DesktopLegacyLocalStorage, {
       load: () => Effect.void,
     }),
-    DesktopBackendPool.layerTest([backend]),
+    DesktopBackendPool.layerTest(options.backends?.(backend) ?? [backend]),
     Layer.succeed(DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth, {
       getBearerToken: count("bearer").pipe(
         Effect.andThen(Deferred.succeed(authRequested, undefined)),
@@ -427,6 +433,61 @@ describe("browser-only actual desktop bootstrap", () => {
       expect(f.counts.wsl).toBe(0);
       expect(f.counts.window).toBe(1);
       expect(f.launcherPaths).toEqual([`${stateHome}/bin/t3`]);
+    }),
+  );
+
+  it.effect("prepares only the backend restarted for changed shell feature flags", () =>
+    Effect.gen(function* () {
+      const restarted = yield* Deferred.make<void>();
+      const events: string[] = [];
+      const notReady: DesktopBackendManager.DesktopBackendSnapshot = {
+        desiredRunning: true,
+        ready: false,
+        activePid: Option.none(),
+        restartAttempt: 0,
+        restartScheduled: false,
+      };
+      const observePreparation = (target: string) =>
+        Effect.sync(() => {
+          events.push(`prepare ${target}`);
+          return notReady;
+        });
+      const f = fixture({ ...config, browserOnly: false }, true, {
+        shellUpdates: Stream.make({
+          version: 1,
+          type: "shellEnvironment",
+          platform: "darwin",
+          discovered: true,
+          environment: { T3CODE_FEATURE_FLAGS: "fixture" },
+        }),
+        backends: (primary) => [
+          {
+            ...primary,
+            snapshot: observePreparation("primary"),
+            stop: () => Effect.sync(() => void events.push("stop primary")),
+            start: Effect.gen(function* () {
+              const restarting = events.includes("stop primary");
+              events.push("start primary");
+              if (restarting) yield* Deferred.succeed(restarted, undefined);
+            }),
+          },
+          {
+            ...primary,
+            id: DesktopBackendPool.BackendInstanceId("secondary"),
+            snapshot: observePreparation("secondary"),
+          },
+        ],
+      });
+      yield* Effect.gen(function* () {
+        expect(yield* f.bootstrap).toBe(true);
+        yield* Deferred.await(restarted);
+        expect(events).toEqual([
+          "start primary",
+          "prepare primary",
+          "stop primary",
+          "start primary",
+        ]);
+      }).pipe(Effect.provide(f.layer), Effect.scoped);
     }),
   );
 

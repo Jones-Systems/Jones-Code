@@ -161,6 +161,7 @@ export const TAKE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:take-legacy-local-stor
 export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-local-storage";
 
 export const RESTART_AUDIO_SERVICE_CHANNEL = "desktop:restart-audio-service";
+export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
 
 export const GET_CONNECTION_CATALOG_SNAPSHOT_CHANNEL = "desktop:get-connection-catalog-snapshot";
 export const LIST_CONNECTION_COMPATIBILITY_HINTS_CHANNEL =
