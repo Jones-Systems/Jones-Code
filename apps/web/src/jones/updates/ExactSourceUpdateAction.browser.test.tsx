@@ -50,7 +50,7 @@ vi.mock("@t3tools/client-runtime/jones/updates/action-journal", async (original)
 });
 import { webJonesJournal } from "../installStatus/executionJournal";
 import { bindInstallPlanServices } from "../installStatus/services";
-import { createInstallStatusStore } from "../installStatus/panelUi";
+import { createInstallStatusStore, type InstallStatusDevice } from "../installStatus/panelUi";
 import { startPlan } from "@t3tools/client-runtime/jones/install-plan";
 import type {
   JonesInstallPlanRequest,
@@ -742,7 +742,7 @@ describe("exact-source action", () => {
         ...(enrolled ? { policy: { role: "follower", leaderSource: other } } : {}),
       }),
     );
-    const device = {
+    const device: InstallStatusDevice = {
       ...world.host.snapshot,
       environmentId,
       label: "Server",
@@ -752,6 +752,7 @@ describe("exact-source action", () => {
             operationProtocol: 1 as const,
             ...(mode === "no-directive" ? {} : { planDirectiveProtocol: 1 as const }),
             operation: null,
+            update: world.host.snapshot.observation.state,
             enrollment: {
               environmentId,
               enrollmentId,
