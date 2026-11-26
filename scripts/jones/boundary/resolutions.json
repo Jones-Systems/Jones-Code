@@ -201,11 +201,11 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "4746c7b4c9c40ef3c569fb6a3a89a69e92957633716d72599da4d4ddfd9a3804"
+          "sha256": "912838e804bd828297ede6332fe4699d6d8ee0ec4320608f21e7cfa729d872e8"
         },
         {
           "path": "apps/server/src/binCli.ts",
-          "sha256": "cfef82348443c2b4471a5d073da47f59abc251aaa95aa1efac5c791b137e42ab"
+          "sha256": "b3386342659b44c9d66b912e657905c9dbfd8e94d1186a94987b6c9ea078069b"
         },
         {
           "path": "scripts/prepare-server-compile-cache.cjs",
@@ -238,11 +238,11 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "4746c7b4c9c40ef3c569fb6a3a89a69e92957633716d72599da4d4ddfd9a3804"
+          "sha256": "912838e804bd828297ede6332fe4699d6d8ee0ec4320608f21e7cfa729d872e8"
         },
         {
           "path": "apps/server/src/server.ts",
-          "sha256": "2b8b3ce0d467f799310c931b30a658587b1cc9a3acd234bd968e3efb68a348e7"
+          "sha256": "d025aef9fefe79fc078f02cfb72c75acf9b500ac8dc9fa3b1d1959c23cf874a1"
         },
         {
           "path": "scripts/prepare-server-compile-cache.cjs",
@@ -259,7 +259,7 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "4746c7b4c9c40ef3c569fb6a3a89a69e92957633716d72599da4d4ddfd9a3804"
+          "sha256": "912838e804bd828297ede6332fe4699d6d8ee0ec4320608f21e7cfa729d872e8"
         },
         {
           "path": "apps/server/scripts/cli.ts",

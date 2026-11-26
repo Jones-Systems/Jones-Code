@@ -60,7 +60,6 @@ import {
   composerContextSendBlockReason,
   reidentifyComposerContext,
   serializeComposerMessageForServer,
-  uploadedComposerContext,
 } from "../lib/composerContext";
 import { uuidv4 } from "../lib/uuid";
 import { useNowMinuteMs } from "../lib/clock";

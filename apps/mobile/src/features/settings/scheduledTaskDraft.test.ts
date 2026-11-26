@@ -14,8 +14,6 @@ import {
   createDraft,
   editDraft,
   scheduledTaskDefaultModel,
-  createDraft,
-  editDraft,
   hasScheduledTaskDraftChanges,
   DEFAULT_SCHEDULE,
   scheduleDraftForTask,

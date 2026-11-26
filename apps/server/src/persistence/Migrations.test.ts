@@ -9,7 +9,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Ref from "effect/Ref";
-import * as Logger from "effect/Logger";
+
 import * as Console from "effect/Console";
 import * as NodeUtil from "node:util";
 import type { DatabaseMigrationProgress as Progress } from "@t3tools/contracts";

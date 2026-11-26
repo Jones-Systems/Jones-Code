@@ -22,7 +22,6 @@ import {
   AuthTerminalOperateScope,
   CommandId,
   MessageId,
-  ORCHESTRATION_V2_WS_METHODS,
   RunId,
   WS_METHODS,
   WsRpcGroup,

@@ -27,6 +27,7 @@ import { Route as ChatUsageRouteImport } from "./routes/_chat.usage";
 import { Route as ChatSettingsRouteImport } from "./routes/_chat.settings";
 import { Route as ChatPullRequestsRouteImport } from "./routes/_chat.pull-requests";
 import { Route as ChatNewRouteImport } from "./routes/_chat.new";
+import { Route as ChatIssuesRouteImport } from "./routes/_chat.issues";
 import { Route as ChatConversationsRouteImport } from "./routes/_chat.conversations";
 import { Route as ThreadsEnvironmentIdThreadIdRouteImport } from "./routes/threads.$environmentId.$threadId";
 import { Route as ChatSettingsWorktreesRouteImport } from "./routes/_chat.settings.worktrees";
@@ -60,6 +61,7 @@ import { Route as ChatSettingsAboutRouteImport } from "./routes/_chat.settings.a
 import { Route as ChatDraftDraftIdRouteImport } from "./routes/_chat.draft.$draftId";
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from "./routes/_chat.$environmentId.$threadId";
 import { Route as ChatSettingsJonesCodeAppearanceRouteImport } from "./routes/_chat.settings.jones-code_.appearance";
+import { Route as ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRouteImport } from "./routes/_chat.linked.$viaEnvironmentId.$linkedEnvironmentId.$linkedThreadId";
 
 const WorkQueueRoute = WorkQueueRouteImport.update({
   id: "/work-queue",
@@ -150,16 +152,22 @@ const ChatNewRoute = ChatNewRouteImport.update({
   path: "/new",
   getParentRoute: () => ChatRoute,
 } as any);
+const ChatIssuesRoute = ChatIssuesRouteImport.update({
+  id: "/issues",
+  path: "/issues",
+  getParentRoute: () => ChatRoute,
+} as any);
 const ChatConversationsRoute = ChatConversationsRouteImport.update({
   id: "/conversations",
   path: "/conversations",
   getParentRoute: () => ChatRoute,
 } as any);
-const ThreadsEnvironmentIdThreadIdRoute = ThreadsEnvironmentIdThreadIdRouteImport.update({
-  id: "/threads/$environmentId/$threadId",
-  path: "/threads/$environmentId/$threadId",
-  getParentRoute: () => rootRouteImport,
-} as any);
+const ThreadsEnvironmentIdThreadIdRoute =
+  ThreadsEnvironmentIdThreadIdRouteImport.update({
+    id: "/threads/$environmentId/$threadId",
+    path: "/threads/$environmentId/$threadId",
+    getParentRoute: () => rootRouteImport,
+  } as any);
 const ChatSettingsWorktreesRoute = ChatSettingsWorktreesRouteImport.update({
   id: "/worktrees",
   path: "/worktrees",
@@ -180,11 +188,12 @@ const ChatSettingsStorageRoute = ChatSettingsStorageRouteImport.update({
   path: "/storage",
   getParentRoute: () => ChatSettingsRoute,
 } as any);
-const ChatSettingsSourceControlRoute = ChatSettingsSourceControlRouteImport.update({
-  id: "/source-control",
-  path: "/source-control",
-  getParentRoute: () => ChatSettingsRoute,
-} as any);
+const ChatSettingsSourceControlRoute =
+  ChatSettingsSourceControlRouteImport.update({
+    id: "/source-control",
+    path: "/source-control",
+    getParentRoute: () => ChatSettingsRoute,
+  } as any);
 const ChatSettingsSnapShotRoute = ChatSettingsSnapShotRouteImport.update({
   id: "/snap-shot",
   path: "/snap-shot",
@@ -195,11 +204,12 @@ const ChatSettingsSecretsRoute = ChatSettingsSecretsRouteImport.update({
   path: "/secrets",
   getParentRoute: () => ChatSettingsRoute,
 } as any);
-const ChatSettingsScheduledTasksRoute = ChatSettingsScheduledTasksRouteImport.update({
-  id: "/scheduled-tasks",
-  path: "/scheduled-tasks",
-  getParentRoute: () => ChatSettingsRoute,
-} as any);
+const ChatSettingsScheduledTasksRoute =
+  ChatSettingsScheduledTasksRouteImport.update({
+    id: "/scheduled-tasks",
+    path: "/scheduled-tasks",
+    getParentRoute: () => ChatSettingsRoute,
+  } as any);
 const ChatSettingsProvidersRoute = ChatSettingsProvidersRouteImport.update({
   id: "/providers",
   path: "/providers",
@@ -210,11 +220,12 @@ const ChatSettingsProjectsRoute = ChatSettingsProjectsRouteImport.update({
   path: "/projects",
   getParentRoute: () => ChatSettingsRoute,
 } as any);
-const ChatSettingsOpenSourceLicensesRoute = ChatSettingsOpenSourceLicensesRouteImport.update({
-  id: "/open-source-licenses",
-  path: "/open-source-licenses",
-  getParentRoute: () => ChatSettingsRoute,
-} as any);
+const ChatSettingsOpenSourceLicensesRoute =
+  ChatSettingsOpenSourceLicensesRouteImport.update({
+    id: "/open-source-licenses",
+    path: "/open-source-licenses",
+    getParentRoute: () => ChatSettingsRoute,
+  } as any);
 const ChatSettingsMaintenanceRoute = ChatSettingsMaintenanceRouteImport.update({
   id: "/maintenance",
   path: "/maintenance",
@@ -235,11 +246,12 @@ const ChatSettingsJonesCodeRoute = ChatSettingsJonesCodeRouteImport.update({
   path: "/jones-code",
   getParentRoute: () => ChatSettingsRoute,
 } as any);
-const ChatSettingsIntegrationsRoute = ChatSettingsIntegrationsRouteImport.update({
-  id: "/integrations",
-  path: "/integrations",
-  getParentRoute: () => ChatSettingsRoute,
-} as any);
+const ChatSettingsIntegrationsRoute =
+  ChatSettingsIntegrationsRouteImport.update({
+    id: "/integrations",
+    path: "/integrations",
+    getParentRoute: () => ChatSettingsRoute,
+  } as any);
 const ChatSettingsGeneralRoute = ChatSettingsGeneralRouteImport.update({
   id: "/general",
   path: "/general",
@@ -305,16 +317,26 @@ const ChatDraftDraftIdRoute = ChatDraftDraftIdRouteImport.update({
   path: "/draft/$draftId",
   getParentRoute: () => ChatRoute,
 } as any);
-const ChatEnvironmentIdThreadIdRoute = ChatEnvironmentIdThreadIdRouteImport.update({
-  id: "/$environmentId/$threadId",
-  path: "/$environmentId/$threadId",
-  getParentRoute: () => ChatRoute,
-} as any);
-const ChatSettingsJonesCodeAppearanceRoute = ChatSettingsJonesCodeAppearanceRouteImport.update({
-  id: "/jones-code_/appearance",
-  path: "/jones-code/appearance",
-  getParentRoute: () => ChatSettingsRoute,
-} as any);
+const ChatEnvironmentIdThreadIdRoute =
+  ChatEnvironmentIdThreadIdRouteImport.update({
+    id: "/$environmentId/$threadId",
+    path: "/$environmentId/$threadId",
+    getParentRoute: () => ChatRoute,
+  } as any);
+const ChatSettingsJonesCodeAppearanceRoute =
+  ChatSettingsJonesCodeAppearanceRouteImport.update({
+    id: "/jones-code_/appearance",
+    path: "/jones-code/appearance",
+    getParentRoute: () => ChatSettingsRoute,
+  } as any);
+const ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute =
+  ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRouteImport.update(
+    {
+      id: "/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId",
+      path: "/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId",
+      getParentRoute: () => ChatRoute,
+    } as any,
+  );
 
 export interface FileRoutesByFullPath {
   "/": typeof ChatIndexRoute;
@@ -329,6 +351,7 @@ export interface FileRoutesByFullPath {
   "/welcome": typeof WelcomeRoute;
   "/work-queue": typeof WorkQueueRoute;
   "/conversations": typeof ChatConversationsRoute;
+  "/issues": typeof ChatIssuesRoute;
   "/new": typeof ChatNewRoute;
   "/pull-requests": typeof ChatPullRequestsRoute;
   "/settings": typeof ChatSettingsRouteWithChildren;
@@ -367,6 +390,7 @@ export interface FileRoutesByFullPath {
   "/settings/worktrees": typeof ChatSettingsWorktreesRoute;
   "/threads/$environmentId/$threadId": typeof ThreadsEnvironmentIdThreadIdRoute;
   "/settings/jones-code/appearance": typeof ChatSettingsJonesCodeAppearanceRoute;
+  "/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId": typeof ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute;
 }
 export interface FileRoutesByTo {
   "/approve-agent": typeof ApproveAgentRoute;
@@ -380,6 +404,7 @@ export interface FileRoutesByTo {
   "/welcome": typeof WelcomeRoute;
   "/work-queue": typeof WorkQueueRoute;
   "/conversations": typeof ChatConversationsRoute;
+  "/issues": typeof ChatIssuesRoute;
   "/new": typeof ChatNewRoute;
   "/pull-requests": typeof ChatPullRequestsRoute;
   "/settings": typeof ChatSettingsRouteWithChildren;
@@ -419,6 +444,7 @@ export interface FileRoutesByTo {
   "/settings/worktrees": typeof ChatSettingsWorktreesRoute;
   "/threads/$environmentId/$threadId": typeof ThreadsEnvironmentIdThreadIdRoute;
   "/settings/jones-code/appearance": typeof ChatSettingsJonesCodeAppearanceRoute;
+  "/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId": typeof ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute;
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
@@ -434,6 +460,7 @@ export interface FileRoutesById {
   "/welcome": typeof WelcomeRoute;
   "/work-queue": typeof WorkQueueRoute;
   "/_chat/conversations": typeof ChatConversationsRoute;
+  "/_chat/issues": typeof ChatIssuesRoute;
   "/_chat/new": typeof ChatNewRoute;
   "/_chat/pull-requests": typeof ChatPullRequestsRoute;
   "/_chat/settings": typeof ChatSettingsRouteWithChildren;
@@ -473,6 +500,7 @@ export interface FileRoutesById {
   "/_chat/settings/worktrees": typeof ChatSettingsWorktreesRoute;
   "/threads/$environmentId/$threadId": typeof ThreadsEnvironmentIdThreadIdRoute;
   "/_chat/settings/jones-code_/appearance": typeof ChatSettingsJonesCodeAppearanceRoute;
+  "/_chat/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId": typeof ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
@@ -489,6 +517,7 @@ export interface FileRouteTypes {
     | "/welcome"
     | "/work-queue"
     | "/conversations"
+    | "/issues"
     | "/new"
     | "/pull-requests"
     | "/settings"
@@ -526,7 +555,8 @@ export interface FileRouteTypes {
     | "/settings/voice"
     | "/settings/worktrees"
     | "/threads/$environmentId/$threadId"
-    | "/settings/jones-code/appearance";
+    | "/settings/jones-code/appearance"
+    | "/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId";
   fileRoutesByTo: FileRoutesByTo;
   to:
     | "/approve-agent"
@@ -540,6 +570,7 @@ export interface FileRouteTypes {
     | "/welcome"
     | "/work-queue"
     | "/conversations"
+    | "/issues"
     | "/new"
     | "/pull-requests"
     | "/settings"
@@ -578,7 +609,8 @@ export interface FileRouteTypes {
     | "/settings/voice"
     | "/settings/worktrees"
     | "/threads/$environmentId/$threadId"
-    | "/settings/jones-code/appearance";
+    | "/settings/jones-code/appearance"
+    | "/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId";
   id:
     | "__root__"
     | "/_chat"
@@ -593,6 +625,7 @@ export interface FileRouteTypes {
     | "/welcome"
     | "/work-queue"
     | "/_chat/conversations"
+    | "/_chat/issues"
     | "/_chat/new"
     | "/_chat/pull-requests"
     | "/_chat/settings"
@@ -631,7 +664,8 @@ export interface FileRouteTypes {
     | "/_chat/settings/voice"
     | "/_chat/settings/worktrees"
     | "/threads/$environmentId/$threadId"
-    | "/_chat/settings/jones-code_/appearance";
+    | "/_chat/settings/jones-code_/appearance"
+    | "/_chat/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
@@ -776,6 +810,13 @@ declare module "@tanstack/react-router" {
       path: "/new";
       fullPath: "/new";
       preLoaderRoute: typeof ChatNewRouteImport;
+      parentRoute: typeof ChatRoute;
+    };
+    "/_chat/issues": {
+      id: "/_chat/issues";
+      path: "/issues";
+      fullPath: "/issues";
+      preLoaderRoute: typeof ChatIssuesRouteImport;
       parentRoute: typeof ChatRoute;
     };
     "/_chat/conversations": {
@@ -1009,6 +1050,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof ChatSettingsJonesCodeAppearanceRouteImport;
       parentRoute: typeof ChatSettingsRoute;
     };
+    "/_chat/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId": {
+      id: "/_chat/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId";
+      path: "/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId";
+      fullPath: "/linked/$viaEnvironmentId/$linkedEnvironmentId/$linkedThreadId";
+      preLoaderRoute: typeof ChatLinkedViaEnvironmentIdLinkedEnvironmentIdLinkedThreadIdRouteImport;
+      parentRoute: typeof ChatRoute;
+    };
   }
 }
 
@@ -1076,10 +1124,13 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsJonesCodeAppearanceRoute: ChatSettingsJonesCodeAppearanceRoute,
 };
 
-const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(ChatSettingsRouteChildren);
+const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(
+  ChatSettingsRouteChildren,
+);
 
 interface ChatRouteChildren {
   ChatConversationsRoute: typeof ChatConversationsRoute;
+  ChatIssuesRoute: typeof ChatIssuesRoute;
   ChatNewRoute: typeof ChatNewRoute;
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute;
   ChatSettingsRoute: typeof ChatSettingsRouteWithChildren;
@@ -1093,6 +1144,7 @@ interface ChatRouteChildren {
 
 const ChatRouteChildren: ChatRouteChildren = {
   ChatConversationsRoute: ChatConversationsRoute,
+  ChatIssuesRoute: ChatIssuesRoute,
   ChatNewRoute: ChatNewRoute,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatSettingsRoute: ChatSettingsRouteWithChildren,

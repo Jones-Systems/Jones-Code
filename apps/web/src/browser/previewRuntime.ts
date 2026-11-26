@@ -13,7 +13,6 @@ import {
   type PreviewRuntime,
   type PreviewSessionSnapshot,
 } from "@t3tools/contracts";
-import { Atom } from "effect/reactivity";
 
 import { environmentCatalog } from "~/connection/catalog";
 import { isElectron } from "~/env";

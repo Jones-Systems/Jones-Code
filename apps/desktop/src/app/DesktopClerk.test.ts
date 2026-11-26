@@ -66,6 +66,7 @@ const layerDesktopClerk = (
   },
   listeners = new Map<string, (...args: unknown[]) => void>(),
   userDataDirectoryOverride: Option.Option<string> = Option.none(),
+  stateDir = clerkStateDir,
 ) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir,
@@ -187,7 +188,16 @@ describe("DesktopClerk", () => {
       ]);
     }).pipe(
       Effect.provide(
-        layerDesktopClerk(true, [], "darwin", undefined, undefined, undefined, "relative-state"),
+        layerDesktopClerk(
+          true,
+          [],
+          "darwin",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          "relative-state",
+        ),
       ),
     );
   });

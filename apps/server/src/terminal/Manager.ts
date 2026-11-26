@@ -76,7 +76,7 @@ import { SpawnExecutableResolution, mergePathEntries } from "@t3tools/shared/she
 import { acpRegistryManagedBinaryDirectories } from "@t3tools/provider-acp-registry/server";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as Cause from "effect/Cause";
-import * as Clock from "effect/Clock";
+
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Context from "effect/Context";

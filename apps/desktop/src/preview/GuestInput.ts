@@ -101,16 +101,8 @@ const HOST_FOCUS = "globalThis.__t3PreviewFocus";
 /** A CDP pointer press focuses the guest's native view even with focus emulation enabled. */
 const sendPointerPress = async (
   webContents: Electron.WebContents,
-  debuggee: Electron.Debugger,
-  method: string,
-  params: Record<string, unknown>,
-  sessionId: string | undefined,
-  assertCurrent: (() => void) | undefined,
+  dispatch: () => Promise<unknown>,
 ) => {
-  const dispatch = () => {
-    assertCurrent?.();
-    return debuggee.sendCommand(method, params, sessionId);
-  };
   const host = webContents.hostWebContents;
   if (!host || host.isDestroyed() || webContents.focusedFrame) return dispatch();
   // Focus in a webview with a press in flight came from that press, so keep the earlier save.
@@ -266,16 +258,23 @@ const sendPointerCommand = async (
   method: string,
   params: Record<string, unknown>,
   sessionId: string | undefined,
-  assertCurrent: (() => void) | undefined,
+  route: PointerRoute | undefined,
+  beforeDispatch: (() => void) | undefined,
 ) => {
   const previous = pointerCommands.get(webContents) ?? Promise.resolve();
   const current = previous
     .catch(() => {})
-    .then(() => {
-      assertCurrent?.();
+    .then(async () => {
+      const routed = route && sessionId === undefined ? await route(params) : null;
+      const dispatch = () => {
+        beforeDispatch?.();
+        return routed
+          ? sendToFrame(debuggee, method, routed)
+          : debuggee.sendCommand(method, params, sessionId);
+      };
       return params["type"] === "mousePressed" || params["type"] === "touchStart"
-        ? sendPointerPress(webContents, debuggee, method, params, sessionId, assertCurrent)
-        : debuggee.sendCommand(method, params, sessionId);
+        ? sendPointerPress(webContents, dispatch)
+        : dispatch();
     });
   pointerCommands.set(webContents, current);
   try {
@@ -287,7 +286,7 @@ const sendPointerCommand = async (
 
 /**
  * Sends one command to the guest's page, keeping reloads and input inside it. Input that waits
- * before it reaches the guest checks the current relay once the wait ends.
+ * before it reaches the guest calls `beforeDispatch` once the wait ends, which throws to drop it.
  */
 export const sendPageCommand = async (
   webContents: Electron.WebContents,
@@ -295,11 +294,31 @@ export const sendPageCommand = async (
   method: string,
   params: Record<string, unknown>,
   sessionId?: string,
-  assertCurrent?: () => void,
+  routeMouse?: PointerRoute,
+  beforeDispatch?: () => void,
 ): Promise<unknown> => {
-  assertCurrent?.();
-  if (method === "Input.dispatchMouseEvent" || method === "Input.dispatchTouchEvent") {
-    return sendPointerCommand(webContents, debuggee, method, params, sessionId, assertCurrent);
+  beforeDispatch?.();
+  if (method === "Input.dispatchMouseEvent") {
+    return sendPointerCommand(
+      webContents,
+      debuggee,
+      method,
+      params,
+      sessionId,
+      routeMouse,
+      beforeDispatch,
+    );
+  }
+  if (method === "Input.dispatchTouchEvent") {
+    return sendPointerCommand(
+      webContents,
+      debuggee,
+      method,
+      params,
+      sessionId,
+      undefined,
+      beforeDispatch,
+    );
   }
   if (sessionId !== undefined) return debuggee.sendCommand(method, params, sessionId);
   // Electron's debugger routes Page.reload on a webview to its embedder window.
@@ -318,7 +337,7 @@ export const sendPageCommand = async (
   if ((await evaluate(debuggee, `${FOCUSED_DOCUMENT} !== null`)) !== true) {
     throw new Error(CROSS_SITE_FOCUS_MESSAGE);
   }
-  assertCurrent?.();
+  beforeDispatch?.();
   switch (method) {
     case "Input.insertText":
       await webContents.insertText(typeof params["text"] === "string" ? params["text"] : "");

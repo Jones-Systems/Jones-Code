@@ -23,7 +23,6 @@ import {
   type VcsSwitchRefResult,
   type VcsCreateRefInput,
   type VcsCreateRefResult,
-  type VcsError,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
   type ReviewBranchCommitsInput,

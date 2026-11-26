@@ -4386,6 +4386,7 @@ const make = Effect.gen(function* () {
             attachments: [],
             mode,
             ...(input.freshContext ? { freshContext: true } : {}),
+            ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
             createdBy: "agent",
             creationSource: "mcp",
           })

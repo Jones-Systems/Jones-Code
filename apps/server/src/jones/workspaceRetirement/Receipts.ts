@@ -381,6 +381,7 @@ const make = Effect.gen(function* () {
             const holder = yield* decodeSettlementHolder(captured[0].holder_json);
             const currentThread =
               yield* sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=${intent.thread_id}
+              AND json_extract(payload_json,'$.deletedAt') IS NULL
               AND json_extract(payload_json,'$.settledOverride')='settled' AND json_extract(payload_json,'$.settledAt')=${intent.settled_at}
               AND json_extract(payload_json,'$.worktreePath')=${intent.worktree} AND json_extract(payload_json,'$.projectId')=${holder.projectId}
               AND json_extract(payload_json,'$.branch') IS ${holder.branch}`;

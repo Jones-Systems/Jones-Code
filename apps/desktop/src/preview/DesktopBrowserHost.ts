@@ -562,6 +562,9 @@ export const make = Effect.gen(function* () {
   const relayFor = (tab: AttachedTab) => {
     if (tab.relay) return tab.relay;
     const { webContents, debugger: debuggee, cookiesCleared } = tab.debuggee;
+    const routeHidden = routeMouseToFrame(debuggee, tab.frameSessions, watchFrameDetach(tab));
+    const routeMouse: PointerRoute = (params) =>
+      shownTabs.get(keyOf(tab.key)) === true ? Promise.resolve(null) : routeHidden(params);
     const annotated = (method: string) =>
       method.startsWith("Input.") && tab.debuggee.annotating?.() === true;
     const send = async (
@@ -570,10 +573,18 @@ export const make = Effect.gen(function* () {
       sessionId: string | undefined,
       assertCurrent: () => void,
     ) => {
-      const result = await sendPageCommand(webContents, debuggee, method, params, sessionId, () => {
-        assertCurrent();
-        if (annotated(method)) throw new Error(ANNOTATING_MESSAGE);
-      });
+      const result = await sendPageCommand(
+        webContents,
+        debuggee,
+        method,
+        params,
+        sessionId,
+        routeMouse,
+        () => {
+          assertCurrent();
+          if (annotated(method)) throw new Error(ANNOTATING_MESSAGE);
+        },
+      );
       if (method === "Network.clearBrowserCookies") await cookiesCleared?.();
       return result;
     };

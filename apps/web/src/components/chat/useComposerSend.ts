@@ -304,7 +304,7 @@ interface ComposerSendInput {
   readonly acknowledgeActiveThreadWoke: () => void;
   readonly onNewThreadAccepted?: ((thread: ScopedThreadRef) => void) | undefined;
   /** Resolves true once the side chat started and got the prompt. */
-  readonly onSideChat?: ((prompt: string) => Promise<boolean>) | undefined;
+  readonly onSideChat?: ((message: SideChatMessage | undefined) => Promise<boolean>) | undefined;
   /** Refuses `/side` with this reason and keeps the draft. */
   readonly sideChatDisabledReason: string | null;
   readonly handleNewThreadInActiveProject: () => void;
@@ -1898,6 +1898,9 @@ export function useComposerSend(input: ComposerSendInput) {
                 ? {
                     prepareWorktree: {
                       ...worktreePreparation,
+                      ...(worktreeRepositories === undefined
+                        ? {}
+                        : { repositories: worktreeRepositories }),
                     },
                     runSetupScript: true,
                   }

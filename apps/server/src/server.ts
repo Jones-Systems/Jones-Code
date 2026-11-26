@@ -872,6 +872,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
+  Layer.provideMerge(
+    Layer.mergeAll(MilestoneHub.layer, layerTaskFolders, LayoutCommandApprovalWrites.layer),
+  ),
   Layer.provideMerge(RepoFreshness.layer),
   Layer.provideMerge(
     RuntimeLayer.layerEventInfrastructure.pipe(Layer.provide(DependencyChanges.layer)),
@@ -1076,7 +1079,9 @@ const layerMakeRoutes = Layer.mergeAll(
     // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
     Layer.provide(PeerLinkRequests.layer),
     // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
-    Layer.provide(layerPullRequestService),
+    Layer.provide(
+      Layer.mergeAll(layerPullRequestService, layerIssueService, layerThreadIssueService),
+    ),
     // The same activity instance RunExecutionService reports to, by layer memoization.
     Layer.provide(
       ServerBrowser.layer.pipe(
@@ -1090,7 +1095,12 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),
     // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
     Layer.provide(
-      Layer.merge(PeerForwarding.layer, OriginRegistration.workerLayer).pipe(
+      Layer.mergeAll(
+        PeerForwarding.layer,
+        PeerThreadRelay.layer,
+        PeerClientPairing.layer,
+        OriginRegistration.workerLayer,
+      ).pipe(
         Layer.provideMerge(OriginRegistration.servicesLayer),
         // Forwarded follow-ups reserve in the orchestrator's own command transaction; the same
         // layer reference memoizes to the owner RemoteDelegation captures above.
@@ -1112,7 +1122,7 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(PreviewAutomationBroker.layer),
     Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
     Layer.provide(layerJonesUpdates),
-    Layer.provide(layerServerSelfUpdate),
+    Layer.provide(Layer.merge(layerServerSelfUpdate, ProviderMaintenanceRunner.layer)),
     Layer.provide(layerCommandReadiness),
     Layer.provide(ServerHttp.layerBrowserApiCors),
     Layer.provide(ServerHttp.layerHttpCompression),
@@ -1603,7 +1613,7 @@ const layerMakeServer = Layer.unwrap(
       Layer.provide(VcsProcess.layer),
       Layer.provide(ProcessRunner.layer),
       Layer.provideMerge(ProcessPlacementRuntime.layer),
-      Layer.provideMerge(layerPlatformServices),
+      Layer.provideMerge(Layer.merge(layerPlatformServices, FeatureFlags.layer)),
       Layer.provide(NetService.layer),
       Layer.provide(Layer.succeed(HeldRuntimeOwner, { token: ownership.heldRuntimeOwner })),
       Layer.provide(Layer.succeed(HostProcess.InvokedAs, invokedAs)),

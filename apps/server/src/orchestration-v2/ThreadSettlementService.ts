@@ -7,7 +7,6 @@ import type * as Scope from "effect/Scope";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import { backgroundRead } from "../jones/serverParallelism/readClassification.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
-import * as Option from "effect/Option";
 import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
 import {
   backgroundWorkHoldsCompletion,
@@ -853,7 +852,7 @@ export const make = Effect.gen(function* () {
       expected?: RetirementReceipts.SettlementIntent;
     }) {
       const settled = yield* projections.getThread(threadId);
-      if (settled.settledOverride !== "settled") return;
+      if (settled.deletedAt !== null || settled.settledOverride !== "settled") return;
       if (
         expected &&
         (settled.worktreePath !== expected.worktree ||
@@ -865,6 +864,7 @@ export const make = Effect.gen(function* () {
       const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
       const afterClose = yield* projections.getThread(threadId);
       if (
+        afterClose.deletedAt !== null ||
         afterClose.settledOverride !== "settled" ||
         toMillis(afterClose.settledAt) !== toMillis(settled.settledAt) ||
         toMillis(afterClose.updatedAt) !== toMillis(settled.updatedAt)
@@ -890,6 +890,7 @@ export const make = Effect.gen(function* () {
       // Recheck after closing and worktree I/O; only live, settled threads may run scripts.
       const thread = yield* projections.getThread(threadId);
       if (
+        thread.deletedAt !== null ||
         thread.settledOverride !== "settled" ||
         thread.worktreePath !== worktreePath ||
         thread.projectId !== settled.projectId ||

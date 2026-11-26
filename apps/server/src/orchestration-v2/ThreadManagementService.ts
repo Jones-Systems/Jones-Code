@@ -2318,6 +2318,7 @@ const make = Effect.gen(function* () {
     getThreadLinkMetadata: orchestrator.getThreadLinkMetadata,
     listProjectThreads,
     sendToThread,
+    submitRunOutput,
     promoteQueuedBatch,
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
