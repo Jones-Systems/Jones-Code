@@ -670,9 +670,18 @@ describe("orchestrator MCP toolkit", () => {
               ...frame,
               params: {
                 ...params,
+                approvalPolicy: {
+                  granular: {
+                    mcp_elicitations: true,
+                    request_permissions: false,
+                    rules: false,
+                    sandbox_approval: false,
+                    skill_approval: false,
+                  },
+                },
                 input: [
                   {
-                    text: `${replayHeader}${entry.label === "child.queued.turn/start" ? "01" : "00"}\n\n${body}`,
+                    text: `${upstreamActorHeader}\n\n${replayHeader}${entry.label === "child.queued.turn/start" ? "01" : "00"}\n\n${body}`,
                     type: "text",
                   },
                 ],
@@ -1373,7 +1382,7 @@ describe("orchestrator MCP toolkit", () => {
                   ? deliveryTerminalGates.get(turn.threadId)
                   : parentTerminalGates.get(turn.threadId),
               response: (turn) =>
-                turn.message.text === delegatedPrompt
+                turn.message.text === `${upstreamActorHeader}\n\n${delegatedPrompt}`
                   ? delegatedResult
                   : `Claude completed: ${turn.message.text}`,
             }),
@@ -1520,8 +1529,12 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(
               Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
             ),
-            // The watch tool is registered but never called here.
-            Layer.provide(Layer.mock(PullRequestService.PullRequestService)({})),
+            // The fixture links by explicit URL and has no resolved forge for its checkout.
+            Layer.provide(
+              Layer.mock(PullRequestService.PullRequestService)({
+                addressedProject: () => Effect.succeed(undefined),
+              }),
+            ),
             Layer.provide(Layer.mock(GitManager.GitManager)({})),
             Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
             Layer.provideMerge(layerOrchestration),
@@ -1536,6 +1549,7 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
             Layer.provide(
               Layer.mock(ProjectService.ProjectService)({
+                workspaceScanDirectory: Effect.succeed,
                 getById: (id) =>
                   Effect.succeed(
                     id === projectId || id === foreignProjectId
@@ -2383,7 +2397,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(threadInterruptTool?.tool.annotations?.destructiveHint).toBe(true);
 
             const capabilities = yield* invoke("orchestrator_capabilities", {});
-            expect(capabilities.isError).toBe(false);
+            expect(capabilities.isError, JSON.stringify(capabilities.content)).toBe(false);
             expect(capabilities.structuredContent).toMatchObject({
               inheritedProviderInstanceId: codexInstanceId,
               inheritedModel: codexModel,
@@ -2735,7 +2749,7 @@ describe("orchestrator MCP toolkit", () => {
               {
                 instanceId: claudeInstanceId,
                 threadId: localChild(delegated.childThreadId),
-                text: delegatedPrompt,
+                text: `${upstreamActorHeader}\n\n${delegatedPrompt}`,
               },
             ]);
             expect(
@@ -3478,7 +3492,7 @@ describe("orchestrator MCP toolkit", () => {
             ).pipe(Effect.orDie);
             expect(promptedReadNext.items.map((item) => item.type)).toEqual(["assistant_message"]);
             expect(promptedReadNext.items[0]?.text).toBe(
-              `Claude completed: ${createdThreadPrompt}`,
+              `Claude completed: ${upstreamActorHeader}\n\n${createdThreadPrompt}`,
             );
 
             const forkedThreadId = ThreadId.make("thread:mcp-orchestrator-inherited-read");
@@ -3583,7 +3597,7 @@ describe("orchestrator MCP toolkit", () => {
               (yield* Ref.get(capturedTurns))
                 .filter((turn) => turn.threadId === emptyThread.threadId)
                 .map((turn) => turn.text),
-            ).toEqual([sentMessage?.text]);
+            ).toEqual([`${upstreamActorHeader}\n\n${sentMessage?.text}`]);
 
             const activeThreadCall = yield* invoke("create_threads", {
               threads: [{ prompt: cancellationPrompt, title: "Managed active thread" }],
