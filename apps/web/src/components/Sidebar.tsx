@@ -494,6 +494,7 @@ function useSidebarThreads(input: {
   readonly threads: readonly EnvironmentThreadShell[];
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly routeRowThreadKey: string | null;
+  readonly departingThreadKey: string | null;
   readonly personalWorkstreams: ReturnType<typeof usePersonalWorkstreams>["state"];
   readonly workstreamsEnabled: boolean;
   // Set in boring mode: the project groups to fold active threads into, in order.
@@ -1551,6 +1552,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     threads: listedThreads,
     delegatedUnderParent,
     routeRowThreadKey,
+    departingThreadKey,
     personalWorkstreams: workstreamController.state,
     workstreamsEnabled,
     folderGroups: boringSidebarEnabled
@@ -4106,7 +4108,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               jumpLabel={
                                 showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null
                               }
-                              currentEnvironmentId={primaryEnvironmentId}
                               environmentLabel={
                                 environmentLabelById.get(thread.environmentId) ?? null
                               }

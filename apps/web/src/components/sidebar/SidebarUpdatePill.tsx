@@ -5,11 +5,8 @@ import {
   targetForDesktop,
 } from "../../jones/installStatus/entrypoints";
 import { useInstallPlan } from "../../jones/installStatus/useInstallPlan";
-import {
-  type DesktopBridge,
-  type DesktopUpdateState,
-  managedUpdatesDenial,
-} from "@t3tools/contracts";
+import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
+import { managedUpdatesDenial } from "@t3tools/client-runtime/contract-labels";
 import type {
   JonesUpdateBuildList,
   JonesUpdateProvenance,

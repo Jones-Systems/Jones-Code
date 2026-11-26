@@ -43,7 +43,6 @@ it("renders live Workstream row updates and activation without a native sortable
     isRouteThread: false,
     readOpensPullRequestsInRightPanel: () => false,
     jumpLabel: null,
-    currentEnvironmentId: thread.environmentId,
     environmentLabel: "Synthetic environment",
     environmentMachine: "server",
     scratchMachineLabel: null,

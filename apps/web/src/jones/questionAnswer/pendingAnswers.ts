@@ -1,4 +1,4 @@
-import type { UserInputQuestion } from "@t3tools/contracts";
+import type { OrchestrationV2UserInputQuestion as UserInputQuestion } from "@t3tools/contracts";
 import { formatUserResponseChoiceWithNote } from "@t3tools/contracts/jones/userResponseRequest";
 import {
   normalizeSelectedOptionValues,

@@ -134,7 +134,7 @@ function PdfDocumentRevision(props: {
     !(navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   const { pdfSession } = props;
   const load = pdfSession?.load(src);
-  const openPdfLink = (url: string, event: MouseEvent) => {
+  const openPdfLink = (url: string, event: Pick<MouseEvent, "metaKey" | "ctrlKey" | "button">) => {
     void openLink(url, { event }).catch((cause: unknown) => console.error(cause));
   };
   if (props.onRetry)

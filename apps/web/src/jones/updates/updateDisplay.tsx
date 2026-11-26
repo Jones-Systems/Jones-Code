@@ -1,4 +1,4 @@
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
 import { toastManager } from "../../components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
@@ -6,7 +6,7 @@ import { jonesBuildLabel, type JonesBuildLabel, type JonesBuildLabelForm } from 
 
 function useCopyValue(label: string) {
   return useCopyToClipboard<{ value: string }>({
-    target: label,
+    target: namedClipboardTarget(label),
     onCopy: (copied) => {
       toastManager.add({ type: "success", title: `Copied ${label}`, description: copied.value });
     },

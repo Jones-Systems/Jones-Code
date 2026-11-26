@@ -12,7 +12,7 @@ import {
 } from "@t3tools/client-runtime/jones/remoteAdmission/controller";
 import { Button } from "../../components/ui/button";
 import { admissionPresentation } from "./presentation";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   requestOutcomeLabel,
   requestOutcomeReason,
@@ -913,7 +913,7 @@ function RecoveryDetails({ receiver, item }: { receiver: EnvironmentId; item: It
   const [error, setError] = useState<string | null>(null);
   const { href } = useLinkProps(requestLink(receiver, item.record.id, item.record.bindingDigest));
   const { copyToClipboard, isCopied } = useCopyToClipboard({
-    target: "recovery details",
+    target: namedClipboardTarget("recovery details"),
     onCopy: () => setError(null),
     onError: () => setError("Could not copy recovery details. Try again."),
   });

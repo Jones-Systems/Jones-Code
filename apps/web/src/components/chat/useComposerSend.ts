@@ -1,4 +1,4 @@
-import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
+import { namedClipboardTarget, writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { withMessageContext } from "../../jones/composer/messageContext";
 import {
   resolveFirstSendWorktreePreparation,
@@ -1742,9 +1742,10 @@ export function useComposerSend(input: ComposerSendInput) {
             actionProps: {
               children: "Copy message",
               onClick: () => {
-                void writeTextToClipboard(sendSnapshot.draftText, "failed message").catch(
-                  () => undefined,
-                );
+                void writeTextToClipboard(
+                  sendSnapshot.draftText,
+                  namedClipboardTarget("failed message"),
+                ).catch(() => undefined);
               },
             },
           }),

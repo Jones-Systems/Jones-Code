@@ -59,7 +59,6 @@ function rowProps(
     isRouteThread: false,
     readOpensPullRequestsInRightPanel: () => false,
     jumpLabel: null,
-    currentEnvironmentId: thread.environmentId,
     environmentLabel: "Laptop",
     environmentMachine: "laptop",
     scratchMachineLabel: null,

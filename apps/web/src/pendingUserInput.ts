@@ -3,7 +3,7 @@ import type {
   PreviewAnnotationPayload,
   ReviewCommentContextRecord,
   ThreadContextRecord,
-  UserInputQuestion,
+  OrchestrationV2UserInputQuestion as UserInputQuestion,
 } from "@t3tools/contracts";
 import {
   projectComposerContextForProvider,

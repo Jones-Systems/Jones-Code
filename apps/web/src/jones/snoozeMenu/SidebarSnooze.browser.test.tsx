@@ -52,7 +52,6 @@ it.each(
     isRouteThread: false,
     readOpensPullRequestsInRightPanel: () => false,
     jumpLabel: null,
-    currentEnvironmentId: thread.environmentId,
     environmentLabel: "Synthetic environment",
     environmentMachine: "server",
     scratchMachineLabel: null,

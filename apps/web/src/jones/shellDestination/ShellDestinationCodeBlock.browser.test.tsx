@@ -273,7 +273,6 @@ function timeline(threadId: string) {
     turnDiffSummaries: [],
     runs: [],
     routeThreadKey: `source:${threadId}`,
-    onOpenTurnDiff: () => {},
     onOpenThread: () => {},
     onForkFromRun: async () => {},
     supportsConversationRollback: false,

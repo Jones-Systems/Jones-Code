@@ -155,7 +155,9 @@ function setup() {
   const draftId = DraftId.make("fresh-routing-draft");
   const projectId = ProjectId.make("project");
   const store = useComposerDraftStore.getState();
-  onTestFinished(() => useComposerDraftStore.setState(store, true));
+  onTestFinished(() => {
+    useComposerDraftStore.setState(store, true);
+  });
   store.clearDraftThread(draftId);
   store.setProjectDraftThreadId(scopeProjectRef(a, projectId), draftId, {
     environmentSelection: "auto",
