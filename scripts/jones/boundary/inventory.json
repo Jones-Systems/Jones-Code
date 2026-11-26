@@ -8,6 +8,9 @@
   "baseline": "36816d26be2d862440d6412d62332a10c4d896ff",
   "paths": {
     "apps/desktop/scripts/build-apple-speech.mjs": "accepted-shared",
+    "apps/server/src/feedback/FeedbackReport.ts": "accepted-shared",
+    "evals/workflow-authoring/cases.ts": "accepted-shared",
+    "evals/workflow-authoring/fixtures/webhook-filter-and-dedupe.ts": "accepted-shared",
     "evals/workflow-authoring/grade.ts": "accepted-shared",
     "apps/server/src/peer/PeerClientPairing.ts": "accepted-shared",
     "apps/server/src/peer/PeerClientPairing.test.ts": "jones-tests-in-upstream",
@@ -1187,6 +1190,7 @@
     "apps/server/src/orchestration-v2/Adapters/MuseAdapterV2.testkit.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/CheckpointCaptureService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/CheckpointRollbackService.taskFolder.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/CheckpointRollbackService.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts": "jones-tests-in-upstream",

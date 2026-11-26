@@ -456,6 +456,17 @@ interface CompletedThreadTransfer {
   readonly replacementProviderSessionId: ProviderSessionId | undefined;
 }
 
+type TransferRetirementUpdate = readonly [
+  capture:
+    | { readonly pending: RetirementLedger.Retirement }
+    | {
+        readonly record: RetirementLedger.Retirement;
+        readonly idleUnloadFibers: ReadonlyArray<Fiber.Fiber<void, never>>;
+      }
+    | undefined,
+  sessions: Map<string, LiveSessionEntry>,
+];
+
 interface HandoffSettlementInput<E, R> {
   readonly runtime: ProviderAdapterV2SessionRuntime;
   readonly threadId: ThreadId;
@@ -1211,7 +1222,6 @@ export const layerWithOptions = (
       const retirements = RetirementLedger.makeRetirementLedger();
       const recoveryRetirements = makeProviderRecoveryRetirements();
       const equivalentBinding = Schema.toEquivalence(ProviderAdapterBinding);
-      const transferWorkers = new WeakSet<RetirementLedger.Retirement>();
       const forgetCompletedThreadTransfers = (threadId: ThreadId) =>
         Ref.update(sessions, (current) => {
           const next = new Map(current);
@@ -3842,7 +3852,7 @@ export const layerWithOptions = (
         const guardTurnInput = (input: ProviderAdapter.ProviderAdapterV2TurnInput) => {
           const expected = input.providerThread;
           const expectedGeneration = expected.runtimeIdentity?.runtimeGeneration;
-          let admittedSuccessor: typeof ProviderAdapterBinding.Type | undefined;
+          let admittedSuccessor: ProviderRuntimeBinding | undefined;
           return {
             ...input,
             revalidateStartAdmission: Effect.gen(function* () {
@@ -5515,17 +5525,17 @@ export const layerWithOptions = (
           // Capture exclusivity and publish its attachment fence in the same synchronous transition.
           const captured = yield* threadAttachment.withLock(
             threadAttachmentKey(input),
-            Ref.modify(sessions, (current) => {
+            Ref.modify(sessions, (current): TransferRetirementUpdate => {
               const pending = retirements.find(input.providerSessionId, input.threadId);
-              if (pending !== undefined)
-                return [{ record: pending, idleUnloadFibers: [] }, current] as const;
+              if (pending !== undefined) return [{ pending }, current];
               const latest = current.get(sessionKey(input.providerSessionId));
               if (
                 latest?.runtime !== entry.runtime ||
+                latest.scope !== entry.scope ||
                 !latest.attachedThreadIds.has(input.threadId) ||
                 latest.loadedProviderThreadKeyByThread.get(input.threadId) !== loadedKey
               )
-                return [undefined, current] as const;
+                return [undefined, current];
               const attachedThreadIds = new Set(latest.attachedThreadIds);
               attachedThreadIds.delete(input.threadId);
               originalThreadLoads.get(entry.runtime)?.delete(input.threadId);
@@ -5557,19 +5567,21 @@ export const layerWithOptions = (
                   loadedProviderThreadKeyByThread,
                   idleThreadUnloads,
                 }),
-              ] as const;
+              ];
             }),
           );
-          if (captured === undefined) {
-            const pending = retirements.find(input.providerSessionId, input.threadId);
-            if (pending !== undefined) {
-              if (options?.awaitCompletion !== false)
-                yield* RetirementAdmission.awaitWriterRetirement(pending, UNLOAD_THREAD_TIMEOUT_MS);
-              return;
-            }
-            return yield* Effect.fail("The source runtime changed before retirement was captured.");
+          if (captured === undefined || "pending" in captured) {
+            const pending =
+              captured?.pending ?? retirements.find(input.providerSessionId, input.threadId);
+            if (pending === undefined)
+              return yield* Effect.fail(
+                "The source runtime changed before retirement was captured.",
+              );
+            if (options?.awaitCompletion !== false)
+              yield* RetirementAdmission.awaitWriterRetirement(pending, UNLOAD_THREAD_TIMEOUT_MS);
+            return;
           }
-          const { record } = captured;
+          const { record, idleUnloadFibers } = captured;
           const nativeRetired = Deferred.makeUnsafe<void>();
           const receipts: Array<RuntimeRetirementReceipt> = [];
           let producerExited = false;
@@ -5593,6 +5605,7 @@ export const layerWithOptions = (
                 const latest = current.get(sessionKey(input.providerSessionId));
                 if (
                   latest?.runtime !== entry.runtime ||
+                  latest.scope !== entry.scope ||
                   latest.attachedThreadIds.has(input.threadId) ||
                   latest.loadedProviderThreadKeyByThread.has(input.threadId)
                 )
@@ -5613,7 +5626,9 @@ export const layerWithOptions = (
             for (const receipt of receipts) yield* physicalEvidence.invalidate(receipt.binding);
             yield* retirements.complete(record);
             if (input.revokeMcpCredential === true) yield* clearMcpSession(input.threadId);
-            yield* scheduleIdleRelease(input.providerSessionId);
+            yield* scheduleIdleReleaseInternal(input.providerSessionId, {
+              onlyIfRuntime: entry.runtime,
+            });
             cleaned = true;
           }).pipe(
             cleanupPermit.withPermits(1),
@@ -5630,11 +5645,9 @@ export const layerWithOptions = (
             recoveryRetirements.retain(binding, finishRetirement);
           yield* Effect.uninterruptible(
             Effect.gen(function* () {
-              if (transferWorkers.has(record)) return;
-              transferWorkers.add(record);
               const retire = entry.runtime.retireThreadForTransfer;
               yield* Effect.gen(function* () {
-                yield* Effect.forEach(captured.idleUnloadFibers, cancelIdleFiber, {
+                yield* Effect.forEach(idleUnloadFibers, cancelIdleFiber, {
                   discard: true,
                 });
                 if (
@@ -5698,30 +5711,53 @@ export const layerWithOptions = (
           const provider = before.providerThreads.find(
             (row) => row.id === before.thread.activeProviderThreadId,
           );
-          if (provider?.providerSessionId == null) return null;
-          const key = sessionKey(provider.providerSessionId);
+          const generation = provider?.runtimeIdentity?.runtimeGeneration;
+          const evidenceRevision = provider?.runtimeIdentity?.evidenceRevision;
+          if (provider === undefined || generation === undefined || evidenceRevision === undefined)
+            return null;
+          const binding = runtimeBinding(provider, generation);
+          if (binding?.threadId !== threadId || provider.nativeThreadRef?.driver !== binding.driver)
+            return null;
+          const key = sessionKey(binding.providerSessionId);
           const entry = (yield* Ref.get(sessions)).get(key);
           if (
             !entry?.attachedThreadIds.has(threadId) ||
+            entry.runtime.providerSessionId !== binding.providerSessionId ||
+            entry.runtime.instanceId !== binding.providerInstanceId ||
+            entry.runtime.driver !== binding.driver ||
             entry.runtime.captureRuntimeStop === undefined
           )
             return null;
+          if (expected !== undefined) {
+            const expectedGeneration = expected.provider.runtimeIdentity?.runtimeGeneration;
+            const expectedBinding =
+              expectedGeneration === undefined
+                ? undefined
+                : runtimeBinding(expected.provider, expectedGeneration);
+            if (
+              expected.runtime !== entry.runtime ||
+              expectedBinding === undefined ||
+              !equivalentBinding(expectedBinding, binding) ||
+              expected.provider.nativeThreadRef?.driver !== binding.driver ||
+              expected.provider.runtimeIdentity?.evidenceRevision !== evidenceRevision
+            )
+              return null;
+          }
+          const loadedKey = entry.loadedProviderThreadKeyByThread.get(threadId);
+          const isCapturedAttachment = (
+            live: LiveSessionEntry | undefined,
+          ): live is LiveSessionEntry =>
+            live?.runtime === entry.runtime &&
+            live.scope === entry.scope &&
+            live.attachedThreadIds.has(threadId) &&
+            live.loadedProviderThreadKeyByThread.get(threadId) === loadedKey;
+          const captured = yield* entry.runtime.captureRuntimeStop(provider);
           if (
-            expected !== undefined &&
-            (expected.runtime !== entry.runtime ||
-              expected.provider.id !== provider.id ||
-              expected.provider.providerSessionId !== provider.providerSessionId ||
-              expected.provider.providerInstanceId !== provider.providerInstanceId ||
-              expected.provider.nativeThreadRef?.nativeId !== provider.nativeThreadRef?.nativeId ||
-              expected.provider.runtimeIdentity?.runtimeGeneration !==
-                provider.runtimeIdentity?.runtimeGeneration ||
-              expected.provider.runtimeIdentity?.evidenceRevision !==
-                provider.runtimeIdentity?.evidenceRevision)
+            captured === null ||
+            !equivalentBinding(binding, captured.binding) ||
+            captured.evidenceRevision !== evidenceRevision
           )
             return null;
-          const captured = yield* entry.runtime.captureRuntimeStop(provider);
-          if (captured === null) return null;
-          const equivalent = Schema.toEquivalence(ProviderAdapterBinding);
           const isCurrent = Effect.gen(function* () {
             if (!(yield* captured.isCurrent)) return false;
             const fresh = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
@@ -5729,24 +5765,24 @@ export const layerWithOptions = (
               (row) => row.id === fresh.thread.activeProviderThreadId,
             );
             const currentGeneration = current?.runtimeIdentity?.runtimeGeneration;
-            const binding =
+            const currentBinding =
               current === undefined || currentGeneration === undefined
                 ? undefined
-                : ProviderAdapter.runtimeBinding(current, currentGeneration);
+                : runtimeBinding(current, currentGeneration);
             const live = (yield* Ref.get(sessions)).get(key);
             return (
-              binding !== undefined &&
-              equivalent(binding, captured.binding) &&
-              current?.runtimeIdentity?.evidenceRevision === captured.evidenceRevision &&
-              live?.runtime === entry.runtime &&
-              live.attachedThreadIds.has(threadId) &&
+              currentBinding !== undefined &&
+              equivalentBinding(currentBinding, binding) &&
+              current?.nativeThreadRef?.driver === binding.driver &&
+              current?.runtimeIdentity?.evidenceRevision === evidenceRevision &&
+              isCapturedAttachment(live) &&
               fresh.thread.deletedAt === null &&
               fresh.thread.archivedAt === null
             );
           }).pipe(Effect.catchCause(() => Effect.succeed(false)));
           if (!(yield* isCurrent)) return null;
           const retirement = captured.retirement;
-          if (retirement !== undefined && !equivalent(retirement.binding, captured.binding))
+          if (retirement !== undefined && !equivalentBinding(retirement.binding, captured.binding))
             return null;
           let retirementFiber:
             | Fiber.Fiber<
@@ -5759,7 +5795,7 @@ export const layerWithOptions = (
               ? undefined
               : retirement.awaitRetired.pipe(
                   Effect.flatMap((receipt) => {
-                    if (!equivalent(receipt.binding, captured.binding))
+                    if (!equivalentBinding(receipt.binding, captured.binding))
                       return Effect.fail(
                         new ProviderAdapter.ProviderRuntimeBindingError({
                           driver: entry.runtime.driver,
@@ -5778,7 +5814,8 @@ export const layerWithOptions = (
                           }),
                           Ref.modify(sessions, (all) => {
                             const current = all.get(key);
-                            if (current?.runtime !== entry.runtime) return [null, all] as const;
+                            // A shared runtime can load a successor before the old thread closes.
+                            if (!isCapturedAttachment(current)) return [null, all] as const;
                             const retired = retirements.retain({
                               source: entry.runtime,
                               scope: entry.scope,
@@ -5814,7 +5851,9 @@ export const layerWithOptions = (
                           yield* Effect.forEach(capturedIdle.idleUnloadFibers, cancelIdleFiber, {
                             discard: true,
                           });
-                          yield* physicalEvidence.invalidate(captured.binding);
+                        }
+                        yield* physicalEvidence.invalidate(captured.binding);
+                        if (capturedIdle !== null) {
                           yield* retirements.complete(capturedIdle.retired);
                         }
                         return receipt;

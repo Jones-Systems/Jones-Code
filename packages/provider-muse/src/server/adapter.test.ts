@@ -1663,21 +1663,23 @@ describe("MuseAdapterV2", () => {
         history: { items: null, mode: "none", noneReason: "excluded" },
       });
       const harness = yield* makeHarness(fake, INSTANCE_ID, "saved-session");
-      const resumed = yield* fake.takeCall("session/resume");
-      assert.strictEqual(resumed.params.sessionId, "saved-session");
+      const resumed = fake.calls.find((call) => call.method === "session/resume");
+      assert.strictEqual(resumed?.params.sessionId, "saved-session");
       // Loading the saved session is reported while Muse answers, then cleared.
-      const phases: Array<string | null> = [];
-      for (let index = 0; index < 2; index += 1) {
-        const update = yield* harness.takeEvent("provider_session.updated");
-        phases.push(update.providerSession.startupPhase ?? null);
-      }
+      yield* harness.takeEvent("provider_thread.updated");
+      const phases = harness.allEvents
+        .filter((event) => event.type === "provider_session.updated")
+        .map((event) => event.providerSession.startupPhase ?? null);
       assert.deepStrictEqual(phases, ["resume", null]);
-      assert.strictEqual(resumed.params.excludeItems, true);
+      assert.strictEqual(resumed?.params.excludeItems, true);
       assert.isFalse(fake.calls.some((call) => call.method === "session/start"));
       assert.strictEqual(harness.providerThread.nativeThreadRef?.nativeId, "saved-session");
       const snapshot = yield* harness.runtime.readThreadSnapshot!({
         providerThread: harness.providerThread,
       });
+      const read = fake.calls.find((call) => call.method === "session/read");
+      assert.strictEqual(read?.params.sessionId, "saved-session");
+      assert.strictEqual(read?.params.excludeItems, false);
       assert.strictEqual(snapshot.providerThread.nativeThreadRef?.nativeId, "saved-session");
       assert.deepStrictEqual(snapshot.providerPayload, [nativeItem]);
       assert.strictEqual(snapshot.messages[0]?.text, "Previous answer");

@@ -8,6 +8,7 @@ import {
   OrchestratorMcpThreadSendReceiptLookupResult,
   OrchestratorMcpThreadSendResult,
   OrchestratorMcpThreadWaitResult,
+  ThreadId,
 } from "@t3tools/contracts";
 import {
   fileBasename,
@@ -62,6 +63,8 @@ const encodeSend = Schema.encodeEffect(OrchestratorMcpThreadSendInput);
 
 type Service = WorkflowAgents["Service"];
 type Route = { readonly environmentId: EnvironmentId; readonly generation: string };
+const turnMarker = (key: string) => `workflow-agent/turn/v1/${key}`;
+const turnGenerationPrefix = (key: string) => `workflow-agent/turn-generation/v1/${key}/`;
 
 export const make = Effect.gen(function* () {
   const peers = yield* PeerMcpClient.PeerMcpClient;
@@ -71,16 +74,15 @@ export const make = Effect.gen(function* () {
   const store = yield* WorkflowStore.make;
 
   const read = <S extends Schema.Decoder<unknown>>(
-    environment: string,
+    route: Route,
     tool: "t3_project_list" | "t3_thread_read" | "t3_thread_wait",
     success: S,
     args: Record<string, unknown>,
-    expectedGeneration?: string,
   ) =>
     peers
       .call({
-        environmentId: EnvironmentId.make(environment),
-        ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
+        environmentId: route.environmentId,
+        expectedGeneration: route.generation,
         tool,
         arguments: args,
         limits: LIMITS,
@@ -91,7 +93,7 @@ export const make = Effect.gen(function* () {
         Effect.mapError(
           (error) =>
             new WorkflowAgentError({
-              reason: `Environment ${environment} refused ${tool}: ${error.message}`,
+              reason: `Environment ${route.environmentId} refused ${tool}: ${error.message}`,
             }),
         ),
       );
@@ -136,6 +138,17 @@ export const make = Effect.gen(function* () {
     return { environmentId, generation: current.value };
   });
 
+  const requireOriginalPairing = Effect.fn("WorkflowAgentLinks.requireOriginalPairing")(function* (
+    route: Route,
+  ) {
+    const current = yield* capture(route.environmentId);
+    if (current.generation !== route.generation) {
+      return yield* new WorkflowAgentError({
+        reason: `The link to ${route.environmentId} changed after the workflow turn was accepted.`,
+      });
+    }
+  });
+
   const hash = Effect.fn("WorkflowAgentLinks.hash")(function* (value: unknown) {
     return Hex.encode(
       yield* digest
@@ -151,13 +164,48 @@ export const make = Effect.gen(function* () {
     return yield* hash([environment, threadId, turnId]);
   });
 
+  const turnGenerations = (runId: string, key: string) => sql<{ name: string }>`
+    SELECT name FROM workflow_marks
+    WHERE run_id = ${runId} AND name GLOB ${turnGenerationPrefix(key) + "*"}
+    LIMIT 2
+  `;
+
+  const acceptedRoute = Effect.fn("WorkflowAgentLinks.acceptedRoute")(function* (
+    runId: string | undefined,
+    environment: string,
+    key: string,
+  ) {
+    if (runId === undefined) return undefined;
+    const [mark, ambiguous] = yield* turnGenerations(runId, key);
+    if (mark === undefined || ambiguous !== undefined) return undefined;
+    const generation = mark.name.slice(turnGenerationPrefix(key).length);
+    if (generation === "") return undefined;
+    return { environmentId: EnvironmentId.make(environment), generation };
+  });
+
   const accepted = Effect.fn("WorkflowAgentLinks.accepted")(function* (
     runId: string,
-    turn: AgentTurn & { readonly environment: string },
+    route: Route,
+    turn: Pick<AgentTurn, "threadId" | "turnId">,
+    uncertain: WorkflowAgentMutationUncertain,
   ) {
-    const key = yield* turnKey(turn.environment, turn);
-    yield* store.mark(runId, `workflow-agent/turn/v1/${key}`);
-    return turn;
+    const key = yield* turnKey(route.environmentId, turn);
+    const binding = `${turnGenerationPrefix(key)}${route.generation}`;
+    const proved = yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const arrival = yield* store.mark(runId, turnMarker(key));
+          const prior = arrival === 1 ? [] : yield* turnGenerations(runId, key);
+          // A legacy marker may name a different accepted write with the same turn ids.
+          if (arrival > 1 && prior.length === 0) return false;
+          // Keep conflicting evidence so neither pairing can later claim this turn.
+          yield* store.mark(runId, binding);
+          return prior.every((mark) => mark.name === binding);
+        }),
+      )
+      .pipe(Effect.catchTags({ SqlError: () => Effect.fail(uncertain) }));
+    if (!proved) return yield* uncertain;
+    return { ...turn, environment: route.environmentId };
   });
 
   const recordIntent = Effect.fn("WorkflowAgentLinks.recordIntent")(function* <A extends Route>(
@@ -199,13 +247,10 @@ export const make = Effect.gen(function* () {
     let cursor: number | null = 0;
     while (cursor !== null) {
       const page: Schema.Schema.Type<typeof ProjectToolkit.tools.t3_project_list.successSchema> =
-        yield* read(
-          route.environmentId,
-          "t3_project_list",
-          ProjectToolkit.tools.t3_project_list.successSchema,
-          { cursor, limit: 100 },
-          route.generation,
-        );
+        yield* read(route, "t3_project_list", ProjectToolkit.tools.t3_project_list.successSchema, {
+          cursor,
+          limit: 100,
+        });
       const found = page.projects.find(
         (project) => normalizeProjectPathForComparison(project.workspaceRoot) === target,
       );
@@ -243,14 +288,11 @@ export const make = Effect.gen(function* () {
   });
 
   /** The whole text of the run's last assistant message. */
-  const reply = Effect.fn("WorkflowAgentLinks.reply")(function* (
-    turn: AgentTurn,
-    environment: string,
-  ) {
+  const reply = Effect.fn("WorkflowAgentLinks.reply")(function* (turn: AgentTurn, route: Route) {
     let last: OrchestratorMcpThreadReadResult["items"][number] | undefined;
     let cursor: { beforePosition?: number; afterPosition?: number } = {};
     while (true) {
-      const page = yield* read(environment, "t3_thread_read", OrchestratorMcpThreadReadResult, {
+      const page = yield* read(route, "t3_thread_read", OrchestratorMcpThreadReadResult, {
         threadId: turn.threadId,
         view: "messages",
         limit: 100,
@@ -280,7 +322,7 @@ export const make = Effect.gen(function* () {
     let text = last.text ?? "";
     let textOffset = last.textTruncated ? (last.nextTextOffset ?? null) : null;
     while (textOffset !== null) {
-      const rest = yield* read(environment, "t3_thread_read", OrchestratorMcpThreadReadResult, {
+      const rest = yield* read(route, "t3_thread_read", OrchestratorMcpThreadReadResult, {
         threadId: turn.threadId,
         itemId: last.itemId,
         textOffset,
@@ -305,6 +347,7 @@ export const make = Effect.gen(function* () {
       input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema };
     const { runId, step } = input.origin;
     const provenance = linkedStepMarker(step);
+    const origin = { schemaVersion: "t3.linked-message-origin/v1", environmentId: here } as const;
     if (input.thread !== undefined) {
       const threadId = input.thread;
       const uncertain = new WorkflowAgentMutationUncertain({
@@ -340,7 +383,6 @@ export const make = Effect.gen(function* () {
         uncertain,
       );
       const { args } = intent;
-      const origin = { schemaVersion: "t3.linked-message-origin/v1", environmentId: here } as const;
       const sending = intent.first
         ? yield* write(
             intent,
@@ -353,29 +395,37 @@ export const make = Effect.gen(function* () {
       const sent = yield* Option.match(sending, {
         onSome: (sent) =>
           sent.threadId === threadId ? Effect.succeed(sent) : Effect.fail(uncertain),
-        onNone: () =>
-          Effect.gen(function* () {
-            const requestDigest = yield* hash(args);
-            const receipt = yield* PeerMcpClient.lookupSendReceipt(peers, {
-              environmentId: intent.environmentId,
-              expectedGeneration: intent.generation,
-              origin,
-              limits: LIMITS,
-              request: { threadId: args.threadId, clientRequestId: requestId, requestDigest },
-              success: OrchestratorMcpThreadSendReceiptLookupResult,
-            }).pipe(Effect.mapError(() => uncertain));
-            if (
-              receipt.environmentId !== intent.environmentId ||
-              receipt.threadId !== threadId ||
-              receipt.clientRequestId !== requestId ||
-              receipt.requestDigest !== requestDigest ||
-              receipt.outcome !== "accepted"
-            )
-              return yield* uncertain;
-            return receipt.sent;
-          }),
+        onNone: Effect.fn("WorkflowAgentLinks.recoverSendReceipt")(function* () {
+          const requestDigest = yield* hash(args);
+          const receipt = yield* PeerMcpClient.lookupSendReceipt(peers, {
+            environmentId: intent.environmentId,
+            expectedGeneration: intent.generation,
+            origin,
+            limits: LIMITS,
+            request: {
+              threadId: ThreadId.make(args.threadId),
+              clientRequestId: requestId,
+              requestDigest,
+            },
+            success: OrchestratorMcpThreadSendReceiptLookupResult,
+          }).pipe(Effect.mapError(() => uncertain));
+          if (
+            receipt.environmentId !== intent.environmentId ||
+            receipt.threadId !== threadId ||
+            receipt.clientRequestId !== requestId ||
+            receipt.requestDigest !== requestDigest ||
+            receipt.outcome !== "accepted"
+          )
+            return yield* uncertain;
+          return receipt.sent;
+        }),
       });
-      return yield* accepted(runId, { threadId: sent.threadId, turnId: sent.runId, environment });
+      return yield* accepted(
+        runId,
+        intent,
+        { threadId: sent.threadId, turnId: sent.runId },
+        uncertain,
+      );
     }
     const project = input.project;
     const byPath = project !== undefined && isProjectPath(project);
@@ -393,7 +443,7 @@ export const make = Effect.gen(function* () {
       ...outputSchema,
       clientRequestId: requestId,
       // The thread there says which run it is a step of, and where that run lives.
-      workflowRun: { environmentId: here, ...input.origin },
+      workflowRun: { ...input.origin, environmentId: here },
     };
     const uncertain = new WorkflowAgentMutationUncertain({
       environment,
@@ -426,6 +476,7 @@ export const make = Effect.gen(function* () {
       "t3_thread_launch",
       ProjectToolkit.tools.t3_thread_launch.successSchema,
       { projectId, ...launchRequest },
+      origin,
     ).pipe(Effect.mapError(() => uncertain));
     if (launched.runId === null) {
       return yield* new WorkflowAgentMutationUncertain({
@@ -435,18 +486,28 @@ export const make = Effect.gen(function* () {
         threadId: launched.threadId,
       });
     }
-    return yield* accepted(runId, {
-      threadId: launched.threadId,
-      turnId: launched.runId,
-      environment,
-    });
+    return yield* accepted(
+      runId,
+      intent,
+      { threadId: launched.threadId, turnId: launched.runId },
+      uncertain,
+    );
   });
 
   const result = Effect.fn("WorkflowAgentLinks.result")(function* (
     turn: AgentTurn,
     environment: string,
-    options?: { readonly quiet?: Duration.Duration | undefined },
+    options?: Parameters<Service["result"]>[1],
   ): Effect.fn.Return<AgentResult, WorkflowAgentError> {
+    const key = yield* turnKey(environment, turn);
+    const unproved = new WorkflowAgentError({
+      reason: `Cannot prove the original pairing for workflow turn ${turn.turnId} in ${environment}.`,
+    });
+    const route = yield* acceptedRoute(options?.workflowRunId, environment, key).pipe(
+      Effect.mapError(() => unproved),
+    );
+    if (route === undefined) return yield* unproved;
+    yield* requireOriginalPairing(route);
     const ended = new Set(["completed", "failed", "interrupted", "cancelled", "rolled_back"]);
     /** The result a later turn submits, or nothing once the thread has been quiet. */
     const owed = Effect.fn("WorkflowAgentLinks.owed")(function* (quiet: Duration.Duration) {
@@ -455,7 +516,7 @@ export const make = Effect.gen(function* () {
       let counted = turn.turnId;
       while (true) {
         const piece = Math.min(left, Duration.toMillis(WAIT_PIECE));
-        const waited = yield* read(environment, "t3_thread_wait", OrchestratorMcpThreadWaitResult, {
+        const waited = yield* read(route, "t3_thread_wait", OrchestratorMcpThreadWaitResult, {
           threadId: turn.threadId,
           runId: turn.turnId,
           untilOutput: true,
@@ -466,7 +527,7 @@ export const make = Effect.gen(function* () {
         if (!waited.timedOut) return Option.none<Schema.Json>();
         left -= piece;
         if (left > 0) continue;
-        const page = yield* read(environment, "t3_thread_read", OrchestratorMcpThreadReadResult, {
+        const page = yield* read(route, "t3_thread_read", OrchestratorMcpThreadReadResult, {
           threadId: turn.threadId,
           limit: 1,
           runLimit: 1,
@@ -479,13 +540,13 @@ export const make = Effect.gen(function* () {
       }
     });
     while (true) {
-      const waited = yield* read(environment, "t3_thread_wait", OrchestratorMcpThreadWaitResult, {
+      const waited = yield* read(route, "t3_thread_wait", OrchestratorMcpThreadWaitResult, {
         threadId: turn.threadId,
         runId: turn.turnId,
         timeoutMs: Duration.toMillis(WAIT_PIECE),
       });
       if (waited.timedOut) continue;
-      const page = yield* read(environment, "t3_thread_read", OrchestratorMcpThreadReadResult, {
+      const page = yield* read(route, "t3_thread_read", OrchestratorMcpThreadReadResult, {
         threadId: turn.threadId,
         limit: 1,
         runLimit: 50,
@@ -504,7 +565,7 @@ export const make = Effect.gen(function* () {
         return {
           ending: "completed",
           detail: "",
-          reply: yield* reply(turn, environment),
+          reply: yield* reply(turn, route),
           ...(Option.isNone(output) ? {} : { output: output.value }),
         };
       }
@@ -542,6 +603,11 @@ export const make = Effect.gen(function* () {
       requestId,
       threadId,
     });
+    const route = yield* acceptedRoute(workflowRunId, environment, key).pipe(
+      Effect.mapError(() => uncertain),
+    );
+    if (route === undefined) return yield* uncertain;
+    yield* requireOriginalPairing(route).pipe(Effect.mapError(() => uncertain));
     const args = {
       threadId,
       runId: turnId,
@@ -551,9 +617,9 @@ export const make = Effect.gen(function* () {
     const intent = yield* recordIntent(
       workflowRunId,
       requestId,
-      `workflow-agent/turn/v1/${key}`,
+      turnMarker(key),
       ["t3_thread_interrupt", args],
-      yield* Effect.result(capture(environment)),
+      Result.succeed(route),
       uncertain,
     );
     if (!intent.first) return yield* uncertain;

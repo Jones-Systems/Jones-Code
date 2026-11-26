@@ -320,7 +320,15 @@ export function derivePendingBackgroundWork(input: {
 
   for (const task of pullRequestWatchTasks(input.pullRequests)) byTaskId.set(task.taskId, task);
 
-  return mergeDependencyTasks(Array.from(byTaskId.values()), input.dependencies);
+  // Follow-up tasks may share a child thread. Count each child once in the provider roster.
+  const childThreadIds = new Set<string>();
+  const providerTasks = Array.from(byTaskId.values()).filter((task) => {
+    if (task.kind !== "subagent" || task.childThreadId == null) return true;
+    if (childThreadIds.has(task.childThreadId)) return false;
+    childThreadIds.add(task.childThreadId);
+    return true;
+  });
+  return mergeDependencyTasks(providerTasks, input.dependencies);
 }
 
 function mergeDependencyTasks(

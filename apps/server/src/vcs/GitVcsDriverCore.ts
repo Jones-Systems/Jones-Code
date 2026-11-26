@@ -6633,7 +6633,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             timeListRefsPhase("snapshotMs"),
           ),
           Cache.get(listRefsCurrentBranchCache, normalizeRepositoryPathsCacheKey(input.cwd)).pipe(
-            Effect.orElseSucceed(() => repositoryPaths.currentBranch),
+            Effect.orElseSucceed(() => null),
           ),
         ],
         { concurrency: 2 },
@@ -8255,6 +8255,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     statusDetailsLocal,
     statusDetailsRemote,
     readStatusPoll,
+    readStatusRefreshRefs: readBranchPickerRefs,
     readRemoteFetchObservation,
     bindRemoteFetchObservations,
     resolveRepoFreshnessRemote,

@@ -545,6 +545,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly retireThreadForTransfer?: NonNullable<
       ProviderAdapter.ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]
     >;
+    readonly captureRuntimeStop?: ProviderAdapter.ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
     readonly failEventStream?: boolean;
     readonly normalizeThreadLoadModelSelection?: (selection: ModelSelection) => ModelSelection;
     readonly capabilities?: OrchestrationV2ProviderCapabilities;
@@ -687,6 +688,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
             : {
                 retireThreadForTransfer: options.retireThreadForTransfer,
               }),
+          ...(options.captureRuntimeStop === undefined
+            ? {}
+            : { captureRuntimeStop: options.captureRuntimeStop }),
           resumeThread: (threadInput) =>
             Effect.gen(function* () {
               yield* Ref.update(state, (current) => ({
@@ -761,6 +765,7 @@ function layerTest(input: {
   readonly retireThreadForTransfer?: NonNullable<
     ProviderAdapter.ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]
   >;
+  readonly captureRuntimeStop?: ProviderAdapter.ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
   readonly failEventStream?: boolean;
   readonly normalizeThreadLoadModelSelection?: (selection: ModelSelection) => ModelSelection;
   readonly capabilities?: OrchestrationV2ProviderCapabilities;
@@ -828,6 +833,9 @@ function layerTest(input: {
       ...(input.retireThreadForTransfer === undefined
         ? {}
         : { retireThreadForTransfer: input.retireThreadForTransfer }),
+      ...(input.captureRuntimeStop === undefined
+        ? {}
+        : { captureRuntimeStop: input.captureRuntimeStop }),
       ...(input.normalizeThreadLoadModelSelection === undefined
         ? {}
         : { normalizeThreadLoadModelSelection: input.normalizeThreadLoadModelSelection }),
@@ -7399,4 +7407,117 @@ it.effect(
         Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, retireThreadForTransfer: proof })),
       );
     }),
+);
+
+it.effect("a late retirement receipt leaves a newer load in the same session attached", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const closed = yield* Deferred.make<void>();
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("reloaded-after-stop-capture");
+      const providerSessionId = idAllocator.derive.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+      });
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const recordGeneration = (runtimeGeneration: string, expectedGeneration: string | null) =>
+        Effect.gen(function* () {
+          const providerThread = {
+            ...makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+            runtimeIdentity: {
+              runtimeGeneration,
+              requested: ProviderAdapter.requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+              observed: ProviderAdapter.unobservedRuntimeIdentity(),
+            },
+          };
+          yield* sink.write({
+            runtimeIdentityBoundary: { expectedGeneration },
+            events: [
+              {
+                id: yield* idAllocator.allocate.event({ threadId }),
+                type: "provider-thread.updated",
+                threadId,
+                occurredAt: now,
+                payload: providerThread,
+              },
+            ],
+          });
+          return providerThread;
+        });
+      const original = yield* recordGeneration("original-writer", null);
+      const runtime = yield* manager.open({
+        ...makeTestAdmission().input,
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* runtime.resumeThread({
+        threadId,
+        providerThread: original,
+        modelSelection,
+        runtimePolicy,
+      });
+      const captured = yield* manager.captureCurrentThreadRuntimeStop!(threadId);
+      if (captured?.retirement === undefined)
+        return yield* Effect.die("Missing retirement capture");
+      yield* captured.stop;
+      const replacement = yield* recordGeneration("replacement-writer", "original-writer");
+      yield* runtime.resumeThread({
+        threadId,
+        providerThread: replacement,
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* Deferred.succeed(closed, undefined);
+      assert.deepEqual(yield* captured.retirement.awaitRetired, {
+        binding: captured.binding,
+        evidence: "thread_closed",
+      });
+      assert.isFalse(yield* manager.hasRetiredWriter!({ providerSessionId, threadId }));
+      const attachment = yield* manager.readCurrentThreadRuntimeAttachment!(threadId);
+      assert.equal(attachment.status, "attached");
+      if (attachment.status === "attached")
+        assert.equal(attachment.binding.runtimeGeneration, "replacement-writer");
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          captureRuntimeStop: (provider) => {
+            const runtimeIdentity = provider.runtimeIdentity;
+            const generation = runtimeIdentity?.runtimeGeneration;
+            const evidenceRevision = runtimeIdentity?.evidenceRevision;
+            const binding =
+              generation === undefined
+                ? undefined
+                : ProviderAdapter.runtimeBinding(provider, generation);
+            if (binding === undefined || evidenceRevision === undefined)
+              return Effect.succeed(null);
+            let started = false;
+            return Effect.succeed({
+              binding,
+              evidenceRevision,
+              isCurrent: Effect.succeed(true),
+              stop: Effect.sync(() => {
+                started = true;
+              }),
+              retirement: {
+                binding,
+                started: Effect.sync(() => started),
+                awaitRetired: Deferred.await(closed).pipe(
+                  Effect.as({ binding, evidence: "thread_closed" as const }),
+                ),
+              },
+            });
+          },
+        }),
+      ),
+    );
+  }),
 );

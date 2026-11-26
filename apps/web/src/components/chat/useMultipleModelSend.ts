@@ -68,6 +68,8 @@ interface MultipleModelSendInput {
   readonly composerRef: ComposerHandleRef;
   readonly promptRef: { current: string };
   readonly runtimeMode: RuntimeMode;
+  readonly projectIsGitRepo: boolean;
+  readonly tracksGitRepositories: boolean;
   readonly startFromOrigin: boolean;
   readonly worktreeRepositories: ReadonlyArray<{ readonly path: string }> | undefined;
   readonly resetLocalDispatch: ReturnType<typeof useLocalDispatchState>["resetLocalDispatch"];
@@ -89,6 +91,8 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     composerRef,
     promptRef,
     runtimeMode,
+    projectIsGitRepo,
+    tracksGitRepositories,
     startFromOrigin,
     worktreeRepositories,
     resetLocalDispatch,
@@ -272,6 +276,9 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                         sendEnvMode: "worktree",
                         worktreePath: null,
                         projectCwd: project.workspaceRoot,
+                        projectIsGitRepo,
+                        tracksGitRepositories,
+                        repositories: worktreeRepositories,
                         baseBranch: branch,
                         startFromOrigin,
                         verifiedDefault: usesVerifiedDefault(
@@ -280,7 +287,6 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                         ),
                       }),
                       requireWorktree: true,
-                      ...(worktreeRepositories ? { repositories: worktreeRepositories } : {}),
                     },
                     runSetupScript: true,
                   },

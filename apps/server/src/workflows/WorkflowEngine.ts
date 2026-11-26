@@ -66,6 +66,7 @@ import {
   standingOf,
   unavailable,
   WorkflowForge,
+  type WorkflowForgeError,
 } from "./WorkflowForge.ts";
 import {
   hookId as hookIdOf,
@@ -129,16 +130,21 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
   const admission = workflowAdmission(yield* Effect.serviceOption(UpdateAdmissionFence));
   // Cancels under way, whose slow part the sweep must not take for one cut short.
   const cancelling = new Set<string>();
-  const ownerMutation = <A, E extends WorkflowError>(effect: Effect.Effect<A, E>) =>
-    admission
-      .run(effect)
-      .pipe(
-        Effect.mapError((error) =>
-          error._tag === "UpdateAdmissionRefused"
-            ? new WorkflowInputError({ problem: error.message })
-            : error,
-        ),
-      );
+  // Preserve the operation's own span for the work inside admission.
+  const ownerMutation = <Args extends Array<unknown>, A, E extends WorkflowError>(
+    operation: (...args: Args) => Effect.Effect<A, E>,
+  ) =>
+    Effect.fnUntraced(function* (...args: Args) {
+      return yield* admission
+        .run(Effect.suspend(() => operation(...args)))
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "UpdateAdmissionRefused"
+              ? new WorkflowInputError({ problem: error.message })
+              : error,
+          ),
+        );
+    });
   // The engine reads its own tables as BigInts. The rest of the server's queries must not.
   const plain =
     <Args extends ReadonlyArray<unknown>, A, E>(call: (...args: Args) => Effect.Effect<A, E>) =>
@@ -164,9 +170,14 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
   const stopTurn = plain(agents.interrupt);
   const observingAgents = WorkflowAgents.of({
     ...agents,
-    result: (...input) => admission.observe(Effect.suspend(() => agents.result(...input))),
+    // These wrappers share the enclosing watch's span.
+    result: Effect.fnUntraced(function* (turn, options) {
+      return yield* admission.observe(Effect.suspend(() => agents.result(turn, options)));
+    }),
     // A watch can time out while fenced. The interrupt is a separate, bounded action.
-    interrupt: (target) => admission.hold(Effect.suspend(() => agents.interrupt(target))),
+    interrupt: Effect.fnUntraced(function* (target) {
+      return yield* admission.hold(Effect.suspend(() => agents.interrupt(target)));
+    }),
   });
   const random = yield* SecureRandom.SecureRandom;
   const digest = yield* Digest.Digest;
@@ -487,23 +498,25 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
         const last = lookedAt.get(id);
         const at = DateTime.toEpochMillis(now);
         if (last !== undefined && at - last < Duration.toMillis(LOOK_EVERY)) continue;
-        const found =
-          trigger.kind === "issues"
-            ? forge.issues.list({
-                project: trigger.project,
-                // Closed ones too: an item can open and close between two looks.
-                state: "all",
-                sort: "created",
-                limit: LOOK_AT_MOST,
-                labels: trigger.labels,
-                query: trigger.query,
-              })
-            : forge.pullRequests.list({
-                project: trigger.project,
-                state: "all",
-                limit: LOOK_AT_MOST,
-                query: trigger.query,
-              });
+        const found: Effect.Effect<
+          ReadonlyArray<Issue | PullRequest>,
+          WorkflowForgeError
+        > = trigger.kind === "issues"
+          ? forge.issues.list({
+              project: trigger.project,
+              // Closed ones too: an item can open and close between two looks.
+              state: "all",
+              sort: "created",
+              limit: LOOK_AT_MOST,
+              labels: trigger.labels,
+              query: trigger.query,
+            })
+          : forge.pullRequests.list({
+              project: trigger.project,
+              state: "all",
+              limit: LOOK_AT_MOST,
+              query: trigger.query,
+            });
         const sinceMillis = millisOf(since) ?? at;
         yield* admission
           .run(
@@ -573,13 +586,10 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
                 }
               }),
             ),
-            Effect.catch((error) =>
-              error._tag === "UpdateAdmissionRefused"
-                ? Effect.fail(error)
-                : Effect.logWarning("A workflow could not look for new work", {
-                    trigger: id,
-                    error,
-                  }),
+            Effect.catchIf(
+              (error) => error._tag !== "UpdateAdmissionRefused",
+              (error) =>
+                Effect.logWarning("A workflow could not look for new work", { trigger: id, error }),
             ),
           );
       }
@@ -1355,7 +1365,7 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
   };
 
   return Workflows.of({
-    start: (...input) => ownerMutation(start(...input)),
+    start: ownerMutation(start),
     hooks: Effect.succeed(hooks.map(({ workflow, name, path }) => ({ workflow, name, path }))),
     // A cancelled run whose cleanup has not worked yet still needs its version to run it.
     unfinished: Effect.map(
@@ -1368,11 +1378,11 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
       ],
     ),
     deliver,
-    signal: (...input) => ownerMutation(signal(...input)),
-    answer: (...input) => ownerMutation(answer(...input)),
-    resume: (...input) => ownerMutation(resume(...input)),
-    cancel: (...input) => ownerMutation(cancel(...input)),
-    withdraw: (...input) => ownerMutation(withdraw(...input)),
+    signal: ownerMutation(signal),
+    answer: ownerMutation(answer),
+    resume: ownerMutation(resume),
+    cancel: ownerMutation(cancel),
+    withdraw: ownerMutation(withdraw),
     get: Effect.fn("Workflows.get")(function* (runId) {
       const row = yield* requireRun(runId);
       const steps = yield* store.steps(runId);
@@ -1447,12 +1457,16 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
         value: WorkflowStore.jsonValue(row.valueJson),
       }));
     }),
-    storeSet: Effect.fn("Workflows.storeSet")(function* (key, value) {
-      yield* keyValues.set(key, WorkflowStore.jsonText(value));
-    }, ownerMutation),
-    storeDelete: Effect.fn("Workflows.storeDelete")(function* (key) {
-      yield* keyValues.delete(key);
-    }, ownerMutation),
+    storeSet: ownerMutation(
+      Effect.fn("Workflows.storeSet")(function* (key: string, value: Schema.Json) {
+        yield* keyValues.set(key, WorkflowStore.jsonText(value));
+      }),
+    ),
+    storeDelete: ownerMutation(
+      Effect.fn("Workflows.storeDelete")(function* (key: string) {
+        yield* keyValues.delete(key);
+      }),
+    ),
     watch,
     sweep,
   });

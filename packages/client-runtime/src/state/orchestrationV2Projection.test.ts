@@ -231,6 +231,40 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
     expect(next?.visibleTurnItems[0]).toBe(visibleTurnItems[0]);
   });
 
+  it("retains saved queue policy through sparse lifecycle events and honors revocation", () => {
+    const projection = {
+      ...emptyProjection,
+      runs: [
+        {
+          ...run,
+          explicitQueue: true as const,
+          queuedToolBoundaryEligible: true,
+          queuedToolBoundaryFollowUpOfRunId: runId,
+        },
+      ],
+    };
+    const event = {
+      id: "event-sparse-queue-update",
+      type: "run.updated",
+      threadId,
+      runId,
+      occurredAt: now,
+      payload: run,
+    } as OrchestrationV2DomainEvent;
+    const next = applyOrchestrationV2ProjectionEvent(projection, event);
+    expect(next?.runs[0]).toMatchObject({
+      explicitQueue: true,
+      queuedToolBoundaryEligible: true,
+      queuedToolBoundaryFollowUpOfRunId: runId,
+    });
+    const revoked = applyOrchestrationV2ProjectionEvent(next, {
+      ...event,
+      type: "run.updated",
+      payload: { ...run, queuedToolBoundaryEligible: false },
+    });
+    expect(revoked?.runs[0]?.queuedToolBoundaryEligible).toBe(false);
+  });
+
   it("replaces only the updated visible item and retains its deferred work cursor", () => {
     const deferredWork = { cursor: "remaining-work", itemCount: 100, lastOrdinal: 101 };
     const first = { ...commandItem("item-first", "first"), deferredWork };

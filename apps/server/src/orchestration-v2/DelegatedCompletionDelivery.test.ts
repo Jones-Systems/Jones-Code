@@ -1416,7 +1416,7 @@ const seedRestartCancelledChild = (input: {
   readonly name: string;
   readonly completionWake: "always" | "settled_only";
   readonly continuationPending: boolean;
-  readonly runStatus?: "cancelled" | "completed" | "interrupted";
+  readonly runStatus?: "cancelled" | "completed" | "interrupted" | "running";
   readonly lostWork?: OrchestrationV2Run["restartCancelledBackgroundWork"];
   readonly now: DateTime.Utc;
 }) =>
@@ -3017,17 +3017,13 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
 
         const followupMessageId = MessageId.make("message:followup-grandchild-send");
         const projections = yield* ProjectionStore.ProjectionStoreV2;
-        const read = projections.getThreadRecords;
+        const read = projections.getDelegatedChildControls;
         const startingSnapshot = yield* Deferred.make<void>();
         const releaseSnapshot = yield* Deferred.make<void>();
         // Let the start reaction finish its read only after the nested-task write commits.
-        const readWithGate: typeof read = (threadId, fields, filter) =>
-          Effect.tap(read(threadId, fields, filter), (records) =>
+        const readWithGate: typeof read = (threadId, filter) =>
+          Effect.tap(read(threadId, filter), (records) =>
             threadId === child.childThreadId &&
-            fields.some((field) => field === "attempts") &&
-            "runs" in records &&
-            "subagents" in records &&
-            Array.isArray(records.runs) &&
             records.runs.some(
               (run: OrchestrationV2Run) =>
                 run.userMessageId === followupMessageId && run.status === "starting",
@@ -3039,7 +3035,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
           );
         yield* Effect.acquireRelease(
           Effect.sync(() =>
-            vi.spyOn(projections, "getThreadRecords").mockImplementation(readWithGate),
+            vi.spyOn(projections, "getDelegatedChildControls").mockImplementation(readWithGate),
           ),
           (spy) =>
             Deferred.succeed(releaseSnapshot, undefined).pipe(
@@ -5146,7 +5142,7 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
             name,
             completionWake: "always",
             continuationPending: false,
-            runStatus: "completed",
+            runStatus: "running",
             now,
           });
           const item = {
@@ -5230,6 +5226,19 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
               ],
             });
           }
+          // Recovery must see the terminal run after its last Stop evidence is durable.
+          yield* eventSink.write({
+            commandId: reconcileCommandId(`${name}:terminal`),
+            events: [
+              runEvent({
+                threadId: child.childThreadId,
+                runId: child.childRunId,
+                ordinal: 1,
+                status: "completed",
+                now: stoppedAt,
+              }),
+            ],
+          });
           return child;
         });
       const cut = yield* seedStoppedChild("stop-background-cut", true, true);

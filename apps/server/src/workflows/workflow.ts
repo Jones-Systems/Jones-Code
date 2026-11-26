@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import { identity } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
@@ -44,17 +45,23 @@ import * as WorkflowStore from "./WorkflowStore.ts";
 import { withoutRoutineSpans } from "@t3tools/shared/observability";
 
 /** A step that could not be completed. Its run is paused until someone resumes it. */
-export class StepFailed extends Schema.TaggedError<StepFailed>()("StepFailed", {
-  step: Schema.String,
-  reason: Schema.String,
-}) {
+export class StepFailed extends Schema.TaggedError<StepFailed, { readonly brand: unique symbol }>()(
+  "StepFailed",
+  {
+    step: Schema.String,
+    reason: Schema.String,
+  },
+) {
   override get message(): string {
     return `${this.step}: ${this.reason}`;
   }
 }
 
 /** The workflow's own decision to end without a result. */
-export class WorkflowStop extends Schema.TaggedError<WorkflowStop>()("WorkflowStop", {
+export class WorkflowStop extends Schema.TaggedError<
+  WorkflowStop,
+  { readonly brand: unique symbol }
+>()("WorkflowStop", {
   reason: Schema.String,
   /** The run was never for this workflow to do, which lists leave out. */
   skipped: Schema.optional(Schema.Boolean),
@@ -304,7 +311,7 @@ export const step = Object.assign(
     code: Effect.Effect<A, E, InStep>,
   ): Effect.Effect<A, never, InRun> => {
     checkStepOptions(`step("${name}")`, options);
-    return Effect.orDie(stepAs(claim(name), name, options, code));
+    return Effect.orDie(stepAs(claim(name), name, options, code, identity));
   },
   {
     /** As `step`, but a failure left after the retries comes back as `failed` with the reason. */
@@ -343,9 +350,10 @@ const stepAs = <A, I, X, E>(
   name: string,
   options: { readonly returns: Schema.Codec<A, I>; readonly retry?: StepRetry | undefined },
   code: Effect.Effect<X, E, InStep>,
-  // What the step makes of its tries: by default their value, or their failure.
-  settle: (tried: Effect.Effect<X, E>) => Effect.Effect<A, E> = (tried) =>
-    tried as unknown as Effect.Effect<A, E>,
+  // Preserve the workflow instance so cancellation can suspend the current activity.
+  settle: (
+    tried: Effect.Effect<X, E, WorkflowEngine.WorkflowInstance>,
+  ) => Effect.Effect<A, E, WorkflowEngine.WorkflowInstance>,
 ): Effect.Effect<A, StepFailed, InRun> =>
   Effect.flatMap(claimed, (run) => {
     const retry = options.retry ?? DEFAULT_RETRY;
@@ -1195,6 +1203,7 @@ export const layerDefinition = (definition: WorkflowDefinition, engine: EngineWo
                     reason: ended.reason,
                   }),
                 ),
+                identity,
               ),
         ),
         Effect.provideService(

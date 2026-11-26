@@ -259,6 +259,32 @@ const linkedKeyedLaunchCommandId = Effect.fn("mcp.linkedKeyedLaunchCommandId")(f
   return Option.isSome(accepted) ? legacy : yield* linkedLaunchCommandId(namespace, key);
 });
 
+const linkedWorkflowRun = (
+  input: Tool.Parameters<typeof ProjectToolkit.tools.t3_thread_launch>,
+  scope: McpInvocationContext.McpInvocationScope,
+  linkOrigin: McpToolAccess.StartedModes["linkOrigin"],
+) => {
+  const client = scope.client;
+  const origin = client?.remoteOrigin;
+  const workflowRun = input.workflowRun;
+  // This is an assertion from the authenticated peer. The origin header binds it to the
+  // session, and ordinary forwarding rewrites request keys instead of passing workflow keys.
+  return workflowRun !== undefined &&
+    scope.thread === undefined &&
+    client?.linked === true &&
+    linkOrigin?.sessionId === client.sessionId &&
+    origin?.linkSessionId === client.sessionId &&
+    origin.environmentId === workflowRun.environmentId &&
+    origin.environmentId !== scope.environmentId &&
+    origin.thread === undefined &&
+    client.senderThread === undefined &&
+    input.delegatedFrom === undefined &&
+    input.clientRequestId !== undefined &&
+    /^workflow:[a-f0-9]{64}$/u.test(input.clientRequestId)
+    ? workflowRun
+    : undefined;
+};
+
 export const launchThread = Effect.fn("mcp.launchThread")(function* (
   input: Tool.Parameters<typeof ProjectToolkit.tools.t3_thread_launch>,
   gate: McpToolAccess.ThreadStartGate,
@@ -304,6 +330,7 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
   const scope = yield* McpInvocationContext.McpInvocationContext;
   const context = yield* readCaller();
   const { caller } = context;
+  const workflowRun = linkedWorkflowRun(input, scope, linkOrigin);
   // A retry with the same key replays the first launch: the ids derive
   // from the caller and the key, and the launch service replays a
   // command it already accepted.
@@ -581,9 +608,7 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
     ...(linkOrigin === undefined ? {} : { linkOrigin }),
     // Kept only alongside linkOrigin: thread.create drops it otherwise.
     ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
-    ...(linkOrigin === undefined || input.workflowRun === undefined
-      ? {}
-      : { workflowRun: input.workflowRun }),
+    ...(workflowRun === undefined ? {} : { workflowRun }),
   }).pipe(
     Effect.mapError((error) => {
       if (error._tag === "AttachmentClaimError") {

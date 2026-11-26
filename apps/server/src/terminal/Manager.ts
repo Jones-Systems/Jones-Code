@@ -4813,12 +4813,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         return yield* writeError("Missing end of bracketed paste");
       }
       paste.lastWrite = clock.currentTimeMillisUnsafe();
-      try {
-        if (phase !== "abort" || bracketed) {
-          writeSplitData(phase === "abort" ? TERMINAL_BRACKETED_PASTE_END : input.data);
-        }
-      } catch (cause) {
-        return yield* writeError(cause);
+      if (phase !== "abort" || bracketed) {
+        yield* Effect.try({
+          try: () => writeSplitData(phase === "abort" ? TERMINAL_BRACKETED_PASTE_END : input.data),
+          catch: writeError,
+        });
       }
       if (phase === "continue") {
         paste.trailingData = (paste.trailingData + input.data).slice(-pasteEndOverlap);
@@ -4848,11 +4847,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           if (!isCurrent()) return yield* inactiveError();
           if (activePastes.has(process)) return false;
           // Reserve the PTY in the same turn as the first successful write.
-          try {
-            writeSplitData(input.data);
-          } catch (cause) {
-            return yield* writeError(cause);
-          }
+          yield* Effect.try({ try: () => writeSplitData(input.data), catch: writeError });
           if (!isCurrent()) return yield* inactiveError();
           const paste = {
             owner: viewerId,
@@ -4867,14 +4862,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             while (activePastes.get(process) === paste && isCurrent()) {
               const remaining = paste.lastWrite + pasteIdleMillis - clock.currentTimeMillisUnsafe();
               if (remaining <= 0) {
-                try {
-                  if (bracketed) writeSplitData(TERMINAL_BRACKETED_PASTE_END);
-                } catch (cause) {
-                  releasePaste(process);
-                  return yield* Effect.fail(writeError(cause)).pipe(
-                    Effect.ignoreCause({ log: true }),
-                  );
-                }
+                if (bracketed)
+                  yield* Effect.try({
+                    try: () => writeSplitData(TERMINAL_BRACKETED_PASTE_END),
+                    catch: writeError,
+                  }).pipe(Effect.ignoreCause({ log: true }));
                 releasePaste(process);
                 return;
               }
@@ -4915,26 +4907,26 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       if (activePastes.has(process)) continue;
       if (input.reply && !acceptsQueryReply(toSessionKey(input.threadId, terminalId), viewerId))
         return;
-      try {
-        noteInput();
-        scriptObserver.write(
-          input,
-          {
-            process,
-            threadId: session.threadId,
-            terminalId: session.terminalId,
-            launchCwd: session.cwd,
-            observedCwd,
-            shell: session.shellName,
-            physical: session.workspaceDutyIdentity,
-            isCurrent,
-          },
-          (data) => process.write(PtyAdapter.ptyInput(data, input.binary)),
-        );
-      } catch (cause) {
-        return yield* writeError(cause);
-      }
-      return;
+      return yield* Effect.try({
+        try: () => {
+          noteInput();
+          scriptObserver.write(
+            input,
+            {
+              process,
+              threadId: session.threadId,
+              terminalId: session.terminalId,
+              launchCwd: session.cwd,
+              observedCwd,
+              shell: session.shellName,
+              physical: session.workspaceDutyIdentity,
+              isCurrent,
+            },
+            (data) => process.write(PtyAdapter.ptyInput(data, input.binary)),
+          );
+        },
+        catch: writeError,
+      });
     }
   });
 

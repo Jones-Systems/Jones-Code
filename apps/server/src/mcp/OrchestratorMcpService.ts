@@ -3808,6 +3808,7 @@ const make = Effect.gen(function* () {
                           : { options: resolvedModelSelection.options }),
                       },
                       providers: yield* loadProviders,
+                      cwd: yield* parentWorkspaceCwd(parent),
                     }));
                   const runtimeMode =
                     admitted?.runtimeMode ??

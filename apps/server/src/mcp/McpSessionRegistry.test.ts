@@ -300,10 +300,10 @@ it.effect(
       expect(ordinaryScope).toBeDefined();
       expect(explicitScope).toBeDefined();
       expect(ordinaryScope!.capabilities).toEqual(
-        new Set(["orchestration", "worktree", "pull-requests", "preview"]),
+        new Set(["orchestration", "worktree", "pull-requests", "issues", "preview"]),
       );
       expect(explicitScope!.capabilities).toEqual(
-        new Set(["orchestration", "worktree", "pull-requests", "decision-snapshot"]),
+        new Set(["orchestration", "worktree", "pull-requests", "issues", "decision-snapshot"]),
       );
       let reads = 0;
       let launches = 0;

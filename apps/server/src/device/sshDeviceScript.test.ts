@@ -274,7 +274,7 @@ describe("remote helper lifecycle", () => {
             hub,
             `import http from 'node:http'; import fs from 'node:fs';
   if(fs.existsSync('fail-start-once')) {fs.unlinkSync('fail-start-once');process.exit(1);}
-  const args=process.argv.slice(2); http.createServer((req,res)=>{res.statusCode=fs.existsSync('unhealthy-'+process.pid)?503:200;res.end('ok');}).listen(Number(args[args.indexOf('--port')+1]),'127.0.0.1');`,
+  const args=process.argv.slice(2); http.createServer((req,res)=>{res.statusCode=fs.existsSync('unhealthy-'+process.pid)?503:200;res.end('ok');}).listen(Number(args[args.indexOf('--port')+1]),'127.0.0.1',()=>console.log('token=fixture-'+process.pid));`,
           );
           await NodeFSP.writeFile(
             agent,

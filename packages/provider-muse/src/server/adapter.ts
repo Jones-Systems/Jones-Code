@@ -2059,7 +2059,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               Effect.mapError((cause) => protocolError("The admitted Muse host has exited", cause)),
             );
           }
-          const result = yield* request(
+          const registerNativeSession = request(
             requestedId ? "session/resume" : "session/start",
             requestedId
               ? { excludeItems: true, ...(config ? { config } : {}), permissionProfile }
@@ -2080,6 +2080,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               return Effect.fail(error);
             }),
             Effect.flatMap((value) => decode(MuseSessionResult, value)),
+          );
+          const result = yield* (requestedId ? reportStartupPhase("resume") : Effect.void).pipe(
+            Effect.andThen(registerNativeSession),
             Effect.ensuring(Effect.suspend(() => reportStartupPhase(undefined))),
           );
           if (result.session.sessionId !== nativeSessionId)

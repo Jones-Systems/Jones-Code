@@ -2353,7 +2353,8 @@ server.listen(Number(flag("--port") ?? 0), "127.0.0.1", () => {
           .readFileString(`${home}/.t3/userdata/server-runtime.json`)
           .pipe(Effect.map((runtime) => Number(JSON.parse(runtime).pid)));
 
-        assert.equal((yield* launch("a".repeat(32))).remoteServerKind, "managed");
+        const ownerDesktop = yield* launch("a".repeat(32));
+        assert.equal(ownerDesktop.remoteServerKind, "managed");
         const serverPid = yield* runtimePid;
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
@@ -2370,6 +2371,9 @@ server.listen(Number(flag("--port") ?? 0), "127.0.0.1", () => {
           "the second desktop recorded itself as the server's launcher",
         );
         assert.equal(otherDesktop.remoteServerKind, "external");
+        assert.equal(otherDesktop.remotePort, ownerDesktop.remotePort);
+        assert.equal(yield* fs.readFileString(`${stateDir}/managed`), "managed\n");
+        assert.equal(yield* fs.readFileString(`${stateDir}/pid`), `${serverPid}\n`);
 
         const layer = Layer.mergeAll(
           NodeServices.layer,
@@ -2539,6 +2543,7 @@ const canBind = (port) =>
       const home = `${root}/home`;
       const stateDir = `${home}/.t3/ssh-launch/test-state`;
       const fakeT3 = `${root}/fake-t3.cjs`;
+      const launcherId = "a".repeat(32);
       yield* fs.makeDirectory(stateDir, { recursive: true });
       yield* fs.writeFileString(`${stateDir}/port`, `${yield* freeLoopbackPort}\n`);
       yield* fs.writeFileString(fakeT3, FAKE_T3);
@@ -2576,10 +2581,12 @@ const canBind = (port) =>
         Effect.gen(function* () {
           const launch = `${root}/launch-${archiveVersion}.sh`;
           yield* fs.writeFileString(launch, SshTunnel.buildRemoteLaunchScript({ archiveVersion }));
-          const result = yield* runScript(home, [launch, "test-state"]);
+          const result = yield* runScript(home, [launch, "test-state", launcherId]);
           assert.equal(result.exitCode, 0, result.stderr);
           const pid = yield* readManagedPid;
           launchedPids.add(pid);
+          assert.equal(JSON.parse(result.stdout).serverKind, "managed");
+          assert.equal(yield* fs.readFileString(`${stateDir}/launcher`), `${launcherId}\n`);
           return pid;
         });
       return { connect, readManagedPid, readServerVersion };
@@ -2626,15 +2633,16 @@ const canBind = (port) =>
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.live.skipIf(windowsHost)("a newer client still replaces an older managed server", () =>
+  it.live.skipIf(windowsHost)("a newer client keeps its older managed server running", () =>
     Effect.gen(function* () {
       const { connect, readServerVersion } = yield* prepareLaunch(["0.1.5", "0.1.6"]);
       const olderPid = yield* connect("0.1.5");
+      assert.equal(yield* readServerVersion, "0.1.5");
 
-      const newerPid = yield* connect("0.1.6");
-      assert.notEqual(newerPid, olderPid);
-      assert.isFalse(isAlive(olderPid));
-      assert.equal(yield* readServerVersion, "0.1.6");
+      const pidAfterNewerClient = yield* connect("0.1.6");
+      assert.equal(pidAfterNewerClient, olderPid);
+      assert.isTrue(isAlive(olderPid));
+      assert.equal(yield* readServerVersion, "0.1.5");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

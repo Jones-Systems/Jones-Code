@@ -6307,6 +6307,8 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         yield* git(cwd, ["branch", "feature"]);
         yield* git(cwd, ["branch", "same-commit"]);
         const driver = yield* GitVcsDriver.GitVcsDriver;
+        const refreshRefs = yield* driver.readStatusRefreshRefs(cwd);
+        if (refreshRefs === null) return assert.fail("Expected refs for the status refresh");
         const snapshot = driver.readRefSnapshot(cwd);
         const initial = yield* snapshot;
         assert.isNotNull(initial);
@@ -6317,6 +6319,8 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         const attached = yield* snapshot;
         assert.isNotNull(attached);
         assert.notEqual(attached, initial);
+        assert.equal(yield* driver.readStatusRefreshRefs(cwd), refreshRefs);
+        assert.equal(yield* driver.readRefSnapshot(cwd, refreshRefs), attached);
         assert.equal(yield* snapshot, attached);
         yield* git(worktree, ["checkout", "same-commit"]);
         const switched = yield* snapshot;

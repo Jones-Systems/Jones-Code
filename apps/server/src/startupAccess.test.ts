@@ -222,12 +222,14 @@ describe("headlessServeOutput", () => {
       return { text, issued };
     });
 
-  it.effect("prints pairing details for a server run in a terminal", () =>
+  it.effect("prints the pairing command without exposing the issued credential", () =>
     Effect.gen(function* () {
       const { text, issued } = yield* output(false);
       expect(issued).toBe(1);
-      expect(text).toContain("Token: FIXTURECODE1");
-      expect(text).toContain("#token=FIXTURECODE1");
+      expect(text).toContain("Startup pairing credential issued; credential output withheld.");
+      expect(text).toContain("Run `t3 pair` on this host");
+      expect(text).not.toContain("FIXTURECODE1");
+      expect(text).not.toContain("#token=");
     }),
   );
 

@@ -265,6 +265,7 @@ export const layerExecutor: Layer.Layer<
               ...(effect.request.processLossCount === undefined
                 ? {}
                 : { processLossCount: effect.request.processLossCount }),
+              ...(effect.request.cause === undefined ? {} : { cause: effect.request.cause }),
               ...(effect.request.continueWithoutPreference === undefined
                 ? {}
                 : { continueWithoutPreference: effect.request.continueWithoutPreference }),

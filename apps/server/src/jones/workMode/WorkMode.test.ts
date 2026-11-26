@@ -152,7 +152,7 @@ const testLayer = WorkMode.layer.pipe(Layer.provideMerge(orchestratorLayer));
 // post-restart one. Production has one orchestrator, and it always has planned continuity,
 // so this test's original orchestrator shares the continuity the restarted one uses.
 const plannedContinuityLayer = PlannedUpdateContinuity.layer.pipe(
-  Layer.provide(ThreadCommands.layer),
+  Layer.provideMerge(ThreadCommands.layer),
   Layer.provide(dependencies),
 );
 const plannedTestLayer = WorkMode.layer.pipe(

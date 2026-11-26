@@ -51,6 +51,7 @@ export function deriveQueuedSteerBatch(input: {
         active !== null &&
         !isQueuedSteerControlMessage(message) &&
         run.freshContext !== true &&
+        run.outputSchema === undefined &&
         run.sourcePlanRef === undefined &&
         run.restartContinuationOfRunId === undefined &&
         projection.nodes.some((node) => node.id === run.rootNodeId) &&

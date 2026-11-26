@@ -108,6 +108,7 @@ import { threadEnvironment } from "../../state/threads";
 import { runMobileComposerTransition } from "./draftHeroTransition";
 import { useClientSettingsHydrated } from "../../hooks/useSettings";
 import { useStableCallback } from "../../hooks/useStableCallback";
+import { useWorktreeRepositoryChoices } from "../../hooks/useWorktreeRepositoryChoices";
 import { environmentPresentations } from "../../state/presentation";
 import {
   approvalRedirectNotice,
@@ -413,6 +414,7 @@ export function useComposerSend(input: ComposerSendInput) {
   });
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
+  const { tracksGitRepositories } = useWorktreeRepositoryChoices(activeProject);
   const sendToMultipleModels = useMultipleModelSend({
     environmentId,
     activeThread,
@@ -423,6 +425,8 @@ export function useComposerSend(input: ComposerSendInput) {
     composerRef,
     promptRef,
     runtimeMode,
+    projectIsGitRepo: isGitRepo,
+    tracksGitRepositories,
     startFromOrigin,
     worktreeRepositories,
     resetLocalDispatch,
@@ -1074,6 +1078,7 @@ export function useComposerSend(input: ComposerSendInput) {
     const {
       shouldStartConversation,
       missingWorktreeBaseBranch,
+      baseBranchForWorktree,
       compactBeforeSend,
       turnDispatchMode,
       shouldQueueBehindActiveRun,
@@ -1103,7 +1108,10 @@ export function useComposerSend(input: ComposerSendInput) {
       sendEnvMode: effectiveSendEnvMode,
       worktreePath: activeThread.worktreePath,
       projectCwd: activeProject.workspaceRoot,
-      baseBranch: activeThreadBranch,
+      projectIsGitRepo: isGitRepo,
+      tracksGitRepositories,
+      repositories: worktreeRepositories,
+      baseBranch: baseBranchForWorktree,
       startFromOrigin,
     });
     const shouldCreateWorktree = worktreePreparation !== undefined;
@@ -1899,12 +1907,7 @@ export function useComposerSend(input: ComposerSendInput) {
                 : {}),
               ...(worktreePreparation
                 ? {
-                    prepareWorktree: {
-                      ...worktreePreparation,
-                      ...(worktreeRepositories === undefined
-                        ? {}
-                        : { repositories: worktreeRepositories }),
-                    },
+                    prepareWorktree: worktreePreparation,
                     runSetupScript: true,
                   }
                 : {}),

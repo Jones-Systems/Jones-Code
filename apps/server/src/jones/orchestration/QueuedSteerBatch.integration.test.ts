@@ -971,6 +971,18 @@ it.effect.each(batchScenarios)(
               ),
             };
             assert.isTrue("error" in validateQueuedSteerBatch(freshSession, command));
+            const structured = {
+              ...before,
+              runs: before.runs.map((run) =>
+                run.id === command.items[index]!.queuedRunId
+                  ? { ...run, outputSchema: { type: "object" } }
+                  : run,
+              ),
+            };
+            assert.isTrue("error" in validateQueuedSteerBatch(structured, command));
+            assert.isFalse(
+              queuedSteerBatchCandidates(structured, command.targetRunId, true)[index]!.eligible,
+            );
           }
           assert.isTrue("error" in validateQueuedSteerBatch(before, { ...command, items: [] }));
           assert.isTrue(

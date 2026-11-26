@@ -462,6 +462,11 @@ export interface ProviderTurnStartServiceV2Shape {
   }) => Effect.Effect<void, ProviderTurnStartError | ProviderTurnStartRunStateMissingError>;
 }
 
+type RunStartInput = Parameters<ProviderTurnStartServiceV2Shape["start"]>[0] & {
+  readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
+};
+type RunStart = (input: RunStartInput) => Effect.Effect<void, ProviderTurnStartError>;
+
 export class ProviderTurnStartServiceV2 extends Context.Service<
   ProviderTurnStartServiceV2,
   ProviderTurnStartServiceV2Shape
@@ -829,12 +834,7 @@ export const layer: Layer.Layer<
     );
 
     const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (
-      input: {
-        readonly threadId: ThreadId;
-        readonly runId: RunId;
-        readonly willRetry?: boolean;
-        readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
-      },
+      input: RunStartInput,
       captureStartingRun: (run: OrchestrationV2Run) => void,
     ) {
       const { runId } = input;
@@ -1199,7 +1199,7 @@ export const layer: Layer.Layer<
       }
       const requiredNativeSession = continuation.success;
       const guarded = requiredNativeSession !== undefined;
-      const admittedSuccessors = new Map<string, typeof ProviderRuntimeBinding.Type>();
+      const admittedSuccessors = new Map<string, ProviderRuntimeBinding>();
       const equivalentAdmissionBinding = Schema.toEquivalence(ProviderRuntimeBinding);
       const assertAdmission = Effect.fn("ProviderTurnStartService.assertAdmission")(
         (expected: OrchestrationV2ProviderThread) =>
@@ -1982,7 +1982,10 @@ export const layer: Layer.Layer<
         });
         return;
       }
-      const recreatedBeforeDispatch = yield* worktreeRestore.takeRecreated(projection.thread.id);
+      const recreatedBeforeDispatch =
+        input.nativeCreationGuard === undefined
+          ? yield* worktreeRestore.takeRecreated(projection.thread.id)
+          : undefined;
       const recreated =
         recreateResult.success ??
         (recreatedBeforeDispatch?.worktreePath === projection.thread.worktreePath
@@ -2000,26 +2003,25 @@ export const layer: Layer.Layer<
               createdBy: "system",
               runId,
             });
-            const setupResult = yield* Effect.result(
-              Effect.gen(function* () {
-                const setup = yield* setupScripts.runForThread({
-                  threadId: projection.thread.id,
-                  projectId: project.id,
-                  projectCwd: project.workspaceRoot,
-                  worktreePath,
-                  project,
-                  observeCompletion: {},
-                });
-                if (setup.status !== "started" || !setup.completion) return;
-                if (setup.async) {
-                  yield* setup.completion.pipe(Effect.forkDetach);
-                } else {
-                  const { exitCode } = yield* setup.completion;
-                  if (exitCode !== 0)
-                    return yield* new WorktreeSetupScriptFailedError({ worktreePath, exitCode });
-                }
-              }),
-            );
+            const setup = Effect.gen(function* () {
+              const script = yield* setupScripts.runForThread({
+                threadId: projection.thread.id,
+                projectId: project.id,
+                projectCwd: project.workspaceRoot,
+                worktreePath,
+                project,
+                observeCompletion: {},
+              });
+              if (script.status !== "started" || !script.completion) return;
+              if (script.async) {
+                yield* script.completion.pipe(Effect.forkDetach);
+              } else {
+                const { exitCode } = yield* script.completion;
+                if (exitCode !== 0)
+                  return yield* new WorktreeSetupScriptFailedError({ worktreePath, exitCode });
+              }
+            });
+            const setupResult = yield* guardClaim(Effect.result(setup));
             if (setupResult._tag === "Failure") {
               yield* settleStartFailure({
                 signal: "worktree-setup-failure",
@@ -2029,6 +2031,7 @@ export const layer: Layer.Layer<
               });
               return;
             }
+            yield* assertAdmission(providerThread);
             yield* runStart(input);
           }),
         };
@@ -4300,13 +4303,8 @@ export const layer: Layer.Layer<
       });
     });
 
-    const runStart = Effect.fn("ProviderTurnStartService.start")(
-      function* (input: {
-        readonly threadId: ThreadId;
-        readonly runId: RunId;
-        readonly willRetry?: boolean;
-        readonly nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard;
-      }) {
+    const runStart: RunStart = Effect.fn("ProviderTurnStartService.start")(
+      function* (input: RunStartInput) {
         let startingRun: OrchestrationV2Run | undefined;
         const captureStartingRun = (run: OrchestrationV2Run) => {
           startingRun = run;

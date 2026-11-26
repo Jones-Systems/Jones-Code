@@ -308,6 +308,7 @@ it.effect.each(storageCases)(
       const committed = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
       const layerEvents = Layer.mock(EventSink.EventSinkV2)({
         supersededTerminalTrace: SupersededTerminalTrace.make(),
+        hasAttributedRuntimeStop: () => Effect.succeed(false),
         latestSequence: () => Effect.succeed(0),
         stream: () =>
           Stream.fromEffectRepeat(

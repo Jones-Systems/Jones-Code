@@ -135,6 +135,8 @@ const publicServerCommand = Schema.Union([
   withLegacyInputs(OrchestrationV2Command.members[55]),
   withLegacyInputs(OrchestrationV2Command.members[56]),
   withLegacyInputs(OrchestrationV2Command.members[57]),
+  withLegacyInputs(OrchestrationV2Command.members[58]),
+  withLegacyInputs(OrchestrationV2Command.members[59]),
 ]) satisfies Schema.Constraint & { readonly Type: OrchestrationV2ServerCommand };
 type ServerCommandCoverage<
   A extends typeof publicServerCommand.Type | typeof internalCommand.Type,

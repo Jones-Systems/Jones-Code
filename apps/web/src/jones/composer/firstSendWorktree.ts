@@ -19,6 +19,9 @@ export function resolveFirstSendWorktreePreparation(input: {
   sendEnvMode: DraftThreadEnvMode;
   worktreePath: string | null;
   projectCwd: string;
+  projectIsGitRepo: boolean;
+  tracksGitRepositories: boolean;
+  repositories?: ReadonlyArray<{ readonly path: string }> | undefined;
   baseBranch: string | null;
   startFromOrigin: boolean;
   verifiedDefault?: boolean;
@@ -26,14 +29,24 @@ export function resolveFirstSendWorktreePreparation(input: {
   if (!input.isFirstMessage || input.sendEnvMode !== "worktree" || input.worktreePath !== null) {
     return undefined;
   }
-  if (input.verifiedDefault && input.baseBranch === null) {
+  const preparation = {
+    projectCwd: input.projectCwd,
+    ...(input.repositories === undefined ? {} : { repositories: input.repositories }),
+  };
+  if (
+    input.verifiedDefault &&
+    input.projectIsGitRepo &&
+    !input.tracksGitRepositories &&
+    (input.repositories?.length ?? 0) === 0 &&
+    input.baseBranch === null
+  ) {
     return {
-      projectCwd: input.projectCwd,
+      ...preparation,
       baseFreshness: input.startFromOrigin ? "fetch-now" : "verified",
     };
   }
   return {
-    projectCwd: input.projectCwd,
+    ...preparation,
     ...(input.baseBranch !== null ? { baseBranch: input.baseBranch } : {}),
     ...(input.startFromOrigin ? { startFromOrigin: true } : {}),
   };

@@ -4090,6 +4090,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             type: "provider-runtime.continue",
             sourceRunId: run.id,
             ...(processLossCount === undefined ? {} : { processLossCount }),
+            ...(previous?.type === "provider-runtime.continue" && previous.cause !== undefined
+              ? { cause: previous.cause }
+              : {}),
           },
           availableAt: DateTime.add(yield* DateTime.now, { milliseconds: delayMs }),
         },
@@ -8828,7 +8831,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (
           [...queuedMessages.values()].some(
             (message) =>
-              message.createdBy === "agent" && message.senderThreadId === command.senderThreadId,
+              message.createdBy === "agent" &&
+              (command.linkedSender === undefined
+                ? message.linkedSender === undefined &&
+                  message.senderThreadId === command.senderThreadId
+                : message.linkedSender?.environmentId === command.linkedSender.environmentId &&
+                  message.linkedSender.threadId === command.linkedSender.threadId),
           )
         ) {
           dispatchMode = { type: "queue_after_active" };
@@ -9040,6 +9048,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const commandNotice = noticeKind === "command" && command.creationSource === "server";
     if (
       !freshContext &&
+      !isSlashCommand(command) &&
       stoppedNotificationSource === undefined &&
       (delegatedCompletion !== undefined
         ? delegatedCompletion.taskIds.every(
@@ -14406,7 +14415,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     let updatedRun =
       command.modelSelection === undefined
         ? queuedRun
-        : { ...queuedRun, modelSelection, providerInstanceId: modelSelection.instanceId };
+        : {
+            ...queuedRun,
+            modelSelection,
+            providerInstanceId: modelSelection.instanceId,
+            // Pinning a selection revokes automatic delivery inherited from the active turn.
+            ...(queuedRun.queuedToolBoundaryFollowUpOfRunId === undefined
+              ? {}
+              : { queuedToolBoundaryEligible: false }),
+          };
     if (
       updatedRun.steerWhenReadyRunId !== undefined &&
       (isSlashCommand({

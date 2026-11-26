@@ -11,6 +11,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+      "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
+    },
+    {
       "from": "apps/server/src/workflows/WorkflowAgentLinks.ts",
       "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
     },

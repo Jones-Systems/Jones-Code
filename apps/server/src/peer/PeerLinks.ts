@@ -189,7 +189,7 @@ const failStorage = (cause: unknown) =>
  * code and then the link's token travel to it, so plain http is accepted only
  * where the network already encrypts: this machine, or a Tailscale address.
  */
-const peerOrigin = (url: string) => {
+const peerOrigin = (url: string): Effect.Effect<string, PeerLinkError> => {
   const parsed = URL.parse(url);
   if (parsed === null || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
     return Effect.fail(

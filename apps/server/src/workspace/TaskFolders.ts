@@ -1464,7 +1464,8 @@ const make = Effect.gen(function* () {
               // Listed only now: a branch that appeared during the wait is not this attempt's to
               // delete. Noted only once the command is cleared: one refused after its wait made
               // nothing to roll back.
-              verifySources.pipe(Effect.andThen(branchNames(checkedOutFrom))).pipe(
+              verifySources.pipe(
+                Effect.andThen(branchNames(checkedOutFrom)),
                 Effect.mapError(listFailed),
                 Effect.map((before) => () => {
                   layoutStarted = true;
@@ -2088,7 +2089,7 @@ const make = Effect.gen(function* () {
     removeForProjectFolder,
     registeredPathReason,
     renameBranch,
-    restore: (input) => assertReady(input),
+    restore: assertReady,
     assertReady,
     layoutCommands,
   });

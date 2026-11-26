@@ -27,6 +27,7 @@ import { checkpointRefForScopeOrdinal } from "./orchestration-v2/CheckpointServi
 import {
   DEFAULT_SERVER_SETTINGS,
   ServerSettingsError,
+  type StorageCleanupReportEntry,
   type WorktreeKeepWhen,
   type StorageCleanupSettings,
   type TerminalMetadataStreamEvent,
@@ -1203,17 +1204,27 @@ it.live.each(["repository", "uppercase", "bare"] as const)(
     ),
 );
 
-it.live("removes a worktree whose ignored folder holds a gitfile pointing nowhere", () =>
+it.live("keeps a worktree whose ignored folder holds a dangling gitfile", () =>
   runCleanupTest(
     Effect.gen(function* () {
-      const { service, fs, worktree } = yield* cleanupFixture();
+      const { service, fs, worktree, removalArgs } = yield* cleanupFixture();
       // Packages such as conda-forge's `referencing` ship a test suite's dangling gitlink.
+      const gitfile = `${worktree}/dist/suite/.git`;
+      const contents = "gitdir: ../.git/modules/x\n";
       yield* fs.makeDirectory(`${worktree}/dist/suite`, { recursive: true });
-      yield* fs.writeFileString(`${worktree}/dist/suite/.git`, "gitdir: ../.git/modules/x\n");
+      yield* fs.writeFileString(gitfile, contents);
       const [entry] = (yield* service.runNow).entries;
-      expect(entry?.reason).not.toBe("Contains a nested Git repository");
-      expect(entry).toMatchObject({ outcome: "removed" });
-      expect(yield* fs.exists(worktree)).toBe(false);
+      expect(entry, entry?.reason).toMatchObject({
+        path: worktree,
+        outcome: "kept",
+        retirement: {
+          state: "not_retired",
+          reasonCodes: expect.arrayContaining(["nested_repository"]),
+          receiptId: null,
+        },
+      });
+      expect(yield* fs.readFileString(gitfile)).toBe(contents);
+      expect(removalArgs()).toEqual([]);
     }),
   ),
 );
@@ -3486,76 +3497,88 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.live("keeps reporting a worktree whose git metadata cannot be deleted", () =>
+
+  const legacyLeftoverReason =
+    "Leftover Git metadata is retained until its checkout custody is verified.";
+  const recordLegacyWorktreeLeftover = Effect.fnUntraced(function* (
+    fixture: Effect.Success<ReturnType<typeof cleanupFixture>>,
+  ) {
+    const { command, config, fs, repo, worktree } = fixture;
+    const adminDir = (yield* command(worktree, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
+    // Seed the saved legacy outcome directly. The runner's permissions can change how Git removes a worktree.
+    yield* command(repo, ["worktree", "remove", "--", worktree]);
+    const record = `${config.stateDir}/storage-cleanup-leftovers.json`;
+    const entry = {
+      kind: "worktree",
+      outcome: "kept",
+      reason: "",
+      path: worktree,
+      projectPath: repo,
+      threadId: ThreadId.make("thread-1"),
+      threadTitle: "Thread",
+      bytes: null,
+      files: null,
+    } satisfies StorageCleanupReportEntry;
+    const recordContents = JSON.stringify([{ adminDir, entry }]);
+    yield* fs.writeFileString(record, recordContents);
+    return { adminDir, record, recordContents };
+  });
+
+  it.live("keeps reporting recorded Git metadata after the checkout is gone", () =>
     runCleanupTest(
       Effect.gen(function* () {
         const fixture = yield* cleanupFixture();
-        const adminDir = (yield* fixture.command(fixture.worktree, [
-          "rev-parse",
-          "--absolute-git-dir",
-        ])).stdout.trim();
-        // Stands in for root-owned files a container wrote into the worktree's git dir.
-        const stuck = `${adminDir}/scratch/fanal`;
-        yield* fixture.fs.makeDirectory(stuck, { recursive: true });
-        yield* fixture.fs.writeFileString(`${stuck}/f`, "x\n");
-        yield* fixture.fs.chmod(stuck, 0o555);
-        yield* Effect.addFinalizer(() => fixture.fs.chmod(stuck, 0o755).pipe(Effect.ignore));
-        yield* fixture.service.runNow;
-        // Git may delete these before it reaches the folder it cannot, and then stops listing
-        // the worktree.
-        yield* fixture.fs.remove(`${adminDir}/gitdir`, { force: true });
-        yield* fixture.fs.remove(`${adminDir}/HEAD`, { force: true });
-        const later = yield* fixture.service.runNow;
-        expect(later.entries).toEqual([
-          expect.objectContaining({
-            path: fixture.worktree,
-            outcome: expect.stringMatching(/^(kept|failed)$/),
-          }),
+        const { fs, service, worktree, removalArgs } = fixture;
+        const { adminDir, record, recordContents } = yield* recordLegacyWorktreeLeftover(fixture);
+        const residue = `${adminDir}/scratch/payload`;
+        yield* fs.makeDirectory(`${adminDir}/scratch`, { recursive: true });
+        yield* fs.writeFileString(residue, "leftover\n");
+
+        const report = yield* service.runNow;
+        expect(report.entries).toMatchObject([
+          { path: worktree, outcome: "kept", reason: legacyLeftoverReason },
         ]);
-        expect((yield* fixture.service.runNow).entries).toEqual(later.entries);
-        expect(yield* fixture.fs.exists(stuck)).toBe(true);
-        yield* fixture.fs.chmod(stuck, 0o755);
-        expect((yield* fixture.service.runNow).entries).toEqual([
-          expect.objectContaining({ path: fixture.worktree, outcome: "removed" }),
-        ]);
-        expect(yield* fixture.fs.exists(adminDir)).toBe(false);
-        expect((yield* fixture.service.runNow).entries).toEqual([]);
-        // An unreadable record may still name leftovers, so it is reported and kept as it is.
-        const record = `${fixture.config.stateDir}/storage-cleanup-leftovers.json`;
-        yield* fixture.fs.writeFileString(record, "{");
-        expect((yield* fixture.service.runNow).entries).toEqual([
+        expect((yield* service.runNow).entries).toEqual(report.entries);
+        expect(yield* fs.exists(worktree)).toBe(false);
+        expect(yield* fs.readFileString(record)).toBe(recordContents);
+        expect(yield* fs.readFileString(residue)).toBe("leftover\n");
+        expect(removalArgs()).toEqual([]);
+
+        // A malformed record can still name leftovers and must be available for repair.
+        yield* fs.writeFileString(record, "{");
+        expect((yield* service.runNow).entries).toEqual([
           expect.objectContaining({ path: record, outcome: "failed" }),
         ]);
-        expect(yield* fixture.fs.readFileString(record)).toBe("{");
+        expect(yield* fs.readFileString(record)).toBe("{");
+        expect(yield* fs.readFileString(residue)).toBe("leftover\n");
       }),
     ),
   );
-  it.live("leaves git metadata that a recreated worktree took over from a failed removal", () =>
+  it.live("keeps a recreated dirty worktree using the recorded Git metadata path", () =>
     runCleanupTest(
       Effect.gen(function* () {
         const fixture = yield* cleanupFixture();
-        const adminDir = (yield* fixture.command(fixture.worktree, [
-          "rev-parse",
-          "--absolute-git-dir",
-        ])).stdout.trim();
-        const stuck = `${adminDir}/scratch`;
-        yield* fixture.fs.makeDirectory(stuck);
-        yield* fixture.fs.writeFileString(`${stuck}/f`, "x\n");
-        yield* fixture.fs.chmod(stuck, 0o555);
-        yield* Effect.addFinalizer(() => fixture.fs.chmod(stuck, 0o755).pipe(Effect.ignore));
-        yield* fixture.service.runNow;
-        // The user repairs and prunes the leftover, then the thread resumes under the same name.
-        yield* fixture.fs.chmod(stuck, 0o755);
-        yield* fixture.command(fixture.repo, ["worktree", "prune"]);
-        yield* fixture.command(fixture.repo, ["worktree", "add", fixture.worktree, "feature"]);
-        // Only the cleanup rules remove it now: its metadata is no longer a leftover.
-        expect((yield* fixture.service.runNow).entries).toEqual([
-          expect.objectContaining({
-            path: fixture.worktree,
-            outcome: "removed",
-            reason: expect.stringMatching(/^Inactive for/),
-          }),
+        const { command, fs, repo, service, worktree, removalArgs } = fixture;
+        const { adminDir, record, recordContents } = yield* recordLegacyWorktreeLeftover(fixture);
+        yield* command(repo, ["worktree", "add", worktree, "feature"]);
+        expect((yield* command(worktree, ["rev-parse", "--absolute-git-dir"])).stdout.trim()).toBe(
+          adminDir,
+        );
+        const backlink = yield* fs.readFileString(`${adminDir}/gitdir`);
+        yield* fs.writeFileString(`${worktree}/tracked.txt`, "new local work\n");
+
+        expect((yield* service.runNow).entries).toMatchObject([
+          { path: worktree, outcome: "kept", reason: legacyLeftoverReason },
+          { path: worktree, outcome: "kept", reason: "Has uncommitted changes (1 file)" },
         ]);
+        expect(removalArgs()).toEqual([]);
+        expect(yield* fs.readFileString(record)).toBe(recordContents);
+        expect(yield* fs.readFileString(`${adminDir}/gitdir`)).toBe(backlink);
+        expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("new local work\n");
+        expect(yield* fs.readFileString(`${repo}/tracked.txt`)).toBe("original\n");
+        expect((yield* command(repo, ["worktree", "list", "--porcelain"])).stdout).toContain(
+          `worktree ${worktree}`,
+        );
       }),
     ),
   );

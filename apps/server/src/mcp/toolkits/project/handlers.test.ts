@@ -1,5 +1,9 @@
 import { makeClientLaunchHarness } from "../../../jones/mcp/clientLaunch/ClientLaunch.testkit.ts";
 import { clientLaunchIds } from "../../../jones/mcp/clientLaunch/ClientLaunchIdentity.ts";
+import {
+  encodeLinkedMessageOrigin,
+  withLinkedMessageOrigin,
+} from "../../../jones/peerTransport/LinkedMessageOrigin.ts";
 import { ClaudeProviderCapabilitiesV2 } from "../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Deferred from "effect/Deferred";
@@ -77,7 +81,7 @@ function launchProjectLayer(projectId: ProjectId) {
   });
 }
 
-it.effect("attributes a launched thread's first message to the calling thread", () =>
+const launchedFromThread = (linkOrigin?: OrchestrationV2ThreadShell["linkOrigin"]) =>
   Effect.gen(function* () {
     const sourceThreadId = ThreadId.make("source-thread");
     const projectId = ProjectId.make("project");
@@ -93,12 +97,15 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       activeRunId: "active-run",
       archivedAt: null,
       deletedAt: null,
+      ...(linkOrigin === undefined ? {} : { linkOrigin }),
     } as OrchestrationV2ThreadShell;
-    let launchedSender: ThreadId | undefined;
+    let launched: ThreadLaunch.ThreadLaunchInput | undefined;
     const layerDependencies = Layer.mergeAll(
       Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
       NodeSqliteClient.layer({ filename: ":memory:" }),
-      Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
+      Layer.mock(CommandReceipts.CommandReceiptStoreV2)({
+        getByCommandId: () => Effect.succeedNone,
+      }),
       Layer.mock(EventSink.EventSinkV2)({
         supersededTerminalTrace: SupersededTerminalTrace.make(),
       }),
@@ -117,11 +124,11 @@ it.effect("attributes a launched thread's first message to the calling thread", 
         capabilities: new Set(["orchestration" as const]),
       }),
       Layer.mock(ThreadManagement.ThreadManagementService)({
-        getThreadShell: () => Effect.succeed(caller),
+        getThreadShell: (threadId) => Effect.succeed(threadId === sourceThreadId ? caller : null),
       }),
       Layer.mock(ThreadLaunch.ThreadLaunchService)({
         launch: (input) => {
-          launchedSender = input.initialMessage?.senderThreadId;
+          launched = input;
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
@@ -150,11 +157,34 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       ),
     );
     const result = yield* toolkit
-      .handle("t3_thread_launch", { title: "Audit", message: "Review the change" })
+      .handle("t3_thread_launch", {
+        title: "Audit",
+        message: "Review the change",
+        ...(linkOrigin === undefined
+          ? {}
+          : {
+              clientRequestId: `workflow:${"ab".repeat(32)}`,
+              workflowRun: {
+                environmentId: EnvironmentId.make("source-environment"),
+                workflow: "audit",
+                runId: "workflow-run",
+                step: "review",
+              },
+            }),
+      })
       .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(layerDependencies));
     expect(result.at(-1)?.result).toMatchObject({ projectId, modelSelection });
-    expect(launchedSender).toBe(sourceThreadId);
-  }),
+    expect(launched?.initialMessage?.senderThreadId).toBe(sourceThreadId);
+    expect(launched?.linkOrigin).toEqual(linkOrigin);
+    expect(launched?.workflowRun).toBeUndefined();
+  });
+
+it.effect("attributes a launched thread's first message to the calling thread", () =>
+  launchedFromThread(),
+);
+
+it.effect("preserves the inherited link while ignoring a calling thread's workflow claim", () =>
+  launchedFromThread({ sessionId: "peer-session", label: "Linked T3 Code", access: "full-access" }),
 );
 
 it.effect("launches a scratch thread into the Scratch project", () =>
@@ -1998,6 +2028,95 @@ it.effect(
         "mcp:launch:client%3Asession-1:fix-1",
       );
     }).pipe(Effect.provide(NodeCrypto.layer)),
+);
+
+it.effect("attributes workflow lineage only to a matching direct linked workflow launch", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies, projection } = yield* clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      linked: true,
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const scope = yield* McpInvocationContext.McpInvocationContext.pipe(
+      Effect.provide(dependencies),
+    );
+    const workflowRun = {
+      environmentId: EnvironmentId.make("source-environment"),
+      runId: "workflow-run",
+      workflow: "fix",
+      step: "write",
+    };
+    const origin = {
+      schemaVersion: "t3.linked-message-origin/v1",
+      environmentId: workflowRun.environmentId,
+    } as const;
+    const direct = withLinkedMessageOrigin(scope, encodeLinkedMessageOrigin(origin))!;
+    const launch = (
+      invocation: McpInvocationContext.McpInvocationScope,
+      clientRequestId: string,
+      attribution = workflowRun,
+    ) =>
+      toolkit
+        .handle("t3_thread_launch", {
+          title: "Fix",
+          projectId,
+          message: "Fix the bug",
+          clientRequestId,
+          workflowRun: attribution,
+        })
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provide(dependencies),
+        );
+    yield* launch(direct, `workflow:${"1".repeat(64)}`);
+    yield* launch(scope, `workflow:${"2".repeat(64)}`);
+    yield* launch(direct, `workflow:${"3".repeat(64)}`, {
+      ...workflowRun,
+      environmentId: EnvironmentId.make("different-environment"),
+    });
+    const forwardedThread = withLinkedMessageOrigin(
+      scope,
+      encodeLinkedMessageOrigin({ ...origin, thread: { threadId: "source-thread" } }),
+    )!;
+    yield* launch(forwardedThread, `workflow:${"4".repeat(64)}`);
+    yield* launch(direct, `fwd:${"5".repeat(64)}`);
+    const localClaim = withLinkedMessageOrigin(
+      scope,
+      encodeLinkedMessageOrigin({ ...origin, environmentId: scope.environmentId }),
+    )!;
+    yield* launch(localClaim, `workflow:${"6".repeat(64)}`, {
+      ...workflowRun,
+      environmentId: scope.environmentId,
+    });
+    yield* launch(
+      {
+        ...direct,
+        requestNamespace: "client:other-session",
+        client: { ...direct.client!, sessionId: "other-session" },
+      },
+      `workflow:${"7".repeat(64)}`,
+    );
+
+    expect(launched).toHaveLength(7);
+    expect(launched[0]?.workflowRun).toEqual(workflowRun);
+    expect(launched.slice(1).every((input) => input.workflowRun === undefined)).toBe(true);
+    for (const input of launched.slice(0, 6)) expect(input.linkOrigin?.sessionId).toBe("session-1");
+    expect(launched[6]?.linkOrigin?.sessionId).toBe("other-session");
+    const accepted = yield* projection(launched[0]!.threadId!);
+    const ordinary = yield* projection(launched[1]!.threadId!);
+    expect(accepted.thread.workflowRun).toEqual(workflowRun);
+    expect(accepted.thread.lineage.workflowStep).toBe(true);
+    expect(ordinary.thread.workflowRun).toBeUndefined();
+    expect(ordinary.thread.lineage.workflowStep).toBeUndefined();
+  }),
 );
 
 it.effect("a linked keyed launch gets a short id with no percent-encoded separators", () =>

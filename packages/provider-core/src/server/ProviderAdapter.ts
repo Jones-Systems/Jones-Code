@@ -150,6 +150,7 @@ export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread_model_selection.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: ThreadId,
     instanceId: ProviderInstanceId,
     /** Applies only where the thread still holds `from`, so newer user picks win. */

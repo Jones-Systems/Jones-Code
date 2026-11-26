@@ -31,6 +31,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
     processLossCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    cause: Schema.optional(Schema.Literal("provider_exit")),
     preparedForRestart: Schema.optional(Schema.Boolean),
     continueWithoutPreference: Schema.optional(Schema.Boolean),
   }),

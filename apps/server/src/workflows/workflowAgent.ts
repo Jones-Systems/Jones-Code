@@ -123,11 +123,14 @@ export const settleTurn = Effect.fn("workflow.agent.settle")(function* ({
   agent: watch,
 }: TurnWatch): Effect.fn.Return<TurnEnd, never, WorkflowAgents> {
   const agents = yield* WorkflowAgents;
-  const { turn, startedAt } = watch;
+  const { turn, startedAt, workflowRunId } = watch;
   const threadOf = { threadId: turn.threadId, environment: turn.environment };
   const resultOf = (quiet: number | undefined) =>
     agents
-      .result(turn, { quiet: quiet === undefined ? undefined : Duration.millis(quiet) })
+      .result(turn, {
+        quiet: quiet === undefined ? undefined : Duration.millis(quiet),
+        workflowRunId,
+      })
       .pipe(
         watch.onFailure === "pause"
           ? identity
@@ -148,7 +151,7 @@ export const settleTurn = Effect.fn("workflow.agent.settle")(function* ({
     // Linked stops have a durable intent shared with cancellation. An unknown stop holds
     // the workflow even when the step normally returns failures to its caller.
     const stopping = agents
-      .interrupt({ ...threadOf, turnId: turn.turnId, workflowRunId: watch.workflowRunId })
+      .interrupt({ ...threadOf, turnId: turn.turnId, workflowRunId })
       .pipe(turn.environment === undefined ? Effect.retry({ times: 2 }) : identity);
     const stop: "stopped" | "ended" | "failed" = yield* watch.onFailure === "pause"
       ? stopping

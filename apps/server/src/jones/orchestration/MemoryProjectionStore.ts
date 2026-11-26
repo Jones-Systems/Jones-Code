@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 import {
+  idleCompactionOf,
   OrchestrationV2DomainEvent,
   type OrchestrationV2AppThread,
   type OrchestrationV2Run,
@@ -300,6 +301,18 @@ export const makeMemoryLayer = (
         );
       case "delegated-completions":
         return projection.runs.some((run) => run.delegatedCompletion?.delivery != null);
+      case "unread-steers":
+        return projection.turnItems.some(
+          (item) =>
+            item.type === "user_message" &&
+            item.status === "pending" &&
+            (item.inputIntent === "steer" || item.inputIntent === "promoted_queued_to_steer") &&
+            projection.runs.some(
+              (run) =>
+                run.id === item.runId &&
+                ["completed", "interrupted", "failed", "cancelled"].includes(run.status),
+            ),
+        );
       case "restart-continuations":
         return (
           projection.providerSessions.some(
@@ -995,10 +1008,24 @@ export const makeMemoryLayer = (
               )
               .map((projection) => {
                 const shell = threadShellFromProjection(projection);
+                const latestResumingMessage = projection.messages
+                  .filter(
+                    (message) =>
+                      message.role === "user" &&
+                      idleCompactionOf(message) === undefined &&
+                      (message.createdBy === "user" ||
+                        (message.createdBy === "agent" && message.creationSource === "mcp")),
+                  )
+                  .toSorted(
+                    (left, right) =>
+                      DateTime.toEpochMillis(right.updatedAt) -
+                      DateTime.toEpochMillis(left.updatedAt),
+                  )[0];
                 return {
                   ...shell,
                   lastSnoozeWakeAt: projection.thread.lastSnoozeWakeAt ?? null,
                   latestUserAuthoredMessageAt: shell.latestUserAuthoredMessageAt ?? null,
+                  latestResumingMessageAt: latestResumingMessage?.updatedAt ?? null,
                 };
               })
               .toSorted(
@@ -1577,8 +1604,21 @@ export const makeMemoryLayer = (
             if (projection === undefined)
               return yield* new ProjectionStoreThreadNotFoundError({ threadId });
             const run = projection.runs.find((candidate) => candidate.id === target.runId);
+            const repositoryScopes = projection.checkpointScopes.filter(
+              (candidate) => candidate.kind === "manual",
+            );
+            const preservesCheckpoint = (
+              checkpoint: OrchestrationV2ThreadProjection["checkpoints"][number],
+            ) =>
+              checkpoint.status === "ready" ||
+              ((checkpoint.status === "missing" || checkpoint.status === "error") &&
+                checkpoint.runId !== null);
             return {
               sideChat: projection.thread.lineage.sideChat === true,
+              thread: {
+                projectId: projection.thread.projectId,
+                worktreePath: projection.thread.worktreePath,
+              },
               run,
               rootNode: projection.nodes.find((candidate) => candidate.id === run?.rootNodeId),
               scope: projection.checkpointScopes.find(
@@ -1590,11 +1630,18 @@ export const makeMemoryLayer = (
               preservedCheckpointOrdinals: projection.checkpoints
                 .filter(
                   (candidate) =>
-                    candidate.scopeId === target.scopeId &&
-                    (candidate.status === "ready" ||
-                      (candidate.status === "missing" && candidate.runId !== null)),
+                    candidate.scopeId === target.scopeId && preservesCheckpoint(candidate),
                 )
                 .map((candidate) => candidate.ordinalWithinScope),
+              repositoryScopes,
+              repositoryScopesWithBaseline: projection.checkpoints
+                .filter(
+                  (candidate) =>
+                    candidate.ordinalWithinScope === Math.max(0, (run?.ordinal ?? 0) - 1) &&
+                    repositoryScopes.some((scope) => scope.id === candidate.scopeId) &&
+                    preservesCheckpoint(candidate),
+                )
+                .map((candidate) => candidate.scopeId),
             };
           },
         ),

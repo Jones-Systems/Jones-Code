@@ -2,9 +2,12 @@ import { EnvironmentId, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { assert, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Digest from "effect/crypto/Digest";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -16,8 +19,9 @@ import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import WorkflowsMigration from "../persistence/Migrations/110_Workflows.ts";
 import * as WorkflowAgentLinks from "./WorkflowAgentLinks.ts";
-import { linkedStepMarker } from "./WorkflowAgents.ts";
+import { WorkflowAgents, linkedStepMarker } from "./WorkflowAgents.ts";
 import * as WorkflowStore from "./WorkflowStore.ts";
+import { settleTurn } from "./workflowAgent.ts";
 
 const isFailure = Schema.is(OrchestratorMcpFailure);
 const here = EnvironmentId.make("env-a");
@@ -58,7 +62,11 @@ interface Call {
 /** The other environment, played by the test: each tool answers from a list, in order. */
 const peer = (
   answers: Record<string, ReadonlyArray<unknown>>,
-  options: { readonly enabled?: boolean; readonly prepared?: boolean } = {},
+  options: {
+    readonly enabled?: boolean;
+    readonly prepared?: boolean;
+    readonly beforeAnswer?: (tool: string) => Effect.Effect<void>;
+  } = {},
 ) => {
   const calls: Array<Call> = [];
   const left = new Map(Object.entries(answers).map(([tool, list]) => [tool, [...list]]));
@@ -83,7 +91,10 @@ const peer = (
               );
             const answer = left.get(input.tool)?.shift();
             assert.isDefined(answer, `Unexpected call to ${input.tool}`);
-            return isFailure(answer) ? Effect.fail(answer) : Effect.succeed(answer as never);
+            return Effect.andThen(
+              options.beforeAnswer?.(input.tool) ?? Effect.void,
+              isFailure(answer) ? Effect.fail(answer) : Effect.succeed(answer as never),
+            );
           }),
       }),
     ),
@@ -96,6 +107,9 @@ const peer = (
   return {
     calls,
     layer: Layer.merge(peerLayer, migratedJournal(":memory:", options.prepared)),
+    rePair: (nextGeneration: string) => {
+      generation = nextGeneration;
+    },
     // The file is retained by the test's scope; each use opens and closes its own SQLite client.
     restart: (filename: string, nextGeneration: string, initialize = false) => {
       generation = nextGeneration;
@@ -147,6 +161,12 @@ const launchInProject = Effect.flatMap(WorkflowAgentLinks.make, (links) =>
   links.start({ ...input, project: "p-app" }, "env-b", "workflow:launch", here),
 );
 const launched = { threadId: "thread-1", runId: "turn-1" };
+const readTurn = (quiet?: Duration.Duration) =>
+  Effect.flatMap(WorkflowAgentLinks.make, (links) =>
+    links.result(sentTurn, "env-b", { workflowRunId: input.origin.runId, quiet }),
+  );
+const launchAndRead = (quiet?: Duration.Duration) =>
+  Effect.andThen(launchInProject, readTurn(quiet));
 
 const assistant = (position: number, runId: string, text: string) => ({
   type: "assistant_message",
@@ -169,17 +189,14 @@ const page = (
 });
 const readReply = (...pages: ReadonlyArray<unknown>) => {
   const there = peer({
+    t3_thread_launch: [launched],
     t3_thread_wait: [{ ...waited, timedOut: false }],
     t3_thread_read: [run("completed"), ...pages],
   });
   return Effect.gen(function* () {
-    const result = yield* Effect.provide(
-      Effect.flatMap(WorkflowAgentLinks.make, (links) =>
-        links.result({ threadId: "thread-1", turnId: "turn-1" }, "env-b"),
-      ),
-      there.layer,
-    );
-    return { result, reads: there.calls.slice(2).map((call) => call.arguments) };
+    const result = yield* launchAndRead().pipe(Effect.provide(there.layer));
+    assert.isTrue(there.calls.every((call) => call.expectedGeneration === "generation-1"));
+    return { result, reads: there.calls.slice(3).map((call) => call.arguments) };
   });
 };
 const messageRead = { threadId: "thread-1", view: "messages", limit: 100 };
@@ -234,6 +251,10 @@ it.effect("starts a thread there by the project's folder, with the step's key as
     });
     // The link's own access is the ceiling, not a mode narrower than it.
     assert.equal(launch?.runtimeMode, "full-access");
+    assert.deepStrictEqual(launch?.origin, {
+      schemaVersion: "t3.linked-message-origin/v1",
+      environmentId: "env-a",
+    });
     assert.deepStrictEqual(
       there.calls.map((call) => call.expectedGeneration),
       ["generation-1", "generation-1", "generation-1"],
@@ -348,6 +369,8 @@ it.effect("recovers the exact SEND receipt after reopening the journal without s
           { ...receipt, outcome: "unknown", sent: null },
           { ...receipt, outcome: "accepted", sent },
         ],
+        t3_thread_wait: [{ ...waited, timedOut: false }],
+        t3_thread_read: [run("completed"), page([assistant(1, "turn-1", "Done.")])],
       });
       const lost = yield* continueThread.pipe(
         Effect.provide(there.restart(filename, "generation-1", true)),
@@ -384,6 +407,11 @@ it.effect("recovers the exact SEND receipt after reopening the journal without s
         clientRequestId: "workflow:send",
         requestDigest,
       });
+      const result = yield* readTurn().pipe(
+        Effect.provide(there.restart(filename, "generation-1")),
+      );
+      assert.equal(result.reply, "Done.");
+      assert.isTrue(there.calls.every((call) => call.expectedGeneration === "generation-1"));
     }),
   ),
 );
@@ -472,6 +500,133 @@ it.effect("holds a lost turn interruption across re-pairing and a reopened journ
   ),
 );
 
+it.effect(
+  "keeps an accepted launch on its original pairing even if the reply arrives after re-pairing",
+  () =>
+    journalFile((filename) =>
+      Effect.gen(function* () {
+        const dispatched = yield* Deferred.make<void>();
+        const reply = yield* Deferred.make<void>();
+        const there = peer(
+          { t3_thread_launch: [launched] },
+          {
+            beforeAnswer: () =>
+              Effect.andThen(Deferred.succeed(dispatched, undefined), Deferred.await(reply)),
+          },
+        );
+        const starting = yield* Effect.forkChild(
+          launchInProject.pipe(Effect.provide(there.restart(filename, "generation-1", true))),
+        );
+        yield* Deferred.await(dispatched);
+        there.rePair("generation-2");
+        yield* Deferred.succeed(reply, undefined);
+        assert.deepStrictEqual(yield* Fiber.join(starting), sentTurn);
+
+        const [lost, unconfirmed] = yield* Effect.all([
+          readTurn().pipe(Effect.flip),
+          stopTurn.pipe(Effect.flip),
+        ]).pipe(Effect.provide(there.restart(filename, "generation-2")));
+        assert.match(lost.reason, /changed after the workflow turn was accepted/);
+        assert.equal(unconfirmed._tag, "WorkflowAgentMutationUncertain");
+        assert.deepStrictEqual(
+          there.calls.map(({ tool, expectedGeneration }) => [tool, expectedGeneration]),
+          [["t3_thread_launch", "generation-1"]],
+        );
+      }),
+    ),
+);
+
+it.effect.each(["generation-1", "generation-2"] as const)(
+  "times out an accepted turn with %s present",
+  (generation) =>
+    Effect.gen(function* () {
+      const waiting = yield* Deferred.make<void>();
+      const there = peer(
+        {
+          t3_thread_launch: [launched],
+          t3_thread_wait: [waited],
+          t3_thread_interrupt: [
+            { threadId: "thread-1", runId: "turn-1", status: "interrupt_requested" },
+          ],
+        },
+        {
+          beforeAnswer: (tool) =>
+            tool === "t3_thread_wait"
+              ? Effect.andThen(Deferred.succeed(waiting, undefined), Effect.never)
+              : Effect.void,
+        },
+      );
+      yield* Effect.gen(function* () {
+        const links = yield* WorkflowAgentLinks.make;
+        const turn = yield* launchInProject;
+        const watching = yield* Effect.forkChild(
+          settleTurn({
+            agent: {
+              turn,
+              step: input.origin.step,
+              workflowRunId: input.origin.runId,
+              startedAt: yield* Clock.currentTimeMillis,
+              timeoutMs: 1_000,
+              owesOutput: false,
+              onFailure: "return",
+            },
+          }).pipe(
+            Effect.provideService(WorkflowAgents, {
+              start: () => Effect.die("Unexpected workflow start"),
+              result: (turn, options) => links.result(turn, "env-b", options),
+              interrupt: (turn) => links.interrupt(turn, "env-b"),
+            }),
+          ),
+        );
+        yield* Deferred.await(waiting);
+        there.rePair(generation);
+        yield* TestClock.adjust("1 second");
+        const end = yield* Fiber.join(watching);
+        const stops = there.calls.filter(({ tool }) => tool === "t3_thread_interrupt");
+        if (generation === "generation-1") {
+          assert.propertyVal("result" in end ? end.result : {}, "ending", "stopped");
+          assert.lengthOf(stops, 1);
+          assert.equal(stops[0]?.expectedGeneration, generation);
+          assert.deepInclude(stops[0]?.arguments, { threadId: "thread-1", runId: "turn-1" });
+        } else {
+          assert.propertyVal(end, "held", true);
+          assert.deepStrictEqual(stops, []);
+        }
+      }).pipe(Effect.provide(there.layer));
+    }),
+);
+
+it.effect(
+  "requires generation evidence from the owning run, even when a legacy turn has a marker",
+  () =>
+    Effect.gen(function* () {
+      const there = peer({ t3_thread_launch: [launched] });
+      yield* Effect.gen(function* () {
+        const store = yield* WorkflowStore.make;
+        const legacyRunId = "legacy-run";
+        // The old accepted marker stored only SHA-256 of the environment, thread and turn tuple.
+        yield* store.mark(
+          legacyRunId,
+          "workflow-agent/turn/v1/eac56a4ea740d8a84dff170c47b412e88eae658955ee8f38234a988c9de79bc6",
+        );
+        yield* launchInProject;
+        const links = yield* WorkflowAgentLinks.make;
+        for (const workflowRunId of [legacyRunId, undefined]) {
+          const lost = yield* links.result(sentTurn, "env-b", { workflowRunId }).pipe(Effect.flip);
+          assert.match(lost.reason, /Cannot prove the original pairing/);
+          const stop = yield* links
+            .interrupt({ ...sentTurn, workflowRunId }, "env-b")
+            .pipe(Effect.flip);
+          assert.equal(stop._tag, "WorkflowAgentMutationUncertain");
+        }
+      }).pipe(Effect.provide(there.layer));
+      assert.deepStrictEqual(
+        there.calls.map(({ tool }) => tool),
+        ["t3_thread_launch"],
+      );
+    }),
+);
+
 it.effect("holds a legacy step or turn when the original write evidence was never journaled", () =>
   Effect.gen(function* () {
     const there = peer({}, { prepared: false });
@@ -490,6 +645,7 @@ it.effect("holds a legacy step or turn when the original write evidence was neve
 it.effect("waits in pieces, rides out a dropped route, and returns the output and reply", () =>
   Effect.gen(function* () {
     const there = peer({
+      t3_thread_launch: [launched],
       t3_thread_wait: [
         { ...waited, timedOut: true },
         new OrchestratorMcpFailure({ code: "orchestration_error", message: "unreachable" }),
@@ -516,12 +672,10 @@ it.effect("waits in pieces, rides out a dropped route, and returns the output an
         { recentRuns: [], items: [{ text: "pushed.", textTruncated: false }] },
       ],
     });
-    const result = yield* Effect.provide(
-      Effect.flatMap(WorkflowAgentLinks.make, (links) =>
-        links.result({ threadId: "thread-1", turnId: "turn-1" }, "env-b"),
-      ),
-      there.layer,
-    ).pipe(Effect.raceFirst(Effect.forever(TestClock.adjust("1 second"))));
+    const result = yield* launchAndRead().pipe(
+      Effect.provide(there.layer),
+      Effect.raceFirst(Effect.forever(TestClock.adjust("1 second"))),
+    );
     assert.deepStrictEqual(result, {
       ending: "completed",
       detail: "",
@@ -529,6 +683,7 @@ it.effect("waits in pieces, rides out a dropped route, and returns the output an
       output: { branch: "fix/1" },
     });
     assert.equal(there.calls.filter((call) => call.tool === "t3_thread_wait").length, 3);
+    assert.isTrue(there.calls.every((call) => call.expectedGeneration === "generation-1"));
   }),
 );
 
@@ -613,40 +768,34 @@ it.effect("a turn someone stopped there is stopped, and a refused link fails at 
       t3_thread_launch: [launched],
       t3_thread_interrupt: [{ threadId: "thread-1", runId: "turn-1", status: "interrupted" }],
     });
-    const result = yield* Effect.provide(
-      Effect.flatMap(WorkflowAgentLinks.make, (links) =>
-        links.result({ threadId: "thread-1", turnId: "turn-1" }, "env-b"),
-      ),
-      stopped.layer,
+    const [result, interrupted] = yield* launchInProject.pipe(
+      Effect.andThen(Effect.all([readTurn(), stopTurn])),
+      Effect.provide(stopped.layer),
     );
     assert.deepStrictEqual(result, { ending: "stopped", detail: "interrupted", reply: "" });
     // Stopping names the step's turn, so a person's turn on that thread keeps going.
-    const interrupted = yield* Effect.provide(
-      Effect.andThen(launchInProject, stopTurn),
-      stopped.layer,
-    );
     assert.equal(interrupted, "ended");
     assert.deepInclude(stopped.calls.at(-1)?.arguments, { threadId: "thread-1", runId: "turn-1" });
 
     const revoked = peer({
+      t3_thread_launch: [launched],
       t3_thread_wait: [
         new OrchestratorMcpFailure({ code: "capability_denied", message: "link revoked" }),
       ],
     });
-    const error = yield* Effect.provide(
-      Effect.flatMap(WorkflowAgentLinks.make, (links) =>
-        links.result({ threadId: "thread-1", turnId: "turn-1" }, "env-b"),
-      ),
-      revoked.layer,
-    ).pipe(Effect.flip);
+    const error = yield* launchInProject.pipe(
+      Effect.andThen(readTurn().pipe(Effect.flip)),
+      Effect.provide(revoked.layer),
+    );
     assert.match(error.reason, /link revoked/);
-    assert.equal(revoked.calls.length, 1);
+    assert.equal(revoked.calls.filter((call) => call.tool === "t3_thread_wait").length, 1);
   }),
 );
 
 it.effect("a turn that ended without its result is waited past until a later turn gives it", () =>
   Effect.gen(function* () {
     const there = peer({
+      t3_thread_launch: [launched],
       t3_thread_wait: [
         // The turn ended. The agent is waiting to be woken, and has submitted nothing.
         { ...waited, timedOut: false },
@@ -661,23 +810,21 @@ it.effect("a turn that ended without its result is waited past until a later tur
         { recentRuns: [], hasMore: false, nextPosition: null, items: [] },
       ],
     });
-    const result = yield* Effect.provide(
-      Effect.flatMap(WorkflowAgentLinks.make, (links) =>
-        links.result({ threadId: "thread-1", turnId: "turn-1" }, "env-b", {
-          quiet: Duration.minutes(5),
-        }),
-      ),
-      there.layer,
-    ).pipe(Effect.raceFirst(Effect.forever(TestClock.adjust("1 second"))));
+    const result = yield* launchAndRead(Duration.minutes(5)).pipe(
+      Effect.provide(there.layer),
+      Effect.raceFirst(Effect.forever(TestClock.adjust("1 second"))),
+    );
     assert.deepStrictEqual(result.output, { head: "abc" });
     const waits = there.calls.filter((call) => call.tool === "t3_thread_wait");
     assert.isTrue(waits.slice(1).every((call) => call.arguments.untilOutput === true));
+    assert.isTrue(there.calls.every((call) => call.expectedGeneration === "generation-1"));
   }),
 );
 
 it.effect("a thread that stays quiet gives the turn back without a result", () =>
   Effect.gen(function* () {
     const there = peer({
+      t3_thread_launch: [launched],
       t3_thread_wait: [
         { ...waited, timedOut: false },
         ...Array.from({ length: 6 }, () => ({ ...waited, timedOut: true })),
@@ -689,14 +836,10 @@ it.effect("a thread that stays quiet gives the turn back without a result", () =
         { recentRuns: [], hasMore: false, nextPosition: null, items: [] },
       ],
     });
-    const result = yield* Effect.provide(
-      Effect.flatMap(WorkflowAgentLinks.make, (links) =>
-        links.result({ threadId: "thread-1", turnId: "turn-1" }, "env-b", {
-          quiet: Duration.minutes(5),
-        }),
-      ),
-      there.layer,
-    ).pipe(Effect.raceFirst(Effect.forever(TestClock.adjust("1 second"))));
+    const result = yield* launchAndRead(Duration.minutes(5)).pipe(
+      Effect.provide(there.layer),
+      Effect.raceFirst(Effect.forever(TestClock.adjust("1 second"))),
+    );
     assert.deepStrictEqual(result, { ending: "completed", detail: "", reply: "" });
   }),
 );

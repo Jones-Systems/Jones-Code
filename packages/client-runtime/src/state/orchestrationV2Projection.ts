@@ -365,10 +365,21 @@ export function applyOrchestrationV2ProjectionEvent(
       // Lifecycle updates carry the run as it was when the turn started. What the run returned
       // is written by its own event, and an update without it must not take it away.
       const known = base.runs.find((run) => run.id === event.payload.id);
-      const run =
-        event.payload.output === undefined && known?.output !== undefined
-          ? { ...event.payload, output: known.output }
-          : event.payload;
+      const run = {
+        ...event.payload,
+        ...(known?.output === undefined ? {} : { output: known.output }),
+        ...(event.payload.explicitQueue === undefined && known?.explicitQueue !== undefined
+          ? { explicitQueue: known.explicitQueue }
+          : {}),
+        ...(event.payload.queuedToolBoundaryEligible === undefined &&
+        known?.queuedToolBoundaryEligible !== undefined
+          ? { queuedToolBoundaryEligible: known.queuedToolBoundaryEligible }
+          : {}),
+        ...(event.payload.queuedToolBoundaryFollowUpOfRunId === undefined &&
+        known?.queuedToolBoundaryFollowUpOfRunId !== undefined
+          ? { queuedToolBoundaryFollowUpOfRunId: known.queuedToolBoundaryFollowUpOfRunId }
+          : {}),
+      };
       const next = { ...base, runs: upsertEntity(base.runs, run) };
       if (
         next.capturedRuntimeStopRunId === run.id &&

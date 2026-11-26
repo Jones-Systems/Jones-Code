@@ -106,6 +106,7 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
@@ -2540,6 +2541,7 @@ function layerStartEffectWorker(
               Layer.mock(ProviderTurnControlService.ProviderTurnControlServiceV2)(control),
               Layer.mock(RunFinalizationService.RunFinalizationService)({}),
               Layer.mock(CheckpointRollbackService.CheckpointRollbackServiceV2)({}),
+              Layer.mock(ProjectionMaintenance.ProjectionMaintenanceV2)({}),
               Layer.mock(RuntimeRequestService.RuntimeRequestServiceV2)({}),
               Layer.mock(ThreadTitleRegenerationService.ThreadTitleRegenerationService)({}),
               Layer.mock(ThreadManagementService.ThreadManagementService)({}),

@@ -454,6 +454,17 @@ export class GitVcsDriver extends Context.Service<
       cwd: string,
       options?: GitRemoteStatusOptions,
     ) => Effect.Effect<GitRemoteStatusDetails, GitCommandError>;
+    /** Refs, HEAD and shallow boundaries used by an explicit status refresh. */
+    readonly readStatusRefreshRefs: (cwd: string) => Effect.Effect<string | null>;
+    readonly readStatusPoll: (
+      cwd: string,
+      branch: string | null,
+      refreshUpstream: boolean,
+    ) => Effect.Effect<{
+      readonly inputStamp: string;
+      readonly inputStampAfterLookup: Effect.Effect<string | null>;
+      readonly details: GitRemoteStatusDetails;
+    } | null>;
     readonly readRemoteFetchObservation: (
       input: RemoteFetchTarget & { readonly cwd: string },
     ) => Effect.Effect<RemoteFetchObservation>;
@@ -462,8 +473,8 @@ export class GitVcsDriver extends Context.Service<
       remoteName: string,
     ) => Effect.Effect<(coverage: RemoteFetchTarget["coverage"]) => RemoteFetchObservation>;
     readonly resolveRepoFreshnessRemote: (cwd: string) => Effect.Effect<RepoFreshnessRemote | null>;
-    /** Refs, HEAD and shallow boundaries. Null when the snapshot cannot be read. */
-    readonly readRefSnapshot: (cwd: string) => Effect.Effect<string | null>;
+    /** Branch-picker digest input, including worktree paths. */
+    readonly readRefSnapshot: (cwd: string, refs?: string) => Effect.Effect<string | null>;
     readonly prepareCommitContext: (
       cwd: string,
       filePaths?: readonly string[],

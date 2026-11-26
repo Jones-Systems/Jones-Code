@@ -53,6 +53,7 @@ import * as ThreadSearch from "../../../../../orchestration-v2/ThreadSearch.ts";
 import * as PreviewManager from "../../../../../preview/Manager.ts";
 import * as SourceControlRepositoryService from "../../../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../../../vcs/GitVcsDriver.ts";
+import * as TaskFolders from "../../../../../workspace/TaskFolders.ts";
 import * as McpHttpServer from "../../../../../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../../../../../mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../../../../mcp/PreviewAutomationBroker.ts";
@@ -110,6 +111,7 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
     Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
     Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+    Layer.mock(TaskFolders.TaskFolders)({}),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
     Layer.mock(PreviewManager.PreviewManager)({}),
     Layer.mock(ServerSecretStore.ServerSecretStore)({}),

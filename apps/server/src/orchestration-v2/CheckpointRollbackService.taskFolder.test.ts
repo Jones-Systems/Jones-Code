@@ -445,13 +445,16 @@ const taskFolderThread = Effect.fn(function* (state: State, options: Options) {
     const checkpointId = yield* ids.allocate
       .checkpoint({ checkpointScopeId: rootScope.id, name: String(ordinal) })
       .pipe(Effect.orDie);
-    yield* rollbacks.execute({
-      threadId,
-      providerThreadId,
-      checkpointId,
-      scopeId: rootScope.id,
-      ...(requestId === undefined ? {} : { requestId }),
-    });
+    yield* rollbacks.execute(
+      {
+        threadId,
+        providerThreadId,
+        checkpointId,
+        scopeId: rootScope.id,
+        ...(requestId === undefined ? {} : { requestId }),
+      },
+      Effect.void,
+    );
   });
   /** Run statuses by ordinal, and each folder's checkpoint statuses by ordinal. */
   const recorded = Effect.gen(function* () {
@@ -730,6 +733,9 @@ it.live.each([{ projectIsRepository: true }, { projectIsRepository: false }])(
           ]);
         yield* thread.turn(1, edit("1"));
         yield* thread.turn(2, edit("2"));
+        // Retire a clean checkout. The checkpoints still hold both versions of these files.
+        yield* fileSystem.remove(path.join(folders.api, "a.txt"));
+        yield* fileSystem.remove(path.join(folders.web, "a.txt"));
         const removal = yield* taskFolders.remove({
           root: taskFolder.root,
           force: true,

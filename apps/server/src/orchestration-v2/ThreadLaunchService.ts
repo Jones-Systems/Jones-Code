@@ -102,6 +102,7 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import type { RecordedRun } from "./RecordedTypes.ts";
 import * as TaskFolders from "../workspace/TaskFolders.ts";
 
 // The agent waits for its branch name; a rate-limited provider would hold it for minutes.
@@ -2765,7 +2766,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
   const scheduleRunPreparation = Effect.fn("ThreadLaunchService.scheduleRunPreparation")(function* (
     input: ThreadLaunchPreparationInput,
     thread: OrchestrationV2ThreadProjection["thread"],
-    run: OrchestrationV2ThreadProjection["runs"][number],
+    run: RecordedRun,
     workspacePreparation: ThreadLaunchWorkspaceStrategy,
   ) {
     const { messages } = yield* threads.getThreadRecords(input.threadId, ["messages"], {

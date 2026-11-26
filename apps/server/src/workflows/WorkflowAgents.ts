@@ -122,7 +122,11 @@ export class WorkflowAgents extends Context.Service<
      */
     readonly result: (
       turn: AgentTurn,
-      options?: { readonly quiet?: Duration.Duration | undefined },
+      options?: {
+        readonly quiet?: Duration.Duration | undefined;
+        /** The origin run owning the durable pairing evidence for a linked turn. */
+        readonly workflowRunId?: string | undefined;
+      },
     ) => Effect.Effect<AgentResult, WorkflowAgentError>;
     /**
      * Stop whatever the thread is doing, when its run is cancelled. `ended` when there was nothing

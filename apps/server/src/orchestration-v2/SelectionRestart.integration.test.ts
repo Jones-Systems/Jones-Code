@@ -1052,7 +1052,7 @@ it.live.each(accountSwitchModes)(
           Effect.gen(function* () {
             const terminal = yield* orchestrator.streamDomainEvents.pipe(
               Stream.filter((event) =>
-                mode === "active" && step === "first"
+                active && step === "first"
                   ? event.type === "provider-turn.updated" && event.payload.status === "running"
                   : event.type === "run.updated" &&
                     (event.payload.status === "completed" || event.payload.status === "failed"),
@@ -1066,7 +1066,7 @@ it.live.each(accountSwitchModes)(
             yield* Fiber.join(terminal);
             yield* worker.drain();
             const projection = yield* orchestrator.getThreadProjection(threadId);
-            if (mode !== "active" || step !== "first") {
+            if (!active || step !== "first") {
               assert.equal(
                 projection.runs.at(-1)?.status,
                 "completed",

@@ -1085,7 +1085,7 @@ function claudeProcessExit(
 }
 
 function claudeProcessExitFailure(
-  cause: Cause.Cause<ClaudeAgentSdkQueryRunnerError>,
+  cause: Cause.Cause<unknown>,
 ): { readonly message: string; readonly code: string } | undefined {
   const error = Cause.squash(cause);
   const exit = claudeProcessExit(isClaudeAgentSdkQueryRunnerError(error) ? error.cause : error);
