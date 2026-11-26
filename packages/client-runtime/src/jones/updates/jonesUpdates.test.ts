@@ -343,15 +343,13 @@ it.effect("starts observation after an initially disconnected mount prepares its
     const connections = yield* SubscriptionRef.make(Option.none<string>());
     const disconnected = yield* Deferred.make<void>();
     let reads = 0;
-    const observed = yield* observeJonesUpdateState(
-      SubscriptionRef.changes(connections),
-      (after) =>
-        after === undefined
-          ? Effect.sync(() => {
-              reads++;
-              return staged;
-            })
-          : Effect.never,
+    const observed = yield* observeJonesUpdateState(SubscriptionRef.changes(connections), (after) =>
+      after === undefined
+        ? Effect.sync(() => {
+            reads++;
+            return staged;
+          })
+        : Effect.never,
     ).pipe(
       Stream.tap((state) =>
         state === null ? Deferred.succeed(disconnected, undefined) : Effect.void,

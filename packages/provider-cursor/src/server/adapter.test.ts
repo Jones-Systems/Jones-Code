@@ -3012,6 +3012,7 @@ describe("CursorAdapterV2", () => {
         });
         const instanceId = ProviderInstanceId.make("cursor");
         const threadId = ThreadId.make("cursor-background-thread");
+        const originalAgentId = "native-cursor-background-1";
         const modelSelection = { instanceId, model: "composer-2.5" };
         const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "full-access",
@@ -3207,12 +3208,11 @@ describe("CursorAdapterV2", () => {
           providerThreadTurns: [],
         });
         assert.deepStrictEqual(stopped, ["7"]);
-        assert.deepStrictEqual(retired, [
-          { agentId: providerThread.nativeThreadRef!.nativeId, stopped: ["7"] },
-        ]);
-        assert.notEqual(
+        assert.strictEqual(providerThread.nativeThreadRef?.nativeId, originalAgentId);
+        assert.deepStrictEqual(retired, [{ agentId: originalAgentId, stopped: ["7"] }]);
+        assert.strictEqual(
           rollback.providerThread.nativeThreadRef?.nativeId,
-          providerThread.nativeThreadRef?.nativeId,
+          "native-cursor-background-2",
         );
         assert.deepStrictEqual(rollback.providerThread.pendingBackgroundTasks, []);
         assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
