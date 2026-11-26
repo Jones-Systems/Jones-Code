@@ -61,7 +61,6 @@ function rowProps(
     jumpLabel: null,
     environmentLabel: "Laptop",
     environmentMachine: "laptop",
-    scratchMachineLabel: null,
     project: null,
     projectDisplayName: null,
     providerEntryByInstanceId: new Map(),

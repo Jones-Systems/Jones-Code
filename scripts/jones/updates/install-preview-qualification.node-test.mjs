@@ -2046,7 +2046,7 @@ NodeTest.test(
         await NodeFSP.mkdir(NodePath.dirname(descriptorPath), { recursive: true });
         await atomicJson(descriptorPath, {
           label: "Unmanaged fixture origin",
-          capabilities: { serverBrowser: true },
+          capabilities: { serverBrowser: true, accessTokenRenewal: true },
           orchestrationProtocolVersion: 42,
         });
         const upstream = await serveRendererFixture(root);

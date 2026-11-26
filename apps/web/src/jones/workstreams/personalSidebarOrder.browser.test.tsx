@@ -280,9 +280,8 @@ async function withSidebar(
   });
 }
 
-// A cold sidebar mount and seven real keyboard round trips share this test budget.
-it("traverses Unassigned before named Workstreams", async () => {
-  await withSidebar(async ({ rows, visit, step }) => {
+it("lays out Unassigned before named Workstreams", async () => {
+  await withSidebar(async ({ rows }) => {
     const header = page.getByRole("button", { name: "Hide all Workstreams", exact: true });
     const unassigned = page.getByRole("button", { name: "Collapse Unassigned", exact: true });
     const firstNamed = page.getByRole("button", { name: "Collapse alpha", exact: true });
@@ -296,10 +295,16 @@ it("traverses Unassigned before named Workstreams", async () => {
     expect(order.slice(0, 2).sort()).toEqual(["u1", "u2"]);
     expect(order.slice(2, 7).every((id) => id.startsWith("a"))).toBe(true);
     expect(order[7]).toBe("b1");
+  });
+});
+
+it("traverses Unassigned before named Workstreams", async () => {
+  await withSidebar(async ({ rows, visit, step }) => {
+    const order = rows();
     await visit(order[0]!);
     for (const id of order.slice(1)) await step("next", id);
   });
-}, 30_000);
+});
 
 it("traverses the visible Workstream order in reverse", async () => {
   await withSidebar(async ({ rows, visit, step }) => {

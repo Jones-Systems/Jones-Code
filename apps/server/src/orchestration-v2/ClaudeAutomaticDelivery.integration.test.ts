@@ -14,7 +14,9 @@ import {
   ScheduledTaskUpsertInput,
   ThreadId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import type * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -27,6 +29,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -1121,7 +1124,27 @@ it.effect.each([
 ] as const)("handles an unread steer when %s", (outcome) =>
   Effect.gen(function* () {
     const cwd = yield* checkpointWorkspace("claude-unread-steer");
-    const sdkMessages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
+    const threadId = ThreadId.make("thread:unread-steer");
+    const steerId = MessageId.make("steer");
+    const restartSnapshot =
+      outcome === "the server restarts"
+        ? (yield* Path.Path).join(
+            yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
+              prefix: "claude-unread-steer-restart-",
+            }),
+            "restart.sqlite",
+          )
+        : undefined;
+    const queued = (projection: OrchestrationV2ThreadProjection) =>
+      projection.runs
+        .filter((run) => run.status === "queued")
+        .toSorted(
+          (left, right) =>
+            (left.queuePosition ?? left.ordinal) - (right.queuePosition ?? right.ordinal),
+        );
+    const queueOrder = (projection: OrchestrationV2ThreadProjection) =>
+      queued(projection).map((run) => [run.userMessageId, run.queueHeld === true]);
+    let sdkMessages: Queue.Queue<SDKMessage, Cause.Done>;
     const offers: SDKUserMessage[] = [];
     const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
       instanceId: modelSelection.instanceId,
@@ -1135,26 +1158,30 @@ it.effect.each([
       queryRunner: {
         allocateSessionId: Effect.succeed(sessionId),
         open: () =>
-          Effect.succeed({
-            messages: Stream.fromQueue(sdkMessages),
-            offer: (message) => Effect.sync(() => void offers.push(message)),
-            setModel: () => Effect.void,
-            applyFlagSettings: () => Effect.void,
-            setPermissionMode: () => Effect.void,
-            renameSession: () => Effect.void,
-            backgroundTasks: () => Effect.succeed(false),
-            mcpServerStatus: Effect.succeed([]),
-            readMcpResource: () => Effect.die("unexpected MCP resource read"),
-            callMcpTool: () => Effect.die("unexpected MCP tool call"),
-            mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
-            mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
-            reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
-            listPermissionRules: Effect.die("unexpected permission rules read"),
-            stopTask: () => Effect.void,
-            interrupt: Queue.shutdown(sdkMessages),
-            close: Queue.end(sdkMessages).pipe(Effect.asVoid),
-            // The fixture has no child process to join, only a reader to drain.
-            termination: Effect.void,
+          Effect.gen(function* () {
+            const messages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
+            sdkMessages = messages;
+            return {
+              messages: Stream.fromQueue(messages),
+              offer: (message) => Effect.sync(() => void offers.push(message)),
+              setModel: () => Effect.void,
+              applyFlagSettings: () => Effect.void,
+              setPermissionMode: () => Effect.void,
+              renameSession: () => Effect.void,
+              backgroundTasks: () => Effect.succeed(false),
+              mcpServerStatus: Effect.succeed([]),
+              readMcpResource: () => Effect.die("unexpected MCP resource read"),
+              callMcpTool: () => Effect.die("unexpected MCP tool call"),
+              mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
+              mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
+              reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+              listPermissionRules: Effect.die("unexpected permission rules read"),
+              stopTask: () => Effect.void,
+              interrupt: Queue.shutdown(messages),
+              close: Queue.end(messages).pipe(Effect.asVoid),
+              // The fixture has no child process to join, only a reader to drain.
+              termination: Effect.void,
+            };
           }),
         forkSession: () => Effect.die("unused"),
         subagentLaunchToolUseId: () => Effect.succeed(null),
@@ -1165,8 +1192,6 @@ it.effect.each([
     yield* Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-      const threadId = ThreadId.make("thread:unread-steer");
-      const steerId = MessageId.make("steer");
       const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
         orchestrator.acquireDomainEvents.pipe(
           Effect.flatMap((events) =>
@@ -1214,17 +1239,7 @@ it.effect.each([
         );
       const offeredText = (offer: SDKUserMessage | undefined) =>
         JSON.stringify(offer?.message.content ?? null);
-      const queued = Effect.map(orchestrator.getThreadProjection(threadId), (projection) =>
-        projection.runs
-          .filter((run) => run.status === "queued")
-          .toSorted(
-            (left, right) =>
-              (left.queuePosition ?? left.ordinal) - (right.queuePosition ?? right.ordinal),
-          ),
-      );
-      const queuedOrder = Effect.map(queued, (runs) =>
-        runs.map((run) => [run.userMessageId, run.queueHeld === true]),
-      );
+      const queuedOrder = Effect.map(orchestrator.getThreadProjection(threadId), queueOrder);
       yield* orchestrator.dispatch({
         type: "thread.create",
         commandId: CommandId.make("create"),
@@ -1299,7 +1314,7 @@ it.effect.each([
         yield* worker.drain();
         yield* Fiber.join(nextRunning);
         // The older message runs first; the steer waits right behind it on its own model.
-        const behind = yield* queued;
+        const behind = queued(yield* orchestrator.getThreadProjection(threadId));
         assert.deepEqual(
           behind.map((run) => run.userMessageId),
           [steerId, MessageId.make("after")],
@@ -1349,11 +1364,11 @@ it.effect.each([
       if (outcome === "the Claude process exits") {
         const requeued = yield* watch(
           (event) =>
-            event.type === "run.updated" &&
+            (event.type === "run.created" || event.type === "run.updated") &&
             event.payload.userMessageId === steerId &&
             event.payload.status === "queued",
         );
-        yield* Queue.shutdown(sdkMessages);
+        yield* Queue.end(sdkMessages);
         yield* Fiber.join(requeued);
         yield* worker.drain();
         // The provider failure holds the queue, the follow-up included, until someone resumes it.
@@ -1402,40 +1417,56 @@ it.effect.each([
         return;
       }
 
-      // Recovery cancels the run, holds the queue and leaves the unread steer pending.
-      const projection = yield* orchestrator.getThreadProjection(threadId);
-      const now = yield* DateTime.now;
-      yield* (yield* EventSink.EventSinkV2).write({
-        commandId: CommandId.make("command:runtime-reconcile:startup:unread-steer"),
-        events: projection.runs.map((run, index) => ({
-          id: EventId.make(`recovered-run-${index}`),
-          type: "run.updated" as const,
+      if (restartSnapshot !== undefined) {
+        // Preserve the crash state before gracefully stopping the fixture's original process.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`VACUUM INTO ${restartSnapshot}`;
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("stop-old-fixture"),
           threadId,
-          runId: run.id,
-          occurredAt: now,
-          payload:
-            run.id === parent.id
-              ? { ...run, status: "cancelled" as const, completedAt: now }
-              : { ...run, queueHeld: true },
-        })),
-      });
-      yield* orchestrator.recoverDelegatedTasks;
-      yield* worker.drain();
-      assert.deepEqual(yield* queuedOrder, [
-        [MessageId.make("before"), true],
-        [steerId, true],
-        [MessageId.make("after"), true],
-      ]);
-      assert.equal(offers.length, 2);
+          runId: parent.id,
+          holdQueue: true,
+        });
+        yield* worker.drain();
+      }
     }).pipe(
       Effect.provide(
-        ProviderReplayHarness.layerWithRegistry(
+        ProviderReplayHarness.layerWithRegistryAndServices(
           { name: "claude-unread-steer" },
           ProviderAdapterRegistry.layerSingle(adapter),
           { runEffectWorker: false },
         ),
       ),
     );
+    if (restartSnapshot !== undefined) {
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const recovered = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(
+          recovered.runs.find((run) => run.userMessageId === "first")?.status,
+          "cancelled",
+        );
+        assert.deepEqual(queueOrder(recovered), [
+          [MessageId.make("before"), true],
+          [steerId, true],
+          [MessageId.make("after"), true],
+        ]);
+        assert.equal(offers.length, 2);
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "claude-unread-steer-restart" },
+            ProviderAdapterRegistry.layerSingle(adapter),
+            {
+              databaseLayer: NodeSqliteClient.layer({ filename: restartSnapshot }),
+              recoverOnStartup: true,
+              continueThreadsAfterServerUpdate: false,
+            },
+          ),
+        ),
+      );
+    }
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
@@ -1682,6 +1713,7 @@ const exitWhileIdle = (options: {
           afterWake.messages.filter((message) => message.createdBy === "user").length,
           1,
         );
+        yield* completeActiveTurn(threadId, processes.at(-1)!);
       }).pipe(
         Effect.provide(
           ProviderReplayHarness.layerWithRegistry(

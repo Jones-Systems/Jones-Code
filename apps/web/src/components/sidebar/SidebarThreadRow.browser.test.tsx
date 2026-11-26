@@ -45,7 +45,6 @@ it("renders live Workstream row updates and activation without a native sortable
     jumpLabel: null,
     environmentLabel: "Synthetic environment",
     environmentMachine: "server",
-    scratchMachineLabel: null,
     project: null,
     projectDisplayName: null,
     providerEntryByInstanceId: new Map(),

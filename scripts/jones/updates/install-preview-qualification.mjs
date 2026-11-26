@@ -666,8 +666,9 @@ export async function fixtureProxy(upstream, sourceIdentity) {
         descriptor.label = "Synthetic incompatible Jones host";
         descriptor.serverVersion = "0.0.45-preview.20261011.1.1";
         descriptor.orchestrationProtocolVersion = 0;
-        // Model an older supervised host; the update response still requires qualified bootstrap.
+        // This older supervised host predates DPoP renewal. Pair against the real bearer route.
         descriptor.capabilities = { ...descriptor.capabilities, serverSelfUpdate: "boot-service" };
+        delete descriptor.capabilities.accessTokenRenewal;
         descriptor.jonesSource = { ...sourceIdentity, ...(checks ? { sha: "0".repeat(40) } : {}) };
         bytes = Buffer.from(JSON.stringify(descriptor));
       }
@@ -699,7 +700,7 @@ export async function fixtureProxy(upstream, sourceIdentity) {
       websocketAttempts,
       checks,
       fixtureBoundary:
-        "Real T3 pairing/auth; synthetic older boot-service descriptor and bootstrap-blocked update responses; no installation",
+        "Real T3 bearer pairing/auth; synthetic older boot-service descriptor and bootstrap-blocked update responses; no installation",
     }),
     close: () =>
       new Promise((resolve, reject) => {

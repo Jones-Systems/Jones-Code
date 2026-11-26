@@ -79,7 +79,6 @@ it("keeps the local device subtitle, propagates names and exposes attached workt
     jumpLabel: null,
     environmentLabel: "Synthetic environment",
     environmentMachine: "server",
-    scratchMachineLabel: null,
     project: null,
     projectDisplayName: null,
     providerEntryByInstanceId: new Map(),

@@ -8993,7 +8993,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             Effect.flatMap((adapter) => adapter.getCapabilities()),
             mapDispatchError(command),
           )).turns;
-        if (providerSwitchWaitsForTurn(turns)) {
+        // An owner-authorized selection can use the captured restart path on an interruptible turn.
+        const ownerCanRestart =
+          ownerMessage &&
+          (ownerExplicit || pendingOwner !== undefined) &&
+          target.status === "running" &&
+          turns.supportsInterrupt;
+        if (providerSwitchWaitsForTurn(turns) && !ownerCanRestart) {
           dispatchMode = { type: "queue_after_active" };
         }
       }
@@ -19934,11 +19940,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
-    // Run-end queue release can lag a new send. Durable continuations go first so that
-    // their committed selection and inherited queue overrides govern the next release.
+    // Run-end queue release can lag a new send. Durable continuations and unread steers
+    // must commit their selection and queue position before the next run is released.
     if (
       command.type === "message.dispatch" &&
       command.restartContinuationOfRunId === undefined &&
+      command.steerFollowUpOfRunId === undefined &&
       (command.dispatchMode.type === "start_immediately" ||
         command.dispatchMode.type === "queue_after_active" ||
         command.dispatchMode.type === "defer_start") &&
