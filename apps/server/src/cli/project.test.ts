@@ -230,7 +230,12 @@ it.effect.each(["snapshot", "mutation"] as const)(
         Effect.provideService(FetchHttpClient.Fetch, fetch),
         Effect.forkChild,
       );
-      yield* Effect.promise(() => requestReceived.promise);
+      yield* Effect.raceFirst(
+        Effect.promise(() => requestReceived.promise),
+        Fiber.join(add).pipe(
+          Effect.andThen(Effect.die(`CLI completed before the ${slowRequest} request.`)),
+        ),
+      );
       yield* TestClock.adjust("2 seconds");
       releaseResponse.resolve();
       yield* Fiber.join(add);

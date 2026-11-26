@@ -1,5 +1,7 @@
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
+import * as PeerThreadRelay from "../peer/PeerThreadRelay.ts";
+import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as QueueCompatibility from "./QueueCompatibility.ts";
 import * as ScratchThreadPromotion from "../project/ScratchThreadPromotion.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
@@ -16,6 +18,7 @@ import * as WsAgentSessionScanner from "../project/AgentSessionScanner.ts";
 import * as WsDirectEndpoints from "../environment/DirectEndpoints.ts";
 import * as WsPeerLinks from "../peer/PeerLinks.ts";
 import * as WsMcpAppRequests from "../mcpApps/McpAppRequests.ts";
+import * as McpSignIn from "../mcpApps/McpSignIn.ts";
 import * as WsSecretRequests from "../secrets/SecretRequests.ts";
 import * as WsServerBrowser from "../preview/ServerBrowser.ts";
 import * as OrchestrationHttpApi from "./http.ts";
@@ -107,6 +110,8 @@ import * as FeedbackStore from "../feedback/FeedbackStore.ts";
 import * as WorkflowRuntime from "../workflows/WorkflowRuntime.ts";
 import * as Workflows from "../workflows/Workflows.ts";
 import * as TaskFolders from "../workspace/TaskFolders.ts";
+import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
+import * as LayoutCommandApprovalWrites from "../workspace/LayoutCommandApprovalWrites.ts";
 import * as WsPullRequestSyncReactor from "../orchestration-v2/PullRequestSyncReactor.ts";
 import * as WsDeviceService from "../device/DeviceService.ts";
 import * as WsOrchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -202,6 +207,7 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Threads from "./ThreadManagementService.ts";
+import * as ThreadViewers from "./ThreadViewers.ts";
 import { OrchestratorProjectionError, OrchestratorDispatchError } from "./Orchestrator.ts";
 import {
   LegacyReleaseDecision,
@@ -617,10 +623,16 @@ const unrelatedWsOwners = Layer.mergeAll(
   Layer.mock(IssueTrackerConnections.IssueTrackerConnections)({}),
   Layer.mock(ThreadIssueService.ThreadIssueService)({}),
   Layer.mock(PeerClientPairing.PeerClientPairing)({}),
+  Layer.mock(PeerThreadRelay.PeerThreadRelay)({}),
+  Layer.mock(McpSignIn.McpSignIn)({}),
+  FeatureFlags.layerTest(),
+  ThreadViewers.layer,
   Layer.mock(FeedbackStore.FeedbackStore)({}),
   Layer.mock(WorkflowRuntime.WorkflowDefinitions)({}),
   Workflows.layerDisabled,
   Layer.mock(TaskFolders.TaskFolders)({}),
+  Layer.mock(WorkspaceFolders.WorkspaceFolders)({}),
+  Layer.mock(LayoutCommandApprovalWrites.LayoutCommandApprovalWrites)({}),
 );
 
 it("rejects unauthenticated and query-token WebSocket ingress at the actual production auth boundary with zero RPC work", async () => {

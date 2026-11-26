@@ -586,36 +586,13 @@ export const make = Effect.gen(function* () {
           .pipe(Effect.map(threadHasWaitingGoal))
       : Effect.succeed(false);
 
-  const merged = Effect.fnUntraced(function* (groupKey: string, target: WatchTarget) {
-    if (!(yield* goalMayBeWaiting(target))) {
-      yield* record(target, null).pipe(Effect.tap(() => ended(target, "merged")));
-      return;
-    }
-    yield* hold({
-      groupKey,
-      target,
-      next: null,
-      endedWatch: target.watch,
-      wake: {
-        text: `Pull request #${target.link.number} (${target.link.url}) merged, so Jones Code stopped watching it.`,
-        notification: {
-          source: { kind: "monitor" },
-          outcome: "completed",
-          summary: `#${target.link.number}: merged, stopped watching`,
-        },
-      },
-      reason: "merged",
-    });
-  });
-
-  const endsWithoutRead = ({ thread, link }: WatchTarget): WatchEndReason | undefined =>
+  // Read a merged snapshot once so the wake can include the host's merge evidence.
+  const endsWithoutRead = ({ thread }: WatchTarget): WatchEndReason | undefined =>
     thread.settledOverride === "settled" || thread.settledAt !== null
       ? "settled"
       : thread.lineage.relationshipToParent === "subagent"
         ? "subagent"
-        : link.snapshot?.state === "merged"
-          ? "merged"
-          : undefined;
+        : undefined;
 
   const eachTarget = <E>(
     group: WatchGroup,
@@ -737,9 +714,7 @@ export const make = Effect.gen(function* () {
     }
     if (detail.state !== "open") {
       lastReads.delete(group.key);
-      return yield* eachTarget(group, (target) =>
-        detail.state === "closed" ? closed(group.key, target) : merged(group.key, target),
-      );
+      return yield* eachTarget(group, (target) => finished(group.key, target, detail));
     }
 
     // A failed comments read leaves remarks incomplete, so the next pass reads them again;
@@ -870,10 +845,8 @@ export const make = Effect.gen(function* () {
     yield* Effect.forEach(
       ending,
       ([target, reason]) =>
-        (reason === "merged"
-          ? merged(`${target.thread.projectId} ${threadPullRequestKeyOf(target.link)}`, target)
-          : record(target, null).pipe(Effect.tap(() => ended(target, reason)))
-        ).pipe(
+        record(target, null).pipe(
+          Effect.tap(() => ended(target, reason)),
           Effect.catchCause(
             logFailure("pull request watch stop failed", {
               threadId: target.thread.id,

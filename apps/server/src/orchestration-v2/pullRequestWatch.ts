@@ -21,6 +21,11 @@ const SNIPPET_LENGTH = 200;
 export type PullRequestWatchChange =
   | { readonly kind: "checks-failed"; readonly failed: ReadonlyArray<PullRequestCheck> }
   | { readonly kind: "checks-passed"; readonly count: number; readonly required: boolean }
+  | {
+      readonly kind: "checks-finished";
+      readonly passed: number;
+      readonly failing: ReadonlyArray<PullRequestCheck>;
+    }
   | { readonly kind: "checks-settled" }
   | ObservedPass
   | { readonly kind: "checks-awaiting-approval"; readonly checks: ReadonlyArray<PullRequestCheck> }
@@ -483,6 +488,7 @@ function changeLines(
 const SUMMARY: Record<PullRequestWatchChange["kind"], string> = {
   "checks-failed": "checks failed",
   "checks-passed": "checks passed",
+  "checks-finished": "checks finished",
   "checks-settled": "check wait ended",
   "checks-awaiting-approval": "checks await approval",
   remarks: "new comments",

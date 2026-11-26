@@ -956,6 +956,7 @@ function commandThreadId(
     case "prepared-run.retry":
     case "subagent.stop":
     case "run.interrupt":
+    case "run.output.submit":
     case "queued-message.promote-batch-to-steer":
     case "queued-message.promote-to-steer":
     case "queued-run.start":
