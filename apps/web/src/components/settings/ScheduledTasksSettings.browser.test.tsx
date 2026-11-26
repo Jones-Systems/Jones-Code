@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   type ServerProvider,
+  type UnifiedSettings,
   ScheduledTaskId,
   ThreadId,
   type ScheduledTask,
@@ -66,7 +67,11 @@ const state = vi.hoisted(() => ({
   connected: true,
   tasksLoaded: true,
   remove: vi.fn(),
-  inherited: false,
+  tasks: [] as ScheduledTask[],
+  secondary: false,
+  providers: null as Atom.Atom<ReadonlyArray<ServerProvider>> | null,
+  settings: null as UnifiedSettings | null,
+  upsert: vi.fn(),
 }));
 const secondaryId = EnvironmentId.make("secondary");
 const permissions = new Map<string, Atom.Writable<boolean>>();
@@ -87,7 +92,9 @@ function setup() {
   state.remove.mockReset().mockReturnValue(Effect.succeed({ id: task.id }));
   state.tasks = [task];
   state.secondary = false;
-  state.inherited = false;
+  state.providers = Atom.make<ReadonlyArray<ServerProvider>>([]);
+  state.settings = DEFAULT_UNIFIED_SETTINGS;
+  state.upsert.mockReset().mockReturnValue(Effect.succeed({ id: task.id }));
   permissions.clear();
   taskLists.clear();
   permissions.set(environmentId, Atom.make(true));
@@ -173,7 +180,7 @@ vi.mock(import("../../state/query"), async (original) => ({
     data:
       request === null || request === threadFamilyRead
         ? request
-        : { tasks: state.tasksLoaded ? [state.inherited ? inheritedTask : task] : [] },
+        : { tasks: state.tasksLoaded ? state.tasks : [] },
     error: null,
     isPending: false,
     refresh: vi.fn(),
@@ -246,6 +253,11 @@ async function fillTitleAndPrompt() {
   await userEvent.fill(page.getByRole("textbox", { name: "Prompt", exact: true }), "Review issues");
 }
 
+async function editScheduledTask() {
+  await page.getByRole("button", { name: `Actions for ${task.title}` }).click();
+  await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+}
+
 describe("ScheduledTasksSettings", () => {
   it("only deletes a scheduled task after confirmation, including after cancelling", async () => {
     setup();
@@ -279,17 +291,20 @@ describe("ScheduledTasksSettings", () => {
     "keeps model options when the same model is reselected (existing task: %s)",
     async (editing) => {
       const selection = setupEffortTask();
-      await using screen = await render(
-        <ScheduledTasksSettings {...(editing ? { taskId: task.id } : {})} />,
-      );
-      if (!editing) {
+      await using screen = await render(<ScheduledTasksSettings />);
+      if (editing) {
+        await editScheduledTask();
+      } else {
         await screen.getByRole("button", { name: "New task" }).click();
         await page.getByRole("combobox", { name: "Workspace" }).click();
         await page.getByRole("option", { name: "Use the project checkout" }).click();
       }
       await fillTitleAndPrompt();
       await page.getByRole("button", { name: "GPT-5.4", exact: true }).click();
-      await page.getByRole("option", { name: /GPT-5.4/ }).click();
+      const search = page.getByPlaceholder("Search models...");
+      await userEvent.fill(search, "GPT-5.4");
+      await page.getByRole("option", { name: /GPT-5\.4/ }).click();
+      await expect.element(search).not.toBeInTheDocument();
       await expect.element(page.getByRole("button", { name: "High", exact: true })).toBeVisible();
       await page.getByRole("button", { name: editing ? "Save task" : "Create task" }).click();
       await vi.waitFor(() =>
@@ -303,7 +318,8 @@ describe("ScheduledTasksSettings", () => {
 
   it("saves a changed effort and drops options when switching models", async () => {
     const selection = setupEffortTask();
-    await using screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    await using _screen = await render(<ScheduledTasksSettings />);
+    await editScheduledTask();
     await fillTitleAndPrompt();
     await page.getByRole("button", { name: "High", exact: true }).click();
     await page.getByRole("menuitemradio", { name: /^Low/ }).click();
@@ -321,9 +337,10 @@ describe("ScheduledTasksSettings", () => {
       }),
     );
 
-    await screen.rerender(<ScheduledTasksSettings />);
-    await screen.rerender(<ScheduledTasksSettings taskId={task.id} />);
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+    await editScheduledTask();
     await page.getByRole("button", { name: "GPT-5.4", exact: true }).click();
+    await userEvent.fill(page.getByPlaceholder("Search models..."), "Plain model");
     await page.getByRole("option", { name: /Plain model/ }).click();
     expect(page.getByRole("button", { name: "High", exact: true }).query()).toBeNull();
     await page.getByRole("button", { name: "Save task" }).click();
@@ -437,7 +454,6 @@ describe("ScheduledTasksSettings", () => {
   it("keeps an editor the user opened when the linked task loads later", async () => {
     setup();
     state.tasksLoaded = false;
-    state.inherited = false;
     await using screen = await render(<ScheduledTasksSettings taskId={task.id} />);
     await userEvent.click(page.getByRole("button", { name: "New task" }));
     const dialog = page.getByRole("dialog");
@@ -467,9 +483,7 @@ describe("ScheduledTasksSettings", () => {
 });
 
 it("new tasks inherit project allocation and retain explicit checkout choices", async () => {
-  state.connected = true;
-  state.tasksLoaded = true;
-  state.inherited = false;
+  setup();
   await using _screen = await render(<ScheduledTasksSettings />);
   await userEvent.click(page.getByRole("button", { name: "New task" }));
   const workspace = page.getByRole("dialog").getByRole("combobox", { name: "Workspace" });
@@ -483,12 +497,10 @@ it("new tasks inherit project allocation and retain explicit checkout choices", 
 });
 
 it("reopens persisted auto without converting it to an explicit worktree", async () => {
-  state.connected = true;
-  state.tasksLoaded = true;
-  state.inherited = true;
+  setup();
+  state.tasks = [inheritedTask];
   await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
   await expect
     .element(page.getByRole("dialog").getByRole("combobox", { name: "Workspace" }))
     .toHaveTextContent("Use project allocation setting");
-  state.inherited = false;
 });

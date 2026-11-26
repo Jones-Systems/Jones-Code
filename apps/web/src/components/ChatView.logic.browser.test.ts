@@ -54,10 +54,10 @@ it("keeps focus on the trigger while its popup opens on window return", () => {
   const trigger = document.createElement("button");
   trigger.setAttribute("aria-haspopup", "dialog");
   trigger.setAttribute("aria-expanded", "true");
-  expect(shouldRefocusComposerOnWindowFocus(trigger)).toBe(false);
+  expect(shouldRefocusComposerOnWindowFocus(trigger, null)).toBe(false);
 
   trigger.setAttribute("aria-expanded", "false");
-  expect(shouldRefocusComposerOnWindowFocus(trigger)).toBe(true);
+  expect(shouldRefocusComposerOnWindowFocus(trigger, null)).toBe(true);
 });
 
 it("keeps focus in a region with its own keys on window return", async () => {

@@ -19,7 +19,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
 } from "@t3tools/contracts";
-import { expect, it, vi } from "vite-plus/test";
+import { expect, it, onTestFinished, vi } from "vite-plus/test";
 
 import { act, render } from "../../../test/render";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
@@ -155,6 +155,7 @@ function setup() {
   const draftId = DraftId.make("fresh-routing-draft");
   const projectId = ProjectId.make("project");
   const store = useComposerDraftStore.getState();
+  onTestFinished(() => useComposerDraftStore.setState(store, true));
   store.clearDraftThread(draftId);
   store.setProjectDraftThreadId(scopeProjectRef(a, projectId), draftId, {
     environmentSelection: "auto",

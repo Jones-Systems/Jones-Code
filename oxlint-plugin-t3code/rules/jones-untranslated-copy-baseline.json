@@ -1,5 +1,5 @@
 {
-  "canonicalRevision": "4ed713e00e9dfc1be6ba2dd4398ad6f4dd7a03c4",
+  "canonicalRevision": "529965b67857960254a4424697e8363f1835b593",
   "syncRevision": "211fd232625d364ab7ea480712354e91ab4edd53",
   "upstreamRevision": "36816d26be2d862440d6412d62332a10c4d896ff",
   "files": {
@@ -1083,7 +1083,7 @@
     },
     "apps/web/src/jones/fleetUpdates/FleetController.tsx": {
       "Literal/Property:\"Native publication proof could not be read.\"": 1,
-      "Literal/Property:\"Native publication proof is unavailable.\"": 2
+      "Literal/Property:\"Native publication proof is unavailable.\"": 3
     },
     "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.tsx": {
       "Literal/CallExpression:\"Automatic updates on. This host follows this laptop’s exact source after each committed laptop update.\"": 1,
@@ -1104,6 +1104,8 @@
       "JSXText/JSXElement:Refresh status": 1,
       "JSXText/JSXElement:’s qualified service. It installs a build after\n                this laptop commits the same source; an offline host updates when it reconnects.\n              ": 1,
       "Literal/ConditionalExpression:\"Install this laptop's build after each laptop update.\"": 1,
+      "Literal/ConditionalExpression:\"Refresh laptop report and host status\"": 1,
+      "Literal/ConditionalExpression:\"Refresh status\"": 1,
       "TemplateLiteral/JSXExpressionContainer:`${enrolled ? \"Turn off\" : \"Turn on\"} automatic updates for ${label}`": 1,
       "TemplateLiteral/JSXExpressionContainer:`Automatic updates for ${label}: ${state}${hint === null ? \"\" : `, ${hint}`}`": 1,
       "TemplateLiteral/JSXExpressionContainer:`Refresh automatic update status for ${label}`": 1
@@ -1122,6 +1124,7 @@
       "Literal/LogicalExpression:\"Reading qualified Jones update support…\"": 1
     },
     "apps/web/src/jones/fleetUpdates/followerStatus.ts": {
+      "Literal/LogicalExpression:\"Waiting for the laptop to report a build\"": 1,
       "Literal/ReturnStatement:\"Waiting for the laptop to report a build\"": 1,
       "TemplateLiteral/ReturnStatement:`Checking the last update${reason}`": 1,
       "TemplateLiteral/ReturnStatement:`Couldn't prepare${build}${reason}${after(\"retries after\")}`": 1,
@@ -1132,8 +1135,12 @@
       "TemplateLiteral/ReturnStatement:`Unavailable${reason}`": 1
     },
     "apps/web/src/jones/fleetUpdates/publicationStatus.ts": {
+      "TemplateLiteral/ConditionalExpression:`${running} Publication authorized for ${published}.`": 1,
+      "TemplateLiteral/ConditionalExpression:`${running} Publication was last authorized for ${published}.`": 1,
+      "TemplateLiteral/ReturnStatement:`Automatic publication withheld (${reason}). ${running}${\n    publication.code === \"unproved\" ? \" Open Install status to check laptop verification.\" : \"\"\n  }`": 1,
       "TemplateLiteral/ReturnStatement:`Automatic publication withheld (${reason}).${installed}`": 1,
       "TemplateLiteral/ReturnStatement:`Laptop publication authorized for ${shortJonesSource(publication.source.sha)}.${installed}`": 1,
+      "TemplateLiteral/ReturnStatement:`Laptop publication status unknown. ${running}`": 1,
       "TemplateLiteral/ReturnStatement:`Laptop publication status unknown.${installed}`": 1
     },
     "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.tsx": {
@@ -1316,9 +1323,9 @@
       "Literal/ConditionalExpression:\"Install status is unavailable.\"": 1,
       "Literal/ConditionalExpression:\"Review this device's outstanding work in Install status recovery history first.\"": 1,
       "Literal/ConditionalExpression:\"Update from Connections after Laptop is updated and verified for this source.\"": 1,
-      "Literal/LogicalExpression:\"Device\"": 1,
+      "Literal/LogicalExpression:\"Device\"": 2,
       "Literal/LogicalExpression:\"Install was not granted.\"": 1,
-      "Literal/LogicalExpression:\"The plan handoff was refused.\"": 1,
+      "Literal/LogicalExpression:\"The plan handoff was refused.\"": 2,
       "Literal/Property:\"A native Laptop install requires its full native review.\"": 1,
       "Literal/Property:\"Fresh control authority and a native install review are required.\"": 1,
       "Literal/Property:\"Fresh control authority and the selected device's enrollment are required.\"": 1,
@@ -1336,6 +1343,7 @@
       "Literal/ReturnStatement:\"Open Install status on Laptop first.\"": 1,
       "TemplateLiteral/CallExpression:`Install update${(latest.downloadedVersion ?? latest.availableVersion) ? ` ${latest.downloadedVersion ?? latest.availableVersion}` : \"\"} and restart Jones Code?\\n\\nAny running tasks will be interrupted. Make sure you are ready before continuing.`": 1,
       "TemplateLiteral/Property:`Already on ${target.version}`": 1,
+      "TemplateLiteral/Property:`Already on source ${target.sourceSha.slice(0, 8)}.`": 1,
       "TemplateLiteral/Property:`Update from Connections after Laptop is verified: ${!device.canOperate ? \"no permission\" : route.selectable ? \"unavailable\" : route.reason}`": 1,
       "TemplateLiteral/Property:`Update from Connections after Laptop is verified: ${refusal}`": 1
     },
@@ -2306,6 +2314,7 @@
       "Literal/ConditionalExpression:\"Migrations\"": 1,
       "Literal/ConditionalExpression:\"No changes\"": 1,
       "Literal/ConditionalExpression:\"Rolled back\"": 1,
+      "Literal/ConditionalExpression:\"Waiting for the laptop to report its build\"": 1,
       "Literal/ConditionalExpression:\"Waiting for the laptop's installed build\"": 1,
       "Literal/ConditionalExpression:\"not reported\"": 1,
       "Literal/ConditionalExpression:\"version not reported\"": 1,
@@ -2355,6 +2364,7 @@
       "Literal/Property:\"Not compared. Comparing needs a verified local desktop connection and the full source commit of both builds.\"": 1,
       "Literal/Property:\"Not compared. Comparing needs the full installed source commit of both this host and this laptop.\"": 1,
       "Literal/Property:\"Older\"": 1,
+      "TemplateLiteral/ConditionalExpression:`${candidate.label} build differs from the last laptop source this host recorded`": 1,
       "TemplateLiteral/ConditionalExpression:`${candidate.label} build is not the laptop's, so it will not install`": 1,
       "TemplateLiteral/JSXExpressionContainer:`${candidateLabel} vs this laptop`": 1
     },
@@ -3110,15 +3120,20 @@
       "Literal/ReturnStatement:\"This host follows its laptop and waits for the laptop to report its installed build.\"": 1,
       "Literal/ReturnStatement:\"Waiting for this host's current update status.\"": 1,
       "Literal/TSAsExpression:\"Alternative\"": 1,
+      "TemplateLiteral/ConditionalExpression:`Follows its laptop · last reported source ${shortJonesSource(policy.leaderSource)}`": 1,
       "TemplateLiteral/ConditionalExpression:`Follows its laptop · takes only source ${shortJonesSource(policy.leaderSource)}`": 1,
       "TemplateLiteral/ConditionalExpression:`The host reports source ${shortJonesSource(state.provenance.sourceSha)} downloaded, not ${shortJonesSource(targetSource)}. It will not be installed from this notice.`": 1,
       "TemplateLiteral/ConditionalExpression:`This host cannot ${what} updates right now.`": 1,
       "TemplateLiteral/LogicalExpression:`The host did not start the download (${state.phase}).`": 1,
       "TemplateLiteral/LogicalExpression:`The update is ${state.phase}.`": 1,
-      "TemplateLiteral/ReturnStatement:`This host follows its laptop and installs only the laptop's installed source ${shortJonesSource(policy.leaderSource)}.`": 1
+      "TemplateLiteral/ReturnStatement:`This host follows its laptop and installs only the laptop's installed source ${shortJonesSource(policy.leaderSource)}.`": 1,
+      "TemplateLiteral/ReturnStatement:`This host follows its laptop and uses the last laptop source it recorded: ${shortJonesSource(policy.leaderSource)}.`": 1
     },
     "packages/client-runtime/src/jones/updates/targetStatus.ts": {
-      "TemplateLiteral/ConditionalExpression:`${checkText[kind]} Checked ${checkTime.format(timestamp)}.`": 1
+      "Literal/ReturnStatement:\"The requested build could not be qualified.\"": 1,
+      "Literal/ReturnStatement:\"The requested build is older than the build running on this host. Jones Code does not downgrade.\"": 1,
+      "TemplateLiteral/ConditionalExpression:`${checkText[kind]} Checked ${checkTime.format(timestamp)}.`": 1,
+      "TemplateLiteral/ConditionalExpression:`${message} Checked ${checkTime.format(timestamp)}.`": 1
     }
   }
 }
