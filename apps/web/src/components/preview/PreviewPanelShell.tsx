@@ -1,4 +1,4 @@
-import { useGT } from "gt-react";
+import { PanelFindScope } from "../../jones/panelFind/PanelFind";
 import {
   type CSSProperties,
   type FocusEvent,
@@ -17,6 +17,7 @@ import { canReturnFocusTo, workspaceAreaProps } from "../../lib/workspaceFocus";
 import { cn } from "~/lib/utils";
 
 import { RightPanelResizeHandle } from "./RightPanelResizeHandle";
+import { useGT } from "gt-react";
 
 export type PreviewPanelMode = "inline" | "sheet" | "sidebar" | "embedded";
 

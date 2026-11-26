@@ -1,6 +1,30 @@
-import { m } from "../i18n/messages";
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { useGT, useMessages } from "gt-react";
+import { resolveComposerProviderSelection } from "../jones/composer/providerSelection";
+import {
+  provenPendingThread,
+  canSendAfterInitialMessageRejection,
+} from "../jones/pendingSends/newThread";
+import { PanelFindScope, openFocusedPanelFind } from "../jones/panelFind/PanelFind";
+import type { EnvironmentContextRecord } from "@t3tools/contracts";
+import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
+import { usePendingUserInputDraft } from "./chat/usePendingThreadRequests";
+import {
+  INERT_QUESTION_COMPOSER_PROPS,
+  pendingQuestionBlocksSteering,
+} from "../jones/questionAnswer/questionAnswerCard";
+import { listenForWorkspaceFileDragEnd } from "../jones/questionAnswer/workspaceFileDragLifecycle";
+import { pendingSends } from "../jones/pendingSends/store";
+import { usePendingSends } from "../jones/pendingSends/hooks";
+import { usePendingTurn } from "../jones/pendingSends/usePendingTurn";
+import { ContinuationChoiceBanner } from "../jones/importedHistory/ContinuationChoiceBanner";
+import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
+import {
+  ComposerLayout,
+  ComposerLayoutLane,
+  ComposerLayoutHeadline,
+  ComposerLayoutFooter,
+} from "../jones/composer/ComposerLayout";
+import { NewThreadWorkstreamPicker } from "../jones/composer/NewThreadWorkstreamPicker";
+import { assignNewThreadWorkstream } from "../jones/composer/newThreadWorkstream";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import {
   draftRuntimeModeLimitsInstance,
@@ -440,6 +464,9 @@ const ACTIVE_RUN_STATUSES: ReadonlySet<string> = new Set([
 const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
 const EMPTY_USAGE_LIMIT_SOURCES: UsageLimitSourceSnapshots = [];
 import type { CodexArtifactTemplate } from "@t3tools/shared/codexArtifactTemplates";
+import { useGT, useMessages } from "gt-react";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { m } from "../i18n/messages";
 
 const EMPTY_FEEDBACK_SUBMISSIONS: ReadonlyArray<CodexFeedbackSubmission> = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
@@ -3194,7 +3221,10 @@ export default function ChatView(props: ChatViewProps) {
     scrollToEnd,
     setThreadError,
   });
-  const { onSend, captureDetachedSend } = useComposerSend({
+  const newThreadWorkstreamId = draftThread?.newThreadWorkstreamId ?? null;
+  const { onSend, captureDetachedSend, importedHistoryChoice } = useComposerSend({
+    isImportedHistory: importedHistoryContinuationEligible(serverProjection),
+    steeringBlockedByQuestion: pendingQuestionBlocksSteering(pendingUserInputs),
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -3354,10 +3384,9 @@ export default function ChatView(props: ChatViewProps) {
           threadId={activeThread.id}
           optimisticMessages={optimisticUserMessages}
           editingRunId={queuedRunEdit.editingRunId}
-          editBlockedReason={queuedRunEditBlockedReason(
-            { openQuestionCount: pendingUserInputs.length },
-            messages,
-          )}
+          editBlockedReason={queuedRunEditBlockedReason({
+            openQuestionCount: 0,
+          })}
           onEditQueuedRun={queuedRunEdit.beginEdit}
           onCancelEdit={queuedRunEdit.cancelEdit}
           timestampFormat={timestampFormat}
@@ -4018,9 +4047,9 @@ export default function ChatView(props: ChatViewProps) {
                                       : isRevertingCheckpoint
                                         ? gt("Rewinding conversation")
                                         : feedbackUploading
-                                          ? gt("Sending feedback")
-                                          : threadDetailLoading
-                                            ? gt("Messages loading")
+                                          ? "Sending feedback"
+                                          : sendBlockedByThreadDetail
+                                            ? "Messages loading"
                                             : worktreeSetupBlocksSend
                                               ? gt("Preparing worktree")
                                               : projectCloneSendBlockReason
@@ -4221,18 +4250,14 @@ export default function ChatView(props: ChatViewProps) {
                                       ? (hasWorkspaceControls) => (
                                           <NewThreadWorkstreamPicker
                                             environmentId={environmentId}
-                                            runtimeMode={runtimeMode}
-                                            supportedRuntimeModes={draftSupportedRuntimeModes(
-                                              activeProviderStatus?.supportedRuntimeModes,
-                                              multipleModelSelections,
-                                              providerStatuses,
-                                            )}
-                                            instanceId={draftRuntimeModeLimitsInstance(
-                                              activeProviderStatus?.instanceId,
-                                              multipleModelSelections,
-                                            )}
-                                            cwd={gitCwd}
-                                            onRuntimeModeChange={handleRuntimeModeChangeStable}
+                                            value={newThreadWorkstreamId}
+                                            onChange={(id) =>
+                                              useComposerDraftStore
+                                                .getState()
+                                                .setNewThreadWorkstream(draftId, id)
+                                            }
+                                            disabled={isSendBusy || isEnvironmentChanging}
+                                            showContextDivider={hasWorkspaceControls}
                                           />
                                         )
                                       : undefined

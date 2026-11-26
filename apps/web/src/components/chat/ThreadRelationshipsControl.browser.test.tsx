@@ -43,10 +43,9 @@ vi.mock(import("../../state/entities"), async (original) => ({
   useHiddenThreadKeys: (() => new Set()) as never,
   useAnyEnvironmentHiding: (() => false) as never,
 }));
-vi.mock(import("../../state/environments"), () => ({
-  // The click rule reads the client setting, whose module asks for these.
-  useEnvironments: (() => []) as never,
-  usePrimaryEnvironment: (() => null) as never,
+vi.mock(import("../../state/environments"), async (original) => ({
+  ...(await original()),
+  useEnvironments: (() => ({ environments: [] })) as never,
   useEnvironment: (() => null) as never,
   useEnvironmentProviders: (() => new Map()) as never,
 }));
@@ -66,15 +65,50 @@ vi.mock(import("../../state/use-atom-command"), () => ({
       : AsyncResult.failure(Cause.fail(new Error("Connection lost")))) as never,
 }));
 
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+vi.mock(import("../../jones/linkedThreads/useLinkedThreads"), () => ({
+  useLinkedThreads: () => ({
+    links: [],
+    relations: [],
+    snapshots: new Map(),
+    environments: [],
+    errors: [],
+    offline: [],
+    answering: new Set(),
+    shells: [],
+    loading: false,
+    incomplete: false,
+    truncated: false,
+    visible: false,
+    canLink: false,
+    canCopy: false,
+    hasSuccessor: false,
+    canAccept: () => false,
+    canUnlink: () => false,
+    onExpand: () => {},
+    link: async () => false,
+    unlink: async () => false,
+    accept: async () => false,
+  }),
+}));
+import { act, render as renderBase } from "../../../test/render";
 
-import { fakeTimers, render } from "../../../test/render";
-import { isMacPlatform } from "../../lib/utils";
-import { selectThreadRightPanelState, useRightPanelStore } from "../../rightPanelStore";
+// The Jones composition starts collapsed; these scenarios exercise the upstream lineage actions.
+async function render(...args: Parameters<typeof renderBase>) {
+  const screen = await renderBase(...args);
+  const toggle = screen.container.querySelector<HTMLButtonElement>(
+    'button[aria-label="Linked threads"]',
+  );
+  if (toggle?.getAttribute("aria-expanded") === "false") await act(() => toggle.click());
+  return screen;
+}
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 import { ScrollArea } from "../ui/scroll-area";
 import { ToastProvider } from "../ui/toast";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { useRightPanelStore, selectThreadRightPanelState } from "../../rightPanelStore";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { isMacPlatform } from "../../lib/utils";
+import { fakeTimers } from "../../../test/render";
 
 const environmentId = EnvironmentId.make("environment");
 const threadId = ThreadId.make("fork");

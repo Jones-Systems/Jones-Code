@@ -1,5 +1,7 @@
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
-import { contextMenuSourceOf } from "../contextMenuSource";
+import { useAtomValue } from "@effect/atom-react";
+import { usesVerifiedDefault } from "../jones/composer/firstSendWorktree";
+import { serverEnvironment } from "../state/server";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import { useRightPanelStore } from "../rightPanelStore";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -78,6 +80,7 @@ import { ComposerControl } from "./chat/ComposerControl";
 import { MiddleTruncate } from "./ui/middle-truncate";
 import { BranchPicker, BranchPickerRefItem } from "./BranchPicker";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { contextMenuSourceOf } from "../contextMenuSource";
 
 export interface BranchToolbarBranchSelectorHandle {
   open: () => void;
@@ -721,16 +724,20 @@ export function BranchToolbarBranchSelector({
     [handleOpenChange, isBranchActionPending, isInitialBranchesLoadPending],
   );
 
-  const triggerLabel = resolveBranchTriggerLabel(
-    {
-      activeWorktreePath,
-      effectiveEnvMode,
-      resolvedActiveBranch,
-      resolvedActiveBranchIsRemote,
-      startFromOrigin,
-    },
-    messages,
-  );
+  const usesAutomaticVerifiedBase =
+    verifiedDefault &&
+    isSelectingWorktreeBase &&
+    effectiveEnvMode === "worktree" &&
+    activeThreadBranch === null;
+  const triggerLabel = usesAutomaticVerifiedBase
+    ? "Default branch"
+    : resolveBranchTriggerLabel({
+        activeWorktreePath,
+        effectiveEnvMode,
+        resolvedActiveBranch,
+        resolvedActiveBranchIsRemote,
+        startFromOrigin,
+      });
 
   const branchPrBranch = resolveBranchToolbarPrBranch({
     activeThreadBranch,

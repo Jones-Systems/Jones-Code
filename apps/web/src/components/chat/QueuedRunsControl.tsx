@@ -49,9 +49,15 @@ import {
   XIcon,
 } from "lucide-react";
 import * as DateTime from "effect/DateTime";
-import { msg, T, useGT, useMessages } from "gt-react";
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { useId, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
+import {
+  useLayoutEffect,
+  useId,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 
 import { useAssetUrls } from "../../assets/assetUrls";
 import { threadEnvironment } from "../../state/threads";
@@ -70,6 +76,7 @@ import { GuestMessageName } from "./guestMessageStyle";
 import { TimelineRowTimestamp } from "./TimelineRowParts";
 import { FoldedMessageHeader, useScheduledTaskTitle } from "./TimelineUserMessageRow";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
+import { useGT, useMessages, T } from "gt-react";
 
 export interface EditQueuedRunRequest {
   readonly runId: RunId;
@@ -362,30 +369,22 @@ export function QueuedRunsControl({
     if (!canDispatchRun(freshContext) || steerInFlightRef.current || removals.isBusy()) return;
     steerInFlightRef.current = true;
     setBusyRunId(queuedRunId);
-    const result = workflow?.canSendNow
-      ? await resume({
+    await (async () => {
+      if (workflow?.canSendNow) {
+        await resume({
           environmentId: props.environmentId,
           input: { threadId: props.threadId, runId: queuedRunId },
-        })
-      : activeRun !== null
-        ? await promote({
-            environmentId: props.environmentId,
-            input: { threadId: props.threadId, queuedRunId, targetRunId: activeRun.id },
-          })
-        : null;
-    steerInFlightRef.current = false;
-    setBusyRunId(null);
-    if (result?._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      const error = squashAtomCommandFailure(result);
-      toastManager.add({
-        type: "error",
-        title: m(msg("Could not send queued message")),
-        description:
-          error instanceof Error
-            ? (thrownErrorMessage(error, m) ?? error.message)
-            : m(msg("An error occurred.")),
-      });
-    }
+        });
+      } else if (activeRun !== null) {
+        await promote({
+          environmentId: props.environmentId,
+          input: { threadId: props.threadId, queuedRunId, targetRunId: activeRun.id },
+        });
+      }
+    })().finally(() => {
+      steerInFlightRef.current = false;
+      setBusyRunId(null);
+    });
   };
 
   useImperativeHandle(ref, () => ({
@@ -563,48 +562,26 @@ export function QueuedRunsControl({
                 ) : null}
                 {(workflow?.canSendNow || canSteerRun(item.freshContext)) && !isEditing ? (
                   <>
-                    <SharedTooltipTrigger
-                      render={<span className="flex shrink-0" />}
-                      label={
-                        item.serverIndex === 0 && props.steerShortcutLabel
-                          ? workflow?.canSendNow
-                            ? gt("Start a turn with this message ({shortcut})", {
-                                shortcut: props.steerShortcutLabel,
-                              })
-                            : workflow?.promoteSkipsCompaction
-                              ? gt("Skip compaction and send this message ({shortcut})", {
-                                  shortcut: props.steerShortcutLabel,
-                                })
-                              : movesCommandFirst
-                                ? gt("Move this command to the front of the queue ({shortcut})", {
-                                    shortcut: props.steerShortcutLabel,
-                                  })
-                                : gt("Send into the current turn ({shortcut})", {
-                                    shortcut: props.steerShortcutLabel,
-                                  })
-                          : workflow?.canSendNow
-                            ? gt("Start a turn with this message")
-                            : workflow?.promoteSkipsCompaction
-                              ? gt("Skip compaction and send this message")
-                              : movesCommandFirst
-                                ? gt("Move this command to the front of the queue")
-                                : gt("Send into the current turn")
-                      }
-                    >
-                      <Button
-                        size="xs"
-                        variant="ghost-muted"
-                        disabled={item.runId === null || busyRunId !== null}
-                        onClick={() => {
-                          if (item.runId !== null) {
-                            void sendQueuedMessage(item.runId);
-                          }
-                        }}
-                      >
-                        <ArrowUpIcon />
-                        <T>Send now</T>
-                      </Button>
-                    </SharedTooltipTrigger>
+                    <Tooltip>
+                      <TooltipTrigger render={<span className="flex shrink-0" />}>
+                        <Button
+                          size="xs"
+                          variant="ghost-muted"
+                          disabled={item.runId === null || !canDispatchRun(item.freshContext)}
+                          onClick={() => {
+                            if (item.runId !== null) {
+                              void sendQueuedMessage(item.runId);
+                            }
+                          }}
+                        >
+                          <ArrowUpIcon />
+                          {workflow?.canSendNow ? "Send now" : "Steer"}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipPopup>
+                        {`${workflow?.canSendNow ? "Start a turn with this message" : workflow?.promoteSkipsCompaction ? "Skip compaction and send this message" : "Send into the current turn"}${item.serverIndex === 0 && props.steerShortcutLabel ? ` (${props.steerShortcutLabel})` : ""}`}
+                      </TooltipPopup>
+                    </Tooltip>
                   </>
                 ) : null}
                 {importedEligible &&
@@ -622,10 +599,11 @@ export function QueuedRunsControl({
                   </Button>
                 ) : null}
                 {item.pending ? (
-                  <span className="flex items-center gap-1 px-1">
-                    <Clock3Icon aria-hidden className="size-3" />
-                    <T>Saving</T>
-                  </span>
+                  <PendingSendStatus
+                    environmentId={props.environmentId}
+                    threadId={props.threadId}
+                    messageId={item.messageId}
+                  />
                 ) : null}
                 {isEditing ? (
                   <>
@@ -686,26 +664,28 @@ export function QueuedRunsControl({
                             : gt("Edit in the composer"))}
                       </TooltipPopup>
                     </Tooltip>
-                    <SharedTooltipTrigger
-                      render={
-                        <Button
-                          size="icon-xs"
-                          variant="ghost-muted"
-                          aria-label={gt("Remove queued message")}
-                          disabled={item.runId === null || busyRunId !== null}
-                          onClick={() => {
-                            if (item.runId !== null) void remove(item.runId);
-                          }}
-                        />
-                      }
-                      label={
-                        <>
-                          <T>Remove from queue</T>
-                        </>
-                      }
-                    >
-                      <XIcon />
-                    </SharedTooltipTrigger>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            size="icon-xs"
+                            variant="ghost-muted"
+                            aria-label="Remove queued message"
+                            disabled={
+                              item.runId === null ||
+                              removalBlocked ||
+                              removals.isRemoving(item.runId)
+                            }
+                            onClick={() => {
+                              if (item.runId !== null) void removals.remove([item.runId]);
+                            }}
+                          />
+                        }
+                      >
+                        <XIcon />
+                      </TooltipTrigger>
+                      <TooltipPopup>Remove from queue</TooltipPopup>
+                    </Tooltip>
                   </>
                 )}
               </QueuedMessage>

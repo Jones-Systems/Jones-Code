@@ -427,7 +427,7 @@ const PersistedDraftThreadState = Schema.Struct({
   checkoutPullRequest: Schema.optionalKey(
     Schema.Struct({ url: Schema.String, branch: Schema.String }),
   ),
-  worktreeRepositories: Schema.optionalKey(Schema.Array(Schema.String)),
+  newThreadWorkstreamId: Schema.optionalKey(Schema.String),
   promotedTo: Schema.optionalKey(
     Schema.NullOr(
       Schema.Struct({
@@ -528,11 +528,7 @@ export interface DraftSessionState {
   workspaceExplicit?: true;
   /** Linked to the thread when the draft is sent on this branch. */
   checkoutPullRequest?: DraftCheckoutPullRequest;
-  /**
-   * Tracked repositories a new worktree thread gets a worktree for, by tracked path. Absent
-   * until the user chooses, which leaves the choice to the server's default.
-   */
-  worktreeRepositories?: ReadonlyArray<string>;
+  newThreadWorkstreamId?: string;
   promotedTo?: ScopedThreadRef | null;
 }
 
@@ -1814,8 +1810,8 @@ function createDraftThreadState(
       ? { workspaceExplicit: true as const }
       : {}),
     ...(checkoutPullRequest ? { checkoutPullRequest } : {}),
-    ...(!projectChanged && existingThread?.worktreeRepositories !== undefined
-      ? { worktreeRepositories: existingThread.worktreeRepositories }
+    ...(existingThread?.newThreadWorkstreamId
+      ? { newThreadWorkstreamId: existingThread.newThreadWorkstreamId }
       : {}),
     promotedTo: null,
   };
@@ -1879,7 +1875,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.startFromOrigin === right.startFromOrigin &&
     left.workspaceExplicit === right.workspaceExplicit &&
     checkoutPullRequestsEqual(left.checkoutPullRequest, right.checkoutPullRequest) &&
-    worktreeRepositoriesEqual(left.worktreeRepositories, right.worktreeRepositories) &&
+    left.newThreadWorkstreamId === right.newThreadWorkstreamId &&
     scopedThreadRefsEqual(left.promotedTo, right.promotedTo)
   );
 }
@@ -2042,7 +2038,10 @@ function normalizePersistedDraftThreads(
         worktreePath: normalizedWorktreePath,
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
         startFromOrigin,
-        ...(candidateDraftThread.workspaceExplicit === true ? { workspaceExplicit: true } : {}),
+        ...(typeof candidateDraftThread.newThreadWorkstreamId === "string" &&
+        candidateDraftThread.newThreadWorkstreamId.length > 0
+          ? { newThreadWorkstreamId: candidateDraftThread.newThreadWorkstreamId }
+          : {}),
         ...(candidateDraftThread.environmentSelection === "manual" ||
         candidateDraftThread.environmentSelection === "auto"
           ? { environmentSelection: candidateDraftThread.environmentSelection }
@@ -2832,7 +2831,9 @@ function toHydratedDraftThreadState(
     worktreePath: persistedDraftThread.worktreePath,
     envMode: persistedDraftThread.envMode,
     startFromOrigin: persistedDraftThread.startFromOrigin,
-    ...(persistedDraftThread.workspaceExplicit ? { workspaceExplicit: true } : {}),
+    ...(persistedDraftThread.newThreadWorkstreamId
+      ? { newThreadWorkstreamId: persistedDraftThread.newThreadWorkstreamId }
+      : {}),
     ...(persistedDraftThread.environmentSelection
       ? { environmentSelection: persistedDraftThread.environmentSelection }
       : {}),
@@ -3145,33 +3146,12 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 ? { workspaceExplicit: true as const }
                 : {}),
               ...(checkoutPullRequest ? { checkoutPullRequest } : {}),
-              ...(worktreeRepositories ? { worktreeRepositories } : {}),
+              ...(existing.newThreadWorkstreamId
+                ? { newThreadWorkstreamId: existing.newThreadWorkstreamId }
+                : {}),
               promotedTo: existing.promotedTo ?? null,
             };
-            const isUnchanged =
-              nextDraftThread.environmentId === existing.environmentId &&
-              nextDraftThread.projectId === existing.projectId &&
-              nextDraftThread.logicalProjectKey === existing.logicalProjectKey &&
-              nextDraftThread.environmentSelection === existing.environmentSelection &&
-              nextDraftThread.loadBalancedEnvironmentId === existing.loadBalancedEnvironmentId &&
-              nextDraftThread.createdAt === existing.createdAt &&
-              nextDraftThread.runtimeMode === existing.runtimeMode &&
-              nextDraftThread.interactionMode === existing.interactionMode &&
-              nextDraftThread.branch === existing.branch &&
-              nextDraftThread.worktreePath === existing.worktreePath &&
-              nextDraftThread.envMode === existing.envMode &&
-              nextDraftThread.startFromOrigin === existing.startFromOrigin &&
-              nextDraftThread.workspaceExplicit === existing.workspaceExplicit &&
-              checkoutPullRequestsEqual(
-                nextDraftThread.checkoutPullRequest,
-                existing.checkoutPullRequest,
-              ) &&
-              worktreeRepositoriesEqual(
-                nextDraftThread.worktreeRepositories,
-                existing.worktreeRepositories,
-              ) &&
-              scopedThreadRefsEqual(nextDraftThread.promotedTo, existing.promotedTo);
-            if (isUnchanged) {
+            if (draftThreadsEqual(existing, nextDraftThread)) {
               return state;
             }
             return {

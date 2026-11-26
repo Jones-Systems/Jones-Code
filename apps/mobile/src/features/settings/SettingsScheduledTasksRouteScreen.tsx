@@ -879,26 +879,12 @@ function TaskForm({
     const payload = scheduledTaskUpsertInputFromDraft(draft, schedule);
     if (payload === null) return;
     const input: ScheduledTaskUpsertInput = {
-      ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
-      title: draft.title.trim(),
-      prompt: draft.prompt.trim(),
-      projectId: draft.projectId,
-      modelSelection: withImplicitFastModeSelection(draft.modelSelection, config?.providers ?? []),
-      schedule,
-      enabled: draft.enabled,
-      threadId: draft.threadId,
-      ...(draft.threadId === null && draft.task?.threadId != null ? { unbindThread: true } : {}),
+      ...payload,
+      modelSelection: withImplicitFastModeSelection(
+        payload.modelSelection,
+        config?.providers ?? [],
+      ),
       ...(offersThreadModes ? { threadMode: draft.threadMode } : {}),
-      workspaceStrategy:
-        draft.workspace === "root"
-          ? { type: "root" }
-          : draft.workspace === "existing_worktree"
-            ? { type: "existing_worktree", worktreePath: draft.checkoutPath.trim() }
-            : {
-                type: "worktree",
-                baseRef: worktreeBaseRef,
-                startFromOrigin: draft.startFromOrigin,
-              },
       // Tasks have no mode picker; a mode above the administrator's ceiling is refused.
       runtimeMode:
         clampManagedRuntimeMode(config?.managedPolicy, draft.runtimeMode) ?? draft.runtimeMode,
@@ -1088,11 +1074,13 @@ function TaskForm({
           <SelectRow
             label={gt("Run in")}
             value={
-              draft.workspace === "worktree"
-                ? gt("New worktree")
-                : draft.workspace === "root"
-                  ? gt("Project checkout")
-                  : gt("Specific checkout")
+              draft.workspace === "auto"
+                ? "Project allocation setting"
+                : draft.workspace === "worktree"
+                  ? "New worktree"
+                  : draft.workspace === "root"
+                    ? "Project checkout"
+                    : "Specific checkout"
             }
             actions={[
               {

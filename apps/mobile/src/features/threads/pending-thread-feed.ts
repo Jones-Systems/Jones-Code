@@ -3,7 +3,8 @@ import {
   type ThreadGuestMessage,
   type ThreadGuestShare,
 } from "@t3tools/contracts";
-import { LIVE_ACTIVITY_ROW_ID, type ThreadFeedEntry } from "../../lib/threadActivity";
+import { isWorkModeSentinelMessage } from "@t3tools/shared/jones/workMode";
+import type { ThreadFeedEntry } from "../../lib/threadActivity";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { threadHasCaughtUpTo } from "@t3tools/client-runtime/state/threads";
 import { resolveUserMessageGrouping } from "@t3tools/client-runtime/user-message";
@@ -14,6 +15,7 @@ import type {
   AcknowledgedThreadMessage,
   QueuedThreadMessage,
 } from "../../state/thread-outbox-model";
+import { LIVE_ACTIVITY_ROW_ID } from "../../lib/threadActivity";
 
 /**
  * A guest's message waiting for the owner's Send or Dismiss. It is a feed row, not the list

@@ -1,4 +1,5 @@
-import { copySnapshot as copySnapshotToClipboard } from "./copySnapshot";
+import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import { PendingSendStatus } from "../../jones/pendingSends/PendingSendStatus";
 import { InlineAudioPreview } from "../files/InlineAudioPreview";
 import { filePreviewKind } from "@t3tools/shared/filePreview";
 import type { MarkdownExtensions } from "~/markdown/wordsHast";
@@ -95,6 +96,7 @@ import {
   userMessageFileLabel,
 } from "./TimelineUserMessageRow.logic";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import { copySnapshot as copySnapshotToClipboard } from "./copySnapshot";
 
 // Drawn inside the media so dark screenshots keep an edge on the dark background.
 const MEDIA_EDGE_CLASS_NAME =

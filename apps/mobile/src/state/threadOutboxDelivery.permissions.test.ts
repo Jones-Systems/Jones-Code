@@ -1,11 +1,12 @@
 import { decodePreparedThreadTurn } from "@t3tools/client-runtime/jones/preparedThreadTurn";
-import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
-import { ORCHESTRATION_V2_WS_METHODS } from "@t3tools/contracts";
+import type { PreparedThreadTurn, StartThreadTurnInput } from "@t3tools/client-runtime/operations";
+import { EMPTY_ENVIRONMENT_THREAD_STATE } from "@t3tools/client-runtime/state/threads";
 import {
   AuthOrchestrationOperateScope,
   CommandId,
   EnvironmentId,
   MessageId,
+  ORCHESTRATION_V2_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -15,7 +16,16 @@ import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { threadOutboxRetryDelayMs, type QueuedThreadMessage } from "./thread-outbox-model";
+import {
+  decodeQueuedThreadMessage,
+  threadOutboxRetryDelayMs,
+  type QueuedThreadMessage,
+} from "./thread-outbox-model";
+import type {
+  ComposerDraft,
+  ComposerDraftContent,
+  ComposerDraftSettingsUpdate,
+} from "./use-composer-drafts";
 
 const state = vi.hoisted(() => ({
   draftText: "Keep this draft separate",
@@ -31,6 +41,10 @@ const state = vi.hoisted(() => ({
   interaction: vi.fn(),
   prepare: vi.fn(),
   checkout: vi.fn(),
+  records: new Map<MessageId, string>(),
+  beforeWrite: vi.fn<(_message: QueuedThreadMessage) => void>(),
+  beforeRemove: vi.fn<(_message: QueuedThreadMessage) => void>(),
+  restartManager: null as unknown as () => void,
   // Delivery runs commands as Effects; tests steer them with the settled results the mocks return.
   command: (Effect: typeof import("effect/Effect"), settle: (input: unknown) => unknown) => ({
     label: "command",
@@ -106,7 +120,11 @@ vi.mock("./threads", async () => {
   state.threadShells = Atom.make<ReadonlyArray<unknown>>([state.thread]).pipe(Atom.keepAlive);
   return {
     threadEnvironment: {
+      // Messages dispatch prepared turns; the preceding /compact still uses startTurn.
+      // Both reach the server, so one mock records their relative order.
       startTurn: state.command(Effect, state.start),
+      dispatchPreparedTurn: state.command(Effect, state.start),
+      prepareTurn: state.command(Effect, state.prepareTurn),
       updateMetadata: state.command(Effect, state.metadata),
       setRuntimeMode: state.command(Effect, state.runtime),
       setInteractionMode: state.command(Effect, state.interaction),
@@ -117,7 +135,7 @@ vi.mock("./threads", async () => {
       familyAtom: () => Atom.make(AsyncResult.success({})),
       refresh: vi.fn(),
     },
-    environmentThreadDetails: { stateAtom: () => Atom.make(null) },
+    environmentThreadDetails: { stateAtom: () => Atom.make(EMPTY_ENVIRONMENT_THREAD_STATE) },
   };
 });
 vi.mock("./git", async () => ({
@@ -130,28 +148,56 @@ vi.mock("../lib/uuid", () => ({ uuidv4: () => "uuid", randomHex: () => "abcd" })
 vi.mock("../lib/attachmentUpload", () => ({ prepareTurnAttachments: state.prepare }));
 vi.mock("./composer-attachment-uploads", () => ({ uploadComposerAttachmentShared: vi.fn() }));
 vi.mock("./thread-outbox", async () => {
+  const { Atom } = await import("effect/reactivity");
   const { createThreadOutboxManager } = await import("./thread-outbox-manager");
+  const { decodeQueuedThreadMessage, encodeQueuedThreadMessage } =
+    await import("./thread-outbox-model");
   const { appAtomRegistry } = await import("./atom-registry");
-  state.manager = createThreadOutboxManager({
-    registry: appAtomRegistry,
-    storage: {
-      load: async () => ({ messages: [], errors: [] }),
-      write: async () => {},
-      remove: async () => {},
-    },
-  });
+  const newManager = () =>
+    createThreadOutboxManager({
+      registry: appAtomRegistry,
+      storage: {
+        load: async () => ({
+          messages: Array.from(state.records.values(), (record) =>
+            decodeQueuedThreadMessage(JSON.parse(record)),
+          ),
+          errors: [],
+        }),
+        write: async (message) => {
+          state.beforeWrite(message);
+          state.records.set(message.messageId, JSON.stringify(encodeQueuedThreadMessage(message)));
+        },
+        remove: async (message) => {
+          state.beforeRemove(message);
+          state.records.delete(message.messageId);
+        },
+      },
+    });
+  state.manager = newManager();
+  const managerAtom = Atom.make(state.manager).pipe(Atom.keepAlive);
+  state.restartManager = () => {
+    state.manager = newManager();
+    appAtomRegistry.set(managerAtom, state.manager);
+  };
   return {
-    threadOutboxManager: state.manager,
+    threadOutboxManager: {
+      queuedMessagesByThreadKeyAtom: Atom.make((get) =>
+        get(get(managerAtom).queuedMessagesByThreadKeyAtom),
+      ),
+      load: () => state.manager.load(),
+    },
     threadOutboxRevision: (id: MessageId) => state.manager.revisionOf(id),
     confirmThreadOutboxMessageQueued: (message: QueuedThreadMessage) =>
       state.manager.confirmQueued(message),
     updateThreadOutboxMessage: (message: QueuedThreadMessage, revision?: number) =>
       state.manager.update(message, revision),
+    modifyThreadOutboxMessage: (...args: Parameters<typeof state.manager.modify>) =>
+      state.manager.modify(...args),
   };
 });
 vi.mock("./thread-outbox-removal", () => ({
-  removeThreadOutboxMessage: (message: QueuedThreadMessage, revision?: number) =>
-    state.manager.remove(message, revision),
+  removeThreadOutboxMessage: async (...args: Parameters<typeof state.manager.remove>) =>
+    (await state.manager.remove(...args)) !== null,
 }));
 vi.mock("./use-thread-outbox", async () => {
   const { Atom } = await import("effect/reactivity");
@@ -172,18 +218,33 @@ vi.mock("./use-composer-drafts", async () => {
     appendComposerDraftAttachments: vi.fn(),
     flushComposerDrafts: vi.fn(async () => {}),
     getComposerDraftSnapshot: vi.fn(() => ({ text: state.draftText, attachments: [] })),
-    mergeComposerDraftContent: vi.fn(async (_key: string, input: { text: string }) => {
-      state.draftText += `\n${input.text}`;
-    }),
+    mergeComposerDraftContent: vi.fn(
+      async (
+        _key: string,
+        content: ComposerDraftContent,
+        options?: { readonly onMerged?: (draft: ComposerDraft) => void },
+      ) => {
+        state.draftText += `\n${content.text}`;
+        options?.onMerged?.({ text: state.draftText, attachments: content.attachments });
+        return { skippedAttachmentCount: 0 };
+      },
+    ),
     replaceComposerDraftAttachments: vi.fn(),
     setFreshSessionPending: vi.fn(),
     undoComposerDraftMerge: vi.fn(),
-    updateComposerDraftSettings: vi.fn(),
+    updateComposerDraftSettings: vi.fn(
+      (_key: string, settings: Partial<ComposerDraftSettingsUpdate>) => ({
+        text: state.draftText,
+        attachments: [],
+        ...settings,
+      }),
+    ),
     waitForComposerDraftsLoaded: vi.fn(),
   };
 });
 
 import { appAtomRegistry } from "./atom-registry";
+import { environmentServerConfigsAtom } from "./server";
 import { environmentSession } from "./session";
 import { dispatchingQueuedMessageIdsAtom, editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 
@@ -204,6 +265,12 @@ const message = (overrides: Partial<QueuedThreadMessage> = {}): QueuedThreadMess
 });
 const remaining = () =>
   Object.values(appAtomRegistry.get(state.manager.queuedMessagesByThreadKeyAtom)).flat();
+
+function savedMessage(messageId: MessageId): QueuedThreadMessage {
+  const record = state.records.get(messageId);
+  if (record === undefined) throw new Error(`No saved message: ${messageId}`);
+  return decodeQueuedThreadMessage(JSON.parse(record));
+}
 
 function setOperateGrant(environmentId: string, granted: boolean): void {
   // The mocked session atom holds the grant itself (see the ./session mock).
@@ -242,7 +309,10 @@ beforeEach(() => {
   state.modelUnavailable.mockReset().mockReturnValue(false);
   state.familyMount.mockReset().mockReturnValue(() => {});
   appAtomRegistry.set(state.threadShells, [state.thread]);
-  appAtomRegistry.set(state.manager.queuedMessagesByThreadKeyAtom, {});
+  state.records.clear();
+  state.beforeWrite.mockReset();
+  state.beforeRemove.mockReset();
+  state.restartManager();
   appAtomRegistry.set(dispatchingQueuedMessageIdsAtom, {});
   appAtomRegistry.set(editingQueuedMessageIdsAtom, {});
   for (const command of [
@@ -255,6 +325,75 @@ beforeEach(() => {
     command.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   }
   state.start.mockResolvedValue(AsyncResult.success({}));
+  state.prepareTurn
+    .mockReset()
+    .mockImplementation(async ({ input }: { input: StartThreadTurnInput }) => {
+      const creation = input.bootstrap?.createThread;
+      const worktree = input.bootstrap?.prepareWorktree;
+      const prepared = decodePreparedThreadTurn(
+        creation
+          ? {
+              method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+              payload: {
+                commandId: input.commandId,
+                threadId: input.threadId,
+                projectId: creation.projectId,
+                title: input.titleSeed ?? creation.title,
+                generateTitle: true,
+                modelSelection: input.modelSelection ?? creation.modelSelection,
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+                creationSource: "mobile",
+                workspaceStrategy:
+                  worktree !== undefined
+                    ? {
+                        type: "worktree",
+                        baseRef: worktree.baseBranch,
+                        branch: worktree.branch,
+                        baseFreshness: worktree.baseFreshness,
+                        startFromOrigin: worktree.startFromOrigin,
+                      }
+                    : creation.worktreePath
+                      ? {
+                          type: "existing_worktree",
+                          worktreePath: creation.worktreePath,
+                          ...(creation.branch === null ? {} : { branch: creation.branch }),
+                        }
+                      : { type: "root" },
+                initialMessage: {
+                  messageId: input.message.messageId,
+                  text: input.message.text,
+                  ...(input.message.context === undefined
+                    ? {}
+                    : { context: input.message.context }),
+                  attachments: input.message.attachments,
+                },
+              },
+            }
+          : {
+              method: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+              payload: {
+                type: "message.dispatch",
+                commandId: input.commandId,
+                threadId: input.threadId,
+                messageId: input.message.messageId,
+                text: input.message.text,
+                ...(input.message.context === undefined ? {} : { context: input.message.context }),
+                attachments: input.message.attachments,
+                createdBy: "user",
+                creationSource: "mobile",
+                modelSelection: input.modelSelection,
+                ...(input.modelSelectionExplicit === undefined
+                  ? {}
+                  : { modelSelectionExplicit: input.modelSelectionExplicit }),
+                dispatchMode: {
+                  type: input.dispatchMode === "queue" ? "queue_after_active" : "start_immediately",
+                },
+              },
+            },
+      );
+      return AsyncResult.success(prepared);
+    });
   state.prepare.mockReset().mockImplementation(({ attachments }) =>
     Effect.succeed({
       status: "ready",
@@ -655,6 +794,121 @@ describe("queued task whose launch reply is lost", () => {
   });
 });
 
+describe("issued request persistence", () => {
+  it("keeps the first send off the wire when the issued record cannot be saved", async () => {
+    setOperateGrant("secondary", true);
+    const queued = message();
+    await state.manager.enqueue(queued);
+    state.beforeWrite.mockImplementation((entry) => {
+      if (entry.issuance?.state === "issued") throw new Error("Disk unavailable");
+    });
+
+    await runDrain();
+
+    expect(state.prepareTurn).toHaveBeenCalledOnce();
+    expect(state.start).not.toHaveBeenCalled();
+    expect(savedMessage(queued.messageId)).toEqual(queued);
+    expect(remaining()).toEqual([queued]);
+  });
+
+  it.each(["follow-up", "launch"] as const)(
+    "replays the persisted %s after the server accepts it, the socket drops, and the outbox reloads",
+    async (kind) => {
+      setOperateGrant("secondary", true);
+      const queued = message(
+        kind === "launch"
+          ? {
+              threadId: ThreadId.make("new-thread"),
+              modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+              creation: {
+                projectId: ProjectId.make("project"),
+                projectCwd: "/repo",
+                workspaceMode: "worktree",
+                branch: "main",
+                worktreePath: null,
+              },
+            }
+          : {
+              modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "older" },
+              modelSelectionExplicit: false,
+            },
+      );
+      await state.manager.enqueue(queued);
+      const receipts = new Map<CommandId, PreparedThreadTurn>();
+      state.start.mockImplementation(async ({ input }: { input: PreparedThreadTurn }) => {
+        const commandId = input.payload.commandId;
+        const receipt = receipts.get(commandId);
+        if (receipt !== undefined) {
+          expect(input).toEqual(receipt);
+          return AsyncResult.success({ sequence: 12 });
+        }
+        expect(savedMessage(queued.messageId).issuance).toMatchObject({
+          state: "issued",
+          prepared: input,
+        });
+        receipts.set(commandId, input);
+        return AsyncResult.failure(Cause.fail(new Error("Socket is not connected")));
+      });
+      await runDrain();
+      const accepted = state.start.mock.calls[0]?.[0].input;
+      if (kind === "follow-up") {
+        expect(accepted.payload).toMatchObject({
+          modelSelection: state.thread.modelSelection,
+          modelSelectionExplicit: false,
+        });
+      }
+
+      state.cleanups.splice(0).forEach((cleanup) => cleanup());
+      state.restartManager();
+      expect(await state.manager.load()).toBe(true);
+      // Replay must work without the rows or catalog that would authorize a new preparation.
+      appAtomRegistry.set(state.threadShells, []);
+      const configs = environmentServerConfigsAtom as unknown as Atom.Writable<
+        ReadonlyMap<string, typeof state.config>
+      >;
+      const loadedConfigs = appAtomRegistry.get(configs);
+      appAtomRegistry.set(configs, new Map());
+      state.cleanups.push(() => appAtomRegistry.set(configs, loadedConfigs));
+      await runDrain();
+
+      const replay = state.start.mock.calls[1]?.[0].input;
+      expect(replay).toEqual(accepted);
+      expect(replay).not.toBe(accepted);
+      expect(state.start).toHaveBeenCalledTimes(2);
+      expect(state.prepareTurn).toHaveBeenCalledOnce();
+      expect(state.prepare).toHaveBeenCalledOnce();
+      expect(state.familyMount).not.toHaveBeenCalled();
+      expect(receipts.size).toBe(1);
+      expect(remaining()).toEqual([]);
+      expect(state.records.has(queued.messageId)).toBe(false);
+    },
+  );
+
+  it("restarts with receipt-only cleanup after a confirmed send could not be removed", async () => {
+    setOperateGrant("secondary", true);
+    const queued = message();
+    await state.manager.enqueue(queued);
+    state.beforeRemove.mockImplementationOnce(() => {
+      throw new Error("Disk unavailable");
+    });
+
+    await runDrain();
+    expect(savedMessage(queued.messageId).issuance).toMatchObject({
+      state: "issued",
+      evidence: { kind: "dispatch", status: "accepted" },
+    });
+
+    state.cleanups.splice(0).forEach((cleanup) => cleanup());
+    state.restartManager();
+    expect(await state.manager.load()).toBe(true);
+    await runDrain();
+
+    expect(state.start).toHaveBeenCalledOnce();
+    expect(state.prepareTurn).toHaveBeenCalledOnce();
+    expect(remaining()).toEqual([]);
+  });
+});
+
 describe("compaction before a queued send", () => {
   const compactTurn = {
     commandId: "command:compact",
@@ -765,8 +1019,8 @@ describe("queued delivery timing", () => {
     appAtomRegistry.set(state.threadShells, [state.thread, other]);
     const slowStarted = Promise.withResolvers<void>();
     const finishSlow = Promise.withResolvers<AsyncResult.AsyncResult<object, never>>();
-    state.start.mockImplementation(async ({ input }: { input: { threadId: string } }) => {
-      if (input.threadId !== "thread") return AsyncResult.success({});
+    state.start.mockImplementation(async ({ input }: { input: PreparedThreadTurn }) => {
+      if (input.payload.threadId !== "thread") return AsyncResult.success({});
       slowStarted.resolve();
       return finishSlow.promise;
     });

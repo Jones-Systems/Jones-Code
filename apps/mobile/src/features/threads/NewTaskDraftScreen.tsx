@@ -568,9 +568,8 @@ export function NewTaskDraftScreen(props: {
   const selectedEnvironmentLabel =
     flow.environments.find(
       (environment) => environment.environmentId === flow.selectedEnvironmentId,
-    )?.environmentLabel ?? gt("Environment");
-  const availableCurrentBranchName =
-    flow.availableBranches.find((branch) => branch.current)?.name ??
+    )?.environmentLabel ?? "Environment";
+  const availableDefaultBranchName =
     flow.availableBranches.find((branch) => branch.isDefault)?.name ??
     flow.availableBranches.find((branch) => branch.current && !branch.isRemote)?.name ??
     null;

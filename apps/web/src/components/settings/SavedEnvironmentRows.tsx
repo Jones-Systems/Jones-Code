@@ -1,4 +1,8 @@
-import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
+import { DeviceDisplayNameEditor } from "../../jones/devicePresentation/DeviceDisplayNameEditor";
+import { clientServerBuildDetail, clientServerBuildLabels } from "../../jones/updates/buildPairs";
+import { FleetEnrollmentControls } from "../../jones/fleetUpdates/FleetEnrollmentControls";
+import { JonesUpdateControls } from "../../jones/updates/JonesUpdateControls";
+import { JonesBlockedHostUpdates } from "~/jones/fleetUpdates/JonesBlockedHostUpdates";
 import { SessionPermissions } from "./SessionPermissions";
 import {
   ChevronRightIcon,
@@ -15,6 +19,7 @@ import {
   formatConnectReachable,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
+import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
 import {
   connectionRoutes,
   hasSavedBearerRoute,
@@ -194,8 +199,7 @@ export function SavedBackendListRow({
   const serverUpdateState = useAtomValue(serverEnvironment.updateStateAtom(environmentId));
   const resumingServerUpdate =
     serverUpdateState.status === "running" && serverUpdateState.stage === "resuming";
-  const status = savedBackendStatus(environment, messages);
-  const serverVersion = environment.serverConfig?.environment.serverVersion ?? null;
+  const status = savedBackendStatus(environment);
   // Discovery empties its map on every refresh, so hold the last descriptor
   // seen or the glyph would blink back to the generic one each time.
   const relayDiscovery = useRelayEnvironmentDiscovery();
@@ -237,8 +241,8 @@ export function SavedBackendListRow({
   const subtitleText = [
     environmentTransportLabel(environment, connectedTarget, messages),
     // The headline below names the failure in full.
-    diagnosis ? null : resumingServerUpdate ? gt("Restarting") : status.text,
-    enabled && versionMismatch ? serverVersion : null,
+    diagnosis ? null : resumingServerUpdate ? "Restarting" : status.text,
+    enabled && versionMismatch ? clientServerBuildLabels(versionMismatch).serverLabel.text : null,
   ]
     .filter((value): value is string => value !== null)
     .join(" · ");
@@ -254,16 +258,9 @@ export function SavedBackendListRow({
       ? (connectionErrorText(environment.connection, messages) ??
         connectionStatusText(environment.connection, messages))
       : enabled
-        ? connectionStatusText(environment.connection, messages)
-        : gt("Switched off")
-  }${
-    versionMismatch
-      ? `\n${gt("Update available: {serverVersion} → {clientVersion}", {
-          serverVersion: versionMismatch.serverVersion,
-          clientVersion: versionMismatch.clientVersion,
-        })}`
-      : ""
-  }`;
+        ? connectionStatusText(environment.connection)
+        : "Switched off"
+  }${versionMismatch ? `\nUpdate available: ${clientServerBuildDetail(versionMismatch)}` : ""}`;
 
   return (
     <EnvironmentRow
@@ -435,22 +432,28 @@ export function SavedBackendListRow({
           appearance="icon"
         />
       ) : null}
-      <SharedTooltipTrigger
-        render={
-          <Switch
-            size="sm"
-            checked={enabled}
-            disabled={isRemoving || blocked}
-            aria-label={
-              enabled
-                ? gt("Switch off {label}", { label: environment.label })
-                : gt("Switch on {label}", { label: environment.label })
-            }
-            onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
-          />
-        }
-        label={blocked ? gt("Client not supported") : enabled ? gt("Switch off") : gt("Switch on")}
-      />
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Switch
+              size="sm"
+              checked={enabled}
+              disabled={isRemoving || blocked || historicalUpdate}
+              aria-label={`${enabled ? "Switch off" : "Switch on"} ${environment.label}`}
+              onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
+            />
+          }
+        />
+        <TooltipPopup side="top">
+          {blocked
+            ? "Client not supported"
+            : historicalUpdate
+              ? "Previously required an update; refresh host status"
+              : enabled
+                ? "Switch off"
+                : "Switch on"}
+        </TooltipPopup>
+      </Tooltip>
       <Menu>
         <MenuTrigger
           render={

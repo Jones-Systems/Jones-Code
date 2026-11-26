@@ -8,6 +8,7 @@ import {
   showAnchoredCopyErrorToast,
 } from "../ui/anchoredCopyToast";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 
 export const MessageCopyButton = memo(function MessageCopyButton({
   text,
@@ -36,26 +37,26 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   });
 
   return (
-    <SharedTooltipTrigger
-      render={
-        <Button
-          aria-label={label}
-          disabled={isCopied}
-          onClick={() => copyToClipboard(text)}
-          ref={ref}
-          type="button"
-          size={size}
-          variant={variant === "ghost" ? "ghost-muted" : variant}
-          className={className}
-        />
-      }
-      label={
-        <>
-          <p>{label}</p>
-        </>
-      }
-    >
-      {isCopied ? <CheckIcon className="size-3 text-primary" /> : <Icon className="size-3" />}
-    </SharedTooltipTrigger>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label={label}
+            disabled={isCopied}
+            onClick={() => copyToClipboard(typeof text === "function" ? text() : text)}
+            ref={ref}
+            type="button"
+            size={size}
+            variant={variant === "ghost" ? "ghost-muted" : variant}
+            className={className}
+          />
+        }
+      >
+        {isCopied ? <CheckIcon className="size-3 text-primary" /> : <Icon className="size-3" />}
+      </TooltipTrigger>
+      <TooltipPopup>
+        <p>{label}</p>
+      </TooltipPopup>
+    </Tooltip>
   );
 });

@@ -104,11 +104,24 @@ export function changeQuestionAttachmentPreparation(key: DraftId, delta: number)
   );
 }
 
-/** Releases the draft's attachments except `keepIds`, which have moved to another draft. */
+const preparationGenerations = new Map<DraftId, object>();
+
+export function reserveQuestionExcerptPreparation(key: DraftId): () => void {
+  const generation = preparationGenerations.get(key) ?? {};
+  preparationGenerations.set(key, generation);
+  changeQuestionAttachmentPreparation(key, 1);
+  return () => {
+    if (preparationGenerations.get(key) === generation) {
+      changeQuestionAttachmentPreparation(key, -1);
+    }
+  };
+}
+
 export function clearQuestionAttachmentDraft(
   key: DraftId,
   keepIds: ReadonlySet<string> = new Set(),
 ): void {
+  preparationGenerations.delete(key);
   const store = useComposerDraftStore.getState();
   const draft = store.getComposerDraft(key);
   if (draft) {

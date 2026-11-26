@@ -5,6 +5,7 @@ const testState = vi.hoisted(() => {
   type ProjectFile = { readonly defaultThreadEnvMode?: "local" | "worktree" } | null;
   let completeProjectFileRead: (value: ProjectFile) => void = () => undefined;
   let projectFileRead = Promise.resolve<ProjectFile>(null);
+  let projectRemoved = false;
   let draftSession = {
     environmentId: "environment-ssh",
     projectId: "project-remote",
@@ -13,6 +14,8 @@ const testState = vi.hoisted(() => {
     branch: null as string | null,
     environmentSelection: undefined as "manual" | undefined,
   };
+  let conversationWorkspace: boolean | undefined;
+  let allocation: "on-write" | "eager" = "on-write";
   let connectedEnvironmentIds = ["environment-primary", "environment-ssh"];
   let targetSettings = {
     defaultThreadEnvMode: "local" as "local" | "worktree" | null,
@@ -120,6 +123,9 @@ const testState = vi.hoisted(() => {
         branch: null,
         environmentSelection: undefined,
       };
+      projectRemoved = false;
+      conversationWorkspace = undefined;
+      allocation = "on-write";
       connectedEnvironmentIds = ["environment-primary", "environment-ssh"];
       targetSettings = {
         defaultThreadEnvMode: workspaceDefaults.envMode,
@@ -136,6 +142,12 @@ const testState = vi.hoisted(() => {
       projectFileRead = new Promise<ProjectFile>((resolve) => {
         completeProjectFileRead = resolve;
       });
+    },
+    get projectRemoved() {
+      return projectRemoved;
+    },
+    removeProject() {
+      projectRemoved = true;
     },
     router,
   };
@@ -274,7 +286,7 @@ vi.mock("../state/entities", () => {
     defaultModelSelection: null,
   };
   return {
-    readProjects: () => [project],
+    readProjects: () => (testState.projectRemoved ? [] : [project]),
     readThreadShell: () => null,
     readThreadShells: () => [],
     useProjects: () => [],
@@ -364,6 +376,41 @@ describe.each([
     });
   });
 
+  it("sets the Workstream on a reused project draft before it opens", async () => {
+    testState.reset(draft);
+    const pendingOpen = useNewThreadHandler()(
+      { environmentId: "environment-ssh", projectId: "project-remote" } as never,
+      { workstreamId: "workstream-alpha" },
+    );
+    testState.completeProjectFileRead(null);
+    const opened = await pendingOpen;
+
+    expect(testState.draftStore.setNewThreadWorkstream).toHaveBeenCalledWith(
+      opened?.draftId,
+      "workstream-alpha",
+    );
+    expect(testState.draftStore.setNewThreadWorkstream.mock.invocationCallOrder[0]).toBeLessThan(
+      testState.router.navigate.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("ignores a pending workspace default when its project is removed", async () => {
+    testState.reset(draft, { envMode: null, startFromOrigin: false });
+    const opened = await useNewThreadHandler()({
+      environmentId: "environment-ssh",
+      projectId: "project-remote",
+    } as never);
+    testState.draftStore.setDraftThreadContext.mockClear();
+    const pendingDefault = readPendingWorkspaceDefault(opened!.draftId);
+    expect(pendingDefault).not.toBeNull();
+
+    testState.removeProject();
+    testState.completeProjectFileRead({ defaultThreadEnvMode: "worktree" });
+    await pendingDefault;
+
+    expect(testState.draftStore.setDraftThreadContext).not.toHaveBeenCalled();
+  });
+
   it("keeps a branch the user picked while the project file loaded", async () => {
     testState.reset(draft, { envMode: null, startFromOrigin: false });
     const opened = await useNewThreadHandler()({
@@ -414,6 +461,17 @@ describe.each([
     );
   });
 });
+
+const offlineAllocationCases: ReadonlyArray<{
+  capability: boolean | undefined;
+  allocation: "on-write" | "eager";
+  expected: "local" | "auto";
+}> = [
+  { capability: undefined, allocation: "on-write", expected: "local" },
+  { capability: false, allocation: "on-write", expected: "local" },
+  { capability: true, allocation: "eager", expected: "local" },
+  { capability: true, allocation: "on-write", expected: "auto" },
+];
 
 describe("useNewThreadHandler", () => {
   it("seeds the prompt into the empty draft that is already open", async () => {

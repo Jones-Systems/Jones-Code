@@ -82,7 +82,54 @@ Link two T3 Code machines (beta) so agents on one can launch, message, delegate 
 
 ### Read a linked machine's threads
 
-Open a delegated task or thread link on a linked machine to follow it live (read-only) in the right panel without pairing your client directly. Click **Connect to interact** to pair and take action (one-click if the link has Full access and you can manage access). Files, images, and HTML renders stay on the remote machine until you connect directly.
+Link two machines, such as your laptop and a VPS, and agents on one can work on
+the other: launch, message, wait on and stop its threads, answer their
+questions, and manage its queues, projects and scheduled tasks.
+
+Linked environments is a beta. Turn it on for both machines in **Settings →
+Labs**; on mobile, **Settings → Labs** lists each connected machine. While it is
+off on either machine, agents start nothing over a link between them. A task
+already running on the other machine still finishes, and if that machine has it
+off, its result arrives once it is back on.
+
+On the machine you will work from, open **Settings → Environments → Linked environments**,
+choose **Link**, and pick the other machine or enter its address. The list
+holds the machines this app knows and those on your T3 Connect account. If this
+app has an address for that machine and is connected to it with a session that
+manages access there, it makes the pairing code itself; otherwise paste one
+from that machine's **Settings → Sharing & access**. An address you type always
+needs a pasted code. From a terminal, use
+`t3 environment link <address> --pairing-code <code> --access <mode>`.
+
+You can also ask an agent to link a machine by name, such as "delegate this to
+my vps". It shows a card in the thread where you pick the machine the same way
+and the access, then approve. An address the agent gives that this app does
+not know for one of your machines also needs a pasted code. Paste one only for
+an address you trust: the code is sent there.
+
+- The access you pick is the most agents from this machine may do there. An
+  agent also never gets more there than its own mode here.
+- Choose **Read only** to let an agent retrieve thread history without opening a
+  request or granting permission to send messages. For example, select the Mini
+  as the link origin and the laptop as the destination so a Mini agent can read
+  laptop threads. This grants read access across the laptop environment, and
+  each direction is configured separately.
+- Threads a link starts are marked **From** and this machine's name there.
+- A full-access link works there like that machine's own agents. Below full
+  access, the link's agents can change only threads it started, not that
+  machine's own threads, projects or settings, and they skip its project setup
+  scripts.
+- The link shows up in that machine's **Settings → Sharing & access** like any
+  outside agent. Revoke it there to end it. **Forget** on this machine only
+  removes it here.
+- Links last 30 days. Link again with a new pairing code to renew one.
+
+An agent can also hand a task to a linked machine with `delegate_task`: it runs
+there as an ordinary thread, in the project with the same repository (or the
+one `target.projectId` names), and this thread wakes with its result when it
+ends, as for any delegated task. It keeps following the task across restarts.
+If the other machine revokes the link, or the link is removed here, the task
+fails with that reason.
 
 ### Jones Code: evaluate and review incoming requests
 

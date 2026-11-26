@@ -207,8 +207,9 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
   ): Promise<boolean> =>
     serialize(async () => {
       const current = currentMessages().find((candidate) => candidate.messageId === messageId);
-      const next = current === undefined ? null : change(current);
-      if (current === undefined || next === null) return false;
+      const changed = current === undefined ? null : change(current);
+      if (current === undefined || changed === null) return false;
+      const next = preserveQueuedThreadIssuance(current, changed);
       const revision = revisions.get(messageId) ?? 0;
       try {
         await options.storage.write(next);

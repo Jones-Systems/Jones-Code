@@ -65,7 +65,7 @@ const layerDesktopClerk = (
     copyText: () => Effect.void,
   },
   listeners = new Map<string, (...args: unknown[]) => void>(),
-  stateDir = clerkStateDir,
+  userDataDirectoryOverride: Option.Option<string> = Option.none(),
 ) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir,

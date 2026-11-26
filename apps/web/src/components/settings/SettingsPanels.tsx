@@ -1,5 +1,4 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { m as resolveMessage } from "~/i18n/messages";
+import { useUiStateStore } from "../../uiStateStore";
 import { useAtomValue } from "@effect/atom-react";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
@@ -46,7 +45,6 @@ import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDisabledReason,
   getDesktopUpdateInstallConfirmationMessage,
-  installDesktopUpdate,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
 } from "../../components/desktopUpdate.logic";
@@ -139,6 +137,8 @@ import { canUpdateServer } from "../ServerUpdateAction";
 import { useUpdateEverythingRun } from "../sidebar/updateEverythingRun";
 import { awaitsTrackSwitch, channelSwitchLabel } from "../sidebar/updateEverything.logic";
 import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { m as resolveMessage } from "~/i18n/messages";
 
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, string> = {
   turn: msg("Wait for the full response"),
@@ -168,10 +168,10 @@ const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
 };
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
-function AboutVersionSection() {
-  const setting = useSearchableSetting();
-  const gt = useGT();
+export function AboutVersionSection() {
   const messages = useMessages();
+  const gt = useGT();
+  const setting = useSearchableSetting();
   const updateState = useDesktopUpdateState();
   const [switchChannel, setSwitchChannel] = useState<DesktopUpdateChannel | null>(null);
   const [isUpdateActionPending, setIsUpdateActionPending] = useState(false);
@@ -276,15 +276,15 @@ function AboutVersionSection() {
         setIsUpdateActionPending(false);
         return;
       }
-      void installDesktopUpdate(bridge)
+      void installLocalDesktopUpdate(bridge, updateState)
         .then((result) => {
-          const actionError = getDesktopUpdateActionError(result);
-          if (!actionError) return;
+          const message = getDesktopUpdateActionError(result);
+          if (!message) return;
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: gt("Could not install update"),
-              description: actionError,
+              title: "Could not install update",
+              description: message,
             }),
           );
         })
@@ -353,10 +353,11 @@ function AboutVersionSection() {
   const buttonLabel =
     actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? gt("Check for Updates");
   const description =
-    action === "download" || action === "install"
-      ? gt("Update available.")
-      : (getDesktopUpdateDisabledReason(updateState, updatesDenial, messages) ??
-        gt("Current version of the application."));
+    getJonesDesktopUpdateBlockedMessage(updateState, action) ??
+    (action === "download" || action === "install"
+      ? "Update available."
+      : (getDesktopUpdateDisabledReason(updateState, updatesDenial) ??
+        "Current version of the application."));
 
   return (
     <>
@@ -543,8 +544,10 @@ function AboutVersionSection() {
 }
 
 export function useSettingsRestore(onRestored?: () => void) {
-  const messages = useMessages();
   const gt = useGT();
+  const messages = useMessages();
+  const projectOrder = useUiStateStore((state) => state.projectOrder);
+  const environmentOrder = useUiStateStore((state) => state.environmentOrder);
   const {
     theme,
     setTheme,
@@ -606,8 +609,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.sidebarProjectGroupingMode !== DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode
       ? [gt("Project Grouping")]
       : []),
-    ...(settings.sidebarProjectSortOrder !== DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder
-      ? [gt("Project order")]
+    ...(settings.sidebarProjectSortOrder !== DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder ||
+    projectOrder.length > 0
+      ? ["Project order"]
       : []),
     ...(environmentOrder.length > 0 ? ["Environment order"] : []),
     ...(settings.sidebarWorkingShelfEnabled !== DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled
@@ -983,21 +987,8 @@ export function GeneralSettingsPanel() {
           }
         />
         <SettingsRow
-          {...setting("project-order")}
-          description={<T>Order of projects in the sidebar project picker and command palette.</T>}
-          resetAction={
-            settings.sidebarProjectSortOrder !==
-            DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder ? (
-              <SettingResetButton
-                ariaLabel={gt("Reset project order to default")}
-                onClick={() =>
-                  updateSettings({
-                    sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
-                  })
-                }
-              />
-            ) : null
-          }
+          title="Project and environment order"
+          description="Arrange projects and environments in the sidebar."
           control={
             <Button
               render={<Link to="/settings/jones-code" hash="project-order" />}

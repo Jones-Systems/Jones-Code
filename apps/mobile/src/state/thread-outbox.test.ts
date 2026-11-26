@@ -293,7 +293,7 @@ describe("thread outbox", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
-  it("reads file-backed images from v4 queued messages", () => {
+  it("reads v4 file-backed images and saves them in the rollback-readable v3 format", () => {
     const message = {
       ...queuedMessage({
         messageId: "message-image",
@@ -314,7 +314,11 @@ describe("thread outbox", () => {
       ],
     } satisfies QueuedThreadMessage;
 
-    expect(decodeQueuedThreadMessage({ ...message, schemaVersion: 4 })).toEqual(message);
+    const recovered = decodeQueuedThreadMessage({ ...message, schemaVersion: 4 });
+    expect(recovered).toEqual(message);
+    const encoded = encodeQueuedThreadMessage(recovered);
+    expect(encoded).toMatchObject({ schemaVersion: 3, attachments: message.attachments });
+    expect(decodeQueuedThreadMessage(encoded)).toEqual(message);
   });
 
   it("persists the exact selector snapshot while remaining compatible with v1 messages", () => {

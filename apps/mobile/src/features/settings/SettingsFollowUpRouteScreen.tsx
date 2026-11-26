@@ -20,8 +20,8 @@ const FOLLOW_UP_OPTIONS: ReadonlyArray<{
 }> = [
   {
     behavior: "queue",
-    label: msg("Queue", { $context: "verb, follow-up behavior" }),
-    description: msg("Your message waits and runs after the current turn finishes."),
+    label: "Queue",
+    description: "Your message waits for tools to finish, or for the next turn when needed.",
   },
   {
     behavior: "steer",

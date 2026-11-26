@@ -241,6 +241,7 @@ import {
   nodeToPlainText,
 } from "./chat/MarkdownCodeBlock.logic";
 import { reportMarkdownActionFailure } from "./chat/markdownActionFailure";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "./ui/tooltip";
 
 const isAssetNotFoundError = Schema.is(AssetWorkspaceAssetNotFoundError);
 
@@ -587,6 +588,7 @@ function useChatMarkdownState(
   {
     text,
     inline = false,
+    messageId,
     cwd,
     agentDirectories,
     threadRef,
@@ -1877,9 +1879,15 @@ const CHAT_MARKDOWN_COMPONENTS = {
   },
   pre: function MarkdownPre({ node, children, ...props }) {
     const gt = useGT();
-    const { resolvedTheme, diffThemeName, expandMedia, isStreaming, onRunShellCommand } = use(
-      ChatMarkdownRendererContext,
-    );
+    const {
+      resolvedTheme,
+      diffThemeName,
+      expandMedia,
+      isStreaming,
+      onRunShellCommand,
+      threadRef,
+      messageId,
+    } = use(ChatMarkdownRendererContext);
     const text = use(ChatMarkdownTextContext);
     const codeBlock = extractCodeBlock(children);
     if (!codeBlock) {
@@ -1887,7 +1895,9 @@ const CHAT_MARKDOWN_COMPONENTS = {
     }
 
     const language = extractFenceLanguage(codeBlock.className);
-    const fenceTitle = extractFenceTitle(extractPreCodeMeta(node));
+    const meta = extractPreCodeMeta(node);
+    const fenceTitle = extractFenceTitle(meta);
+    const legacyDestination = hasLegacyDestinationMetadata(language, meta);
     const highlightedCode = (
       <RenderErrorBoundary
         resetKeys={[codeBlock.code, language, diffThemeName, isStreaming]}

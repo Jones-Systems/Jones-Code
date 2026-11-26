@@ -51,7 +51,6 @@ import {
   formatPercent,
   formatTokens,
   formatUsd,
-  makeWindow,
 } from "@t3tools/shared/usageFormat";
 import { formatUsageContractMismatch, usageSourceMessages } from "@t3tools/shared/usageFormatCopy";
 import { Button, InlineButton } from "../ui/button";
@@ -197,6 +196,8 @@ export function UsagePage() {
   const gt = useGT();
   const locale = useLocale();
   const m = useMessages();
+  const windowOptionLabel = WINDOW_OPTIONS.find((option) => option.days === windowDays)?.label;
+  const metricOptionLabel = METRIC_OPTIONS.find((option) => option.value === metric)?.label;
   const shortcutTitle = (
     option: (typeof METRIC_OPTIONS)[number] | (typeof WINDOW_OPTIONS)[number],
   ) => {
@@ -358,8 +359,26 @@ export function UsagePage() {
           start: formatDayShort(shownWindow.sinceDay, locale),
           end: formatDayShort(shownWindow.untilDay, locale),
         });
-  const windowOptionLabel = WINDOW_OPTIONS.find((option) => option.days === windowDays)?.label;
-  const metricOptionLabel = METRIC_OPTIONS.find((option) => option.value === metric)?.label;
+  const desktopWindowLabel =
+    windowSelection.kind === "hours"
+      ? `Past ${windowSelection.hours}h · ${windowLabel}`
+      : windowSelection.kind === "custom"
+        ? `Custom range · ${windowLabel}`
+        : windowLabel;
+  const windowPeriodValue = windowSelection.kind === "day" ? String(windowDays) : "";
+  const rangePickerProps = {
+    selection: windowSelection,
+    timeZone: window.timeZone,
+    sinceValue: customSinceValue,
+    untilValue: customUntilValue,
+    validation: customWindowValidation,
+    disabled: showingLimits,
+    onSinceValueChange: setCustomSinceValue,
+    onUntilValueChange: setCustomUntilValue,
+    onSelectHours: selectHourWindow,
+    onApplyCustom: applyCustomWindow,
+    onClear: clearCustomWindow,
+  };
   const topbarContent = (
     <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 @4xl/usage-header:flex">
       <WorkspaceBreadcrumb ariaLabel={gt("Usage breadcrumb")} className="min-w-0">
@@ -452,7 +471,13 @@ export function UsagePage() {
               variant="ghost"
               className="w-auto min-w-0"
             >
-              <SelectValue>{windowOptionLabel && m(windowOptionLabel)}</SelectValue>
+              <SelectValue>
+                {windowSelection.kind === "day"
+                  ? windowOptionLabel && m(windowOptionLabel)
+                  : windowSelection.kind === "hours"
+                    ? `Past ${windowSelection.hours}h`
+                    : "Custom range"}
+              </SelectValue>
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
               {WINDOW_OPTIONS.map((option) => (
@@ -813,16 +838,10 @@ function UsageOverview({
                   )}
                 >
                   {metric === "cost"
-                    ? gt("{share} of cost · {tokens} tokens", {
-                        share: formatPercent(share),
-                        tokens: formatTokens(totals?.totalTokens ?? 0),
-                      })
-                    : gt("{share} of tokens · {cost}", {
-                        share: formatPercent(share),
-                        cost: formatUsd(totals?.costUsd ?? 0, locale),
-                      })}
-                </p>
-              </div>
+                    ? `${formatPercent(share)} of cost · ${formatTokens(totals?.totalTokens ?? 0)} tokens`
+                    : `${formatPercent(share)} of tokens · ${formatUsd(totals?.costUsd ?? 0)}`}
+                </span>
+              </UsageProviderSummary>
             );
           })}
         </div>
@@ -853,38 +872,20 @@ function UsageOverview({
         </div>
       </section>
 
-      <section className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium text-foreground">
-          <T>Totals</T>
-        </h2>
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
-          <Metric
-            loading={loadingPartial}
-            label={gt("Processed tokens")}
-            value={formatTokens(merged.totalTokens)}
-          />
-          <Metric
-            loading={loadingPartial}
-            label={gt("Cached input")}
-            value={formatTokens(merged.cachedInputTokens)}
-          />
-          <Metric
-            loading={loadingPartial}
-            label={gt("Uncached input")}
-            value={formatTokens(merged.uncachedInputTokens)}
-          />
-          <Metric
-            loading={loadingPartial}
-            label={gt("Output", { $context: "output tokens" })}
-            value={formatTokens(merged.outputTokens)}
-          />
-          <Metric
-            loading={loadingPartial}
-            label={gt("Cache savings")}
-            value={formatUsd(merged.costQuality.cacheSavingsUsd, locale)}
-          />
-        </dl>
-      </section>
+      {detailBreakdown.providerTotals !== null ? (
+        <UsageProviderDetails
+          provider={detailBreakdown.providerTotals}
+          onClose={() => {
+            selectProvider(null);
+            if (focusedProvider !== null) providerTriggers.current.get(focusedProvider)?.focus();
+          }}
+        />
+      ) : (
+        <section className="flex flex-col gap-2">
+          <h2 className="text-sm font-medium text-foreground">Totals</h2>
+          <UsageTotals usage={merged} loading={loadingPartial} />
+        </section>
+      )}
 
       {merged.totalTokens > 0 ? (
         <section
@@ -917,10 +918,21 @@ function UsageOverview({
       ) : null}
 
       <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm font-medium text-foreground">
-            <T>Breakdown</T>
-          </h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <h2 className="text-sm font-medium text-foreground">
+              {focusedProvider === null
+                ? "Breakdown"
+                : `${PROVIDER_PRESENTATION[focusedProvider].label} breakdown`}
+            </h2>
+            <InlineButton
+              tone="muted"
+              disabled={focusedProvider === null}
+              onClick={() => selectProvider(null)}
+            >
+              All providers
+            </InlineButton>
+          </div>
           <ToggleGroup
             aria-label={gt("Usage breakdown")}
             variant="segmented"
@@ -949,89 +961,37 @@ function UsageOverview({
             : `Shares are within ${PROVIDER_PRESENTATION[focusedProvider].label}'s API estimate. The summary and chart include all providers.`}
         </p>
         {breakdown === "model" ? (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-right text-xs text-muted-foreground">
-                <th className="py-2 pr-3 pl-2 text-left font-normal">#</th>
-                <th className="w-full py-2 text-left font-normal">
-                  <T>Model</T>
-                </th>
-                <th className="py-2 pl-6 font-normal">
-                  <T>Cost</T>
-                </th>
-                <th className="hidden py-2 pl-6 font-normal sm:table-cell">
-                  <T context="column heading, percentage share">Share</T>
-                </th>
-                <th className="py-2 pr-2 pl-6 font-normal">
-                  <T>Tokens</T>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {breakdownModels.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-6 text-center text-muted-foreground">
-                    <T>No activity in this window.</T>
-                  </td>
-                </tr>
-              ) : (
-                breakdownModels.map((model, index) => {
-                  const key = `${model.provider}:${model.model}`;
-                  const value = metric === "tokens" ? model.totalTokens : model.costUsd;
-                  const hasBar = value > 0 && breakdownPeak > 0;
-                  const share = modelShare(model, metric === "tokens" ? "tokens" : "cost");
-                  const rowFigures = figureClass(loadingProviders.has(model.provider));
-                  return (
-                    <tr
-                      key={key}
-                      className="relative border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50"
-                    >
-                      <td className="py-2.5 pr-3 pl-2 text-left text-xs">{index + 1}</td>
-                      <td className="py-2.5 text-left whitespace-normal">
-                        <button
-                          type="button"
-                          onClick={() => onSelectModel(key)}
-                          className={cn(
-                            "flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0",
-                            !hasBar && "py-1",
-                          )}
-                        >
-                          <ProviderMark provider={model.provider} className="size-3.5" />
-                          {model.model}
-                        </button>
-                        {hasBar ? (
-                          <div aria-hidden className={cn("mt-1.5 h-0.5 max-w-48", rowFigures)}>
-                            <div
-                              className="h-full rounded-full"
-                              style={{
-                                width: `max(0.5rem, ${(value / breakdownPeak) * 100}%)`,
-                                backgroundColor: PROVIDER_PRESENTATION[model.provider].color,
-                              }}
-                            />
-                          </div>
-                        ) : null}
-                      </td>
-                      <td className={cn("py-2.5 pl-6 text-foreground", rowFigures)}>
-                        {isModelCostUnknown(model) ? (
-                          <span className="text-muted-foreground">
-                            <T>Unpriced</T>
-                          </span>
-                        ) : (
-                          formatUsd(model.costUsd, locale)
-                        )}
-                      </td>
-                      <td className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}>
-                        {share === null ? "" : formatPercent(share)}
-                      </td>
-                      <td className={cn("py-2.5 pr-2 pl-6", rowFigures)}>
-                        {formatTokens(model.totalTokens)}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+          <div className="@container">
+            <table className="w-full text-sm">
+              <UsageModelTableHead />
+              <tbody>
+                {breakdownModels.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-6 text-center text-muted-foreground">
+                      No activity in this window.
+                    </td>
+                  </tr>
+                ) : (
+                  breakdownModels.map((model, index) => {
+                    const key = `${model.provider}:${model.model}`;
+                    return (
+                      <UsageModelRow
+                        key={key}
+                        model={model}
+                        index={index}
+                        metric={metric}
+                        breakdownPeak={breakdownPeak}
+                        loading={loadingProviders.has(model.provider)}
+                        expanded={expandedModelKey === key}
+                        onSelect={() => onSelectModel(key)}
+                        onToggle={() => setExpandedModelKey(expandedModelKey === key ? null : key)}
+                      />
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <div
             className="overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
@@ -1045,8 +1005,8 @@ function UsageOverview({
               </colgroup>
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  <th className="py-2 pl-2 font-normal">{shownHourly ? gt("Hour") : gt("Day")}</th>
-                  {activeProviders.map((provider) => (
+                  <th className="py-2 pl-2 font-normal">{shownHourly ? "Hour" : "Day"}</th>
+                  {breakdownProviders.map((provider) => (
                     <th key={provider} className="py-2 pl-4 text-right font-normal">
                       {PROVIDER_PRESENTATION[provider].label}
                     </th>
@@ -1394,7 +1354,6 @@ function UsageProviderFilter({
 }
 
 function UsageSkeleton() {
-  const gt = useGT();
   return (
     <>
       <section className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
@@ -1433,11 +1392,13 @@ function UsageSkeleton() {
         </h2>
         <MetricSkeletons
           labels={[
-            gt("Processed tokens"),
-            gt("Cached input"),
-            gt("Uncached input"),
-            gt("Output", { $context: "output tokens" }),
-            gt("Cache savings"),
+            "Processed tokens",
+            "Cached input",
+            "Uncached input",
+            "Cache write",
+            "Output",
+            "Cache savings",
+            "Cache %",
           ]}
         />
       </section>

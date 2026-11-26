@@ -687,12 +687,16 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
           onError: coldStreamError,
           endOnDone: true,
         }),
-    ),
-  );
-  // The child has a deadline for reading fd 3. Keep recovery bookkeeping off its startup path.
-  const tracking = options.trackProcess
-    ? yield* options.trackProcess(handle.pid).pipe(Effect.forkScoped)
-    : undefined;
+      ).pipe(
+        Effect.catchCause(() => Effect.promise(() => coldOwner.stop()).pipe(Effect.asVoid)),
+        Effect.forkScoped,
+      );
+    }
+  }
+  const tracking =
+    coldOwner === undefined && options.trackProcess !== undefined
+      ? yield* options.trackProcess(handle.pid).pipe(Effect.forkScoped)
+      : undefined;
   const outputFibers: Array<Fiber.Fiber<void, never>> = [];
   const serverReady = yield* Deferred.make<void>();
 
@@ -781,6 +785,19 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
       ).pipe(Effect.forkScoped),
     );
   }
+  if (coldOwner !== undefined) {
+    yield* Effect.tryPromise({
+      try: () => coldOwner.ready(),
+      catch: (cause) =>
+        new BackendProcessSpawnError({
+          executablePath: options.executablePath,
+          entryPath: options.entryPath,
+          cwd: options.cwd,
+          httpBaseUrl: options.httpBaseUrl,
+          cause,
+        }),
+    });
+  }
   const readinessContext = {
     executablePath: options.executablePath,
     entryPath: options.entryPath,
@@ -788,8 +805,6 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     httpBaseUrl: options.httpBaseUrl,
   };
   const readinessTimeout = options.readinessTimeout ?? DEFAULT_BACKEND_READINESS_TIMEOUT;
-  // A backend with a control fd reports readiness there itself, after its HTTP server is up.
-  // Backends without the fd, such as WSL, are polled over HTTP and must pass their readiness probe.
   const awaitReady =
     options.bootstrap.desktopTelemetryControlFd === undefined
       ? waitForHttpReady({
@@ -1195,6 +1210,8 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
                   );
 
                 if (isCurrentRun) {
+                  yield* Ref.set(migrationProgress, null);
+                  yield* spec.onMigrationProgress?.(null) ?? Effect.void;
                   yield* desktopTelemetryPublisher.removeControlSource(spec.id);
                   if (Option.isSome(pid)) {
                     if (exitObserved && !stopRequested) {
@@ -1214,34 +1231,10 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
                   if (stateDirOwned && !stopRequested) {
                     yield* SubscriptionRef.update(state, (latest) => ({
                       ...latest,
-                      active: Option.none<ActiveBackendRun>(),
-                      ready: false,
-                    };
-                    return [
-                      {
-                        isCurrentRun: true,
-                        nextState: next,
-                        pid: currentRun.pid,
-                        exitObserved: currentRun.exitObserved,
-                        stopRequested: currentRun.stopRequested,
-                        wasReady: latest.ready,
-                      },
-                      next,
-                    ] as const;
-                  },
-                );
-
-              if (isCurrentRun) {
-                yield* Ref.set(migrationProgress, null);
-                yield* spec.onMigrationProgress?.(null) ?? Effect.void;
-                yield* desktopTelemetryPublisher.removeControlSource(spec.id);
-                if (Option.isSome(pid)) {
-                  if (exitObserved && !stopRequested) {
-                    yield* backendOutputLog.persistFailure({
-                      details: `pid=${pid.value} ${reason}`,
-                    });
-                  } else {
-                    yield* backendOutputLog.discardSession;
+                      desiredRunning: false,
+                    }));
+                    yield* (spec.onStateDirOwned?.() ?? Effect.void).pipe(Effect.ignore);
+                    return;
                   }
                   yield* scheduleRestart(reason, exitCode);
                 }
@@ -1252,6 +1245,7 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           const program = runBackendProcess(
             {
               ...config.value,
+              ...(spec.trackProcess === undefined ? {} : { trackProcess: spec.trackProcess }),
               desktopTelemetryStream: desktopTelemetryPublisher.encoded,
               desktopBrowserStream: desktopBrowserHost.events,
               onDesktopBrowserCommand: desktopBrowserHost.handleCommandLine,
@@ -1263,6 +1257,8 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
                   pid: Option.some(pid),
                 }));
                 yield* Ref.set(outputTail, "");
+                yield* Ref.set(migrationProgress, null);
+                yield* spec.onMigrationProgress?.(null) ?? Effect.void;
                 outputDecoders = makeOutputDecoders();
                 yield* backendOutputLog.beginSession({
                   details: `pid=${pid} port=${config.value.bootstrap.port} cwd=${config.value.cwd}`,
@@ -1292,45 +1288,9 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
                 if (!isCurrentRun) {
                   return;
                 }
-                yield* scheduleRestart(reason, exitCode);
-              }
-            }),
-          );
-        });
 
-        const program = runBackendProcess({
-          ...config.value,
-          ...(spec.trackProcess === undefined ? {} : { trackProcess: spec.trackProcess }),
-          desktopTelemetryStream: desktopTelemetryPublisher.encoded,
-          desktopBrowserStream: desktopBrowserHost.events,
-          onDesktopBrowserCommand: desktopBrowserHost.handleCommandLine,
-          onDesktopTelemetryControl: (message) =>
-            desktopTelemetryPublisher.handleControlForSource(spec.id, message),
-          onStarted: Effect.fn("desktop.backendInstance.onStarted")(function* (pid) {
-            yield* updateActiveRun(runId, (run) => ({
-              ...run,
-              pid: Option.some(pid),
-            }));
-            yield* Ref.set(outputTail, "");
-            yield* Ref.set(migrationProgress, null);
-            yield* spec.onMigrationProgress?.(null) ?? Effect.void;
-            outputDecoders = makeOutputDecoders();
-            yield* backendOutputLog.beginSession({
-              details: `pid=${pid} port=${config.value.bootstrap.port} cwd=${config.value.cwd}`,
-            });
-          }),
-          onExitObserved: () =>
-            updateActiveRun(runId, (run) => ({
-              ...run,
-              exitObserved: true,
-            })),
-          onReady: Effect.fn("desktop.backendInstance.onReady")(function* (pid) {
-            const isCurrentRun = yield* SubscriptionRef.modify(state, (latest) => {
-              const activeRun = Option.getOrUndefined(latest.active);
-              if (activeRun?.id !== runId) {
-                return [false, latest] as const;
-              }
-
+                yield* Ref.set(migrationProgress, null);
+                yield* spec.onMigrationProgress?.(null) ?? Effect.void;
                 yield* spec.onReady?.(config.value.httpBaseUrl, pid) ?? Effect.void;
                 if (
                   config.value.runningDistro !== undefined &&
@@ -1344,7 +1304,10 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
               }),
               onReadinessFailure: Effect.fn("desktop.backendInstance.onReadinessFailure")(
                 function* (error) {
-                  if (isRunningDatabaseMigrations(yield* Ref.get(outputTail))) {
+                  if (
+                    (yield* Ref.get(migrationProgress)) !== null ||
+                    isRunningDatabaseMigrations(yield* Ref.get(outputTail))
+                  ) {
                     yield* logInstanceWarning("backend is still migrating its database; waiting", {
                       error: error.message,
                     });
@@ -1360,82 +1323,62 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
                     "The server started but did not become ready in time.",
                   );
                 },
-              ] as const;
-            });
-            if (!isCurrentRun) {
-              return;
-            }
-
-            yield* Ref.set(migrationProgress, null);
-            yield* spec.onMigrationProgress?.(null) ?? Effect.void;
-            yield* spec.onReady?.(config.value.httpBaseUrl, pid) ?? Effect.void;
-            if (
-              config.value.runningDistro !== undefined &&
-              config.value.wslRuntimeId !== undefined
-            ) {
-              yield* wslEnvironment.pruneRuntimes(
-                config.value.runningDistro,
-                config.value.wslRuntimeId,
-                config.value.wslT3Home ?? null,
-              );
-            }
-          }),
-          onReadinessFailure: Effect.fn("desktop.backendInstance.onReadinessFailure")(
-            function* (error) {
-              if (
-                (yield* Ref.get(migrationProgress)) !== null ||
-                isRunningDatabaseMigrations(yield* Ref.get(outputTail))
-              ) {
-                yield* logInstanceWarning("backend is still migrating its database; waiting", {
-                  error: error.message,
-                });
-                return;
-              }
-              yield* logInstanceWarning("backend readiness check failed during bootstrap", {
-                error: error.message,
-              });
-              yield* backendOutputLog.persistFailureSnapshot({
-                details: error.message,
-              });
-              yield* reportStartupFailure("The server started but did not become ready in time.");
-            },
-          ),
-          onOutput: (streamName, chunk) =>
-            Ref.modify(outputTail, (tail) => {
-              const output = tail + outputDecoders[streamName].decode(chunk, { stream: true });
-              return [
-                output,
-                // A cut through a surrogate pair would make encodeURIComponent throw when rendering.
-                output.slice(-STARTUP_FAILURE_OUTPUT_CHARS).toWellFormed(),
-              ];
-            }).pipe(
-              Effect.flatMap((output) =>
-                Effect.gen(function* () {
-                  const latest = yield* SubscriptionRef.get(state);
-                  if (
-                    !latest.ready &&
-                    Option.isSome(latest.active) &&
-                    latest.active.value.id === runId
-                  ) {
-                    const progress = yield* Ref.updateAndGet(migrationProgress, (previous) =>
-                      databaseMigrationProgress(output, previous),
-                    );
-                    yield* spec.onMigrationProgress?.(progress) ?? Effect.void;
-                  }
-                }),
               ),
-              Effect.andThen(backendOutputLog.writeOutputChunk(streamName, chunk)),
+              onOutput: (streamName, chunk) =>
+                Ref.modify(outputTail, (tail) => {
+                  const output = tail + outputDecoders[streamName].decode(chunk, { stream: true });
+                  return [output, output.slice(-STARTUP_FAILURE_OUTPUT_CHARS).toWellFormed()];
+                }).pipe(
+                  Effect.flatMap((output) =>
+                    Effect.gen(function* () {
+                      const latest = yield* SubscriptionRef.get(state);
+                      if (
+                        !latest.ready &&
+                        Option.isSome(latest.active) &&
+                        latest.active.value.id === runId
+                      ) {
+                        const progress = yield* Ref.updateAndGet(migrationProgress, (previous) =>
+                          databaseMigrationProgress(output, previous),
+                        );
+                        yield* spec.onMigrationProgress?.(progress) ?? Effect.void;
+                      }
+                    }),
+                  ),
+                  Effect.andThen(backendOutputLog.writeOutputChunk(streamName, chunk)),
+                ),
+            },
+            coldCustody,
+          ).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+            Scope.provide(runScope),
+            // Cold scope completion must publish retained closure observations before run cleanup.
+            Effect.ensuring(
+              coldCustody === undefined
+                ? Effect.void
+                : Scope.close(runScope, Exit.void).pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        coldCustody.scopeFinalized = true;
+                        coldCustody.reconcile();
+                      }).pipe(
+                        Effect.andThen(
+                          SubscriptionRef.update(state, (latest) =>
+                            Option.getOrUndefined(latest.active)?.id === runId
+                              ? { ...latest, desiredRunning: false }
+                              : latest,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
             ),
-        }).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.provideService(HttpClient.HttpClient, httpClient),
-          Scope.provide(runScope),
-          Effect.matchEffect({
-            onFailure: (error) => finalizeRun(error.message),
-            onSuccess: (exit) => finalizeRun(exit.reason, Option.getOrUndefined(exit.code)),
-          }),
-          Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
-        );
+            Effect.matchEffect({
+              onFailure: (error) => finalizeRun(error.message),
+              onSuccess: (exit) => finalizeRun(exit.reason, Option.getOrUndefined(exit.code)),
+            }),
+            Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
+          );
 
           const fiber = yield* Effect.forkIn(Effect.interruptible(program), parentScope);
           yield* updateActiveRun(runId, (run) => ({

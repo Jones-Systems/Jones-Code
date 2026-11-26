@@ -172,6 +172,7 @@ const WEEKDAY_SHORT = [
 const NEW_THREAD_DESTINATION = " new-thread";
 
 const WORKSPACE_MODE_LABELS: Record<WorkspaceMode, string> = {
+  auto: msg("Use project allocation setting"),
   worktree: msg("Create a new worktree"),
   root: msg("Use the project checkout"),
   existing_worktree: msg("Use a specific checkout"),
@@ -199,7 +200,7 @@ const EMPTY_DRAFT: DraftState = {
   threadId: "",
   savedThreadId: "",
   threadMode: "new_thread",
-  workspaceMode: "worktree",
+  workspaceMode: "auto",
   baseRef: "",
   startFromOrigin: true,
   existingWorktreePath: "",
@@ -1696,15 +1697,7 @@ function ScheduledTaskEditorForm({
       return;
     }
     const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
-      draft.workspaceMode === "root"
-        ? { type: "root" }
-        : draft.workspaceMode === "existing_worktree"
-          ? { type: "existing_worktree", worktreePath: draft.existingWorktreePath.trim() }
-          : {
-              type: "worktree",
-              baseRef: worktreeBaseRef,
-              startFromOrigin: draft.startFromOrigin,
-            };
+      workspaceStrategyFromDraft(draft);
     const input: ScheduledTaskUpsertInput = {
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
@@ -1909,15 +1902,11 @@ function ScheduledTaskEditorForm({
                   <SelectValue>{messages(WORKSPACE_MODE_LABELS[draft.workspaceMode])}</SelectValue>
                 </SelectTrigger>
                 <SelectPopup>
-                  <SelectItem value="worktree">
-                    <T>Create a new worktree</T>
-                  </SelectItem>
-                  <SelectItem value="root">
-                    <T>Use the project checkout</T>
-                  </SelectItem>
-                  <SelectItem value="existing_worktree">
-                    <T>Use a specific checkout</T>
-                  </SelectItem>
+                  {Object.entries(WORKSPACE_MODE_LABELS).map(([mode, label]) => (
+                    <SelectItem key={mode} value={mode}>
+                      {messages(label)}
+                    </SelectItem>
+                  ))}
                 </SelectPopup>
               </Select>
             </Field>

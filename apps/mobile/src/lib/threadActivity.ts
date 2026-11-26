@@ -2009,14 +2009,13 @@ export function deriveThreadFeedPresentation(
         activeWorkStartedAt,
         activeRunId,
         waitingOn > 0
-          ? waitingOnSubagentsLabel(waitingOn, resolve)
-          : zen
-            ? liveAnswerPreview(feed)
-            : null,
-        latestRun?.providerStartingLabelMsg === undefined
-          ? latestRun?.providerStartingLabel
-          : resolve(latestRun.providerStartingLabelMsg),
-        latestRun?.providerStarting?.driver,
+          ? waitingOnSubagentsLabel(waitingOn)
+          : activityLabel === "Thinking"
+            ? zen
+              ? liveAnswerPreview(feed)
+              : null
+            : activityLabel,
+        latestRun?.providerStartingLabel,
       ),
     );
   }

@@ -61,8 +61,12 @@ export function UsageShareBar({
               className="size-2 rounded-xs"
               style={{ backgroundColor: segment.color }}
             />
-            <span className="text-muted-foreground">{m(segment.label)}</span>{" "}
-            <span className="text-foreground tabular-nums">{format(segment.value)}</span>
+            <span className="text-muted-foreground">{segment.label}</span>{" "}
+            <span className="text-foreground tabular-nums">
+              {segment.value === 0
+                ? (segment.zeroLabel ?? format(segment.value))
+                : format(segment.value)}
+            </span>
             <span className="sr-only">, {formatPercent(segment.value / total)}</span>
           </li>
         ))}

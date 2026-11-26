@@ -1,6 +1,12 @@
+import { oneSpaceThreadQuery } from "./jones/composerThreadQuery.ts";
 import { parseMarkdownFileLink } from "./markdownLinks.ts";
 
-export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
+export type ComposerTriggerKind =
+  | "path"
+  | "pull-request"
+  | "slash-command"
+  | "slash-model"
+  | "skill";
 export type ComposerSlashCommand = "model" | "plan" | "default";
 
 export interface ComposerTrigger {

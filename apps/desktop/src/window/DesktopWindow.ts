@@ -12,11 +12,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Electron from "electron";
 import { msg } from "gt-i18n";
 
-import {
-  type DatabaseMigrationProgress,
-  type DesktopSnapShotEvent,
-  DEFAULT_CLIENT_SETTINGS,
-} from "@t3tools/contracts";
+import { type DesktopSnapShotEvent, DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopClerk from "../app/DesktopClerk.ts";
@@ -50,6 +47,8 @@ import { m } from "../i18n/messages.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
 import { copyContextMenuImage } from "./ContextMenuImage.ts";
+import { attachThreadMonitor, type ThreadMonitorHost } from "../jones/threadMonitor/host.ts";
+import type { DatabaseMigrationProgress } from "@t3tools/contracts";
 import { installMainWindowRemoteRequestHeaderPolicy } from "./RemoteRequestHeaders.ts";
 
 const TITLEBAR_HEIGHT = 40;
@@ -418,11 +417,18 @@ export const make = Effect.gen(function* () {
   const runPromise = Effect.runPromiseWith(context);
   const mainWindowMutex = yield* Semaphore.make(1);
   const pendingMainReveals = new WeakMap<Electron.BrowserWindow, Effect.Effect<void>>();
+  let remoteRequestHeaderOwner: Electron.BrowserWindow | null = null;
   const revealMain = Effect.fn("desktop.window.revealMain")((window: Electron.BrowserWindow) =>
     Effect.suspend(() => pendingMainReveals.get(window) ?? electronWindow.reveal(window)),
   );
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
-  let remoteRequestHeaderOwner: Electron.BrowserWindow | null = null;
+  const threadMonitors = new Set<ThreadMonitorHost>();
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      for (const monitor of threadMonitors) monitor.dispose();
+      threadMonitors.clear();
+    }),
+  );
 
   const dismissConnectingSplash = Effect.gen(function* () {
     const splash = yield* Ref.getAndSet(splashWindowRef, Option.none());

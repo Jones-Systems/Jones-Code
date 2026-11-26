@@ -1,4 +1,4 @@
-import { startFileDrag } from "./methods/fileDrag.ts";
+import { registerDesktopUpdateIpc } from "../jones/updates/updateIpcRegistration.ts";
 import * as Effect from "effect/Effect";
 
 import { receiveProviderAuthCallback, cancelProviderAuthCallback } from "./methods/providerAuth.ts";
@@ -42,7 +42,7 @@ import {
 } from "./methods/sshEnvironment.ts";
 import {
   getAppBranding,
-  getDatabaseMigrationProgress,
+  getPreviewAutomationRuntimeIdentity,
   getLocalEnvironmentBootstraps,
   getLocalEnvironmentBearerToken,
   installRelayTelemetryEnabled,
@@ -94,6 +94,7 @@ import {
   uninstallCliCommand,
   addCliCommandToPath,
 } from "./methods/cliCommand.ts";
+import { startFileDrag } from "./methods/fileDrag.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
@@ -108,7 +109,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handleSync(takeLegacyLocalStorage);
   yield* ipc.handle(completeLegacyLocalStorage);
   yield* ipc.handleSync(getAppBranding);
-  yield* ipc.handle(getDatabaseMigrationProgress);
+  yield* ipc.handle(getPreviewAutomationRuntimeIdentity);
   yield* installRelayTelemetryEnabled();
   yield* ipc.handleSync(getSystemLocale);
   yield* ipc.handleSync(getPreferredSystemLanguages);

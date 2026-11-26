@@ -86,7 +86,6 @@ import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
-
 if (process.argv.includes("--version")) {
   try {
     NodeFS.writeSync(process.stdout.fd, `${Electron.app.getVersion()}\n`);
@@ -179,15 +178,29 @@ const layerDesktopServerExposure = DesktopServerExposure.layer.pipe(
   Layer.provideMerge(layerDesktopFoundation),
 );
 
-const layerDesktopPreview = PreviewManager.layer.pipe(
-  Layer.provideMerge(LoopbackTunnel.layer),
-  Layer.provideMerge(DesktopBrowserHost.layer),
-  // IPC needs both services on the same BrowserSession.
-  Layer.provideMerge(BrowserImport.layer.pipe(Layer.provide(LinuxBrowserSecret.layer))),
-  Layer.provideMerge(BrowserSession.layer),
-  Layer.provideMerge(PreviewPasskeys.layer),
-  Layer.provideMerge(layerDesktopFoundation),
-);
+const layerDesktopPreview = Layer.unwrap(
+  Effect.gen(function* () {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    yield* Effect.sync(() =>
+      CompanionProduct.assertCompanionStorage({
+        companion: environment.previewCompanionProduct === true,
+        appDataDirectory: Electron.app.getPath("appData"),
+        userDataDirectory: Electron.app.getPath("userData"),
+        sessionDataDirectory: Electron.app.getPath("sessionData"),
+        join: environment.path.join,
+      }),
+    );
+    return Layer.mergeAll(PreviewManager.layer, CompanionUplink.layer).pipe(
+      Layer.provideMerge(CompanionConfig.layer),
+      Layer.provideMerge(DesktopBrowserHost.layer),
+      Layer.provideMerge(DesktopAppIdentity.layer),
+      // IPC and the uplink share the host-native BrowserSession selected by boot.
+      Layer.provideMerge(BrowserImport.layer.pipe(Layer.provide(LinuxBrowserSecret.layer))),
+      Layer.provideMerge(BrowserSession.layer),
+      Layer.provideMerge(PreviewPasskeys.layer),
+    );
+  }),
+).pipe(Layer.provideMerge(layerDesktopFoundation));
 
 const layerDesktopWindow = DesktopWindow.layer.pipe(
   Layer.provideMerge(layerDesktopServerExposure),

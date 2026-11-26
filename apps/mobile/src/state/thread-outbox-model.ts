@@ -40,8 +40,8 @@ import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/compose
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 
-// v4 file-backed writes require native baselines with embedded readers and storage guards.
-const THREAD_OUTBOX_SCHEMA_VERSION = 4;
+// Keep current writes until a compatible native baseline includes the v4 reader.
+const THREAD_OUTBOX_SCHEMA_VERSION = 3;
 const THREAD_OUTBOX_MAX_RETRY_DELAY_MS = 16_000;
 
 const QueuedThreadCreationSchema = Schema.Struct({
@@ -59,7 +59,7 @@ const QueuedThreadCreationSchema = Schema.Struct({
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
-  schemaVersion: Schema.Literals([1, 2, 3, THREAD_OUTBOX_SCHEMA_VERSION]),
+  schemaVersion: Schema.Literals([1, 2, THREAD_OUTBOX_SCHEMA_VERSION, 4]),
   environmentId: EnvironmentId,
   threadId: ThreadId,
   messageId: MessageId,
@@ -293,8 +293,8 @@ export function isQueuedThreadCreationSendable(message: QueuedThreadMessage): bo
   }
   return (
     message.creation.workspaceMode !== "worktree" ||
-    Boolean(message.creation.branch) ||
-    message.creation.startsFromRepositoryDefaults === true
+    message.creation.branch === null ||
+    message.creation.branch.trim().length > 0
   );
 }
 

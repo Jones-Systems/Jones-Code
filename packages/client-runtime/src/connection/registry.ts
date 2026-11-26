@@ -1,6 +1,4 @@
-import { msg } from "gt-i18n";
-import { translatableDetail } from "../errors/translatable.ts";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -62,6 +60,8 @@ import {
   upsertRoute,
   type ReportedEndpoint,
 } from "./routes.ts";
+import { translatableDetail } from "../errors/translatable.ts";
+import { msg } from "gt-i18n";
 
 const isSshConnectionProfile = Schema.is(SshConnectionProfile);
 

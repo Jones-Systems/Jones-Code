@@ -1,5 +1,4 @@
-import { msg } from "gt-react";
-import { m } from "~/i18n/messages";
+import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
@@ -9,12 +8,10 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import type { RefObject } from "react";
 import type { ChatComposerProps } from "./ChatComposer";
-import {
-  type ChatAttachment,
-  type ComposerContextClipboardFragment,
-  type ComposerContextRecord,
-  type EnvironmentId,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+import type {
+  ComposerContextClipboardFragment,
+  ComposerContextRecord,
+  EnvironmentId,
 } from "@t3tools/contracts";
 import {
   type ComposerFileAttachment,
@@ -58,6 +55,9 @@ import { useStableCallback } from "../../hooks/useStableCallback";
 import { countPreparingComposerImages } from "./preparingComposerImages";
 import type { QueuedAttachmentContextBinding } from "./composerContextUndo";
 import { matchRestorableQueuedAttachment } from "./queuedMessageEdit";
+import type { ChatAttachment } from "@t3tools/contracts";
+import { m } from "~/i18n/messages";
+import { msg } from "gt-react";
 
 const isUnreachable = Schema.is(
   Schema.Union([ConnectionTransientError, ConnectionBlockedError, EnvironmentRpcUnavailableError]),
@@ -215,25 +215,6 @@ export function useComposerContextImport(input: {
     // The draft these bytes belong to may have been sent or switched away from while they
     // downloaded. Dropping them here keeps them out of whatever draft is open now.
     if (attachmentTargetKeyRef.current !== importTargetKey) return;
-    const replacesFileMarker =
-      record.kind === "file" &&
-      composerFilesRef.current.some(
-        (candidate) =>
-          composerFileNeedsReattach(candidate) &&
-          composerFileMatchesReattachMarker(candidate, {
-            name: record.name,
-            mimeType: file.type,
-            sizeBytes: file.size,
-          }),
-      );
-    if (
-      !replacesFileMarker &&
-      (pendingThreadImportsRef.current.get(importTargetKey) ?? 0) > 0 &&
-      countReservedAttachments() >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS
-    ) {
-      fail(m(msg("The attachment limit has been reached.")));
-      return;
-    }
     if (record.kind === "image") {
       const accepted = addComposerDraftImages(
         attachmentDraftTarget,

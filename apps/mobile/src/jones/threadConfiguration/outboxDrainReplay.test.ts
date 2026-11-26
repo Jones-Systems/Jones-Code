@@ -76,11 +76,6 @@ vi.mock("../../state/workspace", async () => {
     },
   };
 });
-vi.mock("@t3tools/client-runtime/state/runtime", async (original) => ({
-  ...(await original<typeof import("@t3tools/client-runtime/state/runtime")>()),
-  runAtomCommand: (_registry: unknown, command: (input: unknown) => unknown, input: unknown) =>
-    command(input),
-}));
 vi.mock("../../state/server", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
@@ -89,8 +84,22 @@ vi.mock("../../state/server", async () => {
   };
 });
 vi.mock("../../state/threads", async () => {
-  const { Atom } = await import("effect/reactivity");
+  const Effect = await import("effect/Effect");
+  const { AsyncResult, Atom } = await import("effect/reactivity");
   const { EMPTY_ENVIRONMENT_THREAD_STATE } = await import("@t3tools/client-runtime/state/threads");
+  const command = (settle: (input: unknown) => unknown) => ({
+    label: "replay command",
+    run: (_registry: unknown, input: unknown) =>
+      Effect.promise(
+        async () => (await settle(input)) as AsyncResult.AsyncResult<unknown, Error>,
+      ).pipe(
+        Effect.flatMap((result) => {
+          if (AsyncResult.isSuccess(result)) return Effect.succeed(result.value);
+          if (AsyncResult.isFailure(result)) return Effect.failCause(result.cause);
+          return Effect.die("Expected a settled replay result");
+        }),
+      ),
+  });
   const projections = Atom.family((key: string) => {
     const atom = Atom.make<EnvironmentThreadState>(EMPTY_ENVIRONMENT_THREAD_STATE).pipe(
       Atom.keepAlive,
@@ -100,10 +109,10 @@ vi.mock("../../state/threads", async () => {
   });
   return {
     threadEnvironment: {
-      prepareTurn: state.prepare,
-      dispatchPreparedTurn: state.dispatch,
-      setRuntimeMode: state.settings,
-      setInteractionMode: state.settings,
+      prepareTurn: command(state.prepare),
+      dispatchPreparedTurn: command(state.dispatch),
+      setRuntimeMode: command(state.settings),
+      setInteractionMode: command(state.settings),
     },
     environmentThreadShells: { threadShellsAtom: Atom.make([]) },
     environmentThreadDetails: {
@@ -193,7 +202,9 @@ vi.mock("../../state/use-thread-outbox", async () => {
   return {
     retryingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
     editingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
-    dispatchingQueuedMessageIdAtom: Atom.make<MessageId | null>(null).pipe(Atom.keepAlive),
+    dispatchingQueuedMessageIdsAtom: Atom.make<Readonly<Record<MessageId, true>>>({}).pipe(
+      Atom.keepAlive,
+    ),
     useThreadOutboxMessages: () => appAtomRegistry.get(state.manager.queuedMessagesByThreadKeyAtom),
     threadOutboxShellStatusesAtom: Atom.make(new Map([["drain-env", "empty"]])),
   };
@@ -216,7 +227,7 @@ vi.mock("../../state/use-composer-drafts", async () => {
 
 import { appAtomRegistry } from "../../state/atom-registry";
 import { acknowledgedThreadMessagesAtom } from "../../state/acknowledged-thread-messages";
-import { dispatchingQueuedMessageIdAtom } from "../../state/use-thread-outbox";
+import { dispatchingQueuedMessageIdsAtom } from "../../state/use-thread-outbox";
 import { createThreadOutboxDelivery } from "../../state/threadOutboxDelivery";
 import { pendingThreadCreationOutcomesAtom } from "../../state/pending-thread-creation";
 import { threadComposerErrorsAtom } from "../../state/thread-composer-error";
@@ -226,9 +237,9 @@ import { withIssuedQueuedThreadTurn } from "./outboxDelivery";
 async function drain(messageId: MessageId) {
   const settled = Promise.withResolvers<void>();
   let started = false;
-  const unsubscribe = appAtomRegistry.subscribe(dispatchingQueuedMessageIdAtom, (id) => {
-    if (id === messageId) started = true;
-    else if (started && id === null) settled.resolve();
+  const unsubscribe = appAtomRegistry.subscribe(dispatchingQueuedMessageIdsAtom, (ids) => {
+    if (ids[messageId]) started = true;
+    else if (started) settled.resolve();
   });
   try {
     startDelivery();
@@ -361,7 +372,7 @@ afterEach(() => {
   state.persisted.clear();
   vi.resetAllMocks();
   appAtomRegistry.set(state.manager.queuedMessagesByThreadKeyAtom, {});
-  appAtomRegistry.set(dispatchingQueuedMessageIdAtom, null);
+  appAtomRegistry.set(dispatchingQueuedMessageIdsAtom, {});
   appAtomRegistry.set(pendingThreadCreationOutcomesAtom, {});
   appAtomRegistry.set(threadComposerErrorsAtom, {});
   appAtomRegistry.set(acknowledgedThreadMessagesAtom, []);
@@ -436,7 +447,7 @@ describe("mobile outbox drain replay ordering", () => {
           commandId: message.commandId,
           messageId: message.messageId,
         });
-        expect(appAtomRegistry.get(dispatchingQueuedMessageIdAtom)).toBe(message.messageId);
+        expect(appAtomRegistry.get(dispatchingQueuedMessageIdsAtom)[message.messageId]).toBe(true);
         // This fixture owner goes away before storage releases the legacy slot.
         unmount();
         releaseRemoval.resolve();
@@ -472,7 +483,7 @@ describe("mobile outbox drain replay ordering", () => {
         ).toEqual([]);
         startDelivery();
         expect(state.dispatch.mock.calls.map(([request]) => request)).toEqual(expectedRequests);
-        expect(appAtomRegistry.get(dispatchingQueuedMessageIdAtom)).toBeNull();
+        expect(appAtomRegistry.get(dispatchingQueuedMessageIdsAtom)).toEqual({});
       } finally {
         releaseRemoval.resolve();
         unmount();
@@ -493,8 +504,8 @@ describe("mobile outbox drain replay ordering", () => {
     ).toBe(message.messageId);
     state.retry.mockClear();
     const removed = Promise.withResolvers<void>();
-    const release = appAtomRegistry.subscribe(dispatchingQueuedMessageIdAtom, (id) => {
-      if (id === null && !state.persisted.has(message.messageId)) removed.resolve();
+    const release = appAtomRegistry.subscribe(dispatchingQueuedMessageIdsAtom, (ids) => {
+      if (!ids[message.messageId] && !state.persisted.has(message.messageId)) removed.resolve();
     });
     publishProjection(message, liveProjection(projection));
     await removed.promise;

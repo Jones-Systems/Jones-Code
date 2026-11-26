@@ -3,10 +3,12 @@
   "upstream": {
     "repository": "pingdotgg/t3code",
     "ref": "refs/heads/main",
-    "commit": "c8c51af4e3f67ec9d121b3fb10b4cfd17adfd541"
+    "commit": "36816d26be2d862440d6412d62332a10c4d896ff"
   },
-  "baseline": "c8c51af4e3f67ec9d121b3fb10b4cfd17adfd541",
+  "baseline": "36816d26be2d862440d6412d62332a10c4d896ff",
   "paths": {
+    "apps/web/src/markdown/wordsHast.ts": "accepted-shared",
+    "docs/internals/testing.md": "hook",
     "packages/client-runtime/src/handoff.ts": "accepted-shared",
     "packages/client-runtime/src/handoff.test.ts": "accepted-shared",
     "apps/web/src/jones/workstreams/WorkstreamNameIconPicker.tsx": "jones-owned",
@@ -22,6 +24,7 @@
     "apps/web/src/components/chat/ThreadRelationshipsControl.remote-parent.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/preview/closePreviewSession.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/settings/SettingsSidebarNav.composition.browser.test.tsx": "jones-tests-in-upstream",
+    "packages/shared/src/markdownHast.ts": "accepted-shared",
     "packages/shared/src/markdownPipeline.test.ts": "jones-tests-in-upstream",
     "packages/shared/src/markdownPipeline.ts": "hook",
     "apps/mobile/src/features/threads/PendingUserInputCard.test.tsx": "jones-tests-in-upstream",
@@ -441,7 +444,6 @@
     "apps/server/src/cli/project.test.ts": "jones-tests-in-upstream",
     "apps/server/src/cli/project.ts": "accepted-shared",
     "apps/server/src/cli/service.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/cli/sshHelper.test.ts": "upstream-deleted",
     "apps/server/src/cli/sshHelper.ts": "accepted-shared",
     "apps/server/src/cli/thread.ts": "accepted-shared",
     "apps/server/src/cli/triagePrompt.test.ts": "upstream-deleted",
@@ -2528,7 +2530,7 @@
     "packages/provider-pi/src/server/mcpInjection.ts": "accepted-shared",
     "packages/provider-pi/vite.config.ts": "hook",
     "packages/provider-testing/package.json": "accepted-shared",
-    "packages/provider-testing/src/replayWorkspace.test.ts": "jones-owned",
+    "packages/provider-testing/src/replayWorkspace.test.ts": "jones-tests-in-upstream",
     "packages/provider-testing/src/replayWorkspace.ts": "accepted-shared",
     "packages/provider-testing/vite.config.ts": "hook",
     "packages/secret-provider-core/vite.config.ts": "hook",
@@ -3848,7 +3850,32 @@
     "apps/server/src/jones/cleanup/sharedAdmission/LocalSchema.test.ts": "jones-owned",
     "apps/server/src/jones/cleanup/sharedAdmission/NativeAccount.ts": "jones-owned",
     "apps/server/src/jones/cleanup/sharedAdmission/bootstrap-race.fixture.ts": "jones-owned",
-    "apps/server/src/jones/cleanup/sharedAdmission/enrollment.fixture.ts": "jones-owned"
+    "apps/server/src/jones/cleanup/sharedAdmission/enrollment.fixture.ts": "jones-owned",
+    ".agents/skills/contribution-triage/SKILL.md": "policy",
+    "docs/internals/10_web-ui.md": "policy",
+    "docs/internals/15_testing.md": "policy",
+    "apps/server/src/peer/PeerThreadRelay.ts": "hook",
+    "packages/client-runtime/src/state/threadTriageOutbox.ts": "hook",
+    "packages/client-runtime/src/state/threadTriageOutbox.test.ts": "jones-owned",
+    "patches/effect@4.1.5.patch": "accepted-shared",
+    "docs/internals/effect-services.md": "policy",
+    "docs/internals/environment-auth.md": "policy",
+    "docs/internals/glossary.md": "policy",
+    "docs/internals/overview.md": "policy",
+    ".github/actions/drop-checkout-credentials/action.yml": "upstream-deleted",
+    ".github/actions/eas-local-build/action.yml": "upstream-deleted",
+    ".github/actions/record-build-tag/action.yml": "upstream-deleted",
+    ".github/scripts/check-nightly-release.cjs": "accepted-shared",
+    ".github/scripts/check-nightly-release.test.cjs": "accepted-shared",
+    ".github/scripts/set-mobile-version.cjs": "upstream-deleted",
+    ".github/scripts/set-release-version.cjs": "upstream-deleted",
+    ".github/scripts/test-delta.cjs": "accepted-shared",
+    ".github/scripts/vercel-deployment-output.test.cjs": "accepted-shared",
+    ".github/scripts/workflow-credentials.test.cjs": "upstream-deleted",
+    ".github/workflows/mobile-eas-preview-build.yml": "upstream-deleted",
+    ".github/workflows/mobile-eas-production-build.yml": "upstream-deleted",
+    "SECURITY.md": "upstream-deleted",
+    "TRADEMARK.md": "upstream-deleted"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -3887,7 +3914,6 @@
     "apps/mobile/src/lib/providerOptions.test.ts",
     "apps/server/src/textGeneration/TextGeneration.test.ts",
     "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts",
-    "apps/server/src/cli/sshHelper.test.ts",
     "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
     "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
     "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
@@ -4867,6 +4893,26 @@
     {
       "from": "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
       "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
+      "to": "packages/client-runtime/src/jones/deliveryEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionMaintenance.ts",
+      "to": "apps/server/src/jones/persistence/historyMaintenancePreflight.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionMaintenance.ts",
+      "to": "apps/server/src/jones/persistence/settlementCompactionPreflight.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/DatabaseMaintenance.ts",
+      "to": "apps/server/src/jones/persistence/historyMaintenancePreflight.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/state/threadTriageOutbox.ts",
+      "to": "packages/contracts/src/jones/guardedThreadSettlement.ts"
     }
   ]
 }

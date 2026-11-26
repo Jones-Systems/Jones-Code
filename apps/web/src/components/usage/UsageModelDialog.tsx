@@ -59,15 +59,6 @@ export function UsageModelDialog({
   const presentation = PROVIDER_PRESENTATION[model.provider];
   const costUnknown = isModelCostUnknown(model);
   const hitRate = cacheHitRate(model);
-  const perMillion = costPerMillionTokens(model);
-  const stats = [
-    { label: gt("Cost"), value: costUnknown ? gt("Unpriced") : formatUsd(model.costUsd, locale) },
-    { label: gt("Tokens"), value: formatTokens(model.totalTokens) },
-    perMillion === null
-      ? null
-      : { label: gt("Per 1M tokens"), value: formatUsd(perMillion, locale) },
-    hitRate === null ? null : { label: gt("Cache hit"), value: formatPercent(hitRate) },
-  ].filter((stat) => stat !== null);
 
   return (
     <Dialog

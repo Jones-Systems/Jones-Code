@@ -126,6 +126,18 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/jones-code/appearance": msg("Appearance"),
 };
 
+const JONES_CODE_SETTINGS_HEADING = msg("Jones Code");
+const JONES_CODE_SETTINGS_PATHS = [
+  "/settings/jones-code/appearance",
+  "/settings/jones-code",
+] as const;
+
+export function settingsSectionCategoryLabel(path: string) {
+  return JONES_CODE_SETTINGS_PATHS.some((section) => section === path)
+    ? JONES_CODE_SETTINGS_HEADING
+    : undefined;
+}
+
 /** Sidebar labels; an entry of its own lets a translator shorten one below its page title. */
 export const SETTINGS_NAV_LABELS: Readonly<Record<SettingsPath, string>> = {
   ...SETTINGS_SECTION_LABELS,
@@ -312,7 +324,9 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Delete now"),
     to: "/settings/maintenance",
     scope: "environment-defaults",
-    searchTerms: [msg("storage cleanup run now results report removed kept failed")],
+    searchTerms: [
+      "storage cleanup run now results report removed kept failed propose proposal retire retirement reclaim space recover disk worktrees",
+    ],
   },
   {
     id: "storage-worktrees",
@@ -519,8 +533,14 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "project-order",
     title: msg("Project order"),
-    to: "/settings/general",
-    searchTerms: [msg("sort projects sidebar manual created recent")],
+    to: "/settings/jones-code",
+    searchTerms: ["sort projects sidebar manual created recent reorder drag move draft"],
+  },
+  {
+    id: "environment-order",
+    title: msg("Environment order"),
+    to: "/settings/jones-code",
+    searchTerms: ["sort environments run on host machine reorder drag move"],
   },
   {
     id: "snooze-options",
@@ -1777,6 +1797,7 @@ export function searchSettings(
   return settingsForThisPlatform(items)
     .flatMap((item, index) => {
       const title = normalizeSearchText(decodeMsg(item.title));
+      const category = settingsSectionCategoryLabel(item.to);
       const fields = [
         title,
         normalizeSearchText(SETTINGS_SECTION_LABELS[item.to]),

@@ -445,6 +445,12 @@ export function NewTaskFlowProvider(
     { choices: worktreeRepositoryChoices, chosen: draftRepositories },
     messages,
   );
+  const capabilities = selectedEnvironmentServerConfig?.environment?.capabilities;
+  const cadence = selectedProject
+    ? selectedEnvironmentServerConfig?.settings.projectSettingsOverrides[selectedProject.id]
+        ?.repoFreshnessCadenceSeconds
+    : undefined;
+  const verifiedDefault = capabilities?.repoFreshness === true && (cadence ?? 0) > 0;
   const startFromOrigin =
     isGitRepo &&
     (draftStartFromOrigin ??
@@ -773,10 +779,10 @@ export function NewTaskFlowProvider(
   };
 
   const worktreeCreation = (chosen: ReadonlyArray<string> | undefined) => {
-    const repositories = resolveWorktreeRepositorySelection({
-      choices: worktreeRepositoryChoices,
-      chosen,
-    }).strategyRepositories;
+    const repositories = resolveWorktreeRepositorySelection(
+      { choices: worktreeRepositoryChoices, chosen },
+      messages,
+    ).strategyRepositories;
     return {
       ...(repositories === undefined
         ? {}
@@ -855,9 +861,8 @@ export function NewTaskFlowProvider(
           currentCheckoutBranch: options?.currentCheckoutBranch ?? null,
         }),
         worktreePath: mode === "worktree" ? null : (workspaceSelection?.worktreePath ?? null),
-        ...((workspaceSelection?.startFromOrigin ?? startFromOrigin)
-          ? { startFromOrigin: true }
-          : {}),
+        ...(fetchFromOrigin ? { startFromOrigin: true } : {}),
+        ...(baseFreshness === undefined ? {} : { baseFreshness }),
         ...(mode === "worktree" ? worktreeCreation(workspaceSelection.repositories) : {}),
       },
       createdAt: metadata.createdAt,

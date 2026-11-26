@@ -1,4 +1,9 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { openOwnedThreadMenu } from "../jones/workstreams/threadMenuBridge";
+import { SETTLEMENT_RESTORE_MENU_ID } from "../jones/settlementRestore/menu";
+import {
+  undoSettleFromMenu,
+  withThreadSettlementRestore,
+} from "../jones/settlementRestore/threadMenu";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
@@ -52,6 +57,8 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { canTurnThreadIntoProject, useThreadActions } from "./useThreadActions";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { readEnvironmentServerConfigLoaded } from "../state/entities";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -155,9 +162,22 @@ export function useThreadActionMenu(input: {
       canShareWithGuest,
       canTurnIntoProject: canTurnThreadIntoProject(threadRef),
     });
-    const run = async (action: ThreadActionMenuId) => {
+    const run = async (action: ThreadActionMenuId | typeof SETTLEMENT_RESTORE_MENU_ID) => {
       const api = readLocalApi();
       if (!api) return;
+      const thread = readThreadShell(threadRef);
+      if (!thread) {
+        failureToast("Thread actions unavailable", new Error("This thread has not loaded yet."));
+        return;
+      }
+      const now = new Date();
+      const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
+      if (action === SETTLEMENT_RESTORE_MENU_ID) {
+        await undoSettleFromMenu(threadRef, (error) =>
+          failureToast("Failed to undo settle", error),
+        );
+        return;
+      }
       if (
         threadActionRequiresOperate(action) &&
         !(isThreadTriageAction(action)
@@ -378,10 +398,29 @@ export function useThreadActionMenu(input: {
           return;
       }
     };
-    return { items, run };
+    return {
+      items: withThreadSettlementRestore(items, {
+        threadRef,
+        isSettled: supports.settlement && thread.settledOverride === "settled",
+        canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
+      }),
+      run,
+    };
   };
 
   const openMenu = (position: { x: number; y: number }, source?: ContextMenuSource) => {
+    if (threadRef === null) return;
+    if (
+      onStartRename !== undefined &&
+      readThreadShell(threadRef) !== null &&
+      openOwnedThreadMenu(threadRef, position, {
+        onFind,
+        onStartRename,
+        ...(source === undefined ? {} : { source }),
+      })
+    ) {
+      return;
+    }
     void (async () => {
       const api = readLocalApi();
       if (!api || threadRef === null) return;

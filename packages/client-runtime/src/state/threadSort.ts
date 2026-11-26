@@ -1,12 +1,8 @@
 import type { ProjectId } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
-import {
-  generateSpreadPinOrderKeys,
-  LEADING_ORDER_TIER,
-  pinOrderKeyBetween,
-} from "@t3tools/shared/pinOrderKey";
 import type { EnvironmentThreadShell } from "./models.ts";
 import { planPinnedReorder, toSortableTimestamp } from "@t3tools/shared/jones/pinOrder";
+import { LEADING_ORDER_TIER } from "@t3tools/shared/pinOrderKey";
 
 export { generateSpreadPinOrderKeys, pinOrderKeyBetween } from "@t3tools/shared/pinOrderKey";
 

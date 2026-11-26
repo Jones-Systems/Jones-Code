@@ -9,10 +9,11 @@ import * as Schema from "effect/Schema";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-import { decodeLinkedThreadSurface } from "./linkedThreadSurface";
+import { parseRemoteFileHref } from "./jones/remoteFileLinks/remoteFileLink";
 import { resolveStorage } from "./lib/storage";
 import { randomUUID } from "./lib/utils";
 import { decodeThreadSurface, type RightPanelSurface } from "./rightPanelStore";
+import { decodeLinkedThreadSurface } from "./linkedThreadSurface";
 
 export type ClosedView =
   | {

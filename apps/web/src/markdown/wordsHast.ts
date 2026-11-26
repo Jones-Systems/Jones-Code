@@ -587,10 +587,30 @@ const link = (href: string, label: string, properties: Element["properties"] = {
 });
 
 /** Links in text: absolute file paths (remarkLinkAbsoluteFilePaths), then a change request's references. */
-function linkText(value: string, walk: Walk): ElementContent[] | null {
+function linkText(
+  value: string,
+  walk: Walk,
+  previous: ElementContent | undefined,
+): ElementContent[] | null {
   let parts: ElementContent[] = [];
   let offset = 0;
+  const followingUnfinishedCitation =
+    previous?.type === "text" && /:codex-file-citation[\w-]*$/.test(previous.value);
+  const unfinishedAttributesLength = followingUnfinishedCitation
+    ? (/^\{[^}\n]*/.exec(value)?.[0].length ?? 0)
+    : 0;
+  const literalCitations = value.includes(":codex-file-citation")
+    ? Array.from(value.matchAll(/:codex-file-citation[\w-]*\{[^}\n]*/g))
+    : [];
   for (const { index, path } of absoluteFilePathMatches(value)) {
+    if (
+      index < unfinishedAttributesLength ||
+      literalCitations.some(
+        (citation) => index >= citation.index && index < citation.index + citation[0].length,
+      )
+    ) {
+      continue;
+    }
     if (index > offset) parts.push({ type: "text", value: value.slice(offset, index) });
     parts.push(link(path, path));
     offset = index + path.length;
@@ -630,7 +650,7 @@ function transform(node: Root | Element, walk: Walk, inLink: boolean, inCode: bo
         child.value = expandGithubEmojiAliases(child.value);
       }
       if (inLink) continue;
-      const parts = linkText(child.value, walk);
+      const parts = linkText(child.value, walk, children[index - 1]);
       if (!parts) continue;
       children.splice(index, 1, ...parts);
       index += parts.length - 1;

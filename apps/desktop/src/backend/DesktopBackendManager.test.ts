@@ -1103,12 +1103,15 @@ describe("DesktopBackendManager", () => {
       const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
       const progress: Array<{ current: number; total: number } | null> = [];
       const outputProcessed = yield* Queue.unbounded<void>();
+      let instanceSequence = 0;
+      // These simulated servers coexist; each must hold its own process-local admission.
       const startInstance = (
         status: Ref.Ref<number>,
         onReady?: Effect.Effect<void>,
         stdout: string | Stream.Stream<Uint8Array> = "",
       ) =>
         makeTestInstance({
+          id: DesktopBackendManager.BackendInstanceId(`startup-${++instanceSequence}`),
           config: pollingConfig,
           spawnerLayer: Layer.succeed(
             ChildProcessSpawner.ChildProcessSpawner,

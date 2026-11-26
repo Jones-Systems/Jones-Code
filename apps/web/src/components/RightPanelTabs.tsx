@@ -1,6 +1,4 @@
-import { msg, T, useGT, useMessages } from "gt-react";
-import { contextMenuSourceOf } from "../contextMenuSource";
-import { m, type MessageResolver } from "../i18n/messages";
+import { remoteFileName } from "../jones/remoteFileLinks/remoteFileLink";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -116,6 +114,9 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
 import { surfaceShortcutKey } from "~/lib/surfaceShortcutKey";
 import { SharedTooltipTrigger } from "~/components/ui/shared-tooltip";
+import { msg, useGT, useMessages, T } from "gt-react";
+import { type MessageResolver, m } from "../i18n/messages";
+import { contextMenuSourceOf } from "../contextMenuSource";
 
 export interface RightPanelTabsProps {
   mode: PreviewPanelMode;
@@ -599,7 +600,9 @@ function surfaceTitle(
     case "diff":
       return resolve(msg("Diff"));
     case "files":
-      return resolve(msg("Files"));
+      return "Files";
+    case "remote-file":
+      return remoteFileName(surface.target.absolutePath);
     case "file":
       return surface.relativePath.slice(
         Math.max(surface.relativePath.lastIndexOf("/"), surface.relativePath.lastIndexOf("\\")) + 1,

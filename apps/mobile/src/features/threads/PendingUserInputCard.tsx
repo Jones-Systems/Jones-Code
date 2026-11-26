@@ -14,8 +14,7 @@ import {
   type TextDirection,
 } from "@t3tools/shared/textDirection";
 import { useNavigation } from "@react-navigation/native";
-import { Plural, T, useGT, Var } from "gt-react-native";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -44,6 +43,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../../jones/questionAnswer/answers";
 import type { PendingUserInput } from "../../lib/threadActivity";
+import { useGT, T } from "gt-react-native";
 
 export interface PendingUserInputCardProps {
   readonly environmentId: EnvironmentId;
@@ -251,25 +251,11 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         onPress={props.onToggleCollapsed}
         className="min-h-10 flex-1 flex-row items-center gap-2 active:opacity-70"
       >
-        <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
-          <T>User input needed</T>
-        </Text>
-        <Text className="font-sans text-xs text-foreground-muted">
-          <T>
-            <Plural
-              n={questionCount}
-              one={
-                <>
-                  <Var>{questionCount}</Var> question
-                </>
-              }
-              other={
-                <>
-                  <Var>{questionCount}</Var> questions
-                </>
-              }
-            />
-          </T>
+        <Text
+          numberOfLines={1}
+          className="min-w-0 shrink font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary"
+        >
+          User input needed
         </Text>
         <View className="flex-1" />
         <SymbolView
@@ -304,7 +290,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               <T>User input needed</T>
             </Text>
             <Text className="font-t3-bold text-lg text-foreground">
-              <T>Fill in the pending answers</T>
+              Answer one question at a time
             </Text>
           </View>
           <View className="h-8 w-8 items-center justify-center rounded-full bg-subtle-strong">
@@ -444,13 +430,40 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           );
         })}
       </ScrollView>
-      <Button
-        label={gt("Submit answers")}
-        fullWidth
-        tone={props.answers ? "primary" : "secondary"}
-        disabled={!props.canOperateThread || responseDisabled || props.answers === null}
-        onPress={() => void props.onSubmit()}
-      />
+      {blockedReason ? (
+        <Text accessibilityRole="text" className="font-sans text-xs text-foreground-muted">
+          {blockedReason}
+        </Text>
+      ) : null}
+      <View className="flex-row items-center gap-2">
+        {questionIndex > 0 ? (
+          <Button
+            label="Back"
+            tone="text"
+            disabled={isResponding}
+            onPress={() => selectQuestion(questionIndex - 1)}
+          />
+        ) : null}
+        <View className="flex-1">
+          <Button
+            label={isResponding ? "Sending…" : isLastQuestion ? "Send" : "Continue"}
+            fullWidth
+            tone="primary"
+            accessibilityHint={blockedReason ?? ""}
+            disabled={
+              !props.canOperateThread ||
+              responseDisabled ||
+              (isLastQuestion ? props.answers === null : !progress.answered[questionIndex])
+            }
+            onPress={() => {
+              if (!props.canOperateThread || responseDisabled) return;
+              if (isLastQuestion) {
+                if (props.answers !== null) void props.onSubmit();
+              } else if (progress.answered[questionIndex]) selectQuestion(questionIndex + 1);
+            }}
+          />
+        </View>
+      </View>
       {props.pendingUserInput.dismissible ? (
         <Button
           label={gt("Dismiss without answering")}

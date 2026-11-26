@@ -1148,10 +1148,10 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   );
 }
 
-// Window return puts the caret in the composer unless focus or a selection is deliberate: another
-// text field, a terminal, an open dialog, menu, or popup, a region, timeline, or sidebar row reached
-// from the keyboard, a region with its own keys (aria-keyshortcuts), or selected text the composer
-// would clear. A plain focused button or a clicked row yields to the composer.
+// Window return puts the caret in the composer unless focus is deliberate: another text field,
+// a terminal, an open popup or its trigger, a region, timeline, or sidebar row reached from the
+// keyboard, or a region with its own keys (aria-keyshortcuts). A plain focused button or a clicked
+// row yields to the composer.
 export function shouldRefocusComposerOnWindowFocus(
   activeElement:
     | (Pick<Element, "tagName" | "closest" | "getAttribute"> & { isContentEditable?: boolean })

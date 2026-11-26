@@ -3,15 +3,8 @@ import { PanelFindScope } from "../jones/panelFind/PanelFind";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { T, useGT } from "gt-react";
 import { XIcon } from "lucide-react";
-import { useRouter } from "@tanstack/react-router";
-import {
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { ownsProviderReorderKey } from "~/jones/settings/providerReorderKeyboard";
 
 import { getCommandPaletteOpener } from "../commandPaletteStore";
 import { useNativeTitlebarHeight } from "../lib/windowControlsOverlay";
@@ -21,6 +14,8 @@ import { GlobalVoiceInputIndicator } from "./chat/GlobalVoiceInputIndicator";
 import { Button } from "./ui/button";
 import { DialogBackdrop } from "./ui/dialog";
 import { SharedTooltipTrigger } from "./ui/shared-tooltip";
+import { type RefObject, useEffect } from "react";
+import { useRouter } from "@tanstack/react-router";
 
 /**
  * Large modal for the Settings and Usage routes. Esc, the close button, or a press on the
@@ -79,9 +74,14 @@ export function AppRouteModal({
       disablePointerDismissal
       onOpenChange={(nextOpen, eventDetails) => {
         if (nextOpen) return;
-        // Base UI's dismiss handler fires on held Esc repeats after a nested popup closes.
-        if (eventDetails.reason === "escape-key" && eventDetails.event.repeat) {
-          return eventDetails.cancel();
+        if (
+          eventDetails.reason === "escape-key" &&
+          ownsProviderReorderKey("Escape", eventDetails.event.target)
+        ) {
+          // Let the document-owned drag sensor cancel before a later Esc dismisses Settings.
+          eventDetails.cancel();
+          eventDetails.allowPropagation();
+          return;
         }
         // Esc from a layer outside Base UI (Clerk's modals) is that layer's to handle.
         const target = eventDetails.event.target;
@@ -150,8 +150,14 @@ export function AppRouteModal({
               aria-hidden
               className="absolute inset-x-0 top-0 hidden h-(--app-modal-titlebar-height) [-webkit-app-region:drag] max-sm:block"
             />
-            {children}
-            <GlobalVoiceInputIndicator />
+            <PanelFindScope
+              label={label.toLowerCase()}
+              resetKey={pathname}
+              data-find-default
+              className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+            >
+              {children}
+            </PanelFindScope>
           </DialogPrimitive.Popup>
         </DialogPrimitive.Viewport>
       </DialogPrimitive.Portal>

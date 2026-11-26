@@ -174,19 +174,18 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       readonly acceptCompactThreadVisits?: true;
     }) =>
       Stream.unwrap(
-        Effect.all([
-          Ref.set(lastSubscribeAfterSequence, input.afterSequence),
-          Ref.set(lastRequestCompletionMarker, input.requestCompletionMarker === true),
-          Ref.set(lastAcceptBoundedSnapshot, input.acceptBoundedSnapshot),
-          Ref.set(lastAcceptCompactTurnItems, input.acceptCompactTurnItems),
-        ]).pipe(
-          Effect.andThen(SubscriptionRef.updateAndGet(subscriptionCount, (count) => count + 1)),
-          Effect.map(
-            (count) =>
-              options?.streamFor?.(count) ??
-              (options?.completionMarker === true
-                ? streamFrom(inputs)
-                : Stream.concat(Stream.make(synchronized()), streamFrom(inputs))),
+        Ref.set(lastSubscribeAfterSequence, input.afterSequence).pipe(
+          Effect.andThen(
+            Ref.set(lastRequestCompletionMarker, input.requestCompletionMarker === true),
+          ),
+          Effect.andThen(Ref.set(lastAcceptBoundedSnapshot, input.acceptBoundedSnapshot)),
+          Effect.andThen(Ref.set(lastAcceptCompactTurnItems, input.acceptCompactTurnItems)),
+          Effect.andThen(Ref.set(lastAcceptCompactThreadVisits, input.acceptCompactThreadVisits)),
+          Effect.andThen(SubscriptionRef.update(subscriptionCount, (count) => count + 1)),
+          Effect.as(
+            options?.completionMarker === true
+              ? streamFrom(inputs)
+              : Stream.concat(Stream.make(synchronized()), streamFrom(inputs)),
           ),
         ),
       ),

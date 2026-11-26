@@ -113,12 +113,15 @@ function supportsSteering(turns: OrchestrationV2ProviderCapabilities["turns"]): 
 
 /** The server rejects a steer into a run that Stop has reached, though the run still reads as running. */
 export function runStopRequested(
-  projection: Pick<Projection, "turnItems"> | null | undefined,
+  projection: Pick<Projection, "turnItems" | "capturedRuntimeStopRunId"> | null | undefined,
   runId: Run["id"] | null | undefined,
 ): boolean {
   if (projection == null || runId == null) return false;
-  return projection.turnItems.some(
-    (item) => item.runId === runId && item.type === "run_interrupt_request",
+  return (
+    projection.capturedRuntimeStopRunId === runId ||
+    projection.turnItems.some(
+      (item) => item.runId === runId && item.type === "run_interrupt_request",
+    )
   );
 }
 

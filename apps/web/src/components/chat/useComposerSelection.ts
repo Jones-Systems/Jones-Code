@@ -6,7 +6,7 @@ import { matchesProviderModelLock } from "../../jones/composer/ProviderInstanceS
 import { type ProviderInstanceEntry, isProviderInstancePickerReady } from "../../providerInstances";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { UnifiedSettings } from "@t3tools/contracts";
-import { useMessages } from "gt-react";
+import { resolveSelectableModel } from "@t3tools/shared/model";
 import type { Dispatch } from "react";
 import type { ComposerThreadTarget, DraftSessionState } from "../../composerDraftStore";
 import { useStableCallback } from "../../hooks/useStableCallback";
@@ -32,19 +32,17 @@ import {
   resolveNewDraftStartFromOrigin,
   threadHasStarted,
 } from "../../lib/chatThreadActions";
-import {
-  composerTargetKey,
-  type DraftThreadEnvMode,
-  isSameModel,
-  useComposerDraftStore,
-} from "../../composerDraftStore";
-import { cancelHeldComposerSend } from "./preparingComposerImages";
+import { type DraftThreadEnvMode, useComposerDraftStore } from "../../composerDraftStore";
 import {
   getStartedThreadModelChangeBlockReason,
   deriveLockedProvider,
   resolveComposerPickerModelSelection,
   makeModelDisabledReason,
 } from "../ChatView.logic";
+import { useMessages } from "gt-react";
+import { cancelHeldComposerSend } from "./preparingComposerImages";
+import { composerTargetKey } from "../../composerDraftStore";
+
 interface ComposerSelectionInput {
   readonly providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   readonly lockedContinuationGroupKey: string | null;
@@ -158,10 +156,25 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     model: string,
     options?: ComposerModelSelectOptions,
   ) => {
-    if (!activeThread) return;
-    cancelHeldComposerSend(composerTargetKey(composerDraftTarget));
-    const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-    const resolvedDriverKind = entry?.driver ?? null;
+    if (
+      !activeThread ||
+      isEnvironmentChanging ||
+      activeEnvironmentUnavailable ||
+      isRevertingCheckpoint
+    )
+      return;
+    // Look up the configured instance so model normalization and custom
+    // model lookup stay scoped to that exact instance. Unknown instance ids
+    // are rejected by returning early; the server remains authoritative too.
+    const configuredEntry = providerInstanceEntries.find(
+      (entry) => entry.instanceId === instanceId,
+    );
+    if (!configuredEntry || !isProviderInstancePickerReady(configuredEntry)) {
+      if (options?.focusComposer !== false) scheduleComposerFocus();
+      return;
+    }
+    const entry = configuredEntry.snapshot;
+    const resolvedDriverKind = entry.driver;
     if (
       !supportsProviderSwitchingViaHandoff &&
       lockedProvider !== null &&

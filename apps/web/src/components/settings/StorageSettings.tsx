@@ -30,9 +30,7 @@ import { useNowMinute } from "../../hooks/useNowMinute";
 import { useDebouncedValue } from "../../state/queries";
 import { AnimatedHeight } from "../AnimatedHeight";
 import { Button } from "../ui/button";
-import { toastManager } from "../ui/toast";
-import { msg, T, useGT, useMessages, Var } from "gt-react";
-import { m, type MessageResolver } from "../../i18n/messages";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -60,6 +58,8 @@ import {
   useUpdateScopedSettings,
 } from "./useScopedSettings";
 import { settingsScopeEnvironmentLabel } from "./settingsScopeAxis";
+import { useGT, T, msg, useMessages } from "gt-react";
+import { type MessageResolver, m } from "../../i18n/messages";
 
 export function WorktreesDirectoryRow() {
   const setting = useSearchableSetting();
@@ -296,109 +296,11 @@ function lastRunSummary(
   return entries.map((entry) => `${entry.label}: ${entry.counts}`).join(" · ");
 }
 
-function CleanupResults({
-  report,
-  environmentLabel,
-}: {
-  report: StorageCleanupReport;
-  environmentLabel: string;
-}) {
-  const gt = useGT();
-  return (
-    <>
-      {report.entries.map((entry, index) => {
-        const name =
-          entry.kind === "worktree"
-            ? ((entry.threadId === null
-                ? entry.path
-                : entry.path?.split(/[\\/]/).findLast(Boolean)) ?? gt("Worktrees"))
-            : entry.kind === "logs"
-              ? gt("Rotated logs")
-              : gt("Browser artifacts");
-        return (
-          <SettingsRow
-            key={`${entry.path ?? entry.kind}:${entry.threadId ?? index}`}
-            title={<span className="wrap-anywhere select-text">{name}</span>}
-            description={
-              <span className="block space-y-2 wrap-anywhere select-text">
-                <span className={`block ${entry.outcome === "failed" ? "text-destructive" : ""}`}>
-                  {entry.reason}
-                </span>
-                <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-border/60 pl-3">
-                  <span>
-                    <T>Machine</T>
-                  </span>
-                  <span className="text-foreground/80">{environmentLabel}</span>
-                  {entry.projectPath && (
-                    <>
-                      <span>
-                        <T>Project</T>
-                      </span>
-                      <code className="text-foreground/80">{entry.projectPath}</code>
-                    </>
-                  )}
-                  {entry.path && (
-                    <>
-                      <span>
-                        <T>Folder</T>
-                      </span>
-                      <code className="text-foreground/80">{entry.path}</code>
-                    </>
-                  )}
-                  {entry.threadTitle && (
-                    <>
-                      <span>
-                        <T>Thread</T>
-                      </span>
-                      <span>{entry.threadTitle}</span>
-                    </>
-                  )}
-                </span>
-              </span>
-            }
-            control={
-              (entry.outcome === "removed" ||
-                (entry.outcome === "kept" && entry.bytes !== null)) && (
-                <span className="text-xs text-muted-foreground">
-                  {[
-                    entry.kind !== "worktree" && entry.files !== null
-                      ? gt("{count, plural, one {{formatted} file} other {{formatted} files}}", {
-                          count: entry.files,
-                          formatted: entry.files.toLocaleString(),
-                        })
-                      : null,
-                    entry.bytes !== null ? formatBytes(entry.bytes) : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </span>
-              )
-            }
-          />
-        );
-      })}
-      {report.omittedCount > 0 && (
-        <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-          {gt(
-            "{omitted, plural, one {{environment}: {count} more result.} other {{environment}: {count} more results.}}",
-            {
-              omitted: report.omittedCount,
-              environment: environmentLabel,
-              count: report.omittedCount.toLocaleString(),
-            },
-          )}
-        </p>
-      )}
-      {report.entries.length === 0 && report.omittedCount === 0 && (
-        <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-          <T>
-            <Var>{environmentLabel}</Var>: Nothing needed cleanup.
-          </T>
-        </p>
-      )}
-    </>
-  );
-}
+const COVERAGE_LABEL = {
+  declared_cache: "Discard declared caches",
+  dependency_reproduction: "Discard reproducible dependencies",
+  format_recognized: "Discard recognized format files",
+} as const;
 
 const storageCleanupReportsAtom = environmentAtomList(
   "web-storage-cleanup-reports",
@@ -410,9 +312,9 @@ const storageCleanupPermissionsAtom = environmentAtomList(
 );
 
 function CleanupSection() {
-  const messages = useMessages();
-  const setting = useSearchableSetting();
   const gt = useGT();
+  const setting = useSearchableSetting();
+  const timestampId = useId();
   const nowMinute = useNowMinute();
   const nowMs = Date.parse(`${nowMinute}:00.000Z`);
   const { scope, connectedEnvironments } = useSettingsScope();
@@ -491,31 +393,24 @@ function CleanupSection() {
     return {
       environmentId,
       report,
-      label: settingsScopeEnvironmentLabel(environment, connectedEnvironments),
-      counts: report
-        ? report.counts.failed > 0
-          ? gt("{removed} removed, {kept} kept, {failed} failed", report.counts)
-          : gt("{removed} removed, {kept} kept", report.counts)
-        : "",
+      label,
+      counts:
+        request && request.status !== "completed"
+          ? cleanupRequestSummary(request)
+          : report
+            ? cleanupReportSummary(report)
+            : query?.failed
+              ? "Report unavailable"
+              : query?.loading
+                ? "Loading report…"
+                : "No completed report available",
       description: report
-        ? report.counts.failed > 0
-          ? gt(
-              "{count, plural, one {Last run {when}. {bytes} recovered. {count} item couldn't be removed.} other {Last run {when}. {bytes} recovered. {count} items couldn't be removed.}}",
-              {
-                count: report.counts.failed,
-                when: formatRelativeTimeLabel(report.finishedAt, nowMs, messages),
-                bytes: formatBytes(report.bytesFreed),
-              },
-            )
-          : gt("Last run {when}. {bytes} recovered.", {
-              when: formatRelativeTimeLabel(report.finishedAt, nowMs, messages),
-              bytes: formatBytes(report.bytesFreed),
-            })
+        ? cleanupReportSummary(report)
         : query?.failed
-          ? gt("Could not load the last run.")
+          ? "Could not load the last report."
           : query?.loading
-            ? gt("Loading last run…")
-            : gt("Cleanup hasn't run yet."),
+            ? "Loading last report…"
+            : "No completed report available for this server session.",
     };
   });
   const timestamp = cleanupFleetTimestamp(summaries, timestampFormat, nowMs);
@@ -625,24 +520,7 @@ function CleanupSection() {
         .filter((environment) =>
           state.some((entry) => entry.environmentId === environment.environmentId && entry.allowed),
         )
-        .map(async (environment) => {
-          const result = await run({ environmentId: environment.environmentId, input: {} });
-          if (result._tag === "Success") {
-            const failures = result.value.entries.filter((entry) => entry.outcome === "failed");
-            if (failures.length > 0)
-              toastManager.add({
-                type: "error",
-                title: gt("Cleanup failed on {label}", { label: environment.label }),
-                description: failures[0]!.reason,
-              });
-          } else if (!isAtomCommandInterrupted(result)) {
-            toastManager.add({
-              type: "error",
-              title: gt("Could not run cleanup on {label}", { label: environment.label }),
-              description: String(squashAtomCommandFailure(result)),
-            });
-          }
-        }),
+        .map((environment) => execute(environment, "cleanup", {})),
     ).finally(() => setPending(false));
   };
   return (
@@ -652,51 +530,144 @@ function CleanupSection() {
           {...setting("storage-delete-now")}
           description={
             <span>
-              {!hasRules
-                ? gt("Turn on a cleanup rule to use this.")
-                : summaries.map(({ environment, label, description }) => (
-                    <span key={environment.environmentId} className="block">
-                      {supported.length > 1 ? `${label}: ` : ""}
-                      {description}
-                    </span>
-                  ))}
+              {summaries.map(({ environmentId, label, description }) => (
+                <span key={environmentId} className="block">
+                  {displayTargets.length > 1 ? `${label}: ` : ""}
+                  {description}
+                </span>
+              ))}
+              {!hasRules && (
+                <span className="block">Turn on a cleanup rule to use Delete now.</span>
+              )}
             </span>
           }
           control={
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pending || !hasRules || !state.some((entry) => entry.allowed)}
-              onClick={() => void deleteNow()}
-            >
-              {pending ? gt("Deleting…") : gt("Delete now")}
-            </Button>
+            <>
+              {supported.some(
+                (e) => e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true,
+              ) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    pending ||
+                    !supported.some(
+                      (environment) =>
+                        environment.serverConfig?.environment.capabilities
+                          .settledWorktreeRetirement === true &&
+                        state.some(
+                          (entry) =>
+                            entry.environmentId === environment.environmentId && entry.allowed,
+                        ),
+                    )
+                  }
+                  onClick={() => void propose()}
+                >
+                  Propose retirements
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pending || !hasRules || !state.some((entry) => entry.allowed)}
+                onClick={() => void deleteNow()}
+              >
+                Delete now
+              </Button>
+            </>
           }
         />
       </SettingsGroup>
-      {summaries.some(({ report }) => report !== null) && (
-        <FoldedSettingsSection
-          id="storage-cleanup-last-run"
-          title={gt("Last run")}
-          headerPlacement="inside"
-          summary={lastRunSummary(
-            summaries.filter(({ report }) => report !== null),
-            connectedEnvironments.length,
-            messages,
-          )}
-        >
-          {summaries.map(
-            ({ environment, label, report }) =>
-              report && (
-                <CleanupResults
-                  key={environment.environmentId}
-                  report={report}
-                  environmentLabel={label}
-                />
-              ),
-          )}
-        </FoldedSettingsSection>
-      )}
+      <FoldedSettingsSection
+        id="storage-cleanup-last-run"
+        title="Last run"
+        headerPlacement="inside"
+        wrapHeader={false}
+        openKey={arrivedReportKey}
+        summary={lastRunSummary(summaries, scope.environmentIds.length)}
+        control={
+          <Tooltip>
+            <TooltipTrigger
+              render={<span tabIndex={0} />}
+              className="truncate whitespace-nowrap text-right text-xs text-muted-foreground"
+              aria-label={`Last completed run: ${timestamp.exact}`}
+              aria-describedby={timestampId}
+            >
+              {timestamp.label}
+            </TooltipTrigger>
+            <TooltipPopup role="tooltip" id={timestampId}>
+              {timestamp.exact}
+            </TooltipPopup>
+          </Tooltip>
+        }
+      >
+        <div className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
+          Reports are retained until each server restarts. Manual reports stay visible ahead of
+          automatic cleanup. Progress is shown for requests started in this view.
+        </div>
+        {summaries.map(({ environmentId, label, report }) => {
+          const request = requests[environmentId];
+          const query = state.find((entry) => entry.environmentId === environmentId);
+          if (request && cleanupRequestIsOutstanding(request, report))
+            return (
+              <p key={environmentId} role="status" className="px-3 py-2.5 text-xs sm:px-4">
+                {label}: {cleanupRequestSummary(request)}{" "}
+                {request.status === "completed"
+                  ? query?.failed
+                    ? "Could not load the retained report."
+                    : "Waiting for the retained report to update."
+                  : ""}{" "}
+                {report
+                  ? "Previous completed report shown below."
+                  : "No completed report available."}
+              </p>
+            );
+          if (!report)
+            return (
+              <p
+                key={environmentId}
+                role="status"
+                className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4"
+              >
+                {label}:{" "}
+                {query?.failed
+                  ? "Could not load the last report."
+                  : query?.loading
+                    ? "Loading last report…"
+                    : "No completed report available for this server session."}
+              </p>
+            );
+          return null;
+        })}
+        <CleanupResults
+          selectedEnvironmentIds={displayTargets.map(({ environmentId }) => environmentId)}
+          reports={summaries.flatMap(({ environmentId, label, report }) => {
+            const environment = supported.find(
+              (candidate) => candidate.environmentId === environmentId,
+            );
+            return report
+              ? [
+                  {
+                    environmentId,
+                    environmentLabel: label,
+                    report,
+                    timestampFormat,
+                    nowMs,
+                    ...(!pending &&
+                    environment?.serverConfig?.environment.capabilities
+                      .settledWorktreeRetirement === true &&
+                    state.some((e) => e.environmentId === environment.environmentId && e.allowed)
+                      ? {
+                          onRetire: (entry: StorageCleanupReport["entries"][number]) =>
+                            void retireTarget(environment.environmentId, entry),
+                        }
+                      : {}),
+                  },
+                ]
+              : [];
+          })}
+        />
+      </FoldedSettingsSection>
     </SettingsSection>
   );
 }
@@ -923,9 +894,7 @@ export function WorktreeCleanupSection() {
                     ]
                       .filter(Boolean)
                       .join(". ")}
-                    description={gt(
-                      "Remove worktrees this many days after their thread settles. Set 0 days to remove them at the next cleanup. Branches and thread history are kept.",
-                    )}
+                    description="Remove worktrees this many days after their thread settles and its final checkpoint completes. Branches and history are kept."
                     serverScoped={!isProjectScope}
                     control={
                       <RetentionControl
@@ -1033,12 +1002,10 @@ export function WorktreeCleanupSection() {
                   managedPaths={lockablePath("worktreeKeepWhen")}
                   description={
                     settings.worktreeKeepWhen === "any-local-files"
-                      ? gt("Includes ignored files, except node_modules.")
+                      ? "Keeps any untracked or ignored content."
                       : settings.worktreeKeepWhen === "tracked-changes"
-                        ? gt("Deletes untracked and ignored files, including .env.")
-                        : gt(
-                            "Keeps edits and untracked files. Deletes ignored files, including .env.",
-                          )
+                        ? "Keeps tracked edits. Removes untracked and ignored files; sensitive paths need confirmation."
+                        : "Keeps edits and untracked files. Removes only ignored files that are safe to discard."
                   }
                   serverScoped={!isProjectScope}
                   control={

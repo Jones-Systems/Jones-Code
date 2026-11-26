@@ -7,8 +7,15 @@ When an agent asks a question that accepts a custom answer, you can attach files
 
 ## Behavior and limits
 
-- **Limits**: Up to 100 files across one set of answers, with the same per-file and image size limits as the [composer](./composer.md#attach-files).
-- **Per-question drafts**: Each question keeps its own attachments while you move between questions, separate from your main composer draft. Wait for uploads to finish before submitting.
-- **How the agent sees them**: Files upload to the thread's environment (including remote environments), and the agent receives their saved file paths with your answer.
-- **Availability**: Only shown for questions that accept custom text (not fixed-choice-only questions). Requires an up-to-date server.
-- **Cleanup**: Submitted attachments stay in thread history and are cleaned up when you revert past or delete the thread.
+Submitted attachments remain in the thread history. Reverting a thread removes attachments belonging to discarded answers; deleting the thread uses the same file cleanup as other attachments. You can attach up to 100 files across one set of answers, using the same file and total image size limits as the normal composer.
+
+On web and desktop, you can also drop a sidebar thread or paste a copied thread reference into
+a written answer. These references carry the thread title, source environment, and a bounded
+excerpt captured when attached: up to three recent exchanges with tool activity and six earlier
+input/reply pairs. Long text and tool output are shortened with omissions marked; reasoning and
+file contents are excluded. No transcript file is uploaded. The excerpt is copied into your
+answer and shares the same size limits as [thread context in the composer](./composer.md#context-in-your-message).
+
+If the source is disconnected or does not support excerpts, the reference keeps its identity.
+The answering agent can read additional history on demand. For another environment, its tool
+must support the source environment ID and that source must be linked and accessible.

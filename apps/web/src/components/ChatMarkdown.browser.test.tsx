@@ -1,10 +1,4 @@
 import { MISSING_FILE_ACCESS_MESSAGE } from "@t3tools/client-runtime/state/assets";
-
-function fileOptions(container: HTMLElement) {
-  return [...container.querySelectorAll("button")]
-    .map((button) => button.getAttribute("aria-label"))
-    .filter((label) => label?.startsWith("File options for "));
-}
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { searchableMessageSegments } from "@t3tools/shared/threadFindText";
 import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";
@@ -17,12 +11,9 @@ import { act, render } from "../../test/render";
 import "../index.css";
 
 import { filesystemEnvironment } from "../state/filesystem";
-import {
-  hostRightPanel,
-  selectActiveRightPanelSurface,
-  useRightPanelStore,
-} from "../rightPanelStore";
-import type { MarkdownExtensions } from "../markdown/wordsHast";
+import { useRightPanelStore } from "../rightPanelStore";
+import { MarkdownFindContext } from "./chat/markdownFindContext";
+import { useThreadFindHighlights } from "./chat/threadFindHighlights";
 import { setMarkdownTaskChecked } from "@t3tools/shared/markdownTaskEdits";
 import { HostImageUrlContext } from "./chat/hostImageUrl";
 import { getSyntaxHighlighterPromise } from "~/lib/syntaxHighlighting";
@@ -171,6 +162,8 @@ import {
   serializeRenderedMarkdownFragment,
 } from "../markdown-clipboard";
 import { AudioPreview } from "./files/AudioPreview";
+import { hostRightPanel, selectActiveRightPanelSurface } from "../rightPanelStore";
+import type { MarkdownExtensions } from "../markdown/wordsHast";
 
 it("keeps compact audio playback loaded across signed URL renewals", async () => {
   const original =
@@ -215,6 +208,12 @@ function renderText(text: string, props: Partial<Parameters<typeof ChatMarkdown>
 
 function linkTexts(container: HTMLElement) {
   return [...container.querySelectorAll("a")].map((link) => link.textContent);
+}
+
+function fileOptions(container: HTMLElement) {
+  return [...container.querySelectorAll("button")]
+    .map((button) => button.getAttribute("aria-label"))
+    .filter((label) => label?.startsWith("File options for "));
 }
 
 function buttonsLabelled(container: HTMLElement, label: string) {
@@ -354,8 +353,8 @@ it("sizes a raw HTML image by width and height written with px units", async () 
   expect({ width, height }).toEqual({ width: 14, height: 7 });
 });
 
-it("fades a streaming reply's blocks in once, not again when it remounts", async () => {
-  setup();
+it("reuses finished blocks and does not replay a streaming reply's fade when it remounts", async () => {
+  using _fixture = setup();
   const isFading = (element: Element) =>
     element.getAnimations().some((animation) => animation instanceof CSSTransition);
   const message = (
@@ -389,7 +388,7 @@ it("fades a streaming reply's blocks in once, not again when it remounts", async
 });
 
 it("reuses the parse of a remounted message that has stable extensions", async () => {
-  setup();
+  using _fixture = setup();
   const extensions = { userMessage: true };
   const message = <ChatMarkdown cwd="/tmp/project" text="Cached text" extensions={extensions} />;
   {
@@ -971,8 +970,8 @@ describe("ChatMarkdown workspace file opens", () => {
 });
 
 describe("ChatMarkdown skill chips", () => {
-  it("shows the skill's details and opens its instructions, closing the details", async () => {
-    setup();
+  it("shows the skill's details and opens its instructions", async () => {
+    using _fixture = setup();
     const threadRef = {
       environmentId: EnvironmentId.make("workspace"),
       threadId: ThreadId.make("thread"),
@@ -1291,9 +1290,9 @@ describe("ChatMarkdown copy", () => {
       text: "- Configure\n- Deploy",
     },
   ])(
-    "copies $text with the markers its list shows",
+    "keeps the shown numbers when a copy starts at $from and ends past the list",
     async ({ source, from, to, userMessage, text }) => {
-      setup();
+      using _fixture = setup();
       await using screen = await renderText(
         source,
         userMessage ? { extensions: USER_MESSAGE } : {},

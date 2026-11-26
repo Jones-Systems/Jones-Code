@@ -54,10 +54,7 @@ import {
   formatComposerModelMention,
   rankComposerModelMentions,
 } from "@t3tools/client-runtime/composer-model-mentions";
-import { useAtomRefresh } from "@effect/atom-react";
-import { Atom } from "effect/reactivity";
-import { msg, useGT, useMessages } from "gt-react-native";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import {
@@ -69,6 +66,7 @@ import type { ModelOption } from "../../lib/modelOptions";
 import { m, type MessageResolver } from "../../i18n/messages";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { scoreSlashSkillQuery } from "./composerSlashSkillSearch";
+import { msg, useGT, useMessages } from "gt-react-native";
 
 function composerSelectionAtEnd(draftMessage: string): ComposerEditorSelection {
   return { start: draftMessage.length, end: draftMessage.length };

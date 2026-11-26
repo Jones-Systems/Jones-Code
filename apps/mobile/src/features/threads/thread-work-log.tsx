@@ -1547,14 +1547,7 @@ export function ThreadThinkingRow(props: {
       style={{ minHeight: props.rowSizing.estimatedRowHeight }}
     >
       <ShimmeringWorkContent
-        icon="brain"
-        iconNode={
-          driver === undefined ? undefined : (
-            <View style={{ opacity: 0.7 }}>
-              <ProviderIcon provider={driver} size={14} />
-            </View>
-          )
-        }
+        icon={label === "Connecting" || label === "Starting" ? "browser" : "brain"}
         iconSubtleColor={props.iconSubtleColor}
         label={label}
         showIcon

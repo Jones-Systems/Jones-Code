@@ -1,11 +1,7 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { contextMenuSourceOf } from "../contextMenuSource";
-import {
-  ClipboardApiUnavailableError,
-  ClipboardWriteError,
-  writeTextToClipboard,
-} from "../hooks/useCopyToClipboard";
-import * as Schema from "effect/Schema";
+import { environmentServerConfigsAtom } from "../state/server";
+import { useAtomValue } from "@effect/atom-react";
+import { MachineIcon, MachineOrigin } from "../jones/remoteAgentLineage/MachineIdentity";
+import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { formatFilePathForClipboard } from "@t3tools/client-runtime/media-actions";
 import { readLocalApi } from "../localApi";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -80,6 +76,11 @@ import { cn } from "~/lib/utils";
 
 import { observeResize } from "~/lib/observeResize";
 import { SharedTooltipTrigger } from "./ui/shared-tooltip";
+import * as Schema from "effect/Schema";
+import { ClipboardApiUnavailableError, ClipboardWriteError } from "../hooks/useCopyToClipboard";
+import { contextMenuSourceOf } from "../contextMenuSource";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "./ui/tooltip";
 
 const isClipboardApiUnavailableError = Schema.is(ClipboardApiUnavailableError);
 const isClipboardWriteError = Schema.is(ClipboardWriteError);
@@ -207,12 +208,15 @@ const RunContextSelector = memo(function RunContextSelector({
   addTargets,
   onAddToMachine,
 }: RunContextSelectorProps) {
-  const gt = useGT();
   const m = useMessages();
+  const gt = useGT();
+  const conversationAvailable =
+    useAtomValue(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .conversationWorkspace === true;
   const composerFloatingLayerProps = useComposerMenuProps();
   const activeEnvironment =
     availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null;
-  // A folder no worktree can come from runs threads in place, whatever mode was requested.
+  const activeDisplayLabel = activeEnvironment?.displayLabel ?? activeEnvironment?.label;
   const forceNewWorktree = offersWorkspaceModes && requestedForceNewWorktree;
   const effectiveEnvMode = offersWorkspaceModes ? requestedEnvMode : "local";
   const WorkspaceIcon =
@@ -225,9 +229,11 @@ const RunContextSelector = memo(function RunContextSelector({
     ? resolveEnvModeLabel("worktree", m)
     : envModeLocked
       ? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode, m)
-      : effectiveEnvMode === "worktree"
-        ? resolveEnvModeLabel("worktree", m)
-        : resolveCurrentWorkspaceLabel(activeWorktreePath, m);
+      : effectiveEnvMode === "auto"
+        ? resolveEnvModeLabel("auto", m)
+        : effectiveEnvMode === "worktree"
+          ? resolveEnvModeLabel("worktree", m)
+          : resolveCurrentWorkspaceLabel(activeWorktreePath, m);
   const isPanel = displayMode === "panel";
   const workspaceModesLocked = envModeLocked || !offersWorkspaceModes;
   const isLocked = envLocked || (workspaceModesLocked && (!isPanel || !showEnvironmentPicker));
@@ -257,25 +263,32 @@ const RunContextSelector = memo(function RunContextSelector({
     </SharedTooltipTrigger>
   );
   const environmentIcon = (
-    <SharedTooltipTrigger
-      render={<span className="inline-flex shrink-0" />}
-      label={autoEnvironmentLabel ?? activeEnvironment?.label ?? gt("Run on")}
-    >
-      {autoEnvironmentLabel ? (
-        <ScaleIcon
-          className={isPanel ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3 shrink-0"}
-          aria-hidden="true"
-        />
-      ) : (
-        <EnvironmentMachineIcon
-          kind={activeEnvironment?.machine ?? "server"}
-          // Wide machine glyphs need a little more box to match the square row icons.
-          className={
-            isPanel ? cn(THREAD_DETAILS_PANEL_ICON_CLASS, "-mx-px size-4.5") : "size-3 shrink-0"
-          }
-        />
-      )}
-    </SharedTooltipTrigger>
+    <Tooltip>
+      <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
+        {autoEnvironmentLabel ? (
+          <ScaleIcon
+            className={isPanel ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3 shrink-0"}
+            aria-hidden="true"
+          />
+        ) : isPanel ? (
+          <MachineIcon
+            label={activeEnvironment?.label}
+            kind={activeEnvironment?.machine}
+            className={THREAD_DETAILS_PANEL_ICON_CLASS}
+          />
+        ) : (
+          <EnvironmentMachineIcon
+            kind={activeEnvironment?.machine ?? "server"}
+            label={activeEnvironment?.label}
+            // Wide machine glyphs need a little more box to match the square row icons.
+            className={
+              isPanel ? cn(THREAD_DETAILS_PANEL_ICON_CLASS, "-mx-px size-4.5") : "size-3 shrink-0"
+            }
+          />
+        )}
+      </TooltipTrigger>
+      <TooltipPopup>{autoEnvironmentLabel ?? activeDisplayLabel ?? "Run on"}</TooltipPopup>
+    </Tooltip>
   );
   const icon = showEnvironmentIndicator ? environmentIcon : workspaceIcon;
   const triggerContent = (
@@ -283,7 +296,7 @@ const RunContextSelector = memo(function RunContextSelector({
       {icon}
       <ComposerContextLabel displayMode={displayMode}>
         {autoEnvironmentLabel ??
-          (showEnvironmentIndicator ? (activeEnvironment?.label ?? gt("Run on")) : workspaceLabel)}
+          (showEnvironmentIndicator ? (activeDisplayLabel ?? "Run on") : workspaceLabel)}
       </ComposerContextLabel>
       {/* Trailing in the panel, so every row label starts on the same edge. */}
       {isPanel && showEnvironmentIndicator ? workspaceIcon : null}
@@ -302,11 +315,7 @@ const RunContextSelector = memo(function RunContextSelector({
         onContextMenu={handleContextMenu}
         aria-label={
           isPanel
-            ? gt("Run context: {context}", {
-                context: [autoEnvironmentLabel ?? activeEnvironment?.label, workspaceLabel]
-                  .filter(Boolean)
-                  .join(", "),
-              })
+            ? `Run context: ${[autoEnvironmentLabel ?? activeDisplayLabel, workspaceLabel].filter(Boolean).join(", ")}`
             : undefined
         }
         data-composer-context-control
@@ -331,11 +340,7 @@ const RunContextSelector = memo(function RunContextSelector({
         }
         aria-label={
           isPanel
-            ? gt("Run context: {context}", {
-                context: [autoEnvironmentLabel ?? activeEnvironment?.label, workspaceLabel]
-                  .filter(Boolean)
-                  .join(", "),
-              })
+            ? `Run context: ${[autoEnvironmentLabel ?? activeDisplayLabel, workspaceLabel].filter(Boolean).join(", ")}`
             : undefined
         }
         data-composer-context-control
@@ -684,6 +689,9 @@ export const BranchToolbar = memo(function BranchToolbar({
   trailing,
 }: BranchToolbarProps) {
   const m = useMessages();
+  const conversationAvailable =
+    useAtomValue(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .conversationWorkspace === true;
   const branchSelectorRef = useRef<BranchToolbarBranchSelectorHandle>(null);
   const threadRef = scopeThreadRef(environmentId, threadId);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
@@ -886,47 +894,38 @@ export const BranchToolbar = memo(function BranchToolbar({
         </div>
       ) : null}
 
-      {offersRepositoryChoice ? (
-        <WorktreeRepositoriesControl
-          project={activeProject}
-          draftTarget={draftId ?? threadRef}
-          offersBaseBranch={!showBranchControls}
-        />
+      {renderWorkspaceTrailing?.(showGitControls || showEnvironmentIndicator)}
+
+      {showGitControls || trailing ? (
+        <div
+          className={cn(
+            "flex min-w-0 items-center gap-1",
+            trailing ? "ms-auto" : "@xl/composer-surface:ms-auto",
+          )}
+        >
+          {showGitControls ? (
+            <BranchToolbarBranchSelector
+              forceNewWorktree={forceNewWorktree}
+              ref={branchSelectorRef}
+              className="min-w-0 flex-initial justify-end"
+              environmentId={environmentId}
+              threadId={threadId}
+              {...(draftId ? { draftId } : {})}
+              envLocked={envLocked}
+              effectiveEnvModeOverride={effectiveEnvMode}
+              {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
+              {...(onActiveThreadBranchOverrideChange
+                ? { onActiveThreadBranchOverrideChange }
+                : {})}
+              startFromOrigin={startFromOrigin}
+              onStartFromOriginChange={onStartFromOriginChange}
+              {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
+              {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
+            />
+          ) : null}
+          {trailing}
+        </div>
       ) : null}
-      {!showGitControls ? null : !showBranchControls ? (
-        startsNewWorktree ? (
-          <span
-            className="min-w-0 flex-initial truncate px-1.75 @xl/composer-surface:ml-auto"
-            data-composer-context-control
-          >
-            {plainProjectBaseBranch === ""
-              ? m(msg("Each repository starts from its own default branch"))
-              : m(
-                  msg("Repositories start from {branch} where they have it", {
-                    branch: plainProjectBaseBranch,
-                  }),
-                )}
-          </span>
-        ) : null
-      ) : (
-        <BranchToolbarBranchSelector
-          forceNewWorktree={forceNewWorktree}
-          ref={branchSelectorRef}
-          className="min-w-0 flex-initial justify-end @xl/composer-surface:ml-auto"
-          environmentId={environmentId}
-          threadId={threadId}
-          {...(draftId ? { draftId } : {})}
-          envLocked={envLocked}
-          effectiveEnvModeOverride={effectiveEnvMode}
-          {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
-          {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
-          startFromOrigin={startFromOrigin}
-          onStartFromOriginChange={onStartFromOriginChange}
-          {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
-          {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
-        />
-      )}
-      {trailing}
     </ComposerSurface.ContextStrip>
   );
 });

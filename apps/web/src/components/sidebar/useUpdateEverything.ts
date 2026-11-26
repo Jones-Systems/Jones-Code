@@ -1,4 +1,5 @@
-import { msg, useMessages } from "gt-react";
+import { supportsServerUpdateThreadContinuation } from "~/versionSkew";
+import { useJonesBulkUpdates } from "../../jones/installStatus/bulkUpdates";
 import { useAtomValue } from "@effect/atom-react";
 import { connectionErrorText } from "@t3tools/client-runtime/connection";
 import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
@@ -35,6 +36,7 @@ import {
   waitForServerUpdateHandoff,
   waitForUpdateRestart,
 } from "./updateEverythingRun";
+import { useMessages } from "gt-react";
 
 const UPDATE_RESTART_DELAY_MS = 5_000;
 
@@ -74,9 +76,25 @@ export function useUpdateEverything(
     canMaintain: canUpdateServer(sessionStates[index]!),
     updateState: updateStates[index]!,
   }));
-  const { targets: servers, skipped } = channelSwitch
-    ? collectChannelSwitchTargets(machines, channelSwitch, resolve)
-    : collectServerUpdateTargets(machines, targetVersion, resolve);
+  const jones = useJonesBulkUpdates(
+    machines,
+    targetVersion,
+    localUpdateVersion,
+    desktopJonesTarget,
+  );
+  const { targets: selectedServers, skipped } = channelSwitch
+    ? collectChannelSwitchTargets(jones.other, channelSwitch)
+    : collectServerUpdateTargets(jones.other, targetVersion);
+  const servers = selectedServers.map((server) => {
+    const config = machines.find(
+      (machine) => machine.environmentId === server.environmentId,
+    )?.serverConfig;
+    return {
+      ...server,
+      threadContinuation: supportsServerUpdateThreadContinuation(config),
+      continueThreadsAfterServerUpdate: config?.settings.continueThreadsAfterServerUpdate === true,
+    };
+  });
   // Track-only hosts save a setting and restart nothing, so they are neither listed nor counted.
   const moving = servers.filter((server) => server.trackOnly !== true);
   const restarts = collectRestartingMachines(
@@ -92,26 +110,24 @@ export function useUpdateEverything(
     reportFailure: false,
   });
 
-  const view = describeUpdateEverything(
-    {
-      localVersion: localUpdateVersion,
-      localMachines: machines.filter((machine) => machine.hostedByThisApp),
-      servers: moving,
-      skipped,
-      providerMachines: providers.machines.map((machine) => ({
-        environmentId: machine.environmentId,
-        label: machine.label,
-        providers: machine.candidates.map(
-          (candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver,
-        ),
-      })),
-    },
-    resolve,
-  );
+  const view = describeUpdateEverything({
+    localVersion: jones.managesLocal ? null : localUpdateVersion,
+    jonesMachines: jones.reviewMachines,
+    localMachines: machines.filter((machine) => machine.hostedByThisApp),
+    servers: moving,
+    skipped,
+    providerMachines: providers.machines.map((machine) => ({
+      environmentId: machine.environmentId,
+      label: machine.label,
+      providers: machine.candidates.map(
+        (candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver,
+      ),
+    })),
+  });
 
   return {
-    hasUpdates: servers.length > 0 || providers.machines.length > 0,
-    machines,
+    hasUpdates: servers.length > 0 || providers.machines.length > 0 || jones.hasUpdates,
+    skipped,
     ...view,
     restarts,
     updateProvidersOnly: providers.machines.length > 0 ? () => providers.updateAll() : undefined,
@@ -179,15 +195,14 @@ export function useUpdateEverything(
             const runs = await providers.updateAll({ quiet: true });
             const outcomes = runs.map((run) => {
               const runOutcome = getProviderUpdateRunOutcome(run);
-              if (runOutcome.status !== "updated") {
-                providerFailures.set(
-                  run.environmentId,
-                  runOutcome.status === "failed"
-                    ? runOutcome.line
-                    : resolve(msg("Provider update interrupted")),
-                );
-              }
-              return runOutcome;
+              if (runOutcome.status === "updated") return { status: "updated" as const };
+              const line =
+                runOutcome.status === "failed" || runOutcome.status === "unchanged"
+                  ? runOutcome.line
+                  : `${run.machineLabel} · ${run.instanceId}: Provider update interrupted`;
+              const previous = providerFailures.get(run.environmentId);
+              providerFailures.set(run.environmentId, previous ? `${previous}\n${line}` : line);
+              return { status: "failed" as const, line };
             });
             for (const machine of machinesById.values()) {
               if (machine.server === null) {

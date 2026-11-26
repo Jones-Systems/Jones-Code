@@ -1,3 +1,5 @@
+import { useSidebarWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
+import { ContinuationChoiceNotice } from "../../jones/importedHistory/ContinuationChoiceNotice";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
@@ -208,9 +210,9 @@ const FOLLOW_UP_ACTION_LABEL = {
 } as const;
 
 const FOLLOW_UP_ACTION_SUBTITLE = {
-  queue: msg("Run after the current turn"),
-  steer: msg("Interrupt what the agent is doing"),
-  restart: msg("Start the turn over with this message"),
+  queue: "Send after tools finish, or next turn",
+  steer: "Send into the current turn now",
+  restart: "Start the turn over with this message",
 } as const;
 
 function SendActionButton(props: {

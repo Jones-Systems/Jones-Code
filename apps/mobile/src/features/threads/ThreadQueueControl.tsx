@@ -27,8 +27,7 @@ import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/co
 import { Atom } from "effect/reactivity";
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
-import { msg, T, useGT, useMessages } from "gt-react-native";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import ReanimatedSwipeable, {
@@ -64,6 +63,7 @@ import {
   buildCancelQueuedRunCommand,
   resolveThreadQueueRowControls,
 } from "./threadQueueControlPresentation";
+import { useGT, useMessages, msg, T } from "gt-react-native";
 
 const REMOVE_ACTION_WIDTH = 76;
 const THUMBNAIL_LIMIT = 3;
@@ -292,7 +292,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
     const result =
       action === "remove"
         ? await cancel(buildCancelQueuedRunCommand({ ...target, runId }))
-        : workflow?.canSendNow
+        : canSendNow
           ? await resume({ ...target, input: { threadId: target.threadId, runId } })
           : workflow?.activeRun && workflow.canPromoteToSteer
             ? await promote({
@@ -332,8 +332,8 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
             <T>Queue paused</T>
           </Text>
           <Button
-            label={gt("Resume queue")}
-            disabled={resuming || busyRunId !== null}
+            label="Resume queue"
+            disabled={resuming || queueBusy}
             onPress={async () => {
               if (busyRef.current) return;
               busyRef.current = true;

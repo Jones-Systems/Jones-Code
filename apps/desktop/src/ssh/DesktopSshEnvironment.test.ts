@@ -34,14 +34,26 @@ describe("resolveDesktopSshCliRunner", () => {
     Effect.gen(function* () {
       const environment = yield* packagedEnvironment;
 
-      const runner = resolveDesktopSshCliRunner(environment, {
-        [CLI_RELEASE_BASE_URL_ENV]: "https://mirror.example.com/t3code",
-      });
+      const runner = resolveDesktopSshCliRunner(
+        { ...environment, branding: { ...environment.branding, baseName: "T3 Code" } },
+        { [CLI_RELEASE_BASE_URL_ENV]: "https://mirror.example.com/t3code" },
+      );
 
       assert.deepStrictEqual(runner, {
         archiveVersion: "0.0.22",
         releaseBaseUrl: "https://mirror.example.com/t3code",
       });
+    }),
+  );
+
+  it.effect("uses the host-managed runtime for a packaged Jones desktop", () =>
+    Effect.gen(function* () {
+      const environment = yield* packagedEnvironment;
+      const runner = resolveDesktopSshCliRunner(
+        { ...environment, branding: { ...environment.branding, baseName: "Jones Code" } },
+        { [CLI_RELEASE_BASE_URL_ENV]: "https://mirror.example.com/t3code" },
+      );
+      assert.deepStrictEqual(runner, { hostManagedRuntime: true });
     }),
   );
 });

@@ -19,6 +19,7 @@ import { SharedTooltipTrigger } from "./ui/shared-tooltip";
 
 export { useJonesProviderUpdates as useProviderUpdates } from "../jones/updates/useProviderUpdates";
 import { useJonesProviderUpdates as useProviderUpdates } from "../jones/updates/useProviderUpdates";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "./ui/tooltip";
 
 // `refreshModels` always drops the server's hour-long latest-version cache. `modelCatalogOnly`
 // drops it only when the model manifest changed.
@@ -88,25 +89,34 @@ export function ProviderUpdatesAction() {
   };
 
   return (
-    <SharedTooltipTrigger
-      render={
-        <Button
-          size="xs"
-          variant="ghost-muted"
-          disabled={isPending}
-          onClick={() => void handleUpdate()}
-        >
-          {isPending ? <T>Updating…</T> : <T>Update all</T>}
-        </Button>
-      }
-      label={machines.map((machine) => (
-        <div key={machine.environmentId}>
-          {machine.label}:{" "}
-          {machine.candidates
-            .map((candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver)
-            .join(", ")}
-        </div>
-      ))}
-    />
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            size="xs"
+            variant="ghost-muted"
+            disabled={isPending || !canManage}
+            onClick={() => void handleUpdate()}
+          >
+            {isPending ? "Updating…" : "Update all"}
+          </Button>
+        }
+      />
+      <TooltipPopup side="top">
+        {!canManage ? <p>This connection cannot manage provider accounts.</p> : null}
+        {(isPending ? capturedMachines : machines).map((machine) => (
+          <div key={machine.environmentId}>
+            {machine.label}
+            {isPending
+              ? ` · ${completed.filter((run) => run.environmentId === machine.environmentId).length}/${machine.candidates.length} finished`
+              : ""}
+            :{" "}
+            {machine.candidates
+              .map((candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver)
+              .join(", ")}
+          </div>
+        ))}
+      </TooltipPopup>
+    </Tooltip>
   );
 }

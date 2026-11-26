@@ -1,6 +1,19 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { managedUpdatesDenial } from "@t3tools/client-runtime/contract-labels";
-import { type DesktopBridge, type DesktopUpdateState } from "@t3tools/contracts";
+import { classifiedCheckFeedback } from "../../jones/installStatus/checkFeedback";
+import {
+  canOpenInstallStatusPill,
+  routeInstallStatusPill,
+  targetForDesktop,
+} from "../../jones/installStatus/entrypoints";
+import { useInstallPlan } from "../../jones/installStatus/useInstallPlan";
+import {
+  type DesktopBridge,
+  type DesktopUpdateState,
+  managedUpdatesDenial,
+} from "@t3tools/contracts";
+import type {
+  JonesUpdateBuildList,
+  JonesUpdateProvenance,
+} from "@t3tools/contracts/jones/jonesUpdates";
 import { TriangleAlertIcon } from "lucide-react";
 import { msg, T, useGT, useMessages } from "gt-react";
 import { type ComponentProps, useId, useRef, useState } from "react";
@@ -54,6 +67,7 @@ import {
   useUpdateEverythingRun,
 } from "./updateEverythingRun";
 import { type ReportLocalUpdateError, useUpdateEverything } from "./useUpdateEverything";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 
 type SidebarUpdatePopoverChangeDetails = Parameters<
   NonNullable<ComponentProps<typeof Popover>["onOpenChange"]>
@@ -252,17 +266,26 @@ export async function installLocalUpdate(
   expectedVersion?: string,
 ): Promise<boolean> {
   try {
-    const result = await installDesktopUpdate(bridge, expectedVersion);
+    // Update everything installs after its own download finishes, so the rendered
+    // state can predate the staged selection that the installer requires.
+    const current = await bridge.getUpdateState();
+    const result =
+      current.jones !== undefined
+        ? await installLocalDesktopUpdate(bridge, current)
+        : expectedVersion === undefined
+          ? await bridge.installUpdate()
+          : await bridge.installUpdate(expectedVersion);
+    const actionError = getDesktopUpdateActionError(result);
+    if (actionError) {
+      reportError("Could not install update", actionError);
+      return false;
+    }
+
     if (!result.accepted) {
       showDesktopUpdateDownloadedToast(bridge, result.state);
       return false;
     }
-    const actionError = shouldToastDesktopUpdateActionResult(result)
-      ? getDesktopUpdateActionError(result)
-      : null;
-    if (!actionError) return true;
-    reportError(m(msg("Could not install update")), actionError);
-    return false;
+    return true;
   } catch (error) {
     reportError(
       m(msg("Could not install update")),
@@ -325,9 +348,10 @@ export function JonesBuildReview({
 }
 
 function SidebarUpdateControl() {
-  const state = useDesktopUpdateState();
-  const gt = useGT();
   const messages = useMessages();
+  const gt = useGT();
+  const state = useDesktopUpdateState();
+  const installPlan = useInstallPlan();
   // The desktop updates this machine, whose policy the primary environment reports.
   const updatesDenial = managedUpdatesDenial(usePrimaryManagedPolicy(), messages);
   const [isActionPending, setIsActionPending] = useState(false);
@@ -403,18 +427,21 @@ function SidebarUpdateControl() {
     showCheckIcon,
   });
   const idleTooltip =
-    !showUpdateDetails && !showCheckIcon
-      ? getDesktopUpdateIdleTooltip(state, updatesDenial, messages)
-      : null;
-  const tooltip = runsEverything
-    ? everything.summary
-    : showUpdateDetails
-      ? state
-        ? getDesktopUpdateButtonTooltip(state, messages)
-        : gt("Update available")
-      : showCheckIcon
-        ? gt("Checking for updates…")
-        : (idleTooltip?.title ?? gt("Check for updates"));
+    !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state, updatesDenial) : null;
+  const opensInstallStatus = canOpenInstallStatusPill(installPlan.native, state, hasUpdates);
+  const tooltip = opensInstallStatus
+    ? "Open Install status"
+    : runsEverything
+      ? offeredBuild !== undefined && everything.jonesMachineCount <= 1
+        ? `Review Jones Code ${offeredBuild.version} · ${offeredBuild.sourceSha.slice(0, 8)}`
+        : everything.summary
+      : showUpdateDetails
+        ? state
+          ? getDesktopUpdateButtonTooltip(state)
+          : "Update available"
+        : showCheckIcon
+          ? "Checking for updates…"
+          : (idleTooltip?.title ?? "Check for updates");
   const disabled = showCheckIcon
     ? true
     : runsEverything
@@ -536,30 +563,7 @@ function SidebarUpdateControl() {
       setIsCheckAnimationLatched(true);
       setCheckAnimationKey((key) => key + 1);
     }
-    const appCheck = bridge
-      .checkForUpdate()
-      .then((result) => {
-        if (result.checked) return;
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: gt("Could not check for updates"),
-            description:
-              updatesDenial ??
-              result.state.message ??
-              gt("Automatic updates are not available in this build."),
-          }),
-        );
-      })
-      .catch((error) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: gt("Could not check for updates"),
-            description: thrownErrorMessage(error, m) ?? gt("Update check failed."),
-          }),
-        );
-      });
+    const appCheck = checkForSidebarUpdate(bridge);
     setProviderCheck("button");
     const providersChecked = checkProviderUpdates().finally(() => setProviderCheck(null));
     void Promise.allSettled([appCheck, providersChecked]).then(() => setIsActionPending(false));
@@ -601,12 +605,9 @@ function SidebarUpdateControl() {
     setIsActionPending(false);
     if (result._tag === "Failure") {
       const error = squashAtomCommandFailure(result);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: gt("Could not update everything"),
-          description: thrownErrorMessage(error, m) ?? gt("An unexpected error occurred."),
-        }),
+      toastUpdateError(
+        providersOnly ? "Could not update providers" : "Could not update everything",
+        error instanceof Error ? error.message : "An unexpected error occurred.",
       );
     }
   };

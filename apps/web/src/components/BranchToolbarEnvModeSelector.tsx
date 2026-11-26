@@ -24,6 +24,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { shortcutLabelForCommand } from "../keybindings";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { SharedTooltipTrigger } from "./ui/shared-tooltip";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "./ui/tooltip";
 
 const PREVIOUS_WORKTREE_SELECT_VALUE = "previous-worktree";
 
@@ -63,7 +64,8 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
       value: "local",
       label: resolveCurrentWorkspaceLabel(activeWorktreePath, m),
     },
-    { value: "worktree", label: resolveEnvModeLabel("worktree", m) },
+    ...(conversationAvailable ? [{ value: "auto", label: "On write" }] : []),
+    { value: "worktree", label: resolveEnvModeLabel("worktree") },
     ...(showPreviousWorktree && previousWorktreeLabel
       ? [{ value: PREVIOUS_WORKTREE_SELECT_VALUE, label: previousWorktreeLabel }]
       : []),
@@ -122,37 +124,39 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
       }}
       items={envModeItems}
     >
-      <SharedTooltipTrigger
-        render={
-          <ComposerSelectControl
-            size="xs"
-            className="min-w-0 shrink"
-            aria-label={gt("Workspace")}
-            data-composer-shortcut="composer.workspace"
-            data-composer-context-control
-            onMouseDownCapture={stopContextMenuMouseDown}
-          />
-        }
-        label={
-          <>
-            {effectiveEnvMode === "worktree"
-              ? resolveEnvModeLabel("worktree", m)
-              : resolveCurrentWorkspaceLabel(activeWorktreePath, m)}
-            {shortcutLabel ? ` · ${shortcutLabel}` : null}
-          </>
-        }
-      >
-        {effectiveEnvMode === "worktree" ? (
-          <FolderGit2Icon className="size-3" />
-        ) : activeWorktreePath ? (
-          <FolderGitIcon className="size-3" />
-        ) : (
-          <FolderIcon className="size-3" />
-        )}
-        <ComposerContextLabel>
-          <SelectValue />
-        </ComposerContextLabel>
-      </SharedTooltipTrigger>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <ComposerSelectControl
+              size="xs"
+              className="min-w-0 shrink"
+              aria-label="Workspace"
+              data-composer-shortcut="composer.workspace"
+              data-composer-context-control
+              onMouseDownCapture={stopContextMenuMouseDown}
+            />
+          }
+        >
+          {effectiveEnvMode === "worktree" ? (
+            <FolderGit2Icon className="size-3" />
+          ) : activeWorktreePath ? (
+            <FolderGitIcon className="size-3" />
+          ) : (
+            <FolderIcon className="size-3" />
+          )}
+          <ComposerContextLabel>
+            <SelectValue />
+          </ComposerContextLabel>
+        </TooltipTrigger>
+        <TooltipPopup>
+          {effectiveEnvMode === "auto"
+            ? "Start a conversation; attach a worktree before writing."
+            : effectiveEnvMode === "worktree"
+              ? resolveEnvModeLabel("worktree")
+              : resolveCurrentWorkspaceLabel(activeWorktreePath)}
+          {shortcutLabel ? ` · ${shortcutLabel}` : null}
+        </TooltipPopup>
+      </Tooltip>
       <SelectPopup
         alignItemWithTrigger={false}
         {...composerFloatingLayerProps}

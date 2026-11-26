@@ -8,9 +8,8 @@ import {
   ThreadId,
   T3_PROJECT_FILE_NAME,
   WS_METHODS,
-  type IssueDetail,
-  type IssueRef,
-  type ThreadIssueLink,
+  type HostStatusSnapshot,
+  type ProjectReadFileInput,
 } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import {
@@ -55,6 +54,7 @@ import {
   type FakeDriver,
 } from "../../test/fakeEnvironment";
 import { act, fakeTimers, render } from "../../test/render";
+import type { IssueRef, ThreadIssueLink, IssueDetail } from "@t3tools/contracts";
 
 async function chatViewport(width = 1400, height = 900) {
   const previous = { width: window.innerWidth, height: window.innerHeight };
@@ -458,7 +458,8 @@ it("a new draft does not load its reserved thread before the server lists it", a
   expect(threadRequests).toEqual([]);
 });
 
-it("a failed image-only first send of a new thread keeps the new draft", async () => {
+it("an interrupted image-only first send of a new thread says it may not have been sent", async () => {
+  await using _viewport = await chatViewport();
   using _environment = installFakeEnvironment([]);
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
@@ -472,11 +473,19 @@ it("a failed image-only first send of a new thread keeps the new draft", async (
       envMode: "local",
       environmentSelection: "manual",
     });
-  // A refusal fails at once; an interrupted launch would wait for a reconnect and be resent.
-  using launch = holdRpc(
-    ORCHESTRATION_V2_WS_METHODS.launchThread,
-    Effect.fail(new LaunchRefused()),
+  using _projectDefaults = answerRpc(WS_METHODS.projectsReadFile, (input: ProjectReadFileInput) =>
+    input.relativePath === T3_PROJECT_FILE_NAME && input.allowMissing === true
+      ? Effect.succeed({
+          relativePath: input.relativePath,
+          contents: "",
+          byteLength: 0,
+          truncated: false,
+          exists: false,
+        })
+      : Effect.never,
   );
+  // A dropped connection interrupts a new thread's launch, which is not resent.
+  using launch = holdRpc(ORCHESTRATION_V2_WS_METHODS.launchThread, Effect.interrupt);
   const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
   await router.load();
   await using _app = await render(<AppRoot router={router} />, {

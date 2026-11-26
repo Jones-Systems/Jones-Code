@@ -1,4 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
+import { environmentServerConfigsAtom } from "../../state/server";
+import { settlementRestoreMenuItems } from "../../jones/settlementRestore/menu";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -984,12 +986,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
   const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
-  // Until the host answers, only settle, snooze and their undo are offered: they can queue.
-  const triageOnly =
-    !useEnvironmentScopeDenied(thread.environmentId, AuthOrchestrationOperateScope) &&
-    !canOperateThread;
+  const operateDenied = useEnvironmentScopeDenied(
+    thread.environmentId,
+    AuthOrchestrationOperateScope,
+  );
+  const triageOnly = !operateDenied && !canOperateThread;
   const canShareWithGuest = useCanShareWithGuest(thread.environmentId);
-  const navigation = useNavigation();
+  const restoreCapabilities = useAtomValue(environmentServerConfigsAtom).get(thread.environmentId)
+    ?.environment.capabilities;
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
     [onRegenerateThreadTitle, thread],
@@ -1228,19 +1232,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         nested,
         direct: [
           ...direct,
-          localized(CARD_MENU_ACTIONS[0]!),
-          ...(swipeActions.secondary === "snooze"
-            ? [
-                {
-                  id: "snooze",
-                  title: gt("Snooze", { $context: "verb, thread action" }),
-                  image: "clock",
-                  subactions: snoozePresetActions,
-                },
-              ]
-            : []),
+          ...settlementRestoreMenuItems({
+            settled: thread.settledOverride === "settled",
+            canOperate: canOperateThread,
+            capabilities: restoreCapabilities,
+          }),
+          SLIM_MENU_ACTIONS[0]!,
         ],
-        reorder: reorderMenuItems,
+        reorder: reorderMenuItems.filter(
+          (action) => action.id !== "move-up" && action.id !== "move-down",
+        ),
         pin: pinMenuItems,
         secondary: [
           ...titleMenuItems,
@@ -1253,7 +1254,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     );
   }, [
     autoSettleMenuItems,
-    canShareWithGuest,
+    canOperateThread,
     canUnsettle,
     onOpenWorkstreams,
     pinMenuItems,

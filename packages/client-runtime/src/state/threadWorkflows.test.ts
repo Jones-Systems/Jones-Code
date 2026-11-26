@@ -35,16 +35,18 @@ const capabilities = (input?: {
 
 describe("thread workflows", () => {
   it.each([
-    ["queue only", { queued: true }, false, false, false],
-    ["session still attaching", undefined, false, false, true],
-    ["native steering", { steer: true }, false, false, true],
-    ["interrupt and restart", { interrupt: true, restartSteer: true }, false, false, true],
-    ["restart without interrupt", { restartSteer: true }, false, false, false],
-    ["explicit compaction", { steer: true }, true, false, false],
-    ["a run Stop has reached", { steer: true }, false, true, false],
+    ["queue only", { queued: true }, false, null, false],
+    ["session still attaching", undefined, false, null, true],
+    ["native steering", { steer: true }, false, null, true],
+    ["interrupt and restart", { interrupt: true, restartSteer: true }, false, null, true],
+    ["restart without interrupt", { restartSteer: true }, false, null, false],
+    ["explicit compaction", { steer: true }, true, null, false],
+    ["an upstream interrupt request", { steer: true }, false, "interrupt", false],
+    ["a captured Stop on this run", { steer: true }, false, "active", false],
+    ["a captured Stop on an earlier run", { steer: true }, false, "previous", true],
   ] as const)(
     "gates composer steering for %s",
-    (_, turns, compactCommandIsActive, stopRequested, expected) => {
+    (_, turns, compactCommandIsActive, stop, expected) => {
       const projection = {
         thread: { id: "thread", activeProviderThreadId: "provider-thread" },
         runs: [{ id: "active", status: "running", providerThreadId: "provider-thread" }],
@@ -56,7 +58,8 @@ describe("thread workflows", () => {
           { id: "other", status: "ready", capabilities: capabilities({ steer: true }) },
         ],
         messages: [],
-        turnItems: stopRequested ? [{ runId: "active", type: "run_interrupt_request" }] : [],
+        turnItems: stop === "interrupt" ? [{ runId: "active", type: "run_interrupt_request" }] : [],
+        ...(stop === "active" || stop === "previous" ? { capturedRuntimeStopRunId: stop } : {}),
       } as unknown as OrchestrationV2ThreadProjection;
       expect(
         threadCanSteer(projection, {

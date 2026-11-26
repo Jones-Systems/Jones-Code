@@ -130,6 +130,8 @@ function catalogError(operation: keyof typeof CATALOG_FAILURE, cause: unknown) {
 const PERSISTENCE_FAILURE = {
   "list-targets": msg("Could not list targets: {cause}"),
   "list-disabled-targets": msg("Could not list disabled targets: {cause}"),
+  "list-compatibility-hints": msg("Could not list compatibility hints: {cause}"),
+  "set-compatibility-hint": msg("Could not save a compatibility hint: {cause}"),
   "register-connection": msg("Could not register connection: {cause}"),
   "set-connection-routes": msg("Could not set connection routes: {cause}"),
   "remove-connection": msg("Could not remove connection: {cause}"),

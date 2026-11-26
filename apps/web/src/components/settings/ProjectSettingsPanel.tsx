@@ -53,8 +53,7 @@ import {
 } from "./ProjectFaviconPickerDialog";
 import { ProjectActionsSettings } from "./ProjectActionsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
-import { ProjectRepositoriesSettings } from "./ProjectRepositoriesSettings";
-import { ProjectWorktreeLayoutSettings } from "./ProjectWorktreeLayoutSettings";
+import { RepoFreshnessSettings } from "../../jones/repoFreshness/RepoFreshnessSettings";
 import {
   defaultProjectIcon,
   hasDefaultProjectIcon,
@@ -66,6 +65,8 @@ import { useSettingsProjectGroups } from "./useSettingsProjectGroups";
 import { readUnloadedThreadCount } from "../../state/olderSettledShelf";
 import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import { ProjectRepositoriesSettings } from "./ProjectRepositoriesSettings";
+import { ProjectWorktreeLayoutSettings } from "./ProjectWorktreeLayoutSettings";
 
 const ProjectIconPickerDialog = lazy(() =>
   import("./ProjectIconPickerDialog").then((module) => ({

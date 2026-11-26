@@ -1205,17 +1205,7 @@ export function createDeviceStreamClient(
       duoControl.clear();
       rotationCursor = null;
       if (stopped) return;
-      if (event.code === 4001)
-        return fail(
-          leaseEnded(
-            event.reason || resolve(msg("ended", { $context: "device lease end reason" })),
-            resolve,
-          ),
-        );
-      events.onInputConnected(
-        false,
-        event.reason || (event.code === 1006 ? "input socket refused" : `closed ${event.code}`),
-      );
+      if (event.code === 4001) return fail(leaseEnded(event.reason || "ended"));
       // A rejected HTTP upgrade surfaces as 1006, including an expired stream ticket.
       if (
         event.code === 1008 ||

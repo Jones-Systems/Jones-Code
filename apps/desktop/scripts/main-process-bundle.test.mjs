@@ -111,10 +111,7 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
     for (const entry of workerEntries) {
       load(NodePath.join(outputDirectory, entry.replace(/^src\//, "").replace(/\.ts$/, ".cjs")));
     }
-    assert.deepEqual(
-      workers,
-      workerEntries.map(() => 42),
-    );
+    assert.deepEqual(workers, [42, 42, 42, 42, 42]);
     assert.deepEqual(startups, [42]);
   } finally {
     await NodeFSP.rm(directory, { recursive: true, force: true });

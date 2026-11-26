@@ -1770,28 +1770,35 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect(
-    "does not open picture-in-picture against a destroyed webview's WebContents",
-    () =>
-      withManager((manager) =>
-        Effect.gen(function* () {
-          const guest = makeAttachingGuest(49);
-          fromId.mockImplementation((id) =>
-            id === 49 && !guest.wc.isDestroyed() ? guest.wc : null,
-          );
-          yield* manager.prepareWebview(guest.wc);
-          yield* manager.createTab("tab_destroyed_guest");
-          yield* manager.registerWebview("tab_destroyed_guest", 49);
+  effectIt.effect("does not publish a control session detached during initialization", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const guest = makeAttachingGuest(49);
+        let signalStarted = () => {};
+        const started = new Promise<void>((resolve) => {
+          signalStarted = resolve;
+        });
+        let releaseInitialization = () => {};
+        const initialization = new Promise<void>((resolve) => {
+          releaseInitialization = resolve;
+        });
+        guest.sendCommand.mockImplementationOnce(() => {
+          signalStarted();
+          return initialization;
+        });
+        const preparing = yield* manager.prepareWebview(guest.wc).pipe(Effect.forkChild);
+        yield* Effect.promise(() => started);
+        guest.chromiumDetach();
+        releaseInitialization();
+        yield* Fiber.join(preparing);
 
-          guest.destroy();
-          yield* Effect.yieldNow;
-
-          const pictureInPicture = yield* Effect.flip(
-            manager.openPictureInPicture("tab_destroyed_guest"),
-          ).pipe(Effect.orDie);
-          expect(pictureInPicture._tag).toBe("PreviewWebviewNotInitializedError");
-        }),
-      ),
+        expect(guest.detach).not.toHaveBeenCalled();
+        expect(guest.wc.debugger.off).toHaveBeenCalledWith("message", expect.any(Function));
+        expect(guest.wc.debugger.off).toHaveBeenCalledWith("detach", expect.any(Function));
+        yield* manager.prepareWebview(guest.wc);
+        expect(guest.attach).toHaveBeenCalledTimes(2);
+      }),
+    ),
   );
 
   effectIt.effect("skips a guest destroyed while another guest's session opens", () =>

@@ -80,52 +80,6 @@ export interface EnvironmentThreadStructure {
   readonly projection: ThreadStructure;
 }
 
-export interface ThreadRunSummary {
-  readonly runId: RunId;
-  readonly status: OrchestrationV2RunStatus;
-  readonly requestedAt: string | null;
-  readonly startedAt: string | null;
-  readonly completedAt: string | null;
-  readonly assistantMessageId: MessageId | null;
-  /**
-   * The run is still open, but its provider turn already ended, so nothing is
-   * generating while the server settles it.
-   */
-  readonly turnEnded?: boolean;
-  /**
-   * Set while the run is open but its provider has not started a turn, so the
-   * provider is still launching and nothing is generating. Clients show it
-   * instead of "Thinking".
-   */
-  readonly providerStartingLabel?: string;
-  /** `providerStartingLabel` as a `msg()` string; display sites resolve this one. */
-  readonly providerStartingLabelMsg?: string;
-  /** The starting provider, so clients can show its logo beside the label. */
-  readonly providerStarting?: {
-    readonly instanceId: ProviderInstanceId;
-    readonly driver: ProviderDriverKind;
-  };
-  readonly sourcePlanRef?: {
-    readonly threadId: ThreadId;
-    readonly planId: PlanId;
-  };
-}
-
-export interface ThreadRuntimeSummary {
-  readonly status: OrchestrationV2RunStatus | "idle";
-  readonly activeRunId: RunId | null;
-  readonly activityStartedAt?: string | null | undefined;
-  readonly providerInstanceId: ProviderInstanceId;
-  readonly providerName: string | null;
-  readonly lastError: string | null;
-  readonly lastErrorClass?: OrchestrationV2ProviderFailureClass | null;
-  readonly lastErrorCode?: string | null;
-  /** The record `lastError` came from, with its change time so a repeated failure differs. */
-  readonly lastErrorSource?: string | null;
-  readonly usageLimitResetAt?: string | null;
-  readonly updatedAt: string;
-}
-
 /** The runtime summary a thread's structure determines; see ThreadStructure. */
 export type ThreadStructureRuntime = Omit<ThreadRuntimeSummary, "updatedAt">;
 

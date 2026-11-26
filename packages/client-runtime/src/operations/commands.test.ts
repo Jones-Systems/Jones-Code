@@ -71,6 +71,11 @@ const layerTestRandom = Layer.succeed(
   SecureRandom.make((size) => new Uint8Array(size)),
 );
 
+const layerTestCrypto = Layer.succeed(
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => new Uint8Array(size)),
+);
+
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
 const TARGET = new PrimaryConnectionTarget({

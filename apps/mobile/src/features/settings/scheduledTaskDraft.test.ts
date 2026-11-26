@@ -7,7 +7,8 @@ import {
   ProviderInstanceId,
   ProjectId,
   ScheduledTaskId,
-  type ScheduledTask,
+  ScheduledTask,
+  ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
 import {
   createDraft,
@@ -273,36 +274,135 @@ it("rejects dedupe keys without valid request placeholders", () => {
   ).toBeNull();
 });
 
-describe("scheduled task worktree base", () => {
-  const rootTask = {
-    id: ScheduledTaskId.make("task"),
-    title: "Review issues",
-    prompt: "Review open issues",
-    enabled: true,
-    schedule: { type: "interval", everyMs: 60_000 },
-    projectId: ProjectId.make("project"),
-    threadId: null,
-    workspaceStrategy: { type: "root" },
-    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    createdBy: "user",
-    creationSource: "mobile",
-    createdAt: "2026-09-17T00:00:00.000Z",
-    updatedAt: "2026-09-17T00:00:00.000Z",
-    nextRunAt: null,
-    lastRunAt: null,
-    lastRunStatus: "never",
-    lastRunError: null,
-    runCount: 0,
-  } satisfies ScheduledTask;
+describe("scheduled-task form save and reopen", () => {
+  it.each([true, false])(
+    "saves the current webhook signature while keeping automatic base and origin %s",
+    (startFromOrigin) => {
+      const staleSignature = {
+        header: "x-old-signature",
+        encoding: "hex" as const,
+        prefix: "old=",
+      };
+      const currentSignature = {
+        header: "x-current-signature",
+        encoding: "hex" as const,
+        prefix: "sha256=",
+      };
+      const task: ScheduledTask = {
+        ...legacyTask,
+        workspaceStrategy: { type: "worktree", startFromOrigin },
+        schedule: { type: "webhook", signature: staleSignature, maxDeliveryAgeMinutes: 45 },
+      };
+      const draft = editDraft(task);
+      const currentSchedule = scheduleFromDraft({
+        ...draft.schedule,
+        signature: currentSignature,
+      });
+      const saved = decodeUnknownSyncScheduledTaskUpsertInput(
+        scheduledTaskUpsertInputFromDraft(draft, currentSchedule),
+      );
 
-  it("leaves the base automatic for new tasks and tasks without a worktree", () => {
-    expect(createDraft(ProjectId.make("project"), null).baseRef).toBe("");
-    expect(editDraft(rootTask).baseRef).toBe("");
+      expect(saved.schedule).toEqual({
+        type: "webhook",
+        signature: currentSignature,
+        maxDeliveryAgeMinutes: 45,
+        dedupe: {},
+      });
+      expect(saved.workspaceStrategy).toEqual({ type: "worktree", startFromOrigin });
+      expect(saved.workspaceStrategy).not.toHaveProperty("baseRef");
+      expect(draft.schedule.signature).toEqual(staleSignature);
+      const reopened = editDraft(decodeUnknownSyncScheduledTask({ ...task, ...saved }));
+      expect(reopened.schedule.signature).toEqual(currentSignature);
+      expect(reopened.baseRef).toBe("");
+      expect(reopened.startFromOrigin).toBe(startFromOrigin);
+    },
+  );
+
+  it.each([true, false])("keeps automatic base omitted with origin %s", (startFromOrigin) => {
+    const task: ScheduledTask = {
+      ...legacyTask,
+      workspaceStrategy: { type: "worktree", startFromOrigin },
+    };
+    const draft = editDraft(task);
+    const saved = decodeUnknownSyncScheduledTaskUpsertInput(
+      scheduledTaskUpsertInputFromDraft(draft),
+    );
+    expect(saved.workspaceStrategy).toEqual({ type: "worktree", startFromOrigin });
+    expect(saved.workspaceStrategy).not.toHaveProperty("baseRef");
+    expect(saved).toMatchObject({
+      id: task.id,
+      requireExisting: true,
+      title: task.title,
+      prompt: task.prompt,
+      projectId: task.projectId,
+      modelSelection: task.modelSelection,
+      schedule: task.schedule,
+      enabled: task.enabled,
+      threadId: task.threadId,
+      runtimeMode: task.runtimeMode,
+      interactionMode: task.interactionMode,
+      creationSource: task.creationSource,
+    });
+    const reopened = editDraft(decodeUnknownSyncScheduledTask({ ...task, ...saved }));
+    expect(reopened.baseRef).toBe("");
+    expect(reopened.startFromOrigin).toBe(startFromOrigin);
+    expect(hasScheduledTaskDraftChanges(draft, reopened)).toBe(false);
+  });
+
+  it.each([true, false])("trims an explicit base without changing origin %s", (startFromOrigin) => {
+    const draft = { ...editDraft(legacyTask), baseRef: " release/stable ", startFromOrigin };
+    const saved = decodeUnknownSyncScheduledTaskUpsertInput(
+      scheduledTaskUpsertInputFromDraft(draft),
+    );
+    expect(saved.workspaceStrategy).toEqual({
+      type: "worktree",
+      baseRef: "release/stable",
+      startFromOrigin,
+    });
+    const reopened = editDraft(decodeUnknownSyncScheduledTask({ ...legacyTask, ...saved }));
+    expect(reopened.baseRef).toBe("release/stable");
+    expect(reopened.startFromOrigin).toBe(startFromOrigin);
+    expect(reopened.prompt).toBe(legacyTask.prompt);
+    expect(reopened.modelSelection).toEqual(legacyTask.modelSelection);
+  });
+});
+
+const decodeUnknownSyncScheduledTask = Schema.decodeUnknownSync(ScheduledTask);
+
+const decodeUnknownSyncScheduledTaskUpsertInput =
+  Schema.decodeUnknownSync(ScheduledTaskUpsertInput);
+describe("scheduled fresh project allocation inheritance", () => {
+  it("authors new fresh tasks with auto and preserves it on save/reopen", () => {
+    const draft = {
+      ...createDraft(legacyTask.projectId, legacyTask.modelSelection),
+      title: "Fresh",
+      prompt: "Inspect source",
+    };
+    const input = scheduledTaskUpsertInputFromDraft(draft);
+    expect(input?.threadId).toBeNull();
+    expect(input?.workspaceStrategy).toEqual({ type: "auto" });
+    const reopened = editDraft({ ...legacyTask, workspaceStrategy: { type: "auto" } });
+    expect(reopened.workspace).toBe("auto");
+    expect(scheduledTaskUpsertInputFromDraft(reopened)?.workspaceStrategy).toEqual({
+      type: "auto",
+    });
     expect(
-      editDraft({ ...rootTask, workspaceStrategy: { type: "worktree", baseRef: "release" } })
-        .baseRef,
-    ).toBe("release");
+      hasScheduledTaskDraftChanges(
+        reopened,
+        editDraft({ ...legacyTask, workspaceStrategy: { type: "auto" } }),
+      ),
+    ).toBe(false);
+  });
+
+  it.each<ScheduledTask["workspaceStrategy"]>([
+    { type: "auto", baseRef: "release", branch: "work/automation" },
+    { type: "worktree", baseRef: "release", startFromOrigin: true },
+    { type: "existing_worktree", worktreePath: "/checkouts/explicit" },
+    { type: "root" },
+  ])("preserves the stored $type allocation choice", (workspaceStrategy) => {
+    const draft = editDraft({ ...legacyTask, workspaceStrategy });
+    const saved = scheduledTaskUpsertInputFromDraft(draft);
+    expect(saved?.workspaceStrategy).toEqual(workspaceStrategy);
+    expect(saved?.requireExisting).toBe(true);
   });
 });

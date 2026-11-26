@@ -238,9 +238,10 @@ owner review on ordinary backend conflict resolution.
 ## Fork-only migrations
 
 Keep upstream and Jones migration histories in separate loaders and tracking
-tables. Do not assign a Jones migration the next upstream ID or a large reserved
-ID in the upstream stream: a highest-ID loader can then skip future upstream
-migrations. For a database carrying a historical fork migration, verify its
+tables. The same number can identify different migrations in the two tracking
+tables. Keep Jones migrations in `jones_sql_migrations` so the upstream loader
+can advance `effect_sql_migrations` independently. For a database carrying a
+historical fork migration, verify its
 migration identity, schema compatibility and any bridge needed before adopting
 the separate Jones migration history. Source integration does not authorize
 migration of a running installation.

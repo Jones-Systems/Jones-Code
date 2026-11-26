@@ -1265,104 +1265,12 @@ export function resolveWorkingStartedAt(
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
 }): ThreadStatusPill | null {
-  const { thread } = input;
-
-  if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
-    return {
-      label: msg("Pending Approval"),
-      colorClass: "text-amber-600 dark:text-amber-300/90",
-      dotClass: "bg-amber-500 dark:bg-amber-300/90",
-      pulse: false,
-    };
-  }
-
-  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
-    return {
-      label: msg("Awaiting Input"),
-      colorClass: "text-indigo-600 dark:text-indigo-300/90",
-      dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
-      pulse: false,
-    };
-  }
-
-  if ((thread.pendingGuestMessageCount ?? 0) > 0) {
-    return {
-      label: msg("Guest Request"),
-      colorClass: "text-guest-foreground",
-      dotClass: "bg-guest",
-      pulse: false,
-    };
-  }
-
-  if (
-    (thread.runtime?.status === "running" && thread.blockedOnThreadWait !== true) ||
-    thread.runtime?.status === "waiting"
-  ) {
-    return {
-      label: msg("Working"),
-      colorClass: "text-sky-600 dark:text-sky-300/80",
-      dotClass: "bg-sky-500 dark:bg-sky-300/80",
-      pulse: true,
-    };
-  }
-
-  if (
-    thread.runtime?.status === "preparing" ||
-    thread.runtime?.status === "starting" ||
-    thread.runtime?.status === "queued"
-  ) {
-    return {
-      label: msg("Connecting"),
-      colorClass: "text-sky-600 dark:text-sky-300/80",
-      dotClass: "bg-sky-500 dark:bg-sky-300/80",
-      pulse: true,
-    };
-  }
-
-  const waiting = {
-    label: msg("Waiting"),
-    colorClass: "text-sidebar-muted-foreground",
-    dotClass: "bg-sidebar-muted-foreground",
-    pulse: false,
-  };
-  if (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) return waiting;
-
-  // A failed run goes to the inbox even while background work holds the thread.
-  if (hasUnseenRunFailure(thread)) {
-    return {
-      label: msg("Failed"),
-      colorClass: "text-red-600 dark:text-red-300/90",
-      dotClass: "bg-red-500 dark:bg-red-300/90",
-      pulse: false,
-    };
-  }
-
-  if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) return waiting;
-
-  const hasPlanReadyPrompt =
-    !thread.hasPendingUserInput &&
-    thread.interactionMode === "plan" &&
-    isLatestRunSettled(thread.latestRun, thread.runtime) &&
-    thread.hasActionableProposedPlan;
-  if (hasPlanReadyPrompt) {
-    return {
-      label: msg("Plan Ready"),
-      colorClass: "text-violet-600 dark:text-violet-300/90",
-      dotClass: "bg-violet-500 dark:bg-violet-300/90",
-      pulse: false,
-    };
-  }
-
-  if (hasUnseenCompletion(thread)) {
-    return {
-      label: msg("Completed"),
-      colorClass: "text-emerald-600 dark:text-emerald-300/90",
-      dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
-      pulse: false,
-    };
-  }
-
-  return null;
+  const pill = resolveNavigationAttentionPill(input);
+  const latestStatus = input.thread.latestRun?.status;
+  return pill?.label === "Completed" &&
+    (latestStatus === "interrupted" || latestStatus === "cancelled")
+    ? null
+    : pill;
 }
 
 export function getFallbackThreadIdAfterDelete<

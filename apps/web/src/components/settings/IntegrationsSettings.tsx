@@ -1,4 +1,5 @@
-import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
+import { BrowserHostsSettings } from "../../jones/previewCompanion/BrowserHostsSettings";
+import { DecisionSnapshotAccessSettings } from "../../jones/settings/DecisionSnapshotAccessSettings";
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
@@ -36,6 +37,7 @@ import {
   type PreviewAppearancePreference,
   type PreviewViewportSetting,
 } from "@t3tools/contracts";
+import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
 import { usePrimaryManagedPolicy } from "~/state/managedPolicy";
 import { isValidSearchUrlTemplate } from "@t3tools/shared/preview";
 import { PREVIEW_VIEWPORT_PRESETS } from "@t3tools/shared/previewViewport";
@@ -1700,7 +1702,8 @@ export function BrowserSettingsPanel() {
 
   return (
     <SettingsPageContainer>
-      <SettingsSection id="browser-agent-access" title={gt("Agent access")}>
+      <BrowserHostsSettings />
+      <SettingsSection id="browser-agent-access" title="Agent access">
         <AgentBrowserAccessSetting />
       </SettingsSection>
       <SettingsSection id="browser" title={gt("Browsing")}>

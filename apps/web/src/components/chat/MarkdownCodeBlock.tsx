@@ -23,6 +23,7 @@ import { HighlightedCodeLines } from "./HighlightedCodeLines";
 import { createHighlightCacheKey, estimateHighlightedSize } from "./MarkdownCodeBlock.logic";
 import { reportMarkdownActionFailure } from "./markdownActionFailure";
 import { PierreEntryIcon } from "./PierreEntryIcon";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
@@ -250,22 +251,25 @@ export function MarkdownCodeBlock({
               <WrapTextIcon className="size-3" />
             </SharedTooltipTrigger>
           ) : null}
-          {canRun ? (
-            <SharedTooltipTrigger
-              label={gt("Run in terminal")}
-              render={
-                <Button
-                  type="button"
-                  variant="ghost-muted"
-                  size="icon-xs"
-                  onClick={() => onRunShellCommand(command)}
-                  aria-label={gt("Run in terminal")}
-                />
-              }
-            >
-              <PlayIcon className="size-3" />
-            </SharedTooltipTrigger>
-          ) : null}
+          {runControl ??
+            (canRun ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost-muted"
+                      size="icon-xs"
+                      onClick={() => onRunShellCommand(command)}
+                      aria-label="Run in terminal"
+                    />
+                  }
+                >
+                  <PlayIcon className="size-3" />
+                </TooltipTrigger>
+                <TooltipPopup side="top">{runTooltip ?? "Run in terminal"}</TooltipPopup>
+              </Tooltip>
+            ) : null)}
           {viewToggle}
           {copyButton}
         </span>

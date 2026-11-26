@@ -25,7 +25,7 @@ export function useScopedModelDisabledReason(
   textGeneration = false,
 ) {
   const gt = useGT();
-  const { targets } = useSettingsScope();
+  const { target, targets } = useSettingsScope();
   const { environments } = useEnvironments();
   const providersByEnvironment = useEnvironmentProviders();
   return (instanceId: ProviderInstanceId, model: string): string | null => {

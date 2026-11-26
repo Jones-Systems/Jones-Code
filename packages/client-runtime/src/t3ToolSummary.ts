@@ -173,18 +173,48 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
-    case "thread-interrupt": {
-      const count = countEntities(threadIds);
+    case "thread-launch-resolve": {
+      const count = selected.length;
       label = done
         ? resolve(
             msg(
-              "{count, plural, one {Requested interrupts for {count} thread} other {Requested interrupts for {count} threads}}",
+              "{count, plural, one {Resolved {count} unknown thread launch} other {Resolved {count} unknown thread launches}}",
               { count },
             ),
           )
         : resolve(
             msg(
-              "{count, plural, one {Tried to interrupt {count} thread} other {Tried to interrupt {count} threads}}",
+              "{count, plural, one {Tried to resolve {count} unknown thread launch} other {Tried to resolve {count} unknown thread launches}}",
+              { count },
+            ),
+          );
+      break;
+    }
+    case "thread-create": {
+      const createdIds: string[] = [];
+      const resultsKnown =
+        completed.length > 0 &&
+        completed.every((call) => {
+          const threads = Array.isArray(call.output?.threads) ? call.output.threads : [call.output];
+          return threads.every((thread) => {
+            const record = asRecord(thread);
+            if (record?.status === "rolled_back") return true;
+            const threadId = id(record?.threadId);
+            if (!threadId) return false;
+            createdIds.push(threadId);
+            return true;
+          });
+        });
+      const count = resultsKnown ? new Set(createdIds).size : selected.length;
+      label = resultsKnown
+        ? resolve(
+            msg("{count, plural, one {Created {count} thread} other {Created {count} threads}}", {
+              count,
+            }),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Requested thread creation {count} time} other {Requested thread creation {count} times}}",
               { count },
             ),
           );

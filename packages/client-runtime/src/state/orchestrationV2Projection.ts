@@ -145,6 +145,14 @@ const UNFINISHED_RUN_STATUSES: ReadonlySet<OrchestrationV2Run["status"]> = new S
   "waiting",
 ]);
 
+function isCapturedRuntimeStopRun(run: OrchestrationV2Run): boolean {
+  return (
+    run.completedAt === null &&
+    run.activeAttemptId !== null &&
+    (run.status === "starting" || run.status === "running" || run.status === "waiting")
+  );
+}
+
 function shouldDropMissingPartialTurnItem(
   projection: OrchestrationV2ThreadProjection,
   item: OrchestrationV2TurnItem,
@@ -362,6 +370,14 @@ export function applyOrchestrationV2ProjectionEvent(
           ? { ...event.payload, output: known.output }
           : event.payload;
       const next = { ...base, runs: upsertEntity(base.runs, run) };
+      if (
+        next.capturedRuntimeStopRunId === run.id &&
+        (!isCapturedRuntimeStopRun(run) ||
+          run.providerInstanceId !== known?.providerInstanceId ||
+          run.providerThreadId !== known?.providerThreadId)
+      ) {
+        delete next.capturedRuntimeStopRunId;
+      }
       const visible = { ...next, visibleTurnItems: activeVisibleTurnItems(next) };
       const wasQueued = known?.status === "queued";
       return wasQueued && event.payload.status !== "queued"
@@ -411,8 +427,18 @@ export function applyOrchestrationV2ProjectionEvent(
         ...base,
         providerSessions: upsertEntity(base.providerSessions, event.payload),
       };
-    case "provider-session.detach-requested":
-      return projection;
+    case "provider-session.detach-requested": {
+      // The publishing server attributes the event to a run only after proving its binding.
+      const { runId } = event;
+      if (runId === undefined || runId === projection.capturedRuntimeStopRunId) {
+        return projection;
+      }
+      const run = projection.runs.find((candidate) => candidate.id === runId);
+      if (run === undefined || !isCapturedRuntimeStopRun(run)) {
+        return projection;
+      }
+      return { ...projection, capturedRuntimeStopRunId: runId };
+    }
     case "provider-session.detached":
       return {
         ...base,

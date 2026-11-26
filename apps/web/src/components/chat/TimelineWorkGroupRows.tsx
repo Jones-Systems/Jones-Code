@@ -359,11 +359,14 @@ export function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: 
   ) : compacting ? (
     <CompactingLabel createdAt={row.createdAt} />
   ) : row.createdAt ? (
-    <T>
-      Working for <WorkingTimer createdAt={row.createdAt} />
-    </T>
+    <>
+      {activityLabel === "Thinking" ? "Working" : activityLabel} for{" "}
+      <WorkingTimer createdAt={row.createdAt} />
+    </>
+  ) : activityLabel === "Thinking" ? (
+    "Working..."
   ) : (
-    <T>Working...</T>
+    `${activityLabel}…`
   );
   return (
     <div className="border-b border-border/60 pb-2 pt-1">

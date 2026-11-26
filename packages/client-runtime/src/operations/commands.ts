@@ -1,5 +1,8 @@
-import { msg } from "gt-i18n";
-import { translatableMessage } from "../errors/translatable.ts";
+import { resolveDefaultWorktreeBaseBranch } from "@t3tools/shared/git";
+import { requireMonitorGuardedSettle } from "../jones/threadMonitor/guardedSettle.ts";
+import type { GuardedThreadSettlement } from "@t3tools/contracts/jones/guardedThreadSettlement";
+import { requireQueuedRunStart } from "../jones/queue/commands.ts";
+export { promoteQueuedBatch, type PromoteQueuedBatchInput } from "../jones/queue/commands.ts";
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
 import {
   type ThreadLinkedPullRequest,
@@ -50,6 +53,9 @@ import {
   isRpcClientError,
   request,
 } from "../rpc/client.ts";
+import { freezePreparedTurnRequest } from "./jonesPreparedTurn.ts";
+import { translatableMessage } from "../errors/translatable.ts";
+import { msg } from "gt-i18n";
 import { repositoryCheckpointScopeIds } from "../state/threadRepositories.ts";
 
 interface CommandMetadata {
@@ -188,8 +194,11 @@ interface StartThreadBootstrap {
     readonly baseBranch?: string;
     readonly branch?: string;
     readonly startFromOrigin?: boolean;
-    /** Tracked repositories to give a worktree; absent leaves the choice to the server. */
     readonly repositories?: ReadonlyArray<{ readonly path: string }>;
+    readonly baseFreshness?: Extract<
+      OrchestrationV2ThreadLaunchWorkspaceStrategy,
+      { type: "worktree" }
+    >["baseFreshness"];
   };
   readonly conversation?: { readonly baseRef?: string };
   readonly runSetupScript?: boolean;
@@ -796,11 +805,9 @@ export const setThreadInteractionMode = Effect.fn("EnvironmentCommands.setThread
   },
 );
 
-// Servers without native resume dispatch command.text verbatim; newer ones clear
-// it when manualContinuationOfRunId is set.
 const MANUAL_CONTINUATION_FALLBACK_TEXT = "Continue where you left off.";
 
-export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(function* (
+export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTurn")(function* (
   input: StartThreadTurnInput,
 ) {
   input = structuredClone(input);
@@ -815,7 +822,6 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     input.message.attachments,
     attachments,
   );
-  const resend = input.resendAfterSocketLoss ?? true;
   const bootstrap = input.bootstrap?.createThread;
   const conversation = input.bootstrap?.conversation;
   let prepareWorktree = input.bootstrap?.prepareWorktree;
@@ -845,43 +851,60 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     const workspaceStrategy =
       conversation !== undefined
         ? {
-            type: "worktree" as const,
-            baseRef: prepareWorktree.baseBranch,
-            ...(prepareWorktree.branch === undefined ? {} : { branch: prepareWorktree.branch }),
-            ...(prepareWorktree.startFromOrigin === undefined
-              ? {}
-              : { startFromOrigin: prepareWorktree.startFromOrigin }),
-            ...(prepareWorktree.repositories === undefined
-              ? {}
-              : { repositories: prepareWorktree.repositories }),
+            type: "auto" as const,
+            ...conversation,
           }
         : prepareWorktree !== undefined
           ? {
               type: "worktree" as const,
               ...(prepareWorktree.baseBranch === undefined
                 ? {}
-                : { branch: bootstrap.branch }),
-            };
-    const launch = request(ORCHESTRATION_V2_WS_METHODS.launchThread, {
-      commandId,
-      creationSource: input.creationSource ?? "web",
-      threadId: input.threadId,
-      ...(bootstrap === undefined ? { reuseExistingThread: true } : {}),
-      projectId: thread.projectId,
-      title: input.titleSeed ?? thread.title,
-      generateTitle: input.titleSeed !== undefined,
-      modelSelection: input.modelSelection ?? thread.modelSelection,
-      runtimeMode: input.runtimeMode,
-      interactionMode: input.interactionMode,
-      workspaceStrategy,
-      initialMessage: {
-        messageId: input.message.messageId,
-        text: input.message.text,
-        ...(context ? { context } : {}),
-        attachments,
+                : { baseRef: prepareWorktree.baseBranch }),
+              ...(prepareWorktree.branch === undefined ? {} : { branch: prepareWorktree.branch }),
+              ...(prepareWorktree.baseFreshness === undefined
+                ? {}
+                : { baseFreshness: prepareWorktree.baseFreshness }),
+              ...(prepareWorktree.startFromOrigin === undefined
+                ? {}
+                : { startFromOrigin: prepareWorktree.startFromOrigin }),
+              ...(prepareWorktree.repositories === undefined
+                ? {}
+                : { repositories: prepareWorktree.repositories }),
+            }
+          : bootstrap?.worktreePath
+            ? {
+                type: "existing_worktree" as const,
+                worktreePath: bootstrap.worktreePath,
+                ...(bootstrap.branch === null ? {} : { branch: bootstrap.branch }),
+              }
+            : {
+                type: "root" as const,
+                ...(bootstrap?.branch === null || bootstrap?.branch === undefined
+                  ? {}
+                  : { branch: bootstrap.branch }),
+              };
+    return freezePreparedTurnRequest({
+      method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+      payload: {
+        commandId,
+        creationSource: input.creationSource ?? "web",
+        threadId: input.threadId,
+        ...(bootstrap === undefined ? { reuseExistingThread: true } : {}),
+        projectId: thread.projectId,
+        title: input.titleSeed ?? thread.title,
+        generateTitle: input.titleSeed !== undefined,
+        modelSelection: input.modelSelection ?? thread.modelSelection,
+        runtimeMode: input.runtimeMode,
+        interactionMode: input.interactionMode,
+        workspaceStrategy,
+        initialMessage: {
+          messageId: input.message.messageId,
+          text: input.message.text,
+          ...(context ? { context } : {}),
+          attachments,
+        },
       },
     });
-    return yield* resend ? resendAfterSocketLoss(launch) : launch;
   }
 
   const requestedMode = input.dispatchMode ?? "auto";
@@ -919,8 +942,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
         ...(input.freshContext ? { freshContext: true } : {}),
         dispatchMode: { type: "start_immediately" },
       },
-      resend,
-    );
+    });
   }
 
   const capabilities = (yield* getInitialServerConfig()).environment.capabilities;
@@ -1003,8 +1025,32 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       dispatchMode,
       ...(queuedToolBoundaryEligible ? { queuedToolBoundaryEligible: true } : {}),
     },
-    resend,
-  );
+  });
+});
+
+export type PreparedThreadTurn = Effect.Success<ReturnType<typeof prepareThreadTurn>>;
+
+export const dispatchPreparedThreadTurn = Effect.fn(
+  "EnvironmentCommands.dispatchPreparedThreadTurn",
+)(function* (prepared: PreparedThreadTurn) {
+  if (prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
+    return yield* request(prepared.method, prepared.payload);
+  }
+  return yield* request(prepared.method, prepared.payload);
+});
+
+export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(function* (
+  input: StartThreadTurnInput,
+) {
+  const prepared = yield* prepareThreadTurn(input);
+  if (
+    prepared.method === ORCHESTRATION_V2_WS_METHODS.dispatchCommand &&
+    prepared.payload.type === "message.dispatch"
+  ) {
+    return yield* dispatchMessage(prepared.payload, input.resendAfterSocketLoss ?? true);
+  }
+  const send = dispatchPreparedThreadTurn(prepared);
+  return yield* input.resendAfterSocketLoss === false ? send : resendAfterSocketLoss(send);
 });
 
 export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThreadTurn")(function* (
@@ -1260,15 +1306,14 @@ export const mergeThreadBack = Effect.fn("EnvironmentCommands.mergeThreadBack")(
 export const resumeThreadQueue = Effect.fn("EnvironmentCommands.resumeThreadQueue")(function* (
   input: ResumeThreadQueueInput,
 ) {
-  return yield* resendAfterSocketLoss(
-    dispatch({
-      ...(input.runId === undefined
-        ? { type: "queue.resume" as const }
-        : { type: "queued-run.start" as const, runId: input.runId }),
-      commandId: yield* allocateCommandId(input),
-      threadId: input.threadId,
-    }),
-  );
+  if (input.runId !== undefined) yield* requireQueuedRunStart();
+  return yield* dispatch({
+    ...(input.runId === undefined
+      ? { type: "queue.resume" as const }
+      : { type: "queued-run.start" as const, runId: input.runId }),
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+  });
 });
 
 export const promoteQueuedRun = Effect.fn("EnvironmentCommands.promoteQueuedRun")(function* (

@@ -107,8 +107,41 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
-  getDatabaseMigrationProgress: () =>
-    ipcRenderer.invoke(IpcChannels.GET_DATABASE_MIGRATION_PROGRESS_CHANNEL),
+  ...(process.isMainFrame && process.argv.includes("--jones-thread-monitor-publisher")
+    ? { threadMonitor: createThreadMonitorMainBridge() }
+    : {}),
+  previewCompanion: {
+    getState: () => ipcRenderer.invoke(CompanionChannels.GET_STATE),
+    configure: (input) => ipcRenderer.invoke(CompanionChannels.CONFIGURE, input),
+    setTicketProviderReady: (ready) =>
+      ipcRenderer.invoke(CompanionChannels.TICKET_PROVIDER_READY, ready),
+    completeTicket: (response) => ipcRenderer.invoke(CompanionChannels.COMPLETE_TICKET, response),
+    retry: () => ipcRenderer.invoke(CompanionChannels.RETRY),
+    onTicketRequest: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        if (typeof value !== "object" || value === null) return;
+        listener(value as Parameters<typeof listener>[0]);
+      };
+      ipcRenderer.on(CompanionChannels.TICKET_REQUEST, handler);
+      return () => ipcRenderer.removeListener(CompanionChannels.TICKET_REQUEST, handler);
+    },
+    onNotice: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        if (typeof value !== "object" || value === null) return;
+        listener(value as Parameters<typeof listener>[0]);
+      };
+      ipcRenderer.on(CompanionChannels.NOTICE, handler);
+      return () => ipcRenderer.removeListener(CompanionChannels.NOTICE, handler);
+    },
+    onState: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        if (typeof value !== "object" || value === null) return;
+        listener(value as Parameters<typeof listener>[0]);
+      };
+      ipcRenderer.on(CompanionChannels.STATE, handler);
+      return () => ipcRenderer.removeListener(CompanionChannels.STATE, handler);
+    },
+  },
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {
@@ -116,10 +149,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }
     return result as ReturnType<DesktopBridge["getAppBranding"]>;
   },
-  getRelayTelemetryEnabled: () => {
-    const enabled = ipcRenderer.sendSync(IpcChannels.GET_RELAY_TELEMETRY_ENABLED_CHANNEL);
-    return enabled === null ? null : enabled === true;
-  },
+  getPreviewAutomationRuntimeIdentity: () =>
+    ipcRenderer.invoke(IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL),
+  getRelayTelemetryEnabled: () =>
+    ipcRenderer.sendSync(IpcChannels.GET_RELAY_TELEMETRY_ENABLED_CHANNEL) === true,
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getClientPlatform: () => clientPlatform,
   restartAudioService: () => ipcRenderer.invoke(IpcChannels.RESTART_AUDIO_SERVICE_CHANNEL),

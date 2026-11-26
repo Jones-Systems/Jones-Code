@@ -1431,12 +1431,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
         onPauseCapture={(event) => onAudioPlaybackChange(item.id, event)}
         onEndedCapture={(event) => onAudioPlaybackChange(item.id, event)}
       >
-        <div
-          ref={observeLaneWidth}
-          // An HTML preview can run wider than this lane, which stays the chat column's width.
-          className={cn("chat-content-lane", item.kind !== "html-render" && "overflow-x-clip")}
-          data-timeline-root="true"
-        >
+        <div ref={observeLaneWidth} className="chat-content-lane" data-timeline-root="true">
           <AudioPreviewUnmountContext value={onAudioUnmount}>
             <TimelineRowContent row={item} />
           </AudioPreviewUnmountContext>

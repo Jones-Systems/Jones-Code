@@ -99,9 +99,14 @@ function collectModelTokens(text: string, inlineTokens: ReadonlyArray<ComposerIn
     .map((mention) => ({ ...mention, type: "model" as const }));
 }
 
-export function collectComposerPromptInlineTokens(text: string) {
-  const inlineTokens = collectComposerInlineTokens(text, { findMath: markdownMathRanges });
-  const models = collectModelTokens(text, inlineTokens);
+export function collectComposerPromptInlineTokens(text: string, queryCursor = text.length) {
+  const query = oneSpaceThreadQuery(text, queryCursor, (char) => /\s/u.test(char));
+  const allInlineTokens = collectComposerInlineTokens(text);
+  const inlineTokens = allInlineTokens.filter(
+    (token) => token.type !== "mention" || token.start !== query?.rangeStart,
+  );
+  // A mention held back for a thread query still claims its range, so a model never chips inside it.
+  const models = collectModelTokens(text, allInlineTokens);
   const tokens =
     models.length === 0
       ? inlineTokens

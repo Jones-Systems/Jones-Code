@@ -93,7 +93,24 @@ Download from [GitHub Releases](https://github.com/pingdotgg/t3code/releases) or
 
 ### The `t3` command
 
-The desktop app bundles `t3` and sets it up on first launch (manage anytime under **Settings → About → t3 command**). Use **Add to PATH** if needed, then open a new terminal.
+The desktop app includes the `t3` command-line tool. A new install sets it up
+on first launch; after an update, or any time, choose **Install** next to
+**t3 command** in **Settings → About**. On macOS and Linux it adds a `t3` link
+in `~/.local/bin` (or `~/bin`); on Windows it adds the app's command folder to
+your `PATH`. Open a new terminal afterwards. If the folder is not on your
+`PATH`, **Add to PATH** on the Welcome page or in **Settings → About** adds one
+line to your shell's startup file. **Remove** deletes the `t3` link, and the app
+does not add it again. On macOS and Linux it leaves the `PATH` line in place;
+delete the line marked `# Added by T3 Code` yourself if you no longer want it. If you already have another `t3`, it stays as it is.
+
+### Windows Subsystem for Linux
+
+Choose a WSL distro in **Settings → Sharing & access** to run agents and projects
+there. Install the provider CLIs inside that distro. T3 Code installs its own
+server runtime there automatically; the first launch after an app update can
+take longer.
+
+### Open a project from a terminal
 
 - **Open a folder in the running desktop app**: Run `t3 app` (or `t3 app ../my-project`) from a terminal, or drag folders from your file manager onto the desktop sidebar.
 

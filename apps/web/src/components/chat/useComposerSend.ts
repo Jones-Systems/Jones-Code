@@ -1,7 +1,13 @@
-import * as Equal from "effect/Equal";
-import { msg } from "gt-react";
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { m } from "~/i18n/messages";
+import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
+import { withMessageContext } from "../../jones/composer/messageContext";
+import {
+  resolveFirstSendWorktreePreparation,
+  usesVerifiedDefault,
+} from "../../jones/composer/firstSendWorktree";
+import type { EnvironmentContextRecord } from "@t3tools/contracts";
+import { pendingSends } from "../../jones/pendingSends/store";
+import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
+import { createPendingComposerRecovery } from "../../jones/pendingSends/composerRecovery";
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
 import { readWorktreeBaseBranch } from "../../worktreeRepositoryChoiceStore";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
@@ -70,8 +76,7 @@ import { recordPromptSent } from "../GitHubStarPrompt";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { randomUUID, newMessageId, newThreadId } from "~/lib/utils";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
-import { readPendingWorkspaceDefault } from "../../lib/draftWorkspaceDefaults";
-import { buildThreadRouteParams } from "../../threadRoutes";
+import { buildThreadRouteParams, isThreadRoutePathname } from "../../threadRoutes";
 import {
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
@@ -164,6 +169,12 @@ import type { useQueuedRunEdit } from "./useQueuedRunEdit";
 import type { useTimelineFollow } from "./useTimelineFollow";
 import type { useUsageLimitsPanel } from "./useUsageLimitsPanel";
 import type { useWorktreeSetup } from "./useWorktreeSetup";
+import { m } from "~/i18n/messages";
+import { msg } from "gt-react";
+import { restoreComposerDraft } from "./chatViewSend";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import * as Equal from "effect/Equal";
+import { readPendingWorkspaceDefault } from "../../lib/draftWorkspaceDefaults";
 
 const ENVIRONMENT_UNAVAILABLE_SEND_TOAST_TRAIL_SIZE = 3;
 
@@ -291,8 +302,9 @@ interface ComposerSendInput {
   readonly setKeepFullHistory: (threadKey: string, keep: boolean) => void;
   readonly anchorNewTurn: TimelineFollow["anchorNewTurn"];
   readonly acknowledgeActiveThreadWoke: () => void;
-  /** Resolves true once the side chat started and got the message. */
-  readonly onSideChat?: ((message: SideChatMessage | undefined) => Promise<boolean>) | undefined;
+  readonly onNewThreadAccepted?: ((thread: ScopedThreadRef) => void) | undefined;
+  /** Resolves true once the side chat started and got the prompt. */
+  readonly onSideChat?: ((prompt: string) => Promise<boolean>) | undefined;
   /** Refuses `/side` with this reason and keeps the draft. */
   readonly sideChatDisabledReason: string | null;
   readonly handleNewThreadInActiveProject: () => void;
@@ -840,8 +852,31 @@ export function useComposerSend(input: ComposerSendInput) {
       : promptAtSend;
     const replyTo =
       useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.replyTo ?? null;
-    const promptForSend = withReplyReference(draftPrompt, replyTo);
-    if (warnStrandedThreadContext(promptForSend, composerThreadContexts)) return;
+    // The reply leads the message, so its card sits above the text it is about. Text that
+    // already points at that response, from a pasted card, keeps its one reference.
+    const promptForSend =
+      replyTo && !collectInlineContextIds(draftPrompt).includes(replyTo.contextId)
+        ? `${formatInlineContextReference(responseContextReference(replyTo))} ${draftPrompt}`
+        : draftPrompt;
+    const strandedThread = threadContextsOutsideEnvironment({
+      text: promptForSend,
+      records: composerThreadContexts,
+      environmentId,
+      linkedEnvironments,
+    })[0];
+    if (strandedThread) {
+      const owner =
+        readEnvironmentPresentation(strandedThread.environmentId)?.entry.target.label ??
+        "its machine";
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Attached thread context unavailable",
+          description: `Reconnect to ${owner} and reattach "${strandedThread.title}", or remove it to send.`,
+        }),
+      );
+      return;
+    }
     if (queuedRunEdit.isEditing) {
       // A queued message stays in its thread, so saving `/side` would send it to main.
       if (!directAnnotation && parseSideChatCommand(promptAtSend)) {
@@ -1056,17 +1091,31 @@ export function useComposerSend(input: ComposerSendInput) {
       dispatchMode: input.steeringBlockedByQuestion ? "queue" : dispatchMode,
       freshContext: freshArm !== undefined,
     });
-    if (missingWorktreeBaseBranch) {
-      setThreadError(
-        threadIdForSend,
-        m(msg("Select a base branch before sending in New worktree mode.")),
-      );
+    const worktreePreparation = resolveFirstSendWorktreePreparation({
+      verifiedDefault: usesVerifiedDefault(
+        appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId),
+        activeProject.id,
+      ),
+      isFirstMessage: !sendQueuesBehindSetup && (!isServerThread || activeMessageCount === 0),
+      sendEnvMode: effectiveSendEnvMode,
+      worktreePath: activeThread.worktreePath,
+      projectCwd: activeProject.workspaceRoot,
+      baseBranch: activeThreadBranch,
+      startFromOrigin,
+    });
+    const shouldCreateWorktree = worktreePreparation !== undefined;
+    if (
+      missingWorktreeBaseBranch &&
+      appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+        .worktreeDefaultBase !== true
+    ) {
+      setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
     }
     // A project may set its worktrees up with its own commands, which run only once a person
     // has approved their text. Asking takes as long as the user does, so the draft is compared
     // across it like any other wait before a send.
-    if (baseBranchForWorktree || multipleModelSelections !== null) {
+    if (shouldCreateWorktree || multipleModelSelections !== null) {
       const draftBeforeApproval = useComposerDraftStore
         .getState()
         .getComposerDraft(composerDraftTarget);
@@ -1848,10 +1897,7 @@ export function useComposerSend(input: ComposerSendInput) {
               ...(worktreePreparation
                 ? {
                     prepareWorktree: {
-                      projectCwd: activeProject.workspaceRoot,
-                      baseBranch: baseBranchForWorktree,
-                      ...(startFromOrigin ? { startFromOrigin: true } : {}),
-                      ...(worktreeRepositories ? { repositories: worktreeRepositories } : {}),
+                      ...worktreePreparation,
                     },
                     runSetupScript: true,
                   }
@@ -2016,32 +2062,9 @@ export function useComposerSend(input: ComposerSendInput) {
       ) {
         toastManager.add(
           stackedThreadToast({
-            type: "error",
-            title: isAtomCommandInterrupted(failure)
-              ? m(msg("Message may not have been sent"))
-              : m(msg("Message not sent")),
-            description: hasText
-              ? m(msg("Your new draft was kept. Copy the failed message to send it again."))
-              : m(msg("Your new draft was kept.")),
-            // The toast holds the only trace of the failed message, so it stays until dismissed.
-            timeout: 0,
-            data: { hideCopyButton: true },
-            ...(hasText
-              ? {
-                  actionProps: {
-                    children: m(msg("Copy message")),
-                    onClick: () => {
-                      void writeTextToClipboard(failedText, {
-                        target: "failed message",
-                        unavailableMessage: msg(
-                          "Clipboard API is unavailable while copying failed message.",
-                        ),
-                        failureMessage: msg("Failed to copy failed message to the clipboard."),
-                      }).catch(() => undefined);
-                    },
-                  },
-                }
-              : {}),
+            type: "warning",
+            title: "Message may not have been sent",
+            description: "Your new draft was kept.",
           }),
         );
       }
@@ -2064,7 +2087,7 @@ export function useComposerSend(input: ComposerSendInput) {
                   : m(msg("Could not start thread")),
               description: thrownErrorMessage(error, m) ?? m(msg("Failed to send message.")),
               actionProps: {
-                children: m(msg("Open draft")),
+                children: creationAccepted ? "Open thread" : "Open draft",
                 onClick: () => {
                   if (creationAccepted) {
                     void navigate({
@@ -2141,8 +2164,11 @@ export function useComposerSend(input: ComposerSendInput) {
     if (!draftReady || !sameRoute) return;
     return sendWithEnvironmentRefreshLatest(...args);
   };
-  // No load-balancing refresh: it bails once the draft is no longer displayed, which is the
-  // only time a detached send runs, so the draft keeps the environment it was dictated for.
-  const captureDetachedSend = useStableCallback(() => onSend);
-  return { onSend: onSendWithRouting, captureDetachedSend };
+  return {
+    onSend: onSendWithRouting,
+    // Keep a detached dictation send bound to the original draft and environment.
+    captureDetachedSend: useStableCallback(() => onSend),
+    importedHistoryChoice: importedHistory.banner,
+    onImportedHistoryChoice: importedHistory.onImportedHistoryChoice,
+  };
 }

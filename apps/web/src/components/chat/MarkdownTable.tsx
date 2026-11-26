@@ -10,7 +10,7 @@ import {
 } from "../../markdown-clipboard";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
-import { ScrollArea } from "../ui/scroll-area";
+import { MarkdownTableExpansion } from "../../jones/markdownTables/useMarkdownTableExpansion";
 import { reportMarkdownActionFailure, type TableCopyFormat } from "./markdownActionFailure";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
@@ -23,6 +23,7 @@ const TABLE_COPY_SERIALIZERS: Record<TableCopyFormat, (table: Element) => string
 export function MarkdownTable({ children, ...props }: ComponentProps<"table">) {
   const gt = useGT();
   const containerRef = useRef<HTMLDivElement | null>(null);
+
   const { copyToClipboard, isCopied: copied } = useCopyToClipboard<TableCopyFormat>({
     timeout: 1200,
     onError: (cause, format) =>

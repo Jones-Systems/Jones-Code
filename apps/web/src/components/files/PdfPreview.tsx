@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import {
   clampWorkspacePdfPosition,
@@ -52,12 +52,14 @@ export default function PdfPreview({
   onRetry,
   initialPosition,
   onPositionChange,
+  actions,
 }: {
   readonly src: string;
   readonly title: string;
   readonly initialPosition?: WorkspacePdfPosition | (() => WorkspacePdfPosition) | undefined;
   readonly onPositionChange?: ((position: WorkspacePdfPosition) => void) | undefined;
   readonly onRetry?: (() => void | Promise<void>) | undefined;
+  readonly actions?: ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const pagesRef = useRef<HTMLDivElement>(null);
@@ -411,6 +413,7 @@ export default function PdfPreview({
         >
           Reset
         </Button>
+        {actions}
       </div>
       {searchOpen && (
         <div role="search" className="flex shrink-0 items-center gap-1 border-b px-2 py-1">

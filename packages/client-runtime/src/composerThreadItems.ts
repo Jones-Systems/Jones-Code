@@ -9,7 +9,11 @@ import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/sh
 
 import type { EnvironmentThreadShell } from "./state/models.ts";
 import { threadSearchSubject, type ThreadSearchShell } from "./state/threadSearch.ts";
-import { mFallback, msg } from "gt-i18n";
+import {
+  matchJonesComposerThreadItems,
+  type JonesComposerThreadMatchInput,
+} from "./jones/composerThreadMatching.ts";
+import { msg, mFallback } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
 
 const COMPOSER_THREAD_RESULT_LIMIT = 5;
@@ -37,7 +41,7 @@ export function matchComposerThreadItems(
  * on its own server and on the machines it links to, so candidates stay within those, and a
  * linked machine's threads say which machine they are on.
  */
-export function matchComposerThreadItems(
+export function matchUpstreamComposerThreadItems(
   input: {
     shells: ReadonlyArray<ComposerThreadCandidate>;
     environmentId: EnvironmentId;

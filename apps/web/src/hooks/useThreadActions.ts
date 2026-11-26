@@ -862,13 +862,14 @@ export function useThreadActions() {
     const nowIso = new Date().toISOString();
     const wokeAt = resolved ? threadWokeAt(resolved.thread, { now: nowIso }) : null;
     const undoPlan = ThreadUndo.planThreadUndo("settle", resolved?.thread);
-    // Jones: a server with native restore undoes exactly this settle command.
-    const settleCommandId = newSettleCommandId();
-    const nativeRestore = readEnvironmentSupportsSettlementRestore(target.environmentId);
+    // Jones: a caller-owned ID requires a server receipt before offering exact Undo.
+    const settleCommandId = readEnvironmentSupportsSettlementRestore(target.environmentId)
+      ? newSettleCommandId()
+      : undefined;
     const settleWasNoop =
       resolved?.thread.settledOverride === "settled" &&
       resolved.thread.settledAt != null &&
-      !wasPinned;
+      resolved.thread.pinnedAt == null;
 
     // An older unpin/snooze Undo would re-pin or re-snooze, and the server
     // treats either as a promotion that un-settles; settling supersedes them.
@@ -877,7 +878,10 @@ export function useThreadActions() {
     const action = ThreadUndo.begin("settle", scopedThreadKey(target));
     const result = await settleThreadMutation({
       environmentId: target.environmentId,
-      input: { threadId: target.threadId, commandId: settleCommandId },
+      input: {
+        threadId: target.threadId,
+        ...(settleCommandId === undefined ? {} : { commandId: settleCommandId }),
+      },
     });
     if (result._tag !== "Success") {
       action.finish();
@@ -889,7 +893,10 @@ export function useThreadActions() {
     showThreadUndoNotice({
       action: "Settled",
       claim: action,
-      undo: () => runUndoPlan(target, undoPlan),
+      undo: () =>
+        settleCommandId === undefined
+          ? runUndoPlan(target, undoPlan)
+          : restoreObservedSettlement(target, settleCommandId, { settleWasNoop }),
       failureTitle: m(msg("Failed to undo settle")),
     });
     return result;

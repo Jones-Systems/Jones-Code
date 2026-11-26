@@ -335,7 +335,13 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     savedThreadId: task.threadId ?? "",
     threadMode: scheduledTaskThreadMode(task),
     workspaceMode: task.workspaceStrategy.type,
-    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "",
+    ...(task.workspaceStrategy.type === "auto" && task.workspaceStrategy.branch !== undefined
+      ? { autoBranch: task.workspaceStrategy.branch }
+      : {}),
+    baseRef:
+      task.workspaceStrategy.type === "worktree" || task.workspaceStrategy.type === "auto"
+        ? (task.workspaceStrategy.baseRef ?? "")
+        : "main",
     startFromOrigin:
       task.workspaceStrategy.type === "worktree"
         ? (task.workspaceStrategy.startFromOrigin ?? false)

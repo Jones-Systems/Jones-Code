@@ -869,6 +869,10 @@ export const make = Effect.gen(function* BrowserSessionMake() {
                 return;
               }
               if (permission === "clipboard-read" || permission === "geolocation") {
+                if (isCompanionGuest(webContents)) {
+                  callback(false);
+                  return;
+                }
                 confirmOriginPermission(
                   webContents,
                   permission,
@@ -891,11 +895,12 @@ export const make = Effect.gen(function* BrowserSessionMake() {
             },
           );
           browserSession.setPermissionCheckHandler(
-            (_webContents, permission, requestingOrigin, details) => {
+            (webContents, permission, requestingOrigin, details) => {
               if (permission === "clipboard-read" || permission === "geolocation") {
                 return (
+                  !isCompanionGuest(webContents) &&
                   permissionDecisions[permission].get(permissionOrigin(requestingOrigin) ?? "") ===
-                  true
+                    true
                 );
               }
               if (permission === "media") {

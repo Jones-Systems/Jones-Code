@@ -69,7 +69,7 @@ export function CustomSnoozeDialogHost() {
   return request ? <CustomSnoozeDialog subject={request.subject} /> : null;
 }
 
-function CustomSnoozeDialog() {
+function CustomSnoozeDialog({ subject }: { subject: Request["subject"] }) {
   const gt = useGT();
   const locale = useFormattingLocale();
   const id = useId();
@@ -116,7 +116,9 @@ function CustomSnoozeDialog() {
               <T>Custom snooze</T>
             </DialogTitle>
             <DialogDescription>
-              <T>Choose when snoozed threads return to your inbox.</T>
+              {subject === "workstream"
+                ? gt("Choose when this Workstream returns to your sidebar.")
+                : gt("Choose when snoozed threads return to your inbox.")}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>

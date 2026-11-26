@@ -1,5 +1,8 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { contextMenuSourceOf } from "../contextMenuSource";
+import { isShellRunTerminal } from "@t3tools/contracts/jones/shellDestinationFence";
+import {
+  TerminalContentsFrame,
+  TerminalCopyButton,
+} from "../jones/shellDestination/TerminalContentsFrame";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { msg, T, useGT, useMessages } from "gt-react";
@@ -113,6 +116,8 @@ import {
   resolveTerminalFontSizePreference,
   TYPOGRAPHY_ADVANCED_STORAGE_KEY,
 } from "../appearanceFonts";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { contextMenuSourceOf } from "../contextMenuSource";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -1475,7 +1480,8 @@ function TerminalSplitPanes({
                 threadRef={threadRef}
                 threadId={threadId}
                 terminalId={terminalId}
-                terminalLabel={terminalLabelById.get(terminalId) ?? gt("Terminal")}
+                contentsRef={terminalId === activeTerminalId ? activeContentsRef : undefined}
+                terminalLabel={terminalLabelById.get(terminalId) ?? "Terminal"}
                 cwd={terminalLaunchLocation.cwd}
                 {...(terminalLaunchLocation.worktreePath !== undefined
                   ? { worktreePath: terminalLaunchLocation.worktreePath }

@@ -71,6 +71,16 @@ describe("searchSettings", () => {
     }
   });
 
+  it("finds the Maintenance cleanup controls by propose, retire and reclaim", () => {
+    for (const query of ["propose", "retire", "retirement", "reclaim"]) {
+      expect(searchSettings(query).map((item) => item.id)).toContain("storage-delete-now");
+    }
+    expect(searchSettings("retire")[0]).toMatchObject({
+      id: "storage-delete-now",
+      to: "/settings/maintenance",
+    });
+  });
+
   it("shows the Secrets page in nav and search only when an environment enables secret providers", () => {
     const availability = {
       hasCloudPublicConfig: false,

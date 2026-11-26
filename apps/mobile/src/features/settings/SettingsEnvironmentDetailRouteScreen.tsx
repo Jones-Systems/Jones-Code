@@ -1,6 +1,9 @@
-import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
-import { serverUpdateFailureText } from "@t3tools/client-runtime/state/server";
-import { T, useGT, useMessages, Var } from "gt-react-native";
+import { deviceDisplayLabel } from "@t3tools/contracts/jones/devicePresentation";
+import { JonesBuildVersion } from "../../jones/updates/JonesBuildVersion";
+import { mobileJonesBuildRef, mobileJonesBuildDescription } from "../../jones/updates/buildVersion";
+import { WorkModeSettings } from "../../jones/workMode/WorkModeSettings";
+import { jonesUpdates } from "../../jones/updates/jonesUpdates";
+import { JonesUpdateControls } from "../../jones/updates/JonesUpdateControls";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -43,6 +46,9 @@ import {
   supportsEnvironmentUpdate,
 } from "./environment-maintenance";
 import { environmentReleaseCheckAtom, releaseCheckValue } from "./environmentUpdateCheck";
+import { useGT, useMessages, T, Var } from "gt-react-native";
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
+import { serverUpdateFailureText } from "@t3tools/client-runtime/state/server";
 
 export function SettingsEnvironmentDetailRouteScreen({
   route,
@@ -141,18 +147,8 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
     )
       return;
     Dialog.alert(
-      environment
-        ? gt("Update {environment}?", { environment: environment.environmentLabel })
-        : gt("Update environment?"),
-      capabilities.serverSelfUpdate === "desktop-managed"
-        ? gt(
-            "Install {product} {version}. The desktop app will close and relaunch. Running threads may be interrupted.",
-            { product: "T3 Code", version: targetVersion },
-          )
-        : gt(
-            "Install {product} {version}. The server will restart and reconnect. Running threads may be interrupted.",
-            { product: "T3 Code", version: targetVersion },
-          ),
+      `Update ${environment?.environmentLabel ?? "environment"}?`,
+      `Install T3 Code ${buildDescription(targetVersion)}. ${capabilities.serverSelfUpdate === "desktop-managed" ? "The desktop app will close and relaunch." : "The server will restart and reconnect."} Running threads may be interrupted.`,
       [
         { text: gt("Cancel"), style: "cancel" },
         {
@@ -201,7 +197,13 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
   }
 
   return (
-    <SettingsScreen title={environment?.environmentLabel ?? gt("Environment")}>
+    <SettingsScreen
+      title={deviceDisplayLabel(
+        environment?.environmentLabel ?? "Environment",
+        config?.environment.platform.machine,
+        config?.settings.deviceDisplayName,
+      )}
+    >
       <ScreenScrollView
         contentInsetAdjustmentBehavior="automatic"
         className="flex-1"
@@ -214,7 +216,12 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
           </Text>
         ) : (
           <>
-            <SettingsSection title={gt("Connection")}>
+            <SettingsSection title="Connection">
+              <Text className="text-xs text-foreground-muted">
+                Original: {environment.environmentLabel} · {environmentId}. Connection Label below
+                is saved only on this client; the shared device display name is managed in web or
+                desktop Connections settings.
+              </Text>
               <ConnectionEnvironmentRow
                 environment={environment}
                 expanded={connectionExpanded}
@@ -267,11 +274,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
               <>
                 <SettingsSection title="T3 Code">
                   <View className="gap-1 p-4">
-                    <Text className="text-base text-foreground">
-                      <T>
-                        Version <Var>{version}</Var>
-                      </T>
-                    </Text>
+                    <JonesBuildVersion build={buildRef(config.environment.serverVersion)} />
                     {managedPolicy ? (
                       <Text className="text-sm text-foreground-muted">
                         <T>
@@ -296,10 +299,8 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                     {checkedRelease && !updatesDenial ? (
                       <Text className="text-sm text-foreground-muted">
                         {checkedRelease.targetVersion
-                          ? gt("Version {version} is available.", {
-                              version: checkedRelease.targetVersion,
-                            })
-                          : gt("You are up to date.")}
+                          ? `Version ${buildDescription(checkedRelease.targetVersion)} is available.`
+                          : "You are up to date."}
                       </Text>
                     ) : null}
                     {checkedRelease?.targetVersion &&
@@ -346,14 +347,15 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                   supportsEnvironmentUpdate(config.environment.capabilities) ? (
                     <SettingsActionRow
                       icon="arrow.up.circle"
-                      label={gt("Update to {version}", { version: checkedRelease.targetVersion })}
+                      label={`Update to ${buildDescription(checkedRelease.targetVersion)}`}
                       disabled={disabled}
                       loading={pending === "server" || running}
                       onPress={requestServerUpdate}
                     />
                   ) : null}
                 </SettingsSection>
-                <SettingsSection title={gt("Providers")}>
+                <JonesUpdateControls environmentId={environmentId} allowed={!disabled} />
+                <SettingsSection title="Providers">
                   <SettingsActionRow
                     icon="arrow.clockwise"
                     label={gt("Refresh providers")}

@@ -562,29 +562,18 @@ export const make = Effect.gen(function* () {
   const relayFor = (tab: AttachedTab) => {
     if (tab.relay) return tab.relay;
     const { webContents, debugger: debuggee, cookiesCleared } = tab.debuggee;
-    const routeHidden = routeMouseToFrame(debuggee, tab.frameSessions, watchFrameDetach(tab));
-    // Read when the pointer queue reaches the event: a guest the window shows routes its own input.
-    const routeMouse: PointerRoute = (params) =>
-      shownTabs.get(keyOf(tab.key)) === true ? Promise.resolve(null) : routeHidden(params);
-    // The annotation overlay lives in the guest and takes any input sent there as the
-    // person's at this window, so relayed input waits until they finish.
     const annotated = (method: string) =>
       method.startsWith("Input.") && tab.debuggee.annotating?.() === true;
-    const send = async (method: string, params: Record<string, unknown>, sessionId?: string) => {
-      // Asked again at each dispatch: an annotation can start while the input waits its turn.
-      const refuseAnnotated = () => {
+    const send = async (
+      method: string,
+      params: Record<string, unknown>,
+      sessionId: string | undefined,
+      assertCurrent: () => void,
+    ) => {
+      const result = await sendPageCommand(webContents, debuggee, method, params, sessionId, () => {
+        assertCurrent();
         if (annotated(method)) throw new Error(ANNOTATING_MESSAGE);
-      };
-      refuseAnnotated();
-      const result = await sendPageCommand(
-        webContents,
-        debuggee,
-        method,
-        params,
-        sessionId,
-        routeMouse,
-        refuseAnnotated,
-      );
+      });
       if (method === "Network.clearBrowserCookies") await cookiesCleared?.();
       return result;
     };

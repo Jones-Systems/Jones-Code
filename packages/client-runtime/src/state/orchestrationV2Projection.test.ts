@@ -1198,6 +1198,54 @@ it("requested runtime stop preserves active attachment and projection until its 
   expect(next?.thread.activeProviderThreadId).toBe(activeProviderThreadId);
 });
 
+it("projects a captured Stop for its attributed run without adding interrupt history", () => {
+  const active = {
+    ...run,
+    providerThreadId: ProviderThreadId.make("provider-thread:captured-stop"),
+    activeAttemptId: RunAttemptId.make("attempt:captured-stop"),
+    status: "starting",
+    startedAt: null,
+    completedAt: null,
+  } satisfies OrchestrationV2Run;
+  const projection = { ...emptyProjection, runs: [active] };
+  const occurredAt = DateTime.add(now, { seconds: 1 });
+  const event = {
+    id: EventId.make("event:captured-stop"),
+    type: "provider-session.detach-requested",
+    threadId,
+    runId,
+    occurredAt,
+    payload: { providerSessionId: ProviderSessionId.make("session:captured-stop") },
+  } satisfies OrchestrationV2DomainEvent;
+  const next = applyOrchestrationV2ProjectionEvent(projection, event);
+  expect(next).toEqual({ ...projection, capturedRuntimeStopRunId: runId });
+  expect(applyOrchestrationV2ProjectionEvent(next, event)).toBe(next);
+  expect(
+    applyOrchestrationV2ProjectionEvent(next, {
+      ...event,
+      type: "run.updated",
+      payload: {
+        ...active,
+        status: "running",
+        startedAt: occurredAt,
+        activeAttemptId: RunAttemptId.make("attempt:replacement"),
+      },
+    })?.capturedRuntimeStopRunId,
+  ).toBe(runId);
+
+  for (const payload of [
+    { ...active, status: "interrupted", completedAt: occurredAt },
+    { ...active, providerThreadId: ProviderThreadId.make("provider-thread:replacement") },
+  ] satisfies ReadonlyArray<OrchestrationV2Run>) {
+    const updated = applyOrchestrationV2ProjectionEvent(next, {
+      ...event,
+      type: "run.updated",
+      payload,
+    });
+    expect(updated?.capturedRuntimeStopRunId).toBeUndefined();
+  }
+});
+
 describe("provider-thread.updated", () => {
   const providerThread = (
     id: string,

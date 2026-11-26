@@ -1,4 +1,23 @@
-import { copySnapshot } from "./copySnapshot";
+import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
+import {
+  insertWorkstreamReference,
+  type WorkstreamReference,
+} from "../../jones/workstreams/workstreamReferenceDrop";
+import type { ReactNode } from "react";
+import { requiredComposerProvider } from "../../jones/threadConfiguration/composerSelection";
+import { ComposerShortcutRails } from "../../jones/composer/ComposerShortcutPlate";
+import {
+  ComposerLayoutBody,
+  ComposerLayoutActions,
+  composerLayoutPromptClassName,
+  composerLayoutPlaceholderClassName,
+} from "../../jones/composer/ComposerLayout";
+import { ReasoningEffortShortcuts } from "../../jones/composer/ReasoningEffortShortcuts";
+import { ProviderInstanceShortcuts } from "../../jones/composer/ProviderInstanceShortcuts";
+import { useComposerShortcutRails } from "../../jones/composer/composerShortcutRails";
+import { useComposerCardViewport } from "../../jones/composer/useComposerCardViewport";
+import { getComposerEffectiveTraitsOptions } from "./composerProviderState";
+import type { ComposerModelSelectOptions } from "../../jones/composer/composerModelEffortShortcuts";
 import { VoiceInputSetup } from "./VoiceInputSetup";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
@@ -68,8 +87,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { msg, T, useGT, useMessages, Var } from "gt-react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import {
   clampCollapsedComposerCursor,
   type ComposerTrigger,
@@ -305,6 +323,8 @@ import { ComposerControlsBar } from "./ComposerControlsBar";
 import { composerCommandKeyHandler } from "./composerCommandKey";
 import { promptSuggestionToAccept, usePromptSuggestion } from "./usePromptSuggestion";
 import { useFreshSessionArmed } from "./freshSessionArms";
+import { useGT, useMessages, T, Var, msg } from "gt-react";
+import { copySnapshot } from "./copySnapshot";
 
 function consumePasteAsTextShortcut(deadline: { current: number }): boolean {
   const armed = Date.now() <= deadline.current;
@@ -1157,6 +1177,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const pasteAsTextShortcutUntilRef = useRef(0);
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerAttachInputRef = useRef<HTMLInputElement>(null);
+  const shortcutBandRef = useRef<HTMLDivElement>(null);
+  const accountShortcutGroupRef = useRef<HTMLDivElement>(null);
+  const effortShortcutGroupRef = useRef<HTMLDivElement>(null);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const providerInputRejectedRef = useRef(false);
   const composerSelectLockRef = useRef(false);
@@ -2603,12 +2626,33 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ? promptSuggestion
       : null;
 
-  const onComposerCommandKey = (key: string, event: KeyboardEvent, isTaskItem?: boolean) => {
-    if (key === "Escape" && composerSendHeld && !event.isComposing) {
-      cancelHeldSend();
-      return true;
-    }
-    return composerCommandKeyHandler({
+  const onComposerCommandKey = (
+    ...args: Parameters<ReturnType<typeof composerCommandKeyHandler>>
+  ) =>
+    composerCommandKeyHandler({
+      steeringBlockedByQuestion,
+      hasDraftContext: () =>
+        composerImagesRef.current.length > 0 ||
+        composerFilesRef.current.length > 0 ||
+        composerTerminalContextsRef.current.length > 0 ||
+        composerPreviewAnnotations.length > 0 ||
+        composerReviewComments.length > 0 ||
+        composerThreadContexts.length > 0 ||
+        countPreparingComposerImages(attachmentTargetKey) > 0 ||
+        pendingDraftWork.has(attachmentTargetKey),
+      queueActionDisabled:
+        noProviderAvailable ||
+        isSendDisabled ||
+        isSendBusy ||
+        isRevertingCheckpoint === true ||
+        projectSelectionRequired ||
+        environmentUnavailable !== null ||
+        isEditingQueuedMessage ||
+        activePendingApproval !== null ||
+        pendingUserInputs.length > 0 ||
+        Boolean(questionCard) ||
+        steeringBlockedByQuestion,
+      onSteerNextQueuedMessage,
       keybindings,
       getShortcutContext,
       sendShortcut: settings.sendShortcut,
@@ -2646,8 +2690,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       submitComposer,
       promptSuggestion: offeredPromptSuggestion,
       dismissPromptSuggestion,
-    })(key, event, isTaskItem);
-  };
+    })(...args);
 
   const {
     stashQueue,
@@ -2727,55 +2770,55 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ? 0
       : expandedControlsIconOnlyBlockCount;
   const composerControls = (
-    <RuntimeModeLimitsTargetContext value={runtimeModeLimitsFor}>
-      <ComposerControlsBar
-        environmentId={environmentId}
-        workspaceCwd={gitCwd}
-        routeKind={typeof composerDraftTarget === "string" ? "draft" : routeKind}
-        routeThreadRef={routeThreadRef}
-        draftId={typeof composerDraftTarget === "string" ? composerDraftTarget : draftId}
-        selectedProvider={selectedProvider}
-        selectedInstanceId={selectedInstanceId}
-        selectedModel={selectedModel}
-        selectedProviderModels={selectedProviderModels}
-        composerModelOptions={composerModelOptions}
-        reportedModelSelection={reportedModelSelection}
-        promptUltrathink={promptUltrathink}
-        onPromptEdit={editPromptFromTraitsStable}
-        compatibleRuntimeMode={compatibleRuntimeMode}
-        defaultRuntimeMode={props.defaultRuntimeMode}
-        compatibleRuntimeModeOptions={compatibleRuntimeModeOptions}
-        handleRuntimeModeChange={handleRuntimeModeChange}
-        composerControlsCollapsed={composerControlsCollapsed}
-        effortDisplay={settings.effortDisplay}
-        permissionsShownInStrip={props.permissionsShownInStrip}
-        composerControlsHidden={composerMenusClosed}
-        restingHiddenBlockCount={restingHiddenBlockCount}
-        iconOnlyBlockCount={iconOnlyBlockCount}
-        showProviderUnavailable={showProviderUnavailable}
-        providerSetupInstanceId={providerSetupInstanceId}
-        onOpenProviderSetup={onOpenProviderSetup}
-        providerCatalogPending={providerCatalogPending}
-        isSendBusy={isSendBusy}
-        multipleModelsEnabled={routeKind === "draft" && supportsMultipleModels}
-        multipleModelSelections={multipleModelSelections}
-        onMultipleModelSelectionsChange={handleMultipleModelSelectionsChangeStable}
-        selectedModelSelection={selectedModelSelection}
-        onProviderModelSelect={onProviderModelSelect}
-        activeThreadModelSelection={activeThreadModelSelection}
-        selectedModelForPickerWithCustomFallback={selectedModelForPickerWithCustomFallback}
-        lockedProvider={lockedProvider}
-        lockedContinuationGroupKey={lockedContinuationGroupKey}
-        providerInstanceEntries={providerInstanceEntries}
-        keybindings={keybindings}
-        modelOptionsByInstance={modelOptionsByInstance}
-        terminalOpen={terminalOpen}
-        modelPickerOpen={isComposerModelPickerOpen}
-        onModelPickerOpenChange={setIsComposerModelPickerOpen}
-        modelPickerIconClassName={composerProviderState.modelPickerIconClassName}
-        getModelDisabledReason={getModelDisabledReason}
-      />
-    </RuntimeModeLimitsTargetContext>
+    <ComposerControlsBar
+      activeProjectDefaultModelSelection={activeProjectDefaultModelSelection}
+      configuredDefaultDriverKind={configuredDefaultDriverKind}
+      environmentId={environmentId}
+      workspaceCwd={gitCwd}
+      routeKind={routeKind}
+      routeThreadRef={routeThreadRef}
+      draftId={draftId}
+      selectedProvider={selectedProvider}
+      selectedInstanceId={selectedInstanceId}
+      selectedModel={selectedModel}
+      selectedProviderModels={selectedProviderModels}
+      composerModelOptions={composerModelOptions}
+      reportedModelSelection={reportedModelSelection}
+      promptUltrathink={promptUltrathink}
+      onPromptEdit={editPromptFromTraitsStable}
+      compatibleRuntimeMode={compatibleRuntimeMode}
+      defaultRuntimeMode={props.defaultRuntimeMode}
+      compatibleRuntimeModeOptions={compatibleRuntimeModeOptions}
+      handleRuntimeModeChange={handleRuntimeModeChange}
+      composerControlsCollapsed={composerControlsCollapsed}
+      effortDisplay={settings.effortDisplay}
+      permissionsShownInStrip={props.permissionsShownInStrip}
+      composerControlsHidden={composerControlsHidden}
+      restingHiddenBlockCount={restingHiddenBlockCount}
+      iconOnlyBlockCount={iconOnlyBlockCount}
+      showProviderUnavailable={showProviderUnavailable}
+      providerSetupInstanceId={providerSetupInstanceId}
+      onOpenProviderSetup={onOpenProviderSetup}
+      providerCatalogPending={providerCatalogPending}
+      isSendBusy={isSendBusy}
+      multipleModelsEnabled={routeKind === "draft" && supportsMultipleModels}
+      multipleModelSelections={multipleModelSelections}
+      onMultipleModelSelectionsChange={setMultipleModelSelections}
+      selectedModelSelection={selectedModelSelection}
+      onProviderModelSelect={onProviderModelSelect}
+      activeThreadModelSelection={activeThreadModelSelection}
+      selectedModelForPickerWithCustomFallback={selectedModelForPickerWithCustomFallback}
+      lockedProvider={lockedProvider}
+      lockedContinuationGroupKey={lockedContinuationGroupKey}
+      providerInstanceEntries={providerInstanceEntries}
+      keybindings={keybindings}
+      modelOptionsByInstance={modelOptionsByInstance}
+      terminalOpen={terminalOpen}
+      modelPickerOpen={isComposerModelPickerOpen}
+      onModelPickerOpenChange={setIsComposerModelPickerOpen}
+      modelPickerIconClassName={composerProviderState.modelPickerIconClassName}
+      getModelDisabledReason={getModelDisabledReason}
+    />
   );
   // An open question owns the space above the composer. Only a machine problem,
   // which is why an answer could not go through, stays beside it.
@@ -3153,67 +3196,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     },
   });
 
-  const attachDroppedThreadFile = useEffectEvent((file: File) => addComposerAttachments([file]));
-  const importDroppedThread = useEffectEvent(
-    async (ref: ScopedThreadRef, isActive: () => boolean) => {
-      const targetKey = attachmentTargetKey;
-      pendingDraftWork.begin(targetKey);
-      const loadingToast = toastManager.add({
-        type: "loading",
-        title: gt("Loading thread context…"),
-        timeout: 0,
-        data: { threadRef: routeThreadRef, hideCopyButton: true },
-      });
-      const importResult = await settlePromise(() =>
-        importComposerThreadAttachment({
-          targetKey,
-          pendingImports: pendingThreadImportsRef.current,
-          countReservedAttachments: countReservedAttachmentsStable,
-          load: async () => {
-            const result = await loadThreadTranscript({
-              environmentId: ref.environmentId,
-              input: { threadId: ref.threadId },
-            });
-            if (result._tag !== "Success") {
-              throw squashAtomCommandFailure(result);
-            }
-            return threadContextAttachment(ref.environmentId, result.value);
-          },
-          isActive,
-          attach: attachDroppedThreadFile,
-          onLimitReached: () => {
-            if (activeThreadId) {
-              setThreadError(
-                activeThreadId,
-                gt(
-                  "{count, plural, one {You can attach up to {count} files per message.} other {You can attach up to {count} files per message.}}",
-                  {
-                    count: PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-                  },
-                ),
-              );
-            }
-          },
-        }),
-      );
-      if (importResult._tag === "Failure" && isActive()) {
-        const error = squashAtomCommandFailure(importResult);
-        toastManager.add({
-          type: "error",
-          title: gt("Unable to read the dropped thread"),
-          description:
-            isEnvironmentRequestInvalidError(error) &&
-            error.reason === "thread_transcript_too_large"
-              ? gt("This thread exceeds the attachment size limit. Try a shorter thread.")
-              : gt("Check that its environment is connected and up to date, then try again."),
-        });
-      }
-      toastManager.close(loadingToast);
-      pendingDraftWork.end(targetKey);
-    },
-  );
-
-  useThreadContextDrop(composerFormRef, environmentId, attachmentTargetKey, (refs, isActive) => {
+  useThreadContextDrop(composerFormRef, environmentId, attachmentTargetKey, (refs) => {
     const records = refs.flatMap((ref) => {
       const record = droppedThreadContextRecord(ref, readThreadShell(ref));
       return record ? [record] : [];

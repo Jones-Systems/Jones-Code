@@ -1,4 +1,4 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { createWorkspacePdfSession } from "../../jones/filePreview/workspacePdfSession";
 import { DownloadIcon, CopyIcon, CheckIcon, Code2Icon, EyeIcon, Table2Icon } from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { m, type MessageResolver } from "~/i18n/messages";
@@ -146,6 +146,7 @@ import {
   setProjectFileQueryData,
   useProjectFileQuery,
 } from "./projectFilesQueryState";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 
 const NO_FILE_REVISION_ATOM = Atom.make(null);
 
@@ -291,7 +292,6 @@ export function WorkspaceBrowserPreview(props: {
   // Each workspace mutation re-mints the URL: a file outside the workspace is signed by its
   // inode, which an atomic replace changes.
   const assetUrl = useAssetUrlState(props.environmentId, resource, props.workspaceMutationId);
-  const refreshAssetUrl = useAssetUrlRefresh(props.environmentId, resource);
   // Servers that report the file's revision let an unchanged page stay loaded; older ones only
   // offer the workspace mutation, which changes after every command.
   const fileRevision = assetUrl._tag === "Success" ? assetUrl.fileRevision : undefined;
@@ -312,24 +312,42 @@ export function WorkspaceBrowserPreview(props: {
   }
   const renewGrant = useEffectEvent((url: string) => {
     setEndingGrant(url);
-    // A command may have minted the next URL already; otherwise ask for it.
     if (assetUrl._tag === "Success" && assetUrl.url === url) {
-      void refreshAssetUrl().catch(() => undefined);
+      void refresh().catch(() => undefined);
     }
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mints a fresh URL shortly before the loaded page's grant expires
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Refresh before the loaded grant expires.
   useEffect(() => {
     if (frame === null) return;
     const timer = setTimeout(() => renewGrant(frame.url), frame.renewAt - Date.now());
     return () => clearTimeout(timer);
   }, [frame]);
   const revision = pdf ? latestRevision : (frame?.revision ?? latestRevision);
-  const url =
-    assetUrl._tag !== "Success" ? null : pdf ? assetUrl.url : (frame?.url ?? assetUrl.url);
-  const revisionSuffix =
+  const resourceId = JSON.stringify([
+    props.environmentId,
+    props.threadRef.environmentId,
+    props.threadRef.threadId,
+    resource,
+  ]);
+  const [owner, setOwner] = useState(() => ({
+    resourceId,
+    session: createWorkspacePdfSession(resourceId),
+  }));
+  if (owner.resourceId !== resourceId)
+    setOwner({ resourceId, session: createWorkspacePdfSession(resourceId) });
+  const session = owner.session;
+  // Pending authorization is not evidence of a new document revision.
+  if (assetUrl._tag === "Success" && !assetUrl.waiting) session.selectRevision(revision);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Revoke late authorization completions when this exact resource owner leaves the panel.
+  useEffect(() => {
+    session.activate();
+    return () => session.dispose();
+  }, [session]);
+
+  const revisionSuffix = (url: string) =>
     revision === null
       ? ""
-      : `${url?.includes("?") ? "&" : "?"}${fileRevision !== undefined ? "file" : "workspace"}-revision=${encodeURIComponent(revision)}`;
+      : `${url.includes("?") ? "&" : "?"}${fileRevision !== undefined ? "file" : "workspace"}-revision=${encodeURIComponent(revision)}`;
 
   if (assetUrl._tag === "Failure") {
     return (
@@ -348,12 +366,36 @@ export function WorkspaceBrowserPreview(props: {
       </div>
     );
   }
-  const documentId = `${props.environmentId}:${resource._tag}:${props.threadRef.threadId}:${props.absolutePath}`;
+  const load = pdf
+    ? session.load(`${assetUrl.url}${revisionSuffix(assetUrl.url)}`, retryRevision)
+    : undefined;
   return (
     <BrowserDocumentFrame
-      src={`${url}${revisionSuffix}`}
-      documentKey={`${documentId}:${revision}${pdf ? "" : `:${frame?.renewAt}`}`}
-      documentId={documentId}
+      key={pdf ? undefined : retryRevision}
+      onRetry={async () => {
+        const acceptRetry = load ? session.beginRetry(load) : undefined;
+        if (!pdf && frame !== null) setEndingGrant(frame.url);
+        const url = await refresh();
+        if (!url) throw new Error("Reconnect to the environment and try again.");
+        if (pdf && load) {
+          if (!acceptRetry?.(`${url}${revisionSuffix(url)}`)) return;
+        }
+        setRetryRevision((value) => value + 1);
+      }}
+      src={
+        load?.src ?? `${frame?.url ?? assetUrl.url}${revisionSuffix(frame?.url ?? assetUrl.url)}`
+      }
+      pdfSession={pdf ? session : undefined}
+      documentKey={
+        pdf
+          ? `${resourceId}:${load?.generation ?? 0}`
+          : `${props.environmentId}:${resource._tag}:${props.threadRef.threadId}:${props.absolutePath}:${revision}:${frame?.renewAt}`
+      }
+      documentId={
+        pdf
+          ? resourceId
+          : `${props.environmentId}:${resource._tag}:${props.threadRef.threadId}:${props.absolutePath}`
+      }
       title={props.title}
       pdf={pdf}
       threadRef={props.threadRef}

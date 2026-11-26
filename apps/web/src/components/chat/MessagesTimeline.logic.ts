@@ -1,5 +1,5 @@
 import * as DateTime from "effect/DateTime";
-import { msg } from "gt-react";
+import { isWorkModeSentinelMessage } from "@t3tools/shared/jones/workMode";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import {
@@ -83,6 +83,7 @@ import {
   formatSearchToolLabel,
 } from "@t3tools/shared/toolActivityCopy";
 import { isHostPath } from "@t3tools/shared/path";
+import { msg } from "gt-react";
 
 export function timelineEntryRunId(entry: TimelineEntry): RunId | null {
   if (entry.kind === "message") {
@@ -1646,6 +1647,7 @@ export function deriveMessagesTimelineRows(
     isWorking: boolean;
     /** Native subagent work has no app run; runless entries form the live response. */
     runlessWorkActive?: boolean;
+    waitingForProviderActivity?: boolean;
     activeTurnStartedAt?: string | null;
     turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
     supportsConversationRollback: boolean;
@@ -1657,6 +1659,7 @@ export function deriveMessagesTimelineRows(
   },
   resolve: MessageResolver = m,
 ): MessagesTimelineRow[] {
+  input = withQuietTurnApplied(input);
   const timelineEntries = timelineRowEntries(input);
   const embeddedResultRunIds = new Set<RunId>();
   for (const entry of timelineEntries) {
@@ -2410,6 +2413,7 @@ export function deriveMessagesTimelineRows(
     input.isWorking &&
     input.latestRun?.turnEnded !== true &&
     !replyIsStreaming &&
+    !input.waitingForProviderActivity &&
     !setupOwnsWorkingSlot &&
     !hasActiveCompaction &&
     !compactionOnlyRunFinished &&

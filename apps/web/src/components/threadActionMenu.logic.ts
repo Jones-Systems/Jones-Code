@@ -102,8 +102,7 @@ export function buildDraftActionMenuItems(
 export interface ThreadActionMenuState {
   readonly assignmentItems?: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> | undefined;
   readonly canOperate: boolean;
-  /** Settle, snooze and their undo stay available until the host denies the operate scope. */
-  readonly canTriage?: boolean;
+  readonly environmentAccessStatus?: EnvironmentScopeAccess["status"];
   readonly canFind?: boolean;
   /** False where no inline title editor is rendered, such as sidebar search results. */
   readonly canRename?: boolean;
@@ -173,15 +172,14 @@ export function buildThreadActionMenuItems(
     scope_missing: "This connection can't change threads.",
   };
   const items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> = [
-    ...(state.canFind
-      ? [{ id: "find" as const, label: resolve(msg("Find in thread")), icon: "text-search" }]
-      : []),
-    ...(state.branch
+    ...(!state.canOperate &&
+    state.environmentAccessStatus &&
+    state.environmentAccessStatus !== "granted"
       ? [
           {
-            id: "new-thread-on-branch" as const,
-            label: resolve(msg("New thread on {branch}", { branch: state.branch })),
-            icon: "message-square-plus",
+            id: "environment-access-status" as const,
+            label: accessLabels[state.environmentAccessStatus],
+            disabled: true,
           },
         ]
       : []),
@@ -229,7 +227,12 @@ export function buildThreadActionMenuItems(
     ...(state.supports.snooze
       ? [
           state.isSnoozed
-            ? { id: "unsnooze" as const, label: resolve(msg("Wake thread")), icon: "clock" }
+            ? {
+                id: "unsnooze" as const,
+                label: "Wake thread",
+                icon: "clock",
+                separatorBefore: !state.supports.titleRegeneration && !state.assignmentItems,
+              }
             : {
                 id: "snooze" as const,
                 label: resolve(msg("Snooze", { $context: "verb, snooze the thread" })),
@@ -252,26 +255,23 @@ export function buildThreadActionMenuItems(
         ]
       : []),
     {
-      id: "rename",
-      label: resolve(msg("Rename thread")),
-      icon: "pencil",
-      disabled: state.canRename === false,
-      separatorBefore: true,
+      id: "stop-thread",
+      label: "Stop thread",
+      icon: "square",
+      // Result dependencies can still need releasing without a live provider session.
+      disabled: !state.canOperate,
+      separatorBefore:
+        !state.supports.titleRegeneration && !state.assignmentItems && !state.supports.snooze,
     },
-    ...(state.supports.titleRegeneration
+    ...(state.branch
       ? [
           {
-            id: "regenerate-title" as const,
-            label: state.isRegeneratingTitle
-              ? resolve(msg("Regenerating…"))
-              : resolve(msg("Regenerate title")),
-            icon: "refresh-cw",
-            disabled: state.isRegeneratingTitle,
+            id: "new-thread-on-branch" as const,
+            label: `New thread on ${state.branch}`,
+            icon: "message-square-plus",
+            separatorBefore: true,
           },
         ]
-      : []),
-    ...(state.hasCompletedRun && !state.isRunning
-      ? [{ id: "mark-unread" as const, label: resolve(msg("Mark unread")), icon: "mail-open" }]
       : []),
     ...(state.canShareWithGuest
       ? [{ id: "share-guest" as const, label: resolve(msg("Share with guest")), icon: "user-plus" }]

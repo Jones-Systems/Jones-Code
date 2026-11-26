@@ -14,6 +14,7 @@ import { ProjectFavicon } from "./ProjectFavicon";
 import { ThreadChipHoverCard } from "./ThreadChipHoverCard";
 import { ThreadHoverCardPopup } from "./ThreadHoverCard";
 import { Tooltip, TooltipTrigger } from "./ui/tooltip";
+import { TooltipPopup } from "./ui/tooltip";
 
 export function ThreadContextChip(props: {
   record: Pick<ThreadContextRecord, "environmentId" | "threadId" | "title" | "excerpt">;
@@ -76,14 +77,14 @@ export function ThreadContextChip(props: {
           </ContextChip>
         }
       />
-      <ThreadHoverCardPopup side="top">
-        <ThreadChipHoverCard
-          title={title}
-          project={project}
-          shell={shell}
-          unreadable={props.unreadable === true}
-        />
-      </ThreadHoverCardPopup>
+      <TooltipPopup side="top">
+        {shell || metadata ? "Open thread" : "Thread no longer available"}
+        {props.record.excerpt?.status === "captured"
+          ? ". bounded point-in-time context attached"
+          : props.record.excerpt?.status === "unavailable"
+            ? `. context unavailable: ${props.record.excerpt.reason.replaceAll("_", " ")}; thread identity retained`
+            : ""}
+      </TooltipPopup>
     </Tooltip>
   );
 }

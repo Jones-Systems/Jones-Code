@@ -159,46 +159,6 @@ export function isProviderSettingsUpdateCandidate(
   );
 }
 
-export function hasOneClickUpdateProviderCandidate(
-  candidate: ProviderUpdateCandidate,
-  providers: ReadonlyArray<ServerProvider>,
-): boolean {
-  if (
-    candidate.versionAdvisory.canUpdate !== true ||
-    candidate.versionAdvisory.updateCommand === null
-  ) {
-    return false;
-  }
-
-  const driverProviders = providers.filter((provider) => provider.driver === candidate.driver);
-  if (driverProviders.length === 0) {
-    return false;
-  }
-
-  const updateCommands = new Set<string>();
-  for (const provider of driverProviders) {
-    if (!isProviderUpdateCandidate(provider)) {
-      continue;
-    }
-    const advisory = provider.versionAdvisory;
-    if (!advisory || advisory.canUpdate !== true || advisory.updateCommand === null) {
-      return false;
-    }
-    updateCommands.add(advisory.updateCommand);
-  }
-
-  return updateCommands.size === 1;
-}
-
-export function canOneClickUpdateProviderCandidate(
-  candidate: ProviderUpdateCandidate,
-  providers: ReadonlyArray<ServerProvider>,
-): boolean {
-  return (
-    !isProviderUpdateActive(candidate) && hasOneClickUpdateProviderCandidate(candidate, providers)
-  );
-}
-
 function formatProviderList(
   providers: ReadonlyArray<Pick<ServerProvider, "driver">>,
   resolve: MessageResolver,
@@ -227,18 +187,24 @@ function getProviderUpdateRunningToastView(providerCount: number): ProviderUpdat
   };
 }
 
-export function getProviderUpdateProgressToastView(input: {
-  readonly providers: ReadonlyArray<ServerProvider>;
-  readonly providerCount: number;
-}): ProviderUpdateToastView {
+export function getProviderUpdateProgressToastView(
+  input: {
+    readonly providers: ReadonlyArray<ServerProvider>;
+    readonly providerCount: number;
+  },
+  resolve: MessageResolver = m,
+): ProviderUpdateToastView {
   const providers = dedupeProvidersByInstanceId(input.providers);
   const failedProviders = providers.filter((provider) => provider.updateState?.status === "failed");
   if (failedProviders.length > 0) {
     return {
       phase: "failed",
       type: "error",
-      title: failedProviders.length === 1 ? "Provider update failed" : "Provider updates failed",
-      description: getFailedProviderUpdateDescription(failedProviders),
+      title:
+        failedProviders.length === 1
+          ? resolve(msg("Provider update failed"))
+          : resolve(msg("Provider updates failed")),
+      description: getFailedProviderUpdateDescription(failedProviders, resolve),
     };
   }
 
@@ -273,7 +239,7 @@ export function getProviderUpdateProgressToastView(input: {
       phase: "succeeded",
       type: "success",
       title: input.providerCount === 1 ? "Provider updated" : "Provider updates finished",
-      description: getProviderUpdatedDescription(input.providerCount),
+      description: getProviderUpdatedDescription(input.providerCount, resolve),
       dismissAfterVisibleMs: PROVIDER_UPDATE_SUCCESS_VISIBLE_MS,
     };
   }
@@ -317,7 +283,7 @@ export function getProviderUpdateRunOutcome(
   return updateState?.status === "succeeded"
     ? { status: "updated", message: restartNotice ? `${label}: ${restartNotice}` : null }
     : {
-        status: "failed",
+        status: updateState?.status === "unchanged" ? "unchanged" : "failed",
         line: `${label}: ${updateState?.message ?? resolve(msg("Provider update did not finish."))}`,
       };
 }
@@ -326,7 +292,7 @@ export function getProviderUpdateRunToastView(
   runs: ReadonlyArray<ProviderUpdateRun>,
   resolve: MessageResolver = m,
 ): {
-  readonly type: "success" | "error";
+  readonly type: "success" | "error" | "warning";
   readonly title: string;
   readonly description: string;
 } | null {
@@ -391,7 +357,7 @@ export function getProviderUpdateRunToastView(
         : settled.length === 1
           ? resolve(msg("Provider update failed"))
           : resolve(msg("Provider updates failed")),
-    description: [...failureLines, ...successMessages].join("\n"),
+    description: [...failureLines, ...unverifiedLines, ...successMessages].join("\n"),
   };
 }
 
@@ -527,25 +493,9 @@ export function getProviderUpdateSidebarPillView(
       tone: "warning",
       title:
         unchangedProviders.length === 1
-          ? resolve(msg("{provider} still needs an update", { provider: unchangedProviderName }))
-          : resolve(
-              msg(
-                "{count, plural, one {{count} providers still need updates} other {{count} providers still need updates}}",
-                { count: unchangedProviders.length },
-              ),
-            ),
-      description:
-        unchangedProviders.length === 1
-          ? resolve(
-              msg("{providers} still appears outdated. Review provider settings for details.", {
-                providers: formatProviderList(unchangedProviders, resolve),
-              }),
-            )
-          : resolve(
-              msg("{providers} still appear outdated. Review provider settings for details.", {
-                providers: formatProviderList(unchangedProviders, resolve),
-              }),
-            ),
+          ? `${unchangedProviderName} update could not be verified`
+          : `${unchangedProviders.length} provider updates could not be verified`,
+      description: getUnverifiedProviderUpdateDescription(unchangedProviders),
       dismissible: true,
     });
   }
@@ -595,6 +545,19 @@ export function getProviderUpdateSidebarPillView(
       })
       .at(0) ?? null
   );
+}
+
+function getUnverifiedProviderUpdateDescription(providers: ReadonlyArray<ServerProvider>): string {
+  return providers
+    .map((provider) => {
+      const message =
+        provider.updateState?.message ??
+        "The provider update could not be verified. Review provider settings for details.";
+      return providers.length === 1
+        ? message
+        : `${PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver}: ${message}`;
+    })
+    .join("\n");
 }
 
 function getFailedProviderUpdateDescription(

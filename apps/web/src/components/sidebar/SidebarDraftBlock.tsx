@@ -226,7 +226,9 @@ export function useSidebarDrafts(
   scopedProjectKeys: ReadonlySet<string> | null,
   routeDraftId: string | null,
   terminalLabels: ReadonlyMap<string, string>,
+  excludedEnvironmentIds?: ReadonlySet<string>,
 ): { draftIds: readonly DraftId[]; routeDraftComposer: ComposerThreadDraftState | null } {
+  const pending = usePendingSends();
   const [frozenRoute, setFrozenRoute] = useState<{
     routeDraftId: string | null;
     composer: ComposerThreadDraftState | null;
@@ -240,7 +242,18 @@ export function useSidebarDrafts(
     useShallow((store) => {
       const listed: [string, DraftSessionState][] = [];
       for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
-        if (session.promotedTo != null) continue;
+        if (
+          session.promotedTo != null ||
+          excludedEnvironmentIds?.has(session.environmentId) ||
+          pending.some(
+            (entry) =>
+              entry.sidebarThread &&
+              entry.environmentId === session.environmentId &&
+              entry.threadId === session.threadId,
+          )
+        ) {
+          continue;
+        }
         if (
           scopedProjectKeys !== null &&
           !scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
@@ -277,7 +290,6 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     source: ContextMenuSource,
   ) => void;
 }) {
-  const pending = usePendingSends();
   const draftThreadsByThreadKey = useComposerDraftStore((store) => store.draftThreadsByThreadKey);
   const draftsByThreadKey = useComposerDraftStore(
     useShallow((store) =>
@@ -289,8 +301,7 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   const drafts = props.draftIds.flatMap((draftId) => {
     const session = draftThreadsByThreadKey[draftId];
     const composer =
-      (draftId === props.routeDraftId ? props.routeDraftComposer : null) ??
-      draftsByThreadKey[draftId] ??
+      (draftId === props.routeDraftId ? props.routeDraftComposer : draftsByThreadKey[draftId]) ??
       null;
     return session ? [{ draftId, session, composer }] : [];
   });

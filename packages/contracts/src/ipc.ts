@@ -6,7 +6,7 @@ import type {
   JonesInstallPlanState,
 } from "./jones/installPlan.ts";
 import * as Schema from "effect/Schema";
-import type { DatabaseMigrationProgress } from "./server.ts";
+import type { DesktopCompanionBridge } from "./jones/previewCompanion.ts";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 
 import {
@@ -51,6 +51,7 @@ import type {
   DesktopAppActivationRequest,
   DesktopAppActivationResponse,
 } from "./desktopAppActivation.ts";
+import type { DatabaseMigrationProgress } from "./server.ts";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -327,8 +328,8 @@ export interface DesktopUpdateState {
   notAppliedVersion?: string;
   /** Off only because a managed policy rules out this channel; switching channels turns it on. */
   channelBlockedByPolicy?: true;
-  /** The check failed only because this build's track differs from the saved `channel`. */
-  trackMismatch?: { readonly buildChannel: DesktopUpdateChannel };
+  jones?: JonesUpdateState;
+  jonesPreparation?: JonesDesktopPreparationState;
 }
 
 export interface DesktopUpdateReleaseNote {
@@ -1143,6 +1144,42 @@ export const DesktopAppleSpeechTranscribeInputSchema = Schema.Struct({
   locale: Schema.String.check(Schema.isMaxLength(64)),
   // 16 kHz mono Float32 PCM, at most five minutes.
   pcm: Schema.Uint8Array,
+});
+
+export const DesktopPreviewAutomationClickInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationClickInput,
+});
+
+export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationTypeInput,
+});
+
+export const DesktopPreviewAutomationPressInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationPressInput,
+});
+
+export const DesktopPreviewAutomationScrollInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationScrollInput,
+});
+
+export const DesktopPreviewAutomationEvaluateInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationEvaluateInput,
+});
+
+export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationWaitForInput,
 });
 
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);

@@ -31,9 +31,64 @@ CODEX_HOME=~/.codex_personal codex login
 | Codex Work     | `~/.codex`      | _(leave empty)_     |
 | Codex Personal | `~/.codex`      | `~/.codex_personal` |
 
-- Both instances must share the same **CODEX_HOME path**. Keep the shadow directory fresh—don't copy your full Codex home into it.
-- The shadow account needs file-based credential storage (`auth.json`); see [OpenAI's credential storage guide](https://learn.chatgpt.com/docs/auth#credential-storage).
-- Use a separate **CODEX_HOME path** (no shadow home) if you want completely isolated sessions.
+Both instances must use the same **CODEX_HOME path**. T3 Code prepares the shared
+state in the shadow directory; do not populate it by copying your whole Codex
+home.
+
+The shadow account needs its own `auth.json` file. If Codex uses an OS credential
+store, configure file storage for this setup. See
+[OpenAI's credential storage guide](https://learn.chatgpt.com/docs/auth#credential-storage).
+
+Use a completely separate **CODEX_HOME path**, with no shadow home, when you want
+separate Codex sessions and configuration. That instance cannot continue threads
+from the other home.
+
+## Switch accounts in an existing thread
+
+Choose the other account from the thread's model picker. T3 Code offers compatible
+Codex instances that share the thread's **CODEX_HOME path**. Changing accounts does
+not move the conversation into a separate Codex home.
+
+If the saved conversation cannot be reopened after switching accounts, T3 Code
+reports the resume error instead of starting an empty conversation. Check that
+both accounts can access the shared Codex sessions, or switch back to the
+original account to continue.
+
+If the account is missing from the picker, compare the home paths in provider
+settings. If two instances show the same unexpected account or models, check their
+reported accounts, refresh provider status, and confirm the second instance has
+its own shadow path and login. A shadow-home conflict usually means the directory
+contains a copied Codex setup. Use a fresh shadow directory and sign in again.
+
+## Stop a goal-driven turn
+
+Press **Stop** to pause the thread's active Codex goal before interrupting its
+live child turns and root turn. The pause stays with the native Codex conversation
+when its provider session restarts.
+
+If Codex cannot confirm the goal pause, the thread shows **Goal may still be
+active** and still attempts Stop. Check the goal before continuing. If the root
+does not acknowledge Stop, the thread shows **Turn may still be running** and
+reports the failure; it keeps the turn's last known state until Codex supplies a
+completion event.
+
+## Answer questions while Codex works
+
+Codex can ask a question and keep working. Answer it in the thread's question
+panel. The answer becomes a new message: it reaches the active turn, or starts
+another turn if Codex has finished. Unanswered questions survive reconnects.
+If you do not want to answer, dismiss the question from its panel. Dismissing
+closes it without sending anything to Codex. This requires a Codex version that
+supports async questions.
+
+## Approve app access
+
+Codex tools can request access to another app. Respond to the named app's request
+in the thread on web, desktop, or mobile. Some tools offer access for one request,
+the current session, or permanently. See [Permission modes](./permission-modes.md)
+for command and file approvals.
+
+## Use Daybreak
 
 To switch accounts mid-thread, pick another compatible Codex instance sharing the same **CODEX_HOME path** from the model picker.
 

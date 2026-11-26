@@ -1,6 +1,10 @@
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
-import { msg } from "gt-react-native";
-import { m } from "../i18n/messages";
+import { canRestoreQueuedThreadMessage } from "../jones/threadConfiguration/outboxDelivery";
+import {
+  composerModelSelectionSnapshotIsCurrent,
+  retainComposerModelSelectionSnapshot,
+  trackComposerModelSelectionInteractions,
+} from "../jones/threadConfiguration/outboxSelection";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
 import {
@@ -23,11 +27,14 @@ import {
   holdEditingQueuedMessage,
   releaseEditingQueuedMessage,
 } from "./use-thread-outbox";
+import { m } from "../i18n/messages";
+import { msg } from "gt-react-native";
 
 /** Take delivery ownership before any await; the durable draft then takes ownership of the files. */
 export async function editPendingThreadMessage(message: QueuedThreadMessage): Promise<boolean> {
   if (
     message.creation ||
+    !canRestoreQueuedThreadMessage(message) ||
     appAtomRegistry.get(dispatchingQueuedMessageIdsAtom)[message.messageId] ||
     appAtomRegistry.get(editingQueuedMessageIdsAtom)[message.messageId]
   ) {
@@ -39,7 +46,7 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
   const canTransfer = () =>
     canRestoreQueuedThreadMessage(message) &&
     threadOutboxRevision(message.messageId) === revision &&
-    appAtomRegistry.get(dispatchingQueuedMessageIdAtom) !== message.messageId;
+    !appAtomRegistry.get(dispatchingQueuedMessageIdsAtom)[message.messageId];
   const releaseSelectionTracking = trackComposerModelSelectionInteractions(draftKey);
   let rollback: {
     snapshot: ReturnType<typeof getComposerDraftSnapshot>;

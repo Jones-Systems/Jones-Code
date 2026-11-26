@@ -301,7 +301,7 @@ export function createDraft(
     modelSelectionIsExplicit: false,
     schedule: DEFAULT_SCHEDULE,
     threadMode: "new_thread",
-    workspace: "worktree",
+    workspace: "auto",
     baseRef: "",
     checkoutPath: "",
     enabled: true,
@@ -322,7 +322,10 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     schedule: scheduleDraftForTask(task),
     threadMode: scheduledTaskThreadMode(task),
     workspace: task.workspaceStrategy.type,
-    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "",
+    baseRef:
+      task.workspaceStrategy.type === "worktree" || task.workspaceStrategy.type === "auto"
+        ? (task.workspaceStrategy.baseRef ?? "")
+        : "main",
     checkoutPath:
       task.workspaceStrategy.type === "existing_worktree"
         ? task.workspaceStrategy.worktreePath

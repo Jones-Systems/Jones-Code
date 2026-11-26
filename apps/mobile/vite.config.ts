@@ -6,11 +6,11 @@ import { defineConfig, normalizePath } from "vite-plus";
 import "vite-plus/test/config";
 
 const reactTests = [
-  "src/features/browser/LocalPreviewRouteScreen.test.tsx",
-  "src/features/threads/LinkedThreadSheet.test.tsx",
-  "src/features/workflows/WorkflowStepCard.test.tsx",
-  "src/features/threads/ThreadGuestShareSheet.test.tsx",
-  "src/features/threads/useSubmitAfterNativeImages.test.tsx",
+  "src/features/workstreams/Controls.operations.test.tsx",
+  "src/jones/updates/actionJournal.test.ts",
+  "src/jones/updates/JonesUpdateControls.test.tsx",
+  "src/jones/descendantApproval/DescendantApprovalCard.test.tsx",
+  "src/jones/descendantApproval/PendingApprovalStack.test.tsx",
   "src/features/threads/git/GitBranchesSheet.test.tsx",
   "src/features/threads/git/GitConfirmSheet.test.tsx",
   "src/features/threads/git/GitCommitSheet.test.tsx",
@@ -104,21 +104,7 @@ export const GTProvider = (props) => props.children;
 `;
 
 export default defineConfig({
-  plugins: [
-    {
-      name: "gt-react-native-test",
-      enforce: "pre",
-      resolveId(source, importer) {
-        if (source === "gt-react-native") return gtTestModule;
-        if (importer === gtTestModule) {
-          return this.resolve(source, gtReactNativeEntry, { skipSelf: true });
-        }
-      },
-      load(id) {
-        if (id === gtTestModule) return gtTestModuleCode;
-      },
-    },
-  ],
+  run: { tasks: { "tsrs:typecheck": typecheckTask(packageJson.scripts["typecheck:native"]) } },
   test: {
     hookTimeout: 60_000,
     testTimeout: 60_000,

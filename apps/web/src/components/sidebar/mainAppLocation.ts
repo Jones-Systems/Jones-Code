@@ -11,10 +11,15 @@ export function isAppModalPage(pathname: string) {
 
 export function isSidebarUtilityPage(pathname: string) {
   return (
+    pathname === "/settings" ||
+    pathname.startsWith("/settings/") ||
     pathname.startsWith("/projects/") ||
+    pathname === "/usage" ||
+    pathname === "/voice-review" ||
     pathname === "/pull-requests" ||
-    pathname === "/issues" ||
-    pathname === "/workflows"
+    pathname === "/work-queue" ||
+    pathname === "/requests" ||
+    pathname === "/conversations"
   );
 }
 

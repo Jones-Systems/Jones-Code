@@ -37,13 +37,11 @@ vi.mock(import("../../state/threads"), async (original) => {
 });
 
 import { render } from "../../../test/render";
-import {
-  deriveEffectiveComposerModelState,
-  queuedRunEditDraftId,
-  useComposerDraftStore,
-} from "../../composerDraftStore";
+import { deriveEffectiveComposerModelState, useComposerDraftStore } from "../../composerDraftStore";
+import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../../rpc/atomRegistry";
 import { useComposerSelection } from "./useComposerSelection";
+import { queuedRunEditDraftId } from "../../composerDraftStore";
 
 // Kept alive so a shell set before the hook mounts is still there when it saves a pick.
 const shellAtom = Atom.family((_threadId: string) => Atom.make<unknown>(null).pipe(Atom.keepAlive));

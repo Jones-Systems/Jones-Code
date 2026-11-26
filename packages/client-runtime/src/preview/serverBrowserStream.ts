@@ -6,8 +6,12 @@ import {
   type PreviewStreamHostSetup,
   type PreviewViewportSetting,
 } from "@t3tools/contracts";
-import { mFallback, msg } from "gt-i18n";
+import {
+  decodePreviewHostUnavailable,
+  type PreviewHostUnavailable,
+} from "../jones/previewCompanion/streamUnavailable.ts";
 import type { MFunctionType } from "gt-i18n/types";
+import { mFallback, msg } from "gt-i18n";
 
 export const PREVIEW_STREAM_BASE_PATH = "/api/preview-stream";
 

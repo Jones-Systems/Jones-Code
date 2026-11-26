@@ -1,5 +1,8 @@
-import { mFallback, msg } from "gt-i18n";
-import type { MFunctionType } from "gt-i18n/types";
+import {
+  isDelegatedTaskShownUnderParent,
+  pendingSubagentRequestsByThread,
+  subagentRequest,
+} from "@t3tools/shared/jones/threadAttention";
 import type {
   EnvironmentId,
   OrchestrationV2ShellSnapshot,
@@ -25,6 +28,8 @@ import {
   threadKey,
   threadRefsEqual,
 } from "./entities.ts";
+import type { MFunctionType } from "gt-i18n/types";
+import { mFallback, msg } from "gt-i18n";
 
 const EMPTY_THREADS: ReadonlyArray<OrchestrationV2ThreadShell> = Object.freeze([]);
 const EMPTY_SCOPED_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
@@ -40,24 +45,6 @@ const EMPTY_THREAD_REFS_BY_PROJECT: ReadonlyMap<
   ReadonlyArray<ScopedThreadRef>
 > = new Map();
 
-// An async question outlives the subagent's run, but once that run ends the
-// parent is no longer waiting on the answer, so it stops counting as input.
-// The activity run stays set when a follow-up is queued behind a blocked run;
-// older servers omit it, so fall back to the latest run's status.
-const isChildRunLive = (thread: Pick<OrchestrationV2ThreadShell, "activityRunStatus" | "status">) =>
-  thread.activityRunStatus !== undefined
-    ? thread.activityRunStatus !== null
-    : thread.status === "preparing" ||
-      thread.status === "starting" ||
-      thread.status === "running" ||
-      thread.status === "waiting";
-
-/**
- * Whether a thread shows under its parent rather than in thread lists: a
- * subagent, a side chat, or a task a linked environment delegated here whose parent the
- * client lists (`delegatedUnderParent`, by thread key). A task whose parent
- * the client cannot list stays in the lists, so its work is never out of reach.
- */
 export function isShownUnderParent(
   ref: ScopedThreadRef,
   lineage: OrchestrationV2ThreadShell["lineage"],
@@ -116,53 +103,6 @@ function sideChatRequest(thread: OrchestrationV2ThreadShell): PendingSubagentReq
 
 const asksParent = (thread: OrchestrationV2ThreadShell) =>
   subagentRequest(thread) !== null || sideChatRequest(thread) !== null;
-
-/**
- * The threads to flag for a subagent's live approval, up its
- * subagent chain and through a side chat to its parent. `delegated` are tasks this
- * environment's threads delegated to linked environments, with what each one, or its
- * own subagents, asks.
- */
-function pendingSubagentRequestsByThread(
-  threads: ReadonlyArray<OrchestrationV2ThreadShell>,
-  delegated: ReadonlyArray<{
-    readonly parentThreadId: ThreadId;
-    readonly request: RolledUpRequest;
-  }> = [],
-): ReadonlyMap<ThreadId, RolledUpRequest> {
-  const requests = new Map<ThreadId, RolledUpRequest>();
-  let byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | undefined;
-  const flag = (firstParentId: ThreadId | null, request: RolledUpRequest, seen: Set<ThreadId>) => {
-    // The coordinator answers child questions; approvals and user-only cards need the user.
-    if (request === "user_input") return;
-    byId ??= new Map(threads.map((thread) => [thread.id, thread] as const));
-    let parentId = firstParentId;
-    while (parentId !== null && !seen.has(parentId)) {
-      seen.add(parentId);
-      if (requests.get(parentId) !== "approval") requests.set(parentId, request);
-      const parent = byId.get(parentId);
-      parentId =
-        parent?.lineage.relationshipToParent === "subagent" || parent?.lineage.sideChat === true
-          ? parent.lineage.parentThreadId
-          : null;
-    }
-  };
-  for (const child of threads) {
-    const parentId = child.lineage.parentThreadId;
-    if (child.lineage.sideChat === true) {
-      const request = sideChatRequest(child);
-      if (parentId !== null && request !== null && requests.get(parentId) !== "approval") {
-        requests.set(parentId, request);
-      }
-      continue;
-    }
-    if (child.lineage.relationshipToParent !== "subagent") continue;
-    const request = rolledUpRequest(child, subagentRequest(child));
-    if (request !== null) flag(parentId, request, new Set([child.id]));
-  }
-  for (const task of delegated) flag(task.parentThreadId, task.request, new Set());
-  return requests.size === 0 ? EMPTY_SUBAGENT_REQUESTS : requests;
-}
 
 const sameRequests = (
   left: ReadonlyMap<ThreadId, PendingSubagentRequest>,

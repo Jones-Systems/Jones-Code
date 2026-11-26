@@ -5,6 +5,7 @@ import {
   type OrchestrationV2ThreadShell,
   type ThreadId,
 } from "@t3tools/contracts";
+import type { GuardedThreadSettlement } from "@t3tools/contracts/jones/guardedThreadSettlement";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -216,7 +217,14 @@ export function createThreadTriageOutbox<R, E, SendError>(input: {
   });
 
   /** Queues the action on the device when its environment is not connected. */
-  function queueWhenOffline<I extends { readonly threadId: ThreadId }, CE>(
+  function queueWhenOffline<
+    I extends {
+      readonly threadId: ThreadId;
+      readonly commandId?: CommandId;
+      readonly guard?: GuardedThreadSettlement;
+    },
+    CE,
+  >(
     command: AtomCommand<Target<I>, { readonly sequence: number }, CE>,
     toAction: (input: I) => PendingThreadTriage["action"],
   ): typeof command {
@@ -236,6 +244,14 @@ export function createThreadTriageOutbox<R, E, SendError>(input: {
             ),
             Effect.catchIf(isUnavailable, (unavailable) => {
               const action = toAction(target.input);
+              // Jones: exact Undo needs a durable receipt for the caller's command ID.
+              // Monitor Settle also needs its original guard, which the outbox cannot replay.
+              if (
+                action.type === "settle" &&
+                (target.input.commandId !== undefined || target.input.guard !== undefined)
+              ) {
+                return Effect.fail(unavailable);
+              }
               const queuedAt = DateTime.nowUnsafe();
               if (
                 snapshot == null ||

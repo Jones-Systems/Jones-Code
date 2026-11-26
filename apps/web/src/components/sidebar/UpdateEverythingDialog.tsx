@@ -2,8 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { ChevronRightIcon } from "lucide-react";
-import { msg, T, useGT, useMessages } from "gt-react";
-import { Fragment, type RefObject, useRef } from "react";
+import { Fragment, type ReactNode, type RefObject, useRef } from "react";
 
 import { environmentThreadShells } from "~/state/threads";
 import {
@@ -24,6 +23,7 @@ import {
   type RestartingMachine,
   type UpdateEverythingRow,
 } from "./updateEverything.logic";
+import { msg, useGT, useMessages, T } from "gt-react";
 
 const isRunning = (status: string) =>
   status === "preparing" || status === "starting" || status === "running";
@@ -202,7 +202,11 @@ function UpdateEverythingDialogContent({
                   <MiddleTruncate value={row.label} aria-hidden />
                 </span>
                 <span role="cell">
-                  {row.app !== null ? m(APP_LABELS[row.app]) : null}
+                  {row.app !== null
+                    ? APP_LABELS[row.app]
+                    : row.jonesHandoffNotice
+                      ? "Install status"
+                      : null}
                   {row.app === null && row.skipped !== null ? (
                     <span className="text-muted-foreground">
                       <T>Skipped</T>

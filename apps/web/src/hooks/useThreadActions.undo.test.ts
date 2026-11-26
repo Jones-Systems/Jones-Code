@@ -313,6 +313,10 @@ describe("settle and snooze Undo", () => {
     threadShell.snoozedUntil = snoozedUntil;
     const actions = useThreadActions();
     await actions.settleThread(target);
+    expect(commands.settle).toHaveBeenCalledExactlyOnceWith({
+      environmentId: target.environmentId,
+      input: { threadId: target.threadId },
+    });
     await currentUndo()();
     expect(commands.unsettle).toHaveBeenCalledOnce();
     expect(commands.pin).toHaveBeenCalledExactlyOnceWith({

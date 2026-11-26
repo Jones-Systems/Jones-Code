@@ -1,5 +1,5 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { m } from "~/i18n/messages";
+import { CompanionToolbar } from "../../jones/previewCompanion/HostControls";
+import { useCompanionBindings } from "../../jones/previewCompanion/state";
 import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
@@ -113,6 +113,8 @@ import {
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { observeResize } from "~/lib/observeResize";
 import { SharedTooltipTrigger } from "~/components/ui/shared-tooltip";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { m } from "~/i18n/messages";
 
 interface Props {
   threadRef: ScopedThreadRef;

@@ -89,6 +89,8 @@ function PdfDocument(props: {
   src: string;
   title: string;
   documentKey: string;
+  pdfSession?: WorkspacePdfSession | undefined;
+  onRetry?: (() => void | Promise<void>) | undefined;
   threadRef: ScopedThreadRef | undefined;
   actions?: ReactNode;
 }) {
@@ -102,6 +104,7 @@ function PdfDocument(props: {
       initialView={view}
       onRetry={props.onRetry}
       onViewChange={setView}
+      pdfSession={props.pdfSession}
       threadRef={props.threadRef}
       actions={props.actions}
     />
@@ -116,6 +119,7 @@ function PdfDocumentRevision(props: {
   initialView: PdfViewState;
   pdfSession?: WorkspacePdfSession | undefined;
   onViewChange: (view: PdfViewState) => void;
+  onRetry?: (() => void | Promise<void>) | undefined;
   threadRef: ScopedThreadRef | undefined;
   actions?: ReactNode;
 }) {
@@ -128,7 +132,8 @@ function PdfDocumentRevision(props: {
     navigator.pdfViewerEnabled &&
     !/iPad|iPhone|iPod/.test(navigator.userAgent) &&
     !(navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const load = props.pdfSession?.load(src);
+  const { pdfSession } = props;
+  const load = pdfSession?.load(src);
   if (props.onRetry)
     return (
       <Suspense fallback={<FileSurfaceLoading />}>
@@ -136,10 +141,11 @@ function PdfDocumentRevision(props: {
           src={src}
           title={props.title}
           onRetry={props.onRetry}
-          initialPosition={props.pdfSession?.readPosition}
+          initialPosition={pdfSession?.readPosition}
           onPositionChange={
-            load && props.pdfSession ? (view) => props.pdfSession!.remember(load, view) : undefined
+            load && pdfSession ? (view) => pdfSession.remember(load, view) : undefined
           }
+          actions={props.actions}
         />
       </Suspense>
     );
@@ -184,6 +190,7 @@ export function BrowserDocumentFrame(props: {
   readonly documentId?: string | undefined;
   /** Toolbar actions for the in-app PDF viewer; Chromium's own viewer brings its own. */
   readonly pdfActions?: ReactNode;
+  readonly pdfSession?: WorkspacePdfSession | undefined;
 }) {
   const key = props.documentKey ?? props.src;
   return props.pdf ? (
@@ -298,7 +305,7 @@ function FileDocument(props: {
             title={props.title}
             className="absolute inset-0 size-full border-0"
             style={{ backgroundColor: "Canvas" }}
-            sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+            sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"
             inert={revision === next}
             aria-hidden={revision === next ? true : undefined}
             onLoad={

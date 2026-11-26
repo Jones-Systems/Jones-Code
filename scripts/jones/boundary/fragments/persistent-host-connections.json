@@ -7,7 +7,11 @@
     "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
     "packages/ssh/src/jones/persistentRemoteLifecycle.ts"
   ],
-  "hookPaths": ["packages/ssh/src/tunnel.ts"],
+  "hookPaths": [
+    "apps/desktop/src/ssh/DesktopSshEnvironment.test.ts",
+    "apps/desktop/src/ssh/DesktopSshEnvironment.ts",
+    "packages/ssh/src/tunnel.ts"
+  ],
   "tombstones": [],
   "allowedImports": [
     {

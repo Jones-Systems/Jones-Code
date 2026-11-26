@@ -514,22 +514,16 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
         ),
       );
     const probe = initialConfig.pipe(
-      Effect.flatMap(() =>
-        Effect.gen(function* () {
-          const requestedAtMs = yield* Clock.currentTimeMillis;
-          const result = yield* protocolClient[WS_METHODS.serverProbe]({}).pipe(
-            Effect.mapError(mapRpcError),
-          );
-          if (result.serverTime !== undefined) {
-            recordServerClock(connection.environmentId, {
-              serverTimeMs: Date.parse(result.serverTime),
-              requestedAtMs,
-              receivedAtMs: yield* Clock.currentTimeMillis,
-            });
-          }
-        }),
+      Effect.flatMap((config) =>
+        (config.environment.capabilities.connectionProbe === true
+          ? protocolClient[WS_METHODS.serverProbe]({})
+          : protocolClient[WS_METHODS.serverGetConfig]({})
+        ).pipe(Effect.mapError(mapRpcError)),
       ),
-      Effect.withSpan("clientRuntime.connection.rpcSession.probe"),
+      Effect.asVoid,
+      Effect.withSpan("clientRuntime.connection.rpcSession.probe", {
+        attributes: { "connection.environment.id": connection.environmentId },
+      }),
     );
 
     return {

@@ -57,6 +57,7 @@ import {
   startFanoutThread,
 } from "./chatViewSend";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
+import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 
 interface MultipleModelSendInput {
   readonly environmentId: EnvironmentId;
@@ -136,7 +137,42 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     readonly draftChangedDuringPreparation: () => boolean;
     readonly onNewThreadAccepted?: ((thread: ScopedThreadRef) => void) | undefined;
   }) => {
-    const { attachments: attachmentsSnapshot } = sendSnapshot;
+    const { attachments: attachmentsSnapshot, messageText } = sendSnapshot;
+    const planned = targets.map((target) => {
+      const retryKey = JSON.stringify([
+        routeThreadKey,
+        target.selection.instanceId,
+        target.selection.model,
+      ]);
+      const uncertainThreadId = uncertainSubmissionsRef.current.get(retryKey);
+      const targetThreadId = uncertainThreadId ?? newThreadId();
+      const messageId = newMessageId();
+      if (!uncertainThreadId) {
+        pendingSends.admit(environmentId, targetThreadId, {
+          id: messageId,
+          role: "user",
+          text: target.text,
+          runId: null,
+          createdAt,
+          updatedAt: createdAt,
+          streaming: false,
+          attachments: optimisticMessageAttachments(attachmentsSnapshot),
+        });
+        if (input.activeThread)
+          pendingSends.attachThread(
+            environmentId,
+            targetThreadId,
+            pendingNewThread(
+              input.activeThread,
+              targetThreadId,
+              target.text.slice(0, 80),
+              target.selection,
+              createdAt,
+            ),
+          );
+      }
+      return { target, retryKey, targetThreadId, messageId };
+    });
     const failedSelections: ModelSelection[] = [];
     let clearedDraft = false;
     let releasedComposer = false;
@@ -155,13 +191,20 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
       const context = buildOutgoingMessageContext(
         boundAttachmentIds(attachments, attachmentsSnapshot),
       );
-      const title = deriveComposerSendTitle(sendSnapshot);
-      clearComposerDraftContent(composerDraftTarget);
-      if (currentRouteThreadKeyRef.current === routeThreadKey) {
-        promptRef.current = "";
-        composerRef.current?.resetCursorState();
-      }
-      clearedDraft = true;
+      const title = deriveThreadTitleSeed({
+        text: messageText,
+        attachments: attachmentsSnapshot,
+      });
+      clearedDraft =
+        clearSubmittedComposer({
+          routeThreadKey,
+          currentRouteThreadKeyRef,
+          composerDraftTarget,
+          promptRef,
+          expectedDraft: submittedComposerDraft,
+          isCurrentSend,
+          resetCursor: () => composerRef.current?.resetCursorState(),
+        }) !== null;
       const clearedDraftSnapshot = useComposerDraftStore
         .getState()
         .getComposerDraft(composerDraftTarget);
@@ -238,8 +281,6 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                         ),
                       }),
                       requireWorktree: true,
-                      ...(startFromOrigin ? { startFromOrigin: true } : {}),
-                      ...(worktreeRepositories ? { repositories: worktreeRepositories } : {}),
                     },
                     runSetupScript: true,
                   },

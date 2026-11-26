@@ -5,7 +5,11 @@
     "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts",
     "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts"
   ],
-  "hookPaths": [],
+  "hookPaths": [
+    "apps/server/src/workspace/TaskFolders.test.ts",
+    "apps/server/src/workspace/TaskFolders.testkit.ts",
+    "apps/server/src/workspace/TaskFolders.ts"
+  ],
   "tombstones": [],
   "allowedImports": [
     {

@@ -90,6 +90,7 @@ export const resolveDesktopSshCliRunner = (
       nodeEngineRange: serverPackageJson.engines.node,
     };
   }
+  if (environment.branding.baseName === "Jones Code") return { hostManagedRuntime: true };
   const releaseBaseUrl = env[CLI_RELEASE_BASE_URL_ENV]?.trim() || undefined;
   return {
     archiveVersion: environment.appVersion,

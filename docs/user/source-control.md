@@ -1,6 +1,42 @@
 # Source control
 
-T3 Code integrates with GitHub, GitLab, Forgejo, Gitea, Bitbucket, Azure DevOps, GitCafe, Cursor Origin, and Linear to clone/publish repos, review and merge pull requests, manage issues, and watch CI.
+T3 Code integrates with GitHub, GitLab, Forgejo, Gitea, Bitbucket, Azure DevOps, GitCafe, and Cursor
+Origin to clone and publish repositories, create pull requests, and review changes.
+
+## Keep the default branch fresh
+
+In **Settings → Projects**, choose a project and the environments to update. If an environment
+has several registered checkouts, choose the folder to sync there. Set **Automatic fetch** to
+**2 minutes** or **5 minutes** to apply that interval to the selected checkouts. Each server checks
+the remote while it is running, even when the app is closed. The last checked time advances on a successful
+check, including when the commit stays the same. The result becomes stale after five minutes at the
+two-minute interval, or after 12 minutes and 30 seconds at the five-minute interval.
+
+New worktrees using **Default branch** start from the last verified commit. They use a local base
+when a verified commit is unavailable. Choose **Fetch latest now** when a change has just landed and
+you want the worktree to use a fresh remote check. You can also use **Fetch latest now** in the
+project's source-control controls before starting a thread.
+
+With **Automatically pull** enabled for the project checkout, a successful check can fast-forward
+its clean default branch. A dirty checkout, a different branch, or a branch with local-only
+commits stays as it is.
+
+## Review turn changes
+
+A turn's changed files and diff show only the turn's own work. When a turn pulls, merges, or
+rebases, the files Git brought in are left out. A file stays in the list when the turn edited it,
+committed it, or fixed a conflict in it. Use the branch comparison to review everything that changed
+against your base branch. Restore still returns the complete saved workspace.
+
+On web and desktop, open the Diff pane source picker and choose **Commits** to review one local
+commit at a time. The list shows the newest 100 commits in the branch comparison. A merge commit
+shows its changes against its first parent.
+
+A commit link from a supported code host opens in the Diff pane when the thread's repository has
+that commit locally, on any branch. Otherwise a pull request commit link opens the pull request. Other
+commit links follow your **Open links in** setting; on web, when that opens a new tab, T3 Code first
+shows an **Open link** button. Command/Ctrl+Click always opens the link in your browser. Commit links follow the **Open pull requests in T3 Code**
+setting in **Settings → Diffs**.
 
 ## Connect an account
 
@@ -86,7 +122,74 @@ Open **Issues** from the sidebar utility row or **Open issues** in the command p
 
 ## Troubleshooting
 
-- **Not authenticated**: Run the host's CLI login on the server and click **Rescan** (for Bitbucket/tokens, verify Settings or server env vars).
-- **GitHub verification fails**: Upgrade `gh` to 2.81.0+ or save a token in Settings.
-- **Push fails**: Check Git SSH/HTTPS credentials separately from API auth.
-- **Fork PR badge missing**: Set upstream with `git branch --set-upstream-to=<remote>/<branch>`.
+- **Not authenticated:** run the provider's login command on the server, then rescan. For Bitbucket,
+  check the credentials saved in Settings → Source control, or confirm the running server received
+  the environment variables.
+- **GitHub sign-in cannot be verified:** update GitHub CLI to at least 2.81.0, or save a token in Settings → Source control.
+- **Push fails despite a connected account:** check the Git remote's credentials. SSH and HTTPS
+  remotes can require separate setup from the hosting provider's API access.
+- **A review cannot load:** open it on the host website while resolving connectivity, permissions,
+  or rate limits.
+
+## Linked pull requests
+
+A thread can hold several pull requests, including reviews from another repository on the same host.
+Use **Link pull request** in the command palette or **Linked pull requests** panel, or right-click a
+pull request link in the conversation. Creating a pull request from Git actions links it automatically,
+and so does an agent creating one with `gh pr create` or `glab mr create`. Agents can link other
+pull requests with the `link_pull_request` tool.
+
+Use **Link pull request to thread** in the command palette to keep a pull request with the thread. From a review
+on the Pull requests page, **Link to thread** lets you search for an active thread. The review header
+also lists the threads that link to it, including archived threads, so you can return to their context.
+
+Thread badges show a stack's layer count or the current review number with a count of additional
+links. Clicking a badge with more than one review opens the **Linked pull requests** panel. On mobile, the Git overview lists linked reviews and their stacks; tap a review to open it.
+Linking and unlinking are available in the web and desktop clients.
+
+The **Linked pull requests** panel lists every review and groups stacks. Unlink a review from its
+row menu. An unlinked stack layer stays out of later syncs. Open linked reviews refresh on the server;
+closed reviews refresh periodically so reopening one on the host is detected. Merged reviews refresh
+when requested. Settling a thread refreshes its open and closed reviews once; after that they stop refreshing until you unsettle it. With **Auto-settle merged threads** enabled, a thread can settle after every linked
+review is terminal. An open or unsynced link keeps it active.
+
+Ask the agent to watch, monitor, or babysit a pull request and it calls `watch_pull_request`. While
+the thread is active, the server checks the pull request every two minutes and wakes the agent when a
+check fails or waits for a maintainer's approval, the required checks pass, someone else comments or reviews, or the branch starts to
+conflict. On github.com it also wakes the agent, with GitHub's reason, when the merge queue drops
+the pull request without merging it. Threads in a project that watch the same pull request share one check. On GitHub, a check
+first asks whether anything changed and reads the pull request only when it did, which keeps
+watching inside GitHub's rate limit. Comments from your own account do not wake it. Watching ends
+when the pull request merges or closes, after 10 wakes in a row that bring only comments, after 8
+failed reads in a row, or when you press Stop on the thread. A rate limit only pauses watching.
+While watched checks are pending, a native goal can yield its turn and let the
+watcher deliver the next CI update. The watcher still runs if the provider
+session ends. In that case a Codex goal paused for the wait may need an
+explicit resume after the update arrives.
+Settling or archiving a thread also ends all its watches. Unsettle the thread before starting a new
+watch. Watching a pull request again does not repeat check or conflict news its last
+watch already reported; unlinking the pull request clears that. Subagents cannot watch pull requests; the thread that delegated to them does. To start or stop
+it yourself, use the row menu in the **Linked pull requests** panel. In the thread details card, a
+watched pull request shows an eye; click it to stop watching.
+
+A watched thread counts as working while the pull request still has checks running, so it stays in
+the **Working** section, including after the agent pushes a fix. Once every check has finished,
+including review bots that report as checks, the thread returns to your inbox: what happens next is
+up to a person. That includes a workflow waiting for a maintainer to approve it, which runs only
+once someone does. The watch stays on and still wakes the agent on new comments, failed checks or
+conflicts, and a watched thread never auto-settles.
+
+Cross-repository links use a project on the same host. Azure DevOps reviews require a project checked
+out from the matching organization and repository.
+
+## GitHub stacks
+
+The Pull requests page shows each PR's position in its GitHub stack. Open the stack badge in a
+review to navigate its layers. **Merge stack** submits the selected pull request and every unmerged
+layer below it to GitHub together, respecting branch rules and merge queues. The confirmation shows
+the scope and merge strategy. GitHub rebases the remaining stack after merging.
+
+**Rebase stack** updates remote branches from bottom to top without changing your local checkout.
+It can rewrite history and restart checks. If a layer fails, earlier updates remain; resolve that
+layer before retrying. GitHub may require manual conflict resolution after a lower layer is amended,
+even when its changes look independent. Stack actions require an environment that supports them.

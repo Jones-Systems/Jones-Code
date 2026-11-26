@@ -1,6 +1,7 @@
-import { msg } from "gt-react";
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { m } from "~/i18n/messages";
+import { projectPendingUserInputAnswer as projectJonesAnswer } from "../../jones/questionAnswer/threadReferenceAnswer";
+import { DisplacedAnswerLedger } from "../../jones/questionAnswer/displacedAnswer";
+import { derivePendingUserInputProgress } from "../../jones/questionAnswer/answerProgress";
+import { supportsUserResponseAnswerNotes } from "@t3tools/contracts/jones/userResponseRequest";
 import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import {
   AuthOrchestrationOperateScope,
@@ -62,6 +63,9 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { toastManager } from "../ui/toast";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { m } from "~/i18n/messages";
+import { msg } from "gt-react";
 
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const NO_PENDING_REQUESTS = { approvals: [], userInputs: [] } as const;
@@ -412,13 +416,10 @@ export function usePendingThreadRequests(input: {
       });
       for (const { question, target, draft } of questionDrafts) {
         if ((useQuestionAttachmentPreparation.getState().counts[target] ?? 0) > 0) return;
-        // A skipped optional question has no entry and must not gain an undefined one.
-        if (Object.hasOwn(answers, question.id)) {
-          providerAnswers[question.id] = projectPendingUserInputAnswer(
-            answers[question.id],
-            answerContextRecords(draft, threadDraft),
-          );
-        }
+        providerAnswers[question.id] = projectPendingUserInputAnswer(
+          projectJonesAnswer(answers[question.id], draft?.threadContexts ?? [], environmentId),
+          answerContextRecords(draft, threadDraft),
+        );
         const attachments = draft ? [...draft.images, ...draft.files] : [];
         if (attachments.length === 0) continue;
         await refreshExpiredAttachmentUploads({

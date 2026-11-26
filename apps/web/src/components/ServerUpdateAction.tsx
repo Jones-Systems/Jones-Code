@@ -49,6 +49,7 @@ import { crossesReleaseTrack } from "@t3tools/shared/cliRelease";
 import { Button } from "./ui/button";
 import { toastManager } from "./ui/toast";
 import { SharedTooltipTrigger } from "./ui/shared-tooltip";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "./ui/tooltip";
 
 const UPDATE_STAGE_LABELS: Record<ServerUpdateStage, string> = {
   downloading: msg("Downloading…"),
@@ -316,8 +317,14 @@ export function ServerUpdateAction({
   className,
   appearance = "button",
 }: ServerUpdateTarget & UpdateButtonProps) {
-  const gt = useGT();
   const messages = useMessages();
+  const gt = useGT();
+  const jones = useAtomValue(jonesUpdates.value(environmentId));
+  const navigate = useNavigate();
+  const continueThreadsAfterServerUpdate = useEnvironmentSettings(
+    environmentId,
+    (settings) => settings.continueThreadsAfterServerUpdate,
+  );
   const isDesktopAppUpdate = selfUpdate === "desktop-managed";
   const serverConfig = useServerConfigs().get(environmentId);
   const sourceIdentity = serverConfig?.environment.jonesSource;
@@ -441,7 +448,7 @@ export function ServerUpdateAction({
   if (selfUpdate === "desktop-managed" && !desktopAppUpdate) {
     return (
       <span className="text-muted-foreground text-xs">
-        <T>Update the desktop app on that machine to update this server.</T>
+        {serverUpdateGuidance(selfUpdate)} on that machine to update this server.
       </span>
     );
   }

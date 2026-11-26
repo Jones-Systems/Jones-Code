@@ -1,6 +1,8 @@
-import { T, msg, useGT, useMessages } from "gt-react";
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { m } from "~/i18n/messages";
+import { ClientServerBuildLabels } from "../../jones/updates/ClientServerBuildLabels";
+import {
+  useClientUpdateBanners,
+  type ClientUpdateBannerInput,
+} from "../../jones/updates/clientUpdateBanner";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { type EnvironmentId } from "@t3tools/contracts";
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
@@ -36,6 +38,9 @@ import {
   resolveServerSelfUpdateCapability,
   supportsDesktopAppUpdate,
 } from "../../versionSkew";
+import { useGT, useMessages, msg, T } from "gt-react";
+import { m } from "~/i18n/messages";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 
 export type EnvironmentUnavailableState = {
   readonly environmentId: EnvironmentId;
@@ -141,6 +146,14 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
     handleDisconnectActiveEnvironment,
   );
   const autoBalanceUpdateBanner = useAutoBalanceUpdateBanner(autoUpdateEnvironments);
+  const clientUpdateBanners = useClientUpdateBanners({
+    activeEnvironment:
+      input.clientUpdateEnvironment === undefined
+        ? activeEnvironment
+        : input.clientUpdateEnvironment,
+    automaticEnvironment,
+    eligibleEnvironments: autoUpdateEnvironments,
+  });
   const versionMismatch = resolveServerConfigVersionMismatch(serverConfig, messages);
   const versionMismatchServerName =
     hasMultipleRegisteredEnvironments && activeThreadEnvironmentId !== null
@@ -263,9 +276,19 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
               ? gt("Could not update server")
               : gt("Updating server"),
         description:
-          serverUpdateState.status === "failed"
-            ? serverUpdateState.message
-            : serverUpdateStageLabel(serverUpdateState.stage, messages),
+          serverUpdateState.status === "failed" ? (
+            <>
+              {serverUpdateState.message}
+              {versionMismatch ? (
+                <>
+                  <br />
+                  <ClientServerBuildLabels builds={versionMismatch} />
+                </>
+              ) : null}
+            </>
+          ) : (
+            serverUpdateStageLabel(serverUpdateState.stage)
+          ),
         actions: !updateFailed ? (
           disconnectAction
         ) : !versionMismatch ||

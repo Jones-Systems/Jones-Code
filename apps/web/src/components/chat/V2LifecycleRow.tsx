@@ -1,4 +1,5 @@
-import { T, Var, msg, useGT, useMessages } from "gt-react";
+import { ProviderAccountGlyph } from "../../jones/composer/ProviderShortcutIcon";
+import { subagentAccountDisplayName } from "../../jones/subagents/accountDisplayName";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { AgentElapsed } from "./AgentElapsed";
 import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -70,6 +71,7 @@ import { TimelineSystemDivider } from "./TimelineSystemDivider";
 import { subagentResumedSince } from "./V2LifecycleRow.logic";
 import { Button, InlineButton } from "../ui/button";
 import { T3Wordmark } from "../T3Wordmark";
+import { useGT, T, Var, msg, useMessages } from "gt-react";
 
 export type { HandoffTimelineRun } from "@t3tools/client-runtime/handoff";
 

@@ -1,6 +1,6 @@
-import { errorDisplayMessage, thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { m as resolveMessage } from "~/i18n/messages";
-import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
+import { DeviceDisplayNameEditor } from "../../jones/devicePresentation/DeviceDisplayNameEditor";
+import { clientServerBuildLabels } from "../../jones/updates/buildPairs";
+import { RemoteAdmissionConfigurations } from "../../jones/remoteAdmission/RemoteAdmissionSettings";
 import { SessionPermissions } from "./SessionPermissions";
 import { useSearch } from "@tanstack/react-router";
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
@@ -24,6 +24,7 @@ import {
   EnvironmentId,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
+import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -156,6 +157,8 @@ import {
   type ConnectDeviceRevokeRequest,
   RevokeConnectDeviceDialog,
 } from "./RevokeConnectDeviceDialog";
+import { thrownErrorMessage, errorDisplayMessage } from "@t3tools/client-runtime/errors";
+import { m as resolveMessage } from "~/i18n/messages";
 
 // Sessions T3 Connect minted for a device signed in to the linked account.
 const CLOUD_CONNECT_SESSION_SUBJECT = "cloud-connect";
@@ -1298,8 +1301,8 @@ function ConnectionsSettingsContent({
           <SettingsSection
             {...searchableSetting("connections-environment")}
             title={
-              accessEnvironment?.label ??
-              (desktopBridge ? gt("This machine") : gt("Primary environment"))
+              accessEnvironment?.displayLabel ??
+              (desktopBridge ? "This machine" : "Primary environment")
             }
             icon={
               <EnvironmentMachineIcon
@@ -1378,10 +1381,8 @@ function ConnectionsSettingsContent({
                       targetVersion={primaryVersionMismatch.clientVersion}
                       label={
                         primaryServerUpdateState.status === "failed"
-                          ? gt("Retry update")
-                          : gt("Update to {version}", {
-                              version: primaryVersionMismatch.clientVersion,
-                            })
+                          ? "Retry update"
+                          : `Update to ${clientServerBuildLabels(primaryVersionMismatch).clientLabel.text}`
                       }
                     />
                   ) : primaryServerUpdateState.status === "idle" && primaryServerConfig ? (

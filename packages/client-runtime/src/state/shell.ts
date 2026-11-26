@@ -341,36 +341,42 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     canCommit: () => boolean = () => true,
   ) {
     const fromHttp = pendingLinkIds !== undefined;
-    const disconnected = initial.status === "empty" || initial.status === "cached";
-    let waiting = yield* Ref.get(awaitingCompletion);
-    let next = initial;
-    let receivedAuthoritativeSnapshot = false;
-    let snapshotRequired = false;
-    let deltas: Array<ShellStreamEvent> = [];
-    const receivedAtMs = yield* Clock.currentTimeMillis;
-    const flushDeltas = () => {
-      if (deltas.length > 0 && Option.isSome(next.snapshot)) {
-        let sequence = next.snapshot.value.snapshotSequence;
-        let removedAt: Map<ThreadId, number> | undefined;
-        for (const delta of deltas) {
-          if (delta.sequence <= sequence) continue;
-          switch (delta.kind) {
-            case "thread.removed":
-              removedAt ??= new Map(next.removedAt);
-              removedAt.set(delta.threadId, delta.sequence);
-              break;
-            case "thread.updated":
-              // Replayed catch-up deltas may predate a backward host clock correction.
-              if (!waiting) {
-                observeServerTime(
-                  environmentId,
-                  DateTime.toEpochMillis(delta.thread.updatedAt),
-                  receivedAtMs,
-                );
-              }
-              break;
-            case "project.updated":
-            case "project.removed":
+    const now = yield* Clock.currentTimeMillis;
+    yield* SubscriptionRef.modify(state, (initial) => {
+      if (!canCommit()) return [undefined, initial] as const;
+      let waiting = Ref.getUnsafe(awaitingCompletion);
+      let snapshotRequired = false;
+      let changed: OrchestrationV2ShellSnapshot | undefined;
+      let nextOrigin = Ref.getUnsafe(origin);
+      const disconnected = initial.status === "empty" || initial.status === "cached";
+      let next = initial;
+      let receivedAuthoritativeSnapshot = false;
+      for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+        const item = items[itemIndex]!;
+        if (item.kind === "snapshot-required") {
+          snapshotRequired = true;
+          continue;
+        }
+        if (
+          refreshedAt.size === 0 &&
+          Option.isSome(next.snapshot) &&
+          item.kind !== "snapshot" &&
+          item.kind !== "synchronized" &&
+          item.kind !== "thread.refreshed" &&
+          item.kind !== "thread.omitted"
+        ) {
+          const batch: ShellStreamEvent[] = [];
+          let sequence = next.snapshot.value.snapshotSequence;
+          let removals: Map<ThreadId, number> | undefined;
+          while (itemIndex < items.length) {
+            const delta = items[itemIndex]!;
+            if (
+              delta.kind === "snapshot" ||
+              delta.kind === "snapshot-required" ||
+              delta.kind === "synchronized" ||
+              delta.kind === "thread.refreshed" ||
+              delta.kind === "thread.omitted"
+            )
               break;
             batch.push(delta);
             if (

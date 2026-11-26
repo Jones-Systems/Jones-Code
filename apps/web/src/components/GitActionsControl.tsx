@@ -1,8 +1,4 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { sourceControlInstallHintText } from "@t3tools/client-runtime/contract-labels";
-import { msg, T, useGT, useMessages, Var } from "gt-react";
-import { m, type MessageResolver } from "../i18n/messages";
-import { changeRequestTermKind } from "./pullRequest/changeRequestTerm";
+import { showScopedGitActionResult } from "../jones/requestEconomy/gitActionResultToast";
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import {
@@ -137,6 +133,11 @@ import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import { ChangeBreakdownGrid } from "./pullRequest/ChangeBreakdownGrid";
 import { useOpenLink } from "~/browser/useOpenLink";
+import { type MessageResolver, m } from "../i18n/messages";
+import { msg, useMessages, useGT, T, Var } from "gt-react";
+import { sourceControlInstallHintText } from "@t3tools/client-runtime/contract-labels";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { changeRequestTermKind } from "./pullRequest/changeRequestTerm";
 
 /** The folder a Git actions control acts on: a thread's own folder or a tracked repository. */
 export interface GitActionsTarget {
@@ -1016,6 +1017,8 @@ function CheckoutGitActionsControl({
   const gitCwd = target?.cwd ?? null;
   const panelAnchorRef = useRef<HTMLDivElement | null>(null);
   const activeEnvironmentId = activeThreadRef?.environmentId ?? null;
+  const openResultPullRequest = useOpenLink(activeThreadRef);
+  const successScopeKey = `${activeEnvironmentId ?? ""}\u0000${gitCwd ?? ""}`;
   const canWriteSourceControl = useEnvironmentScope(
     activeEnvironmentId,
     AuthSourceControlWriteScope,
@@ -1274,11 +1277,17 @@ function CheckoutGitActionsControl({
     }
 
     const actionResult = result.value;
-    if (actionResult.commit.status === "created") {
-      setExcludedFiles((current) => (current === excludedFiles ? new Set() : current));
-    }
     const branchUpdate = resolveThreadBranchUpdate(actionResult);
-    if (branchUpdate) branchFollower?.follow(branchUpdate.branch);
+    if (branchUpdate && branchFollower?.canFollow()) branchFollower.follow(branchUpdate.branch);
+    showScopedGitActionResult({
+      result: actionResult,
+      threadRef: activeThreadRef,
+      // The CTA only starts the follow-up action; that run reports its own outcome.
+      run: async (action) => {
+        await runGitActionWithToast({ action });
+      },
+      openPullRequest: openResultPullRequest,
+    });
     const createdPullRequest = actionResult.pr.status === "created";
     setInlineSuccess({
       title: createdPullRequest

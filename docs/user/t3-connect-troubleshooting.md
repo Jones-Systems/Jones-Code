@@ -34,9 +34,9 @@ Restart T3 Code on the host (`t3 service restart` for a background service) and 
 
 The host's T3 Connect address failed DNS, TLS, connection, or timed out.
 
-1. Confirm the host is online and run `t3 connect status`.
-2. If only the host fails, check DNS/VPN/proxy (stale DNS caches clear in ~30 minutes).
-3. If the address no longer points to this host, re-link it: toggle **T3 Connect** off and on in **Settings → Sharing & access**, or run `t3 connect link` and restart the server.
+1. Make sure the host is awake and online.
+2. On the host, run `t3 connect status`.
+3. If the check fails only on the host, check the host's DNS, VPN, or proxy.
 
 ## This device can't reach T3 Connect
 
@@ -48,12 +48,27 @@ The issue is on the client device's network:
 
 ## Sign-in, account, or link problems
 
-- **Different account**: Sign in to the same T3 Connect account on both sides (on host: `t3 connect logout && t3 connect`).
-- **T3 Connect disabled on host**: Turn on **Settings → Sharing & access → T3 Connect** or run `t3 connect`.
-- **Link not yet applied**: Restart T3 Code on the host (`t3 service restart` or restart desktop app).
-- **Expired session**: Sign out of T3 Connect and sign back in.
-- **Waiting for device approval**: Approve the displayed code from an existing device or run `t3 auth connect-device approve <code>` on the host ([Approve new devices](./remote-access.md#approve-new-devices)).
-- **Machine limit reached**: Deregister an unused host or [link a paid T3 Chat account](./remote-access.md#more-machines-with-t3-chat), then restart the host.
+This device's T3 Connect sign-in is not ready yet, or T3 Connect does not have
+an active link between your account and the host.
+
+- **The host is linked to a different account.** Sign in to the same T3 Connect
+  account on this device and on the host. On the host, run `t3 connect logout`,
+  then `t3 connect`.
+- **T3 Connect is off on the host, or the host only publishes agent activity.**
+  On the host, open **Settings > Sharing & access** and turn **T3 Connect** on, or
+  run `t3 connect`.
+- **The host was linked, but the server did not apply the link yet.** Restart
+  the server on the host: quit and reopen the T3 Code desktop app, run
+  `t3 service restart`, or stop `t3 serve` and run it again.
+- **This device's sign-in expired, or the host no longer accepts this
+  device.** Sign out of T3 Connect and sign in again.
+- **This device is still loading its T3 Connect sign-in.** Wait a moment;
+  T3 Code retries on its own. If it keeps waiting, reload or restart T3 Code on
+  this device.
+- **Your account reached its tunnel limit.** Remove an environment you do not
+  use from your T3 account's T3 Connect page, or
+  [link a paid T3 Chat account](./remote-access.md#more-machines-with-t3-chat)
+  for a higher limit. Then restart T3 Code on the host.
 
 ## The clock is off
 
@@ -65,13 +80,16 @@ Update T3 Code on the host machine ([Updating T3 Code](./updating.md)).
 
 ## T3 Connect returned an error
 
-| Error                                            | Fix                                                                                                                           |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `environment_link_limit_exceeded` / tunnel limit | Deregister an unused host or link a paid T3 Chat account, then restart the host.                                              |
-| `auth_invalid` / `invalid_bearer`                | Run `t3 connect login` (or `t3 connect logout && t3 connect`), then restart the server.                                       |
-| Expired or invalid link proof                    | Sync system clock, update T3 Code, and restart.                                                                               |
-| HTTP 403 (unrecognized)                          | If device approval is on, update the client and approve it; otherwise check proxies/firewalls and save any Cloudflare Ray ID. |
-| HTTP 408, 429, or 5xx                            | Temporary—wait a few minutes for automatic retry.                                                                             |
+| Error                                                     | Fix                                                                                                                                                                                                                                          |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `environment_link_limit_exceeded` or managed tunnel limit | Remove an unused environment or link a paid T3 Chat account, then restart T3 Code on the host.                                                                                                                                               |
+| `auth_invalid` or `invalid_bearer`                        | Run `t3 connect login`. If credentials were revoked, run `t3 connect logout`, then `t3 connect` again. Restart the server after signing in.                                                                                                  |
+| Expired or invalid link proof                             | Check the host's date and time, update T3 Code, then restart it.                                                                                                                                                                             |
+| HTTP 403 from the host's anonymous address check          | This does not prove a signed-in device cannot connect. Try that device, then use **Details > Copy diagnostics** if it fails. Compare the host's local identity check and external path; a response Ray ID alone does not identify the cause. |
+| HTTP 408, 429, or 5xx                                     | Wait a few minutes. T3 Code retries temporary failures on its own.                                                                                                                                                                           |
+
+After you fix a permanent rejection, restart the host's server with
+`t3 service restart`. For a foreground server, stop it and run `t3 serve` again.
 
 After fixing a permanent error, restart the host (`t3 service restart` or restart `t3 serve`). If T3 Code stops when SSH disconnects, see [background-service troubleshooting](./background-service.md#troubleshooting).
 

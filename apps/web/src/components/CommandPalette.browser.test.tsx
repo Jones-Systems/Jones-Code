@@ -18,7 +18,8 @@ const entities = vi.hoisted(() => ({
   threads: [] as ReadonlyArray<Thread>,
   activeThread: undefined as Thread | undefined,
   delegatedUnderParent: new Set<string>() as ReadonlySet<string>,
-  handleNewThread: vi.fn(async () => undefined),
+  defaultProjectRef: undefined as ScopedProjectRef | undefined,
+  handleNewThread: vi.fn(async () => null),
 }));
 vi.mock("../state/server", async (original) => {
   const actual = await original<typeof import("../state/server")>();
@@ -33,17 +34,6 @@ vi.mock("../state/server", async (original) => {
     })),
   );
   return { ...actual, primaryServerKeybindingsAtom: Atom.make(jumpBindings) };
-});
-vi.mock("../hooks/useHandleNewThread", async (original) => {
-  const actual = await original<typeof import("../hooks/useHandleNewThread")>();
-  return {
-    ...actual,
-    useHandleNewThread: () => ({
-      ...actual.useHandleNewThread(),
-      activeThread: entities.activeThread,
-      handleNewThread: entities.handleNewThread,
-    }),
-  };
 });
 vi.mock("../state/entities", async (original) => ({
   ...(await original<typeof import("../state/entities")>()),
@@ -60,6 +50,8 @@ vi.mock("../hooks/useHandleNewThread", async (original) => {
       const result = actual.useHandleNewThread();
       return {
         ...result,
+        activeThread: entities.activeThread,
+        handleNewThread: entities.handleNewThread,
         defaultProjectRef: entities.defaultProjectRef ?? result.defaultProjectRef,
       };
     },
@@ -75,6 +67,7 @@ function setup(state: Partial<typeof entities> = {}) {
   entities.threads = state.threads ?? [];
   entities.activeThread = state.activeThread;
   entities.delegatedUnderParent = state.delegatedUnderParent ?? new Set();
+  entities.defaultProjectRef = state.defaultProjectRef;
   entities.handleNewThread.mockClear();
 }
 

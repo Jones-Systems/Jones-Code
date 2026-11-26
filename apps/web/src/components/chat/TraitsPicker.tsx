@@ -127,6 +127,7 @@ function getSelectedTraits(
   modelOptions: ProviderOptions | null | undefined,
   allowPromptInjectedEffort: boolean,
   includePlanAgent: boolean | undefined,
+  displayCapabilities?: ModelCapabilities,
   resolve: MessageResolver = m,
 ) {
   const caps =
@@ -208,6 +209,7 @@ export function getTraitsSectionVisibility(input: {
   modelOptions?: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
   includePlanAgent?: boolean | undefined;
+  displayCapabilities?: ModelCapabilities | undefined;
   resolve?: MessageResolver;
 }) {
   const selected = getSelectedTraits(
@@ -218,6 +220,7 @@ export function getTraitsSectionVisibility(input: {
     input.modelOptions,
     input.allowPromptInjectedEffort ?? true,
     input.includePlanAgent,
+    input.displayCapabilities,
     input.resolve,
   );
 
@@ -363,6 +366,7 @@ export function useTraitsSelection({
     modelOptions,
     allowPromptInjectedEffort,
     includePlanAgent,
+    displayCapabilities,
     resolve,
   });
   return {

@@ -1,10 +1,12 @@
-import { msg, T, useGT } from "gt-react";
+import { BuildVersion } from "../../jones/updates/updateDisplay";
+import { APP_SOURCE_SHA, APP_BUILD_STARTED_AT } from "../../branding";
 
 import { APP_VERSION } from "../../branding";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { InlineButton } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import { useGT, msg, T } from "gt-react";
 
 export function AboutVersionTitle() {
   const gt = useGT();
@@ -27,9 +29,13 @@ export function AboutVersionTitle() {
 
   return (
     <span className="inline-flex items-baseline gap-2">
-      <span>
-        <T>Version</T>
-      </span>
+      <span>Version</span>
+      <BuildVersion
+        label="app version"
+        version={APP_VERSION}
+        sourceSha={APP_SOURCE_SHA}
+        startedAt={APP_BUILD_STARTED_AT}
+      />
       <code className="text-2xs font-medium">
         <SharedTooltipTrigger
           render={

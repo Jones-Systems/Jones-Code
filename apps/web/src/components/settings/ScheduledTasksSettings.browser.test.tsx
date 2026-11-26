@@ -8,7 +8,6 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   type ServerProvider,
-  type UnifiedSettings,
   ScheduledTaskId,
   ThreadId,
   type ScheduledTask,
@@ -67,11 +66,7 @@ const state = vi.hoisted(() => ({
   connected: true,
   tasksLoaded: true,
   remove: vi.fn(),
-  tasks: [] as ScheduledTask[],
-  secondary: false,
-  providers: null as unknown as Atom.Writable<ReadonlyArray<ServerProvider>>,
-  settings: null as unknown as UnifiedSettings,
-  upsert: vi.fn(),
+  inherited: false,
 }));
 const secondaryId = EnvironmentId.make("secondary");
 const permissions = new Map<string, Atom.Writable<boolean>>();
@@ -92,9 +87,7 @@ function setup() {
   state.remove.mockReset().mockReturnValue(Effect.succeed({ id: task.id }));
   state.tasks = [task];
   state.secondary = false;
-  state.providers = Atom.make<ReadonlyArray<ServerProvider>>([]);
-  state.settings = DEFAULT_UNIFIED_SETTINGS;
-  state.upsert.mockReset().mockReturnValue(Effect.succeed({ id: task.id }));
+  state.inherited = false;
   permissions.clear();
   taskLists.clear();
   permissions.set(environmentId, Atom.make(true));
@@ -180,7 +173,7 @@ vi.mock(import("../../state/query"), async (original) => ({
     data:
       request === null || request === threadFamilyRead
         ? request
-        : { tasks: state.tasksLoaded ? state.tasks : [] },
+        : { tasks: state.tasksLoaded ? [state.inherited ? inheritedTask : task] : [] },
     error: null,
     isPending: false,
     refresh: vi.fn(),

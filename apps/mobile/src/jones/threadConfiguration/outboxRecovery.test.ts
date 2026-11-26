@@ -11,6 +11,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { initialMessageCommandId } from "@t3tools/contracts/jones/deliveryEvidence";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { Atom, AsyncResult } from "effect/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -81,7 +82,9 @@ vi.mock("../../state/use-thread-outbox", async () => {
   );
   return {
     editingQueuedMessageIdsAtom,
-    dispatchingQueuedMessageIdAtom: Atom.make<MessageId | null>(null).pipe(Atom.keepAlive),
+    dispatchingQueuedMessageIdsAtom: Atom.make<Readonly<Record<MessageId, true>>>({}).pipe(
+      Atom.keepAlive,
+    ),
     holdEditingQueuedMessage: (id: MessageId) =>
       appAtomRegistry.set(editingQueuedMessageIdsAtom, {
         ...appAtomRegistry.get(editingQueuedMessageIdsAtom),
@@ -395,7 +398,9 @@ describe("mobile evidence-aware editable recovery", () => {
     async (creationAccepted) => {
       const message = rejectedCreation(creationAccepted);
       await harness.manager.enqueue(message);
-      expect(await restoreRejectedQueuedMessage(message, "Refused by admission")).toBe("restored");
+      expect(
+        await Effect.runPromise(restoreRejectedQueuedMessage(message, "Refused by admission")),
+      ).toBe("restored");
       const draftKey = creationAccepted
         ? keyOf(message)
         : restoredNewTaskDraftKey(message.messageId);
@@ -448,7 +453,7 @@ describe("mobile evidence-aware editable recovery", () => {
       await release.promise;
       return result;
     });
-    const restoring = restoreRejectedQueuedMessage(message, "Stale refusal");
+    const restoring = Effect.runPromise(restoreRejectedQueuedMessage(message, "Stale refusal"));
     try {
       await merged.promise;
       drafts.setComposerDraftText(keyOf(message), "Newer unsent content");
@@ -488,7 +493,7 @@ describe("mobile evidence-aware editable recovery", () => {
       removing.resolve();
       await release.promise;
     });
-    const restoring = restoreRejectedQueuedMessage(message, "Stale refusal");
+    const restoring = Effect.runPromise(restoreRejectedQueuedMessage(message, "Stale refusal"));
     try {
       await removing.promise;
       const accepted = observeQueuedThreadDelivery(message, acceptedQueuedThreadDelivery(message));

@@ -526,21 +526,17 @@ export function DeviceStreamView(props: {
               description={props.deviceDescription ?? ""}
               stage="stream"
               message={
-                status === "error" ? (detail ?? gt("Stream failed.")) : gt("Connecting video…")
+                route?.phase === "denied"
+                  ? (route.reason ?? "Device access needs attention.")
+                  : status === "error"
+                    ? (detail ?? "Stream failed.")
+                    : "Connecting video…"
               }
-              error={status === "error"}
+              error={status === "error" || route?.phase === "denied"}
             >
-              {status === "error" ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    // An expired ticket surfaces as unauthorized on restart and
-                    // refreshes access, which starts a new session.
-                    session?.reconnect();
-                  }}
-                >
-                  <T>Reconnect</T>
+              {status === "error" || route?.phase === "denied" ? (
+                <Button size="sm" variant="outline" onClick={retryAccess}>
+                  Reconnect
                 </Button>
               ) : null}
             </DeviceLoadingView>

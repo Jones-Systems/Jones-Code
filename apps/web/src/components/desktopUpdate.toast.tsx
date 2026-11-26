@@ -60,7 +60,8 @@ export function showDesktopUpdateDownloadedToast(
     title: m(msg("Update downloaded")),
     description: (
       <>
-        <T>Restart the app from the update button to install it.</T>
+        {getJonesDesktopUpdateBlockedMessage(state, "install") ??
+          "Restart the app from the update button to install it."}
         {releaseUrl ? <ReleaseNotesLink releaseUrl={releaseUrl} shell={shell} /> : null}
       </>
     ),

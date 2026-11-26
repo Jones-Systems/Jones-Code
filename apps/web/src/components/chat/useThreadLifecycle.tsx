@@ -1,6 +1,9 @@
-import { msg, useGT, useMessages } from "gt-react";
-import { errorDisplayMessage, thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { m } from "~/i18n/messages";
+import { pendingSends } from "../../jones/pendingSends/store";
+import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
+import {
+  acknowledgeComposerSelection,
+  composerSelectionForDispatch,
+} from "../../jones/threadConfiguration/composerSelection";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { Dispatch } from "react";
@@ -82,9 +85,16 @@ import { useAtomValue } from "@effect/atom-react";
 import type { RunStopPresentation } from "@t3tools/client-runtime/state/thread-execution";
 import { Atom } from "effect/reactivity";
 import { environmentThreadDetails } from "../../state/threads";
-import { type SideThreadOpenIntent, sideThreadKindOf } from "@t3tools/client-runtime/side-thread";
-import { openSideThread, resolveThreadOpenRoute } from "../../lib/sideChatPane";
+import { resolveThreadOpenRoute } from "../../lib/sideChatPane";
+import { useDescendantApprovalBanner } from "../../jones/descendantApproval/useDescendantApprovalBanner";
+import { ComposerBannerStack } from "./ComposerBannerStack";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
+import { errorDisplayMessage, thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { m } from "~/i18n/messages";
+import { useGT, useMessages, msg } from "gt-react";
+import { type SideThreadOpenIntent, sideThreadKindOf } from "@t3tools/client-runtime/side-thread";
+import { openSideThread } from "../../lib/sideChatPane";
+
 const RELATED_THREAD_SHELL_WAIT_MS = 1_000;
 
 function actionErrorMessage(error: unknown): string {
@@ -533,16 +543,15 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     onOpenThread: (ref) => onOpenRelatedThreadStable(ref.threadId, ref.environmentId),
   });
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
-  const childInputNow = childInputNowItem(
-    {
-      childThreadInputs,
-      parentAwaitingUser: Boolean(
-        activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput,
-      ),
-      onOpenThread: onOpenRelatedThreadStable,
-    },
-    messages,
-  );
+  const childInputNow = childInputNowItem({
+    childThreadInputs: descendantApprovalBanner
+      ? childThreadInputs.filter((child) => !child.hasPendingApprovals)
+      : childThreadInputs,
+    parentAwaitingUser: Boolean(
+      activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput,
+    ),
+    onOpenThread: onOpenRelatedThreadStable,
+  });
 
   const sendStandaloneCommand = async (text: string, failureMessage: string) => {
     if (!activeThread || !clientSettingsHydrated || sendInFlightRef.current) return;

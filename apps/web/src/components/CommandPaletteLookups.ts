@@ -1,14 +1,10 @@
-import {
-  type ClientSettings,
-  type EnvironmentId,
-  resolveEnvironmentMachineKind,
-} from "@t3tools/contracts";
-import { useGT } from "gt-react";
+import { type ClientSettings, resolveEnvironmentMachineKind } from "@t3tools/contracts";
 
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { useProjects } from "../state/entities";
 import { useEnvironments } from "../state/environments";
+import { useGT } from "gt-react";
 
 // Each helper reads its own source hook so the compiler caches the derived value on that
 // source. Taking the source as an argument instead leaves the helper hook-free, and the

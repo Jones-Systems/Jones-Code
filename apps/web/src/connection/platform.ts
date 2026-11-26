@@ -1,4 +1,5 @@
-import { msg } from "gt-react";
+import { planCreation } from "../jones/pendingSends/planCreation";
+import { clearMonitorEnvironment } from "../jones/threadMonitor/store";
 import {
   ClientCapabilities,
   PlatformConnectionSource,
@@ -65,6 +66,7 @@ import * as ConnectionStorage from "./storage";
 import { browserThreadTriageOutboxStore } from "./threadTriageOutboxStore";
 import { clientPresentationMetadata } from "./clientMetadata";
 import { m } from "../i18n/messages";
+import { msg } from "gt-react";
 
 let nextObservedRpcRequestId = 0;
 
@@ -843,11 +845,11 @@ const layerEnvironmentOwnedDataCleanup = Layer.succeed(
       return Effect.suspend(() => {
         const plansRetired = planCreation.clearEnvironment(environmentId);
         clearComposerDraftsEnvironment(environmentId);
-      }).pipe(
-        Effect.andThen(
-          Effect.ignore(browserThreadTriageOutboxStore.clearEnvironment(environmentId)),
-        ),
-      );
+        const retired = clearMonitorEnvironment(environmentId);
+        return Effect.promise(async () => {
+          await Promise.all([retired, plansRetired]);
+        });
+      });
     }),
   }),
 );

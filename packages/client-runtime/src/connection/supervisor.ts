@@ -446,59 +446,6 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       }),
     );
 
-  const checkBetterRoutes = Effect.fnUntraced(function* (lease: ConnectedLease) {
-    const latest = yield* Ref.get(currentEntry);
-    const current = yield* routeIndex(lease);
-    if (current <= 0) return;
-    const now = yield* Clock.monotonicTimeNanos;
-    const cooldowns = yield* Ref.get(routeCooldowns);
-    const silent = yield* Ref.get(silentRoutes);
-    const better = connectionRoutes(latest)
-      .slice(0, current)
-      .filter((route) => {
-        const id = connectionRouteId(route.target);
-        return (cooldowns.get(id) ?? 0n) <= now && (silent.routes.get(id)?.until ?? 0n) <= now;
-      });
-    const results = yield* Effect.forEach(
-      better,
-      (route: ConnectionRoute) => driver.preflight(latest, route),
-      { concurrency: "unbounded" },
-    );
-    yield* Ref.update(silentRoutes, (previous) => {
-      if (previous.generation !== silent.generation) return previous;
-      const routes = new Map(previous.routes);
-      for (const [position, route] of better.entries()) {
-        const id = connectionRouteId(route.target);
-        if (results[position] !== "silent") routes.delete(id);
-        else routes.set(id, backOffSilentRoute(previous.routes.get(id), now));
-      }
-      return { generation: previous.generation, routes };
-    });
-    const live = yield* SubscriptionRef.get(session);
-    if (Option.isNone(live) || live.value !== lease.session) return;
-    const refused = better
-      .filter((_route, position) => results[position] === "refused")
-      .map((route) => connectionRouteId(route.target));
-    if (refused.length > 0) {
-      const known = yield* Ref.updateAndGet(refusedRoutes, (current) =>
-        mergeRefusedRoutes(current, refused, () => true),
-      );
-      yield* SubscriptionRef.updateSome(state, (current) =>
-        current.phase === "connected" &&
-        current.generation === lease.generation &&
-        current.refusedRouteIds !== known
-          ? Option.some({ ...current, refusedRouteIds: known })
-          : Option.none(),
-      );
-    }
-    const index = results.indexOf("ready");
-    if (index === -1) return;
-    yield* signal({
-      _tag: "BetterRouteAvailable",
-      routeId: connectionRouteId(better[index]!.target),
-    });
-  });
-
   const betterRouteChecks = yield* Queue.dropping<ConnectedLease>(1);
   const requestBetterRouteCheck = (lease: ConnectedLease) =>
     routeIndex(lease).pipe(
@@ -1128,14 +1075,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       activeRoute: routes.find((route) => connectionRouteId(route.target) === activeRouteId),
       generation: nextGeneration,
     };
-    const refusedRouteIds = yield* Ref.updateAndGet(refusedRoutes, (known) =>
-      mergeRefusedRoutes(
-        known,
-        active.lease.refusedRouteIds,
-        (id) =>
-          id !== activeRouteId && routes.some((route) => connectionRouteId(route.target) === id),
-      ),
-    );
+    currentLease = connectedLease;
     const connectedAt = yield* Clock.currentTimeMillis;
     generation = nextGeneration;
     yield* SubscriptionRef.set(prepared, Option.some(connectedLease.prepared));
@@ -1449,38 +1389,8 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       ),
     ),
   );
-  yield* keepRunning(
-    "better-route-checker",
-    Queue.take(betterRouteChecks).pipe(Effect.flatMap(checkBetterRoutes), Effect.forever),
-  );
-  // A restarted loop has forgotten its retry ladder, so it waits out the
-  // ladder's ceiling unless a signal cuts the wait short.
-  yield* run().pipe(
-    Effect.catchCause((cause) =>
-      Effect.gen(function* () {
-        yield* logUnexpectedFailure("loop", cause);
-        const currentIntent = yield* Ref.get(intent);
-        const lastFailure = unexpectedFailure(target).error;
-        yield* setState(
-          !currentIntent.desired
-            ? availableState(currentIntent, generation)
-            : currentIntent.network === "offline"
-              ? offlineState(currentIntent, generation, 1, lastFailure)
-              : {
-                  desired: true,
-                  network: currentIntent.network,
-                  phase: "backoff",
-                  stage: null,
-                  attempt: 1,
-                  generation,
-                  lastFailure,
-                  retryAt: (yield* Clock.currentTimeMillis) + RETRY_MAX_DELAY_MS,
-                  refusedRouteIds: NO_REFUSED_ROUTES,
-                },
-        );
-        yield* waitForRetrySignal(RETRY_MAX_DELAY_MS);
-      }),
-    ),
+  yield* Queue.take(betterRouteChecks).pipe(
+    Effect.flatMap(recovery.check),
     Effect.forever,
     Effect.forkScoped,
   );

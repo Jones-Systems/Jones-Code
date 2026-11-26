@@ -416,57 +416,358 @@ describe("provider update launch notification logic", () => {
     });
   });
 
-  it("does not count an already dismissed success again when another provider updates", () => {
-    const claudeUpdated = provider({
-      driver: driver("claudeAgent"),
-      version: "1.1.0",
-      latestVersion: "1.1.0",
-      advisoryStatus: "current",
-      updateState: {
-        status: "succeeded",
-        startedAt: checkedAt,
-        finishedAt: checkedAt,
-        message: "Provider updated.",
-        output: null,
+  describe("multi-backend update outcomes", () => {
+    const terminalState = (
+      status: "succeeded" | "failed" | "unchanged",
+      message: string,
+    ): NonNullable<ServerProvider["updateState"]> => ({
+      status,
+      startedAt: checkedAt,
+      finishedAt: checkedAt,
+      message,
+      output: null,
+    });
+
+    const fulfilledOutcome = (
+      isPrimary: boolean,
+      snapshot: ServerProvider | null,
+      environment = "env",
+    ): PromiseSettledResult<LocalProviderUpdateOutcome> => ({
+      status: "fulfilled",
+      value: {
+        environmentId: environment as LocalProviderUpdateOutcome["environmentId"],
+        isPrimary,
+        driver: snapshot?.driver ?? driver("codex"),
+        instanceId: snapshot?.instanceId ?? instanceId("codex"),
+        provider: snapshot,
       },
     });
-    const claudeView = getProviderUpdateSidebarPillView([claudeUpdated], {
-      visibleAfterIso: sessionStartedAt,
-    });
-    expect(claudeView).toMatchObject({ title: "Claude updated: v1.1.0" });
 
-    const bothUpdated = [
-      claudeUpdated,
-      provider({
+    it("surfaces a secondary backend's failed update over the primary's success", () => {
+      const snapshots = collectProviderUpdateOutcomeSnapshots([
+        fulfilledOutcome(
+          true,
+          provider({
+            driver: driver("codex"),
+            updateState: terminalState("succeeded", "Provider updated."),
+          }),
+        ),
+        fulfilledOutcome(
+          false,
+          provider({
+            driver: driver("codex"),
+            updateState: terminalState("failed", "npm: NotFound"),
+          }),
+        ),
+      ]);
+
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]?.updateState?.status).toBe("failed");
+      expect(
+        getProviderUpdateProgressToastView({ providers: snapshots, providerCount: 1 }),
+      ).toMatchObject({ phase: "failed" });
+    });
+
+    it("treats a rejected dispatch as not contributing a snapshot", () => {
+      const primary = provider({
         driver: driver("codex"),
-        version: "1.2.0",
-        latestVersion: "1.2.0",
-        advisoryStatus: "current",
-        updateState: {
-          status: "succeeded",
-          startedAt: laterCheckedAt,
-          finishedAt: laterCheckedAt,
-          message: "Provider updated.",
-          output: null,
-        },
-      }),
-    ];
-    const codexView = getProviderUpdateSidebarPillView(bothUpdated, {
-      visibleAfterIso: sessionStartedAt,
-      dismissedKeys: new Set(claudeView?.dismissKeys),
-    });
-    expect(codexView).toMatchObject({ tone: "success", title: "Codex updated: v1.2.0" });
+        updateState: terminalState("succeeded", "Provider updated."),
+      });
+      const results: PromiseSettledResult<LocalProviderUpdateOutcome>[] = [
+        fulfilledOutcome(true, primary),
+        { status: "rejected", reason: new Error("WebSocket closed") },
+      ];
 
-    const groupedView = getProviderUpdateSidebarPillView(bothUpdated, {
-      visibleAfterIso: sessionStartedAt,
+      expect(collectProviderUpdateOutcomeSnapshots(results)).toEqual([primary]);
+      expect(firstRejectedProviderUpdateMessage(results)).toBe("WebSocket closed");
     });
-    expect(groupedView).toMatchObject({ title: "2 providers updated" });
+  });
+
+  describe("per-environment update grouping", () => {
+    const environment = (
+      input: {
+        readonly environmentId: string;
+        readonly providers: ReadonlyArray<ServerProvider>;
+      } & Partial<Omit<LocalEnvironmentProvidersInput, "environmentId" | "providers">>,
+    ): LocalEnvironmentProvidersInput => ({
+      environmentId: input.environmentId as EnvironmentId,
+      label: input.label ?? input.environmentId,
+      isPrimary: input.isPrimary ?? false,
+      connectionState: input.connectionState ?? "ready",
+      providers: input.providers,
+    });
+
+    it("groups each environment's outdated one-click candidates", () => {
+      const result = buildLocalEnvironmentUpdateGroups([
+        environment({
+          environmentId: "env-windows",
+          label: "Windows",
+          isPrimary: true,
+          providers: [provider({ driver: driver("codex"), latestVersion: "1.1.0" })],
+        }),
+        environment({
+          environmentId: "env-wsl",
+          label: "WSL",
+          providers: [provider({ driver: driver("codex"), latestVersion: "1.1.0" })],
+        }),
+      ]);
+
+      expect(result.isAnySettling).toBe(false);
+      expect(result.groups.map((group) => group.label)).toEqual(["Windows", "WSL"]);
+      expect(result.groups.every((group) => group.candidates.length === 1)).toBe(true);
+    });
+
+    it("retains each instance in each environment even when command strings match", () => {
+      const providers = [
+        provider({ driver: driver("codex"), instanceId: instanceId("personal") }),
+        provider({ driver: driver("codex"), instanceId: instanceId("work") }),
+      ];
+      const { groups } = buildLocalEnvironmentUpdateGroups([
+        environment({ environmentId: "first", providers }),
+        environment({ environmentId: "second", providers }),
+      ]);
+
+      expect(
+        groups.flatMap((group) =>
+          group.candidates.map((candidate) => [group.environmentId, candidate.instanceId]),
+        ),
+      ).toEqual([
+        ["first", "personal"],
+        ["first", "work"],
+        ["second", "personal"],
+        ["second", "work"],
+      ]);
+    });
+
+    it.each(["connecting", "disconnected", "error"] as const)(
+      "does not offer cached candidates for a %s environment",
+      (connectionState) => {
+        const { groups } = buildLocalEnvironmentUpdateGroups([
+          environment({
+            environmentId: "offline",
+            connectionState,
+            providers: [provider({ driver: driver("codex") })],
+          }),
+        ]);
+        expect(environmentGroupsWithUpdates(groups)).toEqual([]);
+      },
+    );
+
+    it("flags settling while a secondary backend is still connecting", () => {
+      const result = buildLocalEnvironmentUpdateGroups([
+        environment({
+          environmentId: "env-windows",
+          isPrimary: true,
+          providers: [provider({ driver: driver("codex") })],
+        }),
+        environment({ environmentId: "env-wsl", connectionState: "connecting", providers: [] }),
+      ]);
+
+      expect(result.isAnySettling).toBe(true);
+      expect(
+        result.groups.find((group) => group.environmentId === ("env-wsl" as EnvironmentId))
+          ?.isSettling,
+      ).toBe(true);
+    });
+
+    it("keeps only environments that have a one-click update on offer", () => {
+      const { groups } = buildLocalEnvironmentUpdateGroups([
+        environment({
+          environmentId: "env-windows",
+          isPrimary: true,
+          providers: [provider({ driver: driver("codex") })],
+        }),
+        environment({
+          environmentId: "env-wsl",
+          providers: [
+            provider({ driver: driver("codex"), advisoryStatus: "current", latestVersion: null }),
+          ],
+        }),
+      ]);
+
+      expect(environmentGroupsWithUpdates(groups).map((group) => group.environmentId)).toEqual([
+        "env-windows",
+      ]);
+    });
+
+    it("keys the notification by environment, driver and latest version", () => {
+      const noUpdates = buildLocalEnvironmentUpdateGroups([
+        environment({
+          environmentId: "env-windows",
+          isPrimary: true,
+          providers: [
+            provider({ driver: driver("codex"), advisoryStatus: "current", latestVersion: null }),
+          ],
+        }),
+      ]);
+      expect(localEnvironmentUpdateNotificationKey(noUpdates.groups)).toBeNull();
+
+      const both = buildLocalEnvironmentUpdateGroups([
+        environment({
+          environmentId: "env-windows",
+          isPrimary: true,
+          providers: [provider({ driver: driver("codex"), latestVersion: "1.1.0" })],
+        }),
+        environment({
+          environmentId: "env-wsl",
+          providers: [provider({ driver: driver("codex"), latestVersion: "1.1.0" })],
+        }),
+      ]);
+      const key = localEnvironmentUpdateNotificationKey(both.groups);
+      expect(key).toContain("env-windows=codex:codex:1.1.0:one-click");
+      expect(key).toContain("env-wsl=codex:codex:1.1.0:one-click");
+    });
+
+    it("labels environments by platform so they are distinguishable", () => {
+      expect(
+        deriveEnvironmentDisplayLabel({
+          isWsl: false,
+          wslDistro: null,
+          platformOs: "windows",
+          fallbackLabel: "Jgratton24",
+        }),
+      ).toBe("Windows");
+      expect(
+        deriveEnvironmentDisplayLabel({
+          isWsl: true,
+          wslDistro: null,
+          platformOs: "linux",
+          fallbackLabel: "Jgratton24",
+        }),
+      ).toBe("WSL");
+      expect(
+        deriveEnvironmentDisplayLabel({
+          isWsl: true,
+          wslDistro: "ubuntu",
+          platformOs: "linux",
+          fallbackLabel: "Jgratton24",
+        }),
+      ).toBe("WSL · ubuntu");
+      expect(
+        deriveEnvironmentDisplayLabel({
+          isWsl: false,
+          wslDistro: null,
+          platformOs: undefined,
+          fallbackLabel: "My Device",
+        }),
+      ).toBe("My Device");
+    });
+  });
+
+  describe("isTerminalProviderUpdatePhase", () => {
+    it("treats succeeded/failed/unchanged as terminal", () => {
+      expect(isTerminalProviderUpdatePhase("succeeded")).toBe(true);
+      expect(isTerminalProviderUpdatePhase("failed")).toBe(true);
+      expect(isTerminalProviderUpdatePhase("unchanged")).toBe(true);
+    });
+
+    it("treats running/initial as non-terminal so they are not persisted", () => {
+      expect(isTerminalProviderUpdatePhase("running")).toBe(false);
+      expect(isTerminalProviderUpdatePhase("initial")).toBe(false);
+    });
+  });
+
+  describe("resolveEnvironmentUpdateRowStatus", () => {
+    const group: LocalEnvironmentUpdateGroup = {
+      environmentId: "env-wsl" as EnvironmentId,
+      label: "WSL",
+      isPrimary: false,
+      isSettling: false,
+      candidates: [updateCandidate({ driver: driver("codex"), latestVersion: "1.1.0" })],
+      providers: [],
+    };
+    const succeededResult: ProviderUpdateToastView = {
+      phase: "succeeded",
+      type: "success",
+      title: "Provider updated",
+      description: "New sessions will use the updated provider.",
+    };
+    const successPill: ProviderUpdateSidebarPillView = {
+      key: "succeeded:codex",
+      tone: "success",
+      title: "Codex updated",
+      description: "New sessions will use the updated provider.",
+    };
+
+    it("prefers a transport error", () => {
+      expect(
+        resolveEnvironmentUpdateRowStatus({
+          group,
+          error: "boom",
+          result: succeededResult,
+          pill: successPill,
+          isPending: true,
+        }),
+      ).toMatchObject({ kind: "failed", text: "boom" });
+    });
+  });
+
+  it("retains every provider instance as an update candidate", () => {
     expect(
-      getProviderUpdateSidebarPillView(bothUpdated, {
-        visibleAfterIso: sessionStartedAt,
-        dismissedKeys: new Set(groupedView?.dismissKeys),
-      }),
-    ).toBeNull();
+      collectProviderUpdateCandidates([
+        provider({
+          driver: driver("codex"),
+          instanceId: instanceId("codex_personal"),
+          latestVersion: "1.1.0",
+        }),
+        provider({
+          driver: driver("codex"),
+          instanceId: instanceId("codex"),
+          latestVersion: "1.1.0",
+        }),
+        provider({ driver: driver("cursor"), latestVersion: "0.3.0" }),
+      ]),
+    ).toHaveLength(3);
+  });
+
+  it("keeps unchanged providers actionable from settings", () => {
+    const view = getProviderUpdateProgressToastView({
+      providers: [
+        provider({
+          driver: driver("cursor"),
+          updateState: {
+            status: "unchanged",
+            startedAt: checkedAt,
+            finishedAt: checkedAt,
+            message: "still old",
+            output: null,
+          },
+        }),
+      ],
+      providerCount: 1,
+    });
+
+    expect(view).toMatchObject({
+      phase: "unchanged",
+      type: "warning",
+      title: "Provider update could not be verified",
+      description: "still old",
+    });
+  });
+
+  it("keeps unchanged sidebar pill states dismissible", () => {
+    const view = getProviderUpdateSidebarPillView(
+      [
+        provider({
+          driver: driver("cursor"),
+          updateState: {
+            status: "unchanged",
+            startedAt: checkedAt,
+            finishedAt: checkedAt,
+            message: "still old",
+            output: null,
+          },
+        }),
+      ],
+      { visibleAfterIso: sessionStartedAt },
+    );
+
+    expect(view).toMatchObject({
+      key: "unchanged:cursor:2026-04-23T10:00:00.000Z:still old",
+      tone: "warning",
+      title: "Cursor update could not be verified",
+      dismissible: true,
+    });
   });
 });
 

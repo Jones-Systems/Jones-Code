@@ -1,4 +1,3 @@
-import { buildQueuedFollowUpStartTurnInput } from "../jones/threadConfiguration/queuedFollowUp";
 import {
   acknowledgedThreadMessagesAtom,
   pruneCaughtUpAcknowledgedThreadMessages,
@@ -157,12 +156,7 @@ import * as Option from "effect/Option";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
 import { pendingThreadCreationOutcomesAtom } from "./pending-thread-creation";
-import {
-  decodeQueuedThreadMessage,
-  encodeQueuedThreadMessage,
-  resolveQueuedThreadSettings,
-  type QueuedThreadMessage,
-} from "./thread-outbox-model";
+import type { QueuedThreadMessage } from "./thread-outbox-model";
 import { clearThreadComposerError, threadComposerErrorsAtom } from "./thread-composer-error";
 import * as composerDrafts from "./use-composer-drafts";
 import { startComposerDraftOperation } from "./composerDraftOperations";
@@ -174,7 +168,6 @@ import {
   type DeliveryRetry,
   prepareQueuedMessageAttachments,
   recoverEditedCreationAfterDelivery,
-  removeAcknowledgedExistingThreadMessage,
   restoreRejectedQueuedMessage,
 } from "./threadOutboxDelivery";
 
@@ -227,6 +220,36 @@ function withReusedFileUpload(
 function remainingMessages(): ReadonlyArray<QueuedThreadMessage> {
   return Object.values(appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom)).flat();
 }
+
+it("keeps selected repositories and the plain-folder base when preparing a saved worktree", () => {
+  const message = queuedMessage({ messageId: "multi-repo-task", text: "Search all sources" });
+  const creation = {
+    projectId: ProjectId.make("project-1"),
+    workspaceMode: "worktree",
+    branch: null,
+    worktreePath: null,
+    repositories: ["/workspace/api", "/workspace/client"],
+    startsFromRepositoryDefaults: true,
+  } as const;
+  expect(
+    buildQueuedThreadCreationStartTurnInput({
+      message: { ...message, creation },
+      creation,
+      projectCwd: "/workspace",
+      attachments: [],
+      settings: {
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      },
+      serverResolvesWorktreeBase: true,
+    }).bootstrap.prepareWorktree,
+  ).toMatchObject({
+    projectCwd: "/workspace",
+    baseBranch: "HEAD",
+    repositories: [{ path: "/workspace/api" }, { path: "/workspace/client" }],
+  });
+});
 
 beforeEach(() => {
   appAtomRegistry.set(acknowledgedThreadMessagesAtom, []);
@@ -543,21 +566,15 @@ describe("thread outbox drain delivery cleanup", () => {
   it.effect("retries only cleanup after an acknowledged send removal fails", () =>
     Effect.gen(function* () {
       const message = queuedMessage({ messageId: "message-acknowledged", text: "delivered" });
-      const acknowledged = new Set([message.messageId]);
       harness.removeOutboxMessage.mockRejectedValueOnce(new Error("storage unavailable"));
       yield* Effect.promise(() => harness.manager.enqueue(message));
+      const revision = harness.manager.revisionOf(message.messageId);
 
-      expect(yield* handled(removeAcknowledgedExistingThreadMessage(message, acknowledged))).toBe(
-        false,
-      );
+      expect(yield* completeQueuedMessageDelivery(message, revision)).toBe("failed");
       expect(remainingMessages()).toEqual([message]);
-      expect(acknowledged).toEqual(new Set([message.messageId]));
 
-      expect(yield* handled(removeAcknowledgedExistingThreadMessage(message, acknowledged))).toBe(
-        true,
-      );
+      expect(yield* completeQueuedMessageDelivery(message, revision)).toBe("removed");
       expect(remainingMessages()).toEqual([]);
-      expect(acknowledged).toEqual(new Set());
     }),
   );
 
@@ -796,7 +813,7 @@ describe("thread outbox recovery rollback", () => {
       appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
     });
     try {
-      const recovery = restoreRejectedQueuedMessage(message, "rejected");
+      const recovery = Effect.runPromise(restoreRejectedQueuedMessage(message, "rejected"));
       await mergeCompleted.promise;
       composerDrafts.consumeSubmittedComposerModelPick(draftKey, submitted);
       releaseRecovery.resolve();
@@ -840,7 +857,9 @@ describe("thread outbox recovery rollback", () => {
         appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
       });
 
-      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
+      await expect(
+        Effect.runPromise(restoreRejectedQueuedMessage(message, "rejected")),
+      ).resolves.toBe("deferred");
 
       expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
         text: "Typed before",
@@ -876,7 +895,9 @@ describe("thread outbox recovery rollback", () => {
       }
     });
     try {
-      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
+      await expect(
+        Effect.runPromise(restoreRejectedQueuedMessage(message, "rejected")),
+      ).resolves.toBe("deferred");
 
       expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(selection);
       expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toBe(reselected);
@@ -1091,20 +1112,29 @@ describe("thread outbox recovery rollback", () => {
     }),
   );
 
-  it.effect("does not record a creation outcome for a rejected follow-up message", () =>
-    Effect.gen(function* () {
-      const message = queuedMessage({ messageId: "message-followup-restore", text: "follow up" });
-      yield* Effect.promise(() => harness.manager.enqueue(message));
+  it.effect.each([true, false, undefined])(
+    "restores a rejected follow-up with its selection intent (%s) and no creation outcome",
+    (modelSelectionExplicit) =>
+      Effect.gen(function* () {
+        const message: QueuedThreadMessage = {
+          ...queuedMessage({ messageId: "message-followup-restore", text: "follow up" }),
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+          ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+        };
+        yield* Effect.promise(() => harness.manager.enqueue(message));
 
-      expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("restored");
+        expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("restored");
 
-      expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)).toEqual({});
-      expect(
-        appAtomRegistry.get(threadComposerErrorsAtom)[
-          `${message.environmentId}:${message.threadId}`
-        ],
-      ).toEqual({ message: "rejected", messageId: message.messageId });
-    }),
+        const threadKey = `${message.environmentId}:${message.threadId}`;
+        expect(composerDrafts.getComposerDraftSnapshot(threadKey).modelSelection).toEqual(
+          modelSelectionExplicit === true ? message.modelSelection : undefined,
+        );
+        expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)).toEqual({});
+        expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]).toEqual({
+          message: "rejected",
+          messageId: message.messageId,
+        });
+      }),
   );
 
   it.effect("leaves no error when the restored text is resent before recovery finishes", () =>
@@ -1145,9 +1175,22 @@ describe("thread outbox recovery rollback", () => {
     }),
   );
 
-  it.effect("rolls a failed recovery merge back so the retry cannot duplicate the text", () =>
+  it.effect("rolls a failed recovery merge back and keeps the queued image for the retry", () =>
     Effect.gen(function* () {
-      const message = queuedMessage({ messageId: "message-restore", text: "queued text" });
+      const fileUri = "file:///documents/t3-composer-attachments/queued.png";
+      const attachment = {
+        id: "queued-image",
+        type: "image" as const,
+        name: "queued.png",
+        mimeType: "image/png",
+        sizeBytes: 1,
+        fileUri,
+        previewUri: fileUri,
+      };
+      const message = {
+        ...queuedMessage({ messageId: "message-restore", text: "queued text" }),
+        attachments: [attachment],
+      };
       const draftKey = `${message.environmentId}:${message.threadId}`;
       appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
         [draftKey]: { text: "typed offline", attachments: [] },
@@ -1158,6 +1201,7 @@ describe("thread outbox recovery rollback", () => {
       expect(yield* restoreRejectedQueuedMessage(message, "too large")).toBe("retry");
 
       expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe("typed offline");
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).attachments).toEqual([]);
       expect(remainingMessages()).toEqual([message]);
 
       harness.draftFile.setWriteError(null);
@@ -1166,7 +1210,9 @@ describe("thread outbox recovery rollback", () => {
       expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe(
         "typed offline\n\nqueued text",
       );
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).attachments).toEqual([attachment]);
       expect(remainingMessages()).toEqual([]);
+      expect(harness.removePersistedFile).not.toHaveBeenCalled();
       expect(appAtomRegistry.get(threadComposerErrorsAtom)[draftKey]?.message).toBe("too large");
     }),
   );

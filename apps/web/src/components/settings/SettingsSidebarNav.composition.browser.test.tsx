@@ -7,7 +7,8 @@ import { AppRouteModal } from "../AppRouteModal";
 import { SidebarProvider } from "../ui/sidebar";
 import { SettingsBreadcrumb } from "./SettingsBreadcrumb";
 import { SettingsSidebarNav } from "./SettingsSidebarNav";
-import { settingsNavGroups, SETTINGS_SECTION_LABELS } from "./settingsSearch";
+import { settingsNavGroups, SETTINGS_NAV_LABELS } from "./settingsSearch";
+import { m } from "../../i18n/messages";
 
 vi.mock("./useAvailableSettingsSearchItems", () => ({
   useAvailableSettingsSearchItems: () => [
@@ -118,7 +119,7 @@ it("moves Tab through every settings section", async () => {
 
   const sections = settingsNavGroups(false)
     .flatMap((group) => group.paths)
-    .map((to) => SETTINGS_SECTION_LABELS[to]);
+    .map((to) => m(SETTINGS_NAV_LABELS[to]));
   const tabbed: string[] = [];
   for (let step = 0; step < sections.length; step += 1) {
     await userEvent.tab();
@@ -166,8 +167,14 @@ it.each([1280, 390])("names each group by a heading outside it at %ipx wide", as
       false,
     );
   }
-  const groups = page.getByRole("group").elements();
-  expect(groups).toHaveLength(settingsNavGroups(false).length);
+  const nav = page.getByRole("navigation", { name: "Settings sections" }).element();
+  const groups = new Set(
+    [...nav.querySelectorAll("[data-settings-section]")].map((section) =>
+      section.closest('[role="group"]'),
+    ),
+  );
+  expect(groups.has(null)).toBe(false);
+  expect(groups.size).toBe(settingsNavGroups(false).length);
   for (const group of groups) {
     const first = group?.querySelector("[data-settings-section]")?.textContent;
     const heading = document.getElementById(group?.getAttribute("aria-labelledby") ?? "");

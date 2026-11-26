@@ -23,7 +23,7 @@ const RELEASE_CHANNEL_BY_VARIANT: Readonly<Record<string, ReleaseChannel | undef
   production: "stable",
 };
 
-function resolveTracingConfig(): TracingConfig | null {
+export function resolveTracingConfig(): TracingConfig | null {
   const config = resolveCloudPublicConfig();
   if (!hasTracingPublicConfig(config)) {
     return null;

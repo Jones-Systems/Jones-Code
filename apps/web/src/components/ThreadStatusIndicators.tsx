@@ -60,13 +60,15 @@ import {
 } from "./Sidebar.logic";
 
 import type { SidebarThreadSummary } from "../types";
-import { SharedTooltipTrigger } from "./ui/shared-tooltip";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import {
   PULL_REQUEST_STATE_PRESENTATION,
   PullRequestGlyph,
   type PullRequestGlyphIcon,
 } from "./pullRequest/pullRequestIcons";
 import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
+import { SharedTooltipTrigger } from "./ui/shared-tooltip";
+import { FolderGit2Icon } from "lucide-react";
 
 export interface PrStatusIndicator {
   label: string;
@@ -827,34 +829,40 @@ export function ThreadTerminalStatusButton({
     "{count, plural, one {{count} terminal process running. Open terminal} other {{count} terminal processes running. Open terminal}}",
     { count: terminalIds.length },
   );
+}
+
+export function ThreadWorktreeIndicator({
+  thread,
+}: {
+  thread: Pick<SidebarThreadSummary, "id" | "branch" | "worktreePath">;
+}) {
+  const worktreePath = thread.worktreePath?.trim();
+  if (!worktreePath) {
+    return null;
+  }
+
+  const displayPath = worktreePath;
+  const tooltip = thread.branch
+    ? `Worktree: ${displayPath} (${thread.branch})`
+    : `Worktree: ${displayPath}`;
+
   return (
-    <SharedTooltipTrigger
-      render={
-        <button
-          type="button"
-          aria-label={label}
-          data-testid={`sidebar-terminal-status-${threadRef.threadId}`}
-          className={cn(
-            "inline-flex shrink-0 cursor-pointer items-center justify-center rounded-sm outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-            status?.colorClass,
-          )}
-          onPointerDown={(event) => event.stopPropagation()}
-          onKeyDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            revealThreadTerminal(threadRef, terminalId);
-            onThreadActivate(threadRef);
-          }}
-        />
-      }
-      label={label}
-    >
-      <TerminalIcon
-        className="size-3.5 motion-safe:animate-status-pulse"
-        onAnimationStart={synchronizeTerminalPulse}
-      />
-    </SharedTooltipTrigger>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            role="img"
+            aria-label={tooltip}
+            data-testid={`thread-worktree-${thread.id}`}
+            tabIndex={0}
+            className="inline-flex cursor-default items-center justify-center rounded-sm focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          />
+        }
+      >
+        <FolderGit2Icon className="size-3.5 shrink-0 text-icon-muted" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">{tooltip}</TooltipPopup>
+    </Tooltip>
   );
 }
 

@@ -1,8 +1,7 @@
-import { type TimestampFormat } from "@t3tools/contracts/settings";
-import { msg } from "gt-react";
-
+import type { TimestampFormat } from "@t3tools/contracts/settings";
+import { type MessageResolver, m, getActiveLocale } from "./i18n/messages";
 import { DEFAULT_LOCALE } from "./i18n/locales";
-import { getActiveLocale, m, type MessageResolver } from "./i18n/messages";
+import { msg } from "gt-react";
 
 function getTimestampFormatOptions(
   timestampFormat: TimestampFormat,

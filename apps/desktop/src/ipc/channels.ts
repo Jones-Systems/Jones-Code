@@ -39,7 +39,8 @@ export const CLI_COMMAND_INSTALL_CHANNEL = "desktop:cli-command-install";
 export const CLI_COMMAND_UNINSTALL_CHANNEL = "desktop:cli-command-uninstall";
 export const CLI_COMMAND_ADD_TO_PATH_CHANNEL = "desktop:cli-command-add-to-path";
 export const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
-export const GET_DATABASE_MIGRATION_PROGRESS_CHANNEL = "desktop:get-database-migration-progress";
+export const GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL =
+  "desktop:get-preview-automation-runtime-identity";
 export const GET_RELAY_TELEMETRY_ENABLED_CHANNEL = "desktop:get-relay-telemetry-enabled";
 export const GET_SYSTEM_LOCALE_CHANNEL = "desktop:get-system-locale";
 export const GET_PREFERRED_SYSTEM_LANGUAGES_CHANNEL = "desktop:get-preferred-system-languages";
@@ -160,4 +161,8 @@ export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-lo
 
 export const RESTART_AUDIO_SERVICE_CHANNEL = "desktop:restart-audio-service";
 
-export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
+export const GET_CONNECTION_CATALOG_SNAPSHOT_CHANNEL = "desktop:get-connection-catalog-snapshot";
+export const LIST_CONNECTION_COMPATIBILITY_HINTS_CHANNEL =
+  "desktop:list-connection-compatibility-hints";
+export const SET_CONNECTION_COMPATIBILITY_HINT_CHANNEL =
+  "desktop:set-connection-compatibility-hint";

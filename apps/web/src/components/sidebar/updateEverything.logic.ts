@@ -740,6 +740,7 @@ export function getUpdateEverythingToastView(
     },
     m,
   );
+  const handoffs = (result.jones ?? []).map((entry) => `${entry.label}: ${entry.message}`);
   const restarting =
     result.restarting.length === 0
       ? []
@@ -752,17 +753,26 @@ export function getUpdateEverythingToastView(
           ),
         ];
   if (result.failures.length === 0) {
-    if (updated === null) return null;
+    if (updated === null)
+      return handoffs.length === 0
+        ? null
+        : {
+            type: "info",
+            title: m(msg("Install status handoff")),
+            description: handoffs.join("\n"),
+          };
     return {
       type: "success",
       title: updated,
-      ...(restarting.length === 0 ? {} : { description: restarting.join("\n") }),
+      ...([...handoffs, ...restarting].length === 0
+        ? {}
+        : { description: [...handoffs, ...restarting].join("\n") }),
     };
   }
   return {
     type: "error",
-    title: updated === null ? m(msg("Update failed")) : updated,
-    description: [...result.failures, ...restarting].join("\n"),
+    title: updated ?? m(msg("Update failed")),
+    description: [...handoffs, ...result.failures, ...restarting].join("\n"),
   };
 }
 
@@ -929,16 +939,48 @@ export function describeUpdateEverything(
     (count, machine) => count + machine.providers.length,
     0,
   );
+  const jonesMachineCount =
+    plan.jonesMachines?.filter((machine) => machine.skipped === undefined).length ?? 0;
+  const serverCount = plan.servers.length;
   const summary =
-    updateTargetsSentence(
-      "update",
-      {
-        app: Boolean(plan.localVersion),
-        servers: plan.servers.length,
-        providers: providerCount,
-      },
-      resolve,
-    ) ?? resolve(msg("Update {items}", { items: "" }));
+    jonesMachineCount === 0
+      ? (updateTargetsSentence(
+          "update",
+          { app: Boolean(plan.localVersion), servers: serverCount, providers: providerCount },
+          resolve,
+        ) ?? resolve(msg("Update {items}", { items: "" })))
+      : resolve(
+          msg("Update {items}", {
+            items: joinList(
+              [
+                plan.localVersion ? resolve(msg("this app")) : null,
+                serverCount > 0
+                  ? resolve(
+                      msg("{count, plural, one {{count} server} other {{count} servers}}", {
+                        count: serverCount,
+                      }),
+                    )
+                  : null,
+                resolve(
+                  msg(
+                    "{count, plural, one {{count} Jones machine} other {{count} Jones machines}}",
+                    {
+                      count: jonesMachineCount,
+                    },
+                  ),
+                ),
+                providerCount > 0
+                  ? resolve(
+                      msg("{count, plural, one {{count} provider} other {{count} providers}}", {
+                        count: providerCount,
+                      }),
+                    )
+                  : null,
+              ].filter((part) => part !== null),
+              resolve,
+            ),
+          }),
+        );
 
   const rows = new Map<EnvironmentId | null, UpdateEverythingRow>();
   const update = (

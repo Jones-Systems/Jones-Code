@@ -321,7 +321,15 @@ export const make = Effect.gen(function* () {
           },
           { role: "delete", label: m(msg("Delete", { $context: "Edit menu item" })) },
           { type: "separator" },
-          { role: "selectAll", label: m(msg("Select All", { $context: "Edit menu item" })) },
+          { role: "selectAll" },
+          { type: "separator" },
+          {
+            label: "Find in Panel…",
+            accelerator: "CmdOrCtrl+F",
+            click: () => {
+              runMenuEffect("find-in-panel", dispatchMenuAction("find-in-panel"));
+            },
+          },
           ...(environment.platform === "darwin"
             ? [
                 { type: "separator" as const },

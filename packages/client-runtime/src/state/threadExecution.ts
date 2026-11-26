@@ -54,7 +54,8 @@ import {
 } from "./models.ts";
 import { commandDisplayText } from "../work-log/commandLabel.ts";
 import { formatSubagentDisplayTitle } from "./subagentDisplay.ts";
-import { mFallback, msg } from "gt-i18n";
+import { hasThreadProviderActivity } from "../jones/threadActivityLabel.ts";
+import { msg, mFallback } from "gt-i18n";
 import { markedTextEnglish } from "../errors/translatable.ts";
 import type { MFunctionType } from "gt-i18n/types";
 
@@ -199,9 +200,11 @@ function summarizeThreadRun(
   run: OrchestrationV2ThreadProjection["runs"][number],
   providers?: ProviderDrivers,
 ): ThreadRunSummary {
-  const turnStatus = ACTIVITY_RUN_STATUSES.has(run.status)
-    ? latestProviderTurnForAttempt(projection.providerTurns, run.activeAttemptId)?.status
-    : undefined;
+  const settlement = projection.attempts.find(
+    (attempt) => attempt.id === run.activeAttemptId,
+  )?.providerSettlement;
+  const providerTurn = latestProviderTurnForAttempt(projection.providerTurns, run.activeAttemptId);
+  const turnStatus = ACTIVITY_RUN_STATUSES.has(run.status) ? providerTurn?.status : undefined;
   const session = projection.providerSessions.findLast(
     (candidate) => candidate.providerInstanceId === run.providerInstanceId,
   );

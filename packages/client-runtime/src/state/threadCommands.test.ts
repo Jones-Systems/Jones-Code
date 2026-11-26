@@ -142,6 +142,14 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
     state: connection,
     session,
   } as EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+  const historyController = yield* Effect.service(
+    ThreadHistoryController.ThreadHistoryController,
+  ).pipe(Effect.provide(ThreadHistoryController.layer));
+  yield* historyController.register(ENVIRONMENT_ID, THREAD_ID, {
+    loadEarlier: () => options?.loadEarlier?.() ?? Effect.die("unused"),
+    reconcilePendingWork: () =>
+      options?.reconcilePendingWork?.(THREAD_ID) ?? Queue.offer(reconciled, THREAD_ID),
+  });
   const storage = options?.storage ?? { value: null };
   const store = makeThreadTriageOutboxStore((next) =>
     Effect.sync(() => {
@@ -166,16 +174,7 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
         SecureRandom.make((size) => new Uint8Array(size).fill(++randomCalls % 256)),
       ),
       Layer.succeed(ThreadTriageOutboxStore, store),
-      Layer.succeed(
-        ThreadHistoryController.ThreadHistoryController,
-        ThreadHistoryController.ThreadHistoryController.of({
-          register: () => Effect.die("unused"),
-          unregister: () => Effect.void,
-          loadEarlier: () => options?.loadEarlier?.() ?? Effect.die("unused"),
-          reconcilePendingWork: (_environmentId, threadId) =>
-            options?.reconcilePendingWork?.(threadId) ?? Queue.offer(reconciled, threadId),
-        }),
-      ),
+      Layer.succeed(ThreadHistoryController.ThreadHistoryController, historyController),
     ),
   );
   const snapshotAtom = Atom.family((_environmentId: EnvironmentId) =>

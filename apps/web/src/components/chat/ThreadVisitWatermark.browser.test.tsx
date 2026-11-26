@@ -1,7 +1,7 @@
 import { claimThreadOpen } from "@t3tools/client-runtime/state/thread-search";
 import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
-import { Atom } from "effect/reactivity";
+import * as Cause from "effect/Cause";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
 import { act, fakeTimers, render } from "../../../test/render";
@@ -40,6 +40,7 @@ vi.mock(import("../../connection/catalog"), async (original) => {
 });
 
 import { ThreadVisitWatermark } from "./ThreadVisitWatermark";
+import * as Effect from "effect/Effect";
 
 // Kept alive so a shell set before its tracker mounts is still there when it does.
 const shellAtom = Atom.family((_key: string) => Atom.make<unknown>(null).pipe(Atom.keepAlive));

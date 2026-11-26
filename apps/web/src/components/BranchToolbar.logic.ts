@@ -122,6 +122,7 @@ export function resolveContextStripLabelsCompact(input: {
 }
 
 export function resolveEnvModeLabel(mode: EnvMode, resolve: MessageResolver = m): string {
+  if (mode === "auto") return resolve(msg("On write"));
   return mode === "worktree" ? resolve(msg("New worktree")) : resolve(msg("Current checkout"));
 }
 
@@ -147,9 +148,11 @@ export function resolveLockedWorkspaceLabel(
 ): string {
   if (activeWorktreePath)
     return activeWorktreePath.split(/[\\/]/).findLast(Boolean) ?? resolve(msg("Worktree"));
-  return effectiveEnvMode === "worktree"
-    ? resolveEnvModeLabel("worktree", resolve)
-    : resolve(msg("Local checkout"));
+  return effectiveEnvMode === "auto"
+    ? resolveEnvModeLabel("auto", resolve)
+    : effectiveEnvMode === "worktree"
+      ? resolveEnvModeLabel("worktree", resolve)
+      : resolve(msg("Local checkout"));
 }
 
 export interface PreviousWorktreeSeed {

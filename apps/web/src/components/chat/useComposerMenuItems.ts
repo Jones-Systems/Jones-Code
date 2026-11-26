@@ -222,17 +222,14 @@ export function useComposerMenuItems({
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
       return [
-        ...matchComposerThreadItems(
-          {
-            shells: environmentThreadShells,
-            environmentId,
-            linkedEnvironments,
-            excludeThreadId: activeThreadId,
-            query: composerTrigger.query,
-            now,
-          },
-          messages,
-        ),
+        ...matchComposerThreadItems({
+          shells: environmentThreadShells,
+          environmentId,
+          referenceEnvironments,
+          excludeThreadId: activeThreadId,
+          query: composerTrigger.query,
+          now,
+        }),
         // An answer to an agent's question carries thread links, not machines.
         ...(questionAttachmentTarget === null && offersMachines
           ? matchComposerEnvironmentItems(

@@ -1,5 +1,15 @@
-import { useGT } from "gt-react";
-import { useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref } from "react";
+import { clampImageZoom, imageFit, type ImageView } from "~/jones/filePreview/imageView";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { observeResize } from "~/lib/observeResize";
+import {
+  useImperativeHandle,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type Ref,
+  type ReactNode,
+} from "react";
 import { flushSync } from "react-dom";
 
 import {
@@ -8,6 +18,7 @@ import {
 } from "../../lib/windowControlsOverlay";
 
 import { AttachmentImage } from "../media/AttachmentImage";
+import { useGT } from "gt-react";
 
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 8;
@@ -265,84 +276,8 @@ export function ZoomableImage({
         </div>
       )}
       <div
-        ref={attachViewport}
-        role="region"
-        aria-label={gt("{name}, zoomable image", { name })}
-        aria-description={gt(
-          "Click to zoom in or return to fit. Pinch or Ctrl+scroll to zoom, scroll or drag to pan. Use Enter to toggle zoom, plus or minus to zoom, and 0 to fit.",
-        )}
-        tabIndex={0}
-        className="max-w-[var(--media-width)] overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring"
-        style={{
-          width: width || undefined,
-          height: height || undefined,
-          maxHeight,
-          cursor: zoom > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
-        }}
-        onClick={(event) => {
-          // Pointer capture emits a click after dragging; preserve zoom.
-          if (suppressClickRef.current || event.detail > 1) return;
-          changeZoom(zoom > 1 ? 1 : 2, { x: event.clientX, y: event.clientY });
-        }}
-        onKeyDown={(event) => {
-          if (event.ctrlKey || event.metaKey || event.altKey) return;
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            if (!event.repeat) changeZoom(zoom > 1 ? 1 : 2);
-          } else if (event.key === "+" || event.key === "=") {
-            event.preventDefault();
-            changeZoom(zoom * 1.5);
-          } else if (event.key === "-") {
-            event.preventDefault();
-            changeZoom(zoom / 1.5);
-          } else if (event.key === "0") {
-            event.preventDefault();
-            changeZoom(1);
-          }
-        }}
-        onPointerDown={(event) => {
-          if (dragRef.current) return;
-          suppressClickRef.current = false;
-          if (event.pointerType !== "mouse" || event.button !== 0 || zoom <= 1) return;
-          const viewport = event.currentTarget;
-          const bounds = viewport.getBoundingClientRect();
-          if (
-            event.clientX - bounds.left >= viewport.clientWidth ||
-            event.clientY - bounds.top >= viewport.clientHeight
-          )
-            return;
-          dragRef.current = {
-            pointerId: event.pointerId,
-            x: event.clientX,
-            y: event.clientY,
-            left: viewport.scrollLeft,
-            top: viewport.scrollTop,
-          };
-          viewport.setPointerCapture(event.pointerId);
-          setDragging(true);
-        }}
-        onPointerMove={(event) => {
-          const drag = dragRef.current;
-          if (!drag || drag.pointerId !== event.pointerId) return;
-          if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 4) {
-            suppressClickRef.current = true;
-          }
-          event.currentTarget.scrollLeft = drag.left - (event.clientX - drag.x);
-          event.currentTarget.scrollTop = drag.top - (event.clientY - drag.y);
-        }}
-        onPointerUp={(event) => {
-          if (dragRef.current?.pointerId !== event.pointerId) return;
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-          dragRef.current = null;
-          setDragging(false);
-        }}
-        onLostPointerCapture={(event) => {
-          if (dragRef.current?.pointerId !== event.pointerId) return;
-          dragRef.current = null;
-          setDragging(false);
-        }}
+        ref={attachSizing}
+        className={layout === "panel" ? "relative min-h-0 min-w-0 flex-1" : undefined}
       >
         <div
           ref={attachViewport}

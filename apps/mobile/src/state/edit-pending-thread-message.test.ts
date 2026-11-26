@@ -4,6 +4,9 @@ import type { QueuedThreadMessage } from "./thread-outbox-model";
 
 const state = vi.hoisted(() => ({
   dispatching: {} as Record<string, true>,
+  revision: 1,
+  loaded: vi.fn(async () => {}),
+  mergePersist: vi.fn(async () => {}),
   held: {} as Record<string, true>,
   draft: { text: "Existing draft", attachments: [] as { id: string }[] },
   confirm: vi.fn(async () => true),
@@ -81,6 +84,7 @@ const message: QueuedThreadMessage = {
 beforeEach(() => {
   vi.clearAllMocks();
   state.dispatching = {};
+  state.revision = 1;
   state.held = {};
   state.loaded.mockResolvedValue(undefined);
   state.mergePersist.mockResolvedValue(undefined);
@@ -174,7 +178,7 @@ describe("editing a pending message", () => {
   });
   it("rechecks delivery ownership after the durable draft flush", async () => {
     state.flush.mockImplementationOnce(async () => {
-      state.dispatching = message.messageId;
+      state.dispatching = { [message.messageId]: true };
     });
     expect(await editPendingThreadMessage(message)).toBe(false);
     expect(state.confirm).toHaveBeenCalledTimes(1);

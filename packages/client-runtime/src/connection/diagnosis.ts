@@ -429,14 +429,12 @@ export function presentConnectionDiagnosis(
       ? null
       : DateTime.formatIso(DateTime.makeUnsafe(input.state.retryAt)),
   );
-  add(
-    resolve(msg("Route", { $context: "diagnostics field label" })),
-    relayPath ? "T3 Connect" : resolve(msg("Direct", { $context: "connection route" })),
-  );
-  add(resolve(msg("App version")), input.clientVersion);
-  add(resolve(msg("Host version")), input.serverVersion);
-  add(resolve(msg("Error", { $context: "diagnostics field label" })), failure?.detail);
-  add(resolve(msg("Trace ID")), failure?.traceId);
+  add("Route", relayPath ? "T3 Connect" : "Direct");
+  add("App version", input.clientVersion);
+  add("Host version", input.serverVersion);
+  add("Error", failure?.detail);
+  add("Trace ID", failure?.traceId);
+  facts.push(...connectionSessionFacts(input.state));
 
   return {
     headline: headline(host, located, failure, resolve),

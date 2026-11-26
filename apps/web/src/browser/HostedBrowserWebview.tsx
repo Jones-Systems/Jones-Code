@@ -185,15 +185,35 @@ export function HostedBrowserWebview(props: {
       if (!lease || (companion && registered) || registering) return;
       registering = true;
       void (async () => {
-        try {
-          // Tab creation and webview attachment use separate effects; wait to avoid PreviewTabNotFoundError.
-          await lease.ready;
-          if (disposed || webviewRef.current !== webview) return;
-          const webContentsId = webview.getWebContentsId();
-          if (Number.isInteger(webContentsId) && webContentsId > 0) {
-            await bridge.registerWebview(runtimeTabId, webContentsId);
-            registeredWebContentsId = webContentsId;
-            withDesktopTab(runtimeTabId, () => bridge.setShown(runtimeTabId, reportedShown()));
+        return await (async () => {
+          try {
+            // The main-process tab and the DOM webview are created by separate
+            // effects. Wait for the former so registration cannot race and fail
+            // with PreviewTabNotFoundError on a fast about:blank attachment.
+            const isCurrent = () => !disposed && webviewRef.current === webview;
+            const registerWebview = async () => {
+              const webContentsId = webview.getWebContentsId();
+              if (!Number.isInteger(webContentsId) || webContentsId <= 0)
+                throw new Error("Guest is not attached.");
+              await bridge.registerWebview(runtimeTabId, webContentsId);
+              withDesktopTab(runtimeTabId, () => bridge.setShown(runtimeTabId, reportedShown()));
+            };
+            if (companion) {
+              registered = await registerCompanionGuest({
+                ready: lease.ready,
+                isCurrent,
+                register: registerWebview,
+                url: () => readInitialUrl(),
+                navigate: (url) => {
+                  webview.src = url;
+                },
+              });
+            } else {
+              await lease.ready;
+              if (isCurrent()) await registerWebview();
+            }
+          } catch {
+            // did-attach/dom-ready will retry if the guest was not ready yet.
           }
         })().finally(() => {
           registering = false;

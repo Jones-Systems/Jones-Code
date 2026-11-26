@@ -1,6 +1,6 @@
 # Testing
 
-Rules for writing tests, and for asking for them in review.
+Rules for writing tests, and for asking for them in review. [Contributor guidance](../operations/contributor-guidance.md#verification) carries the same writing rules under Verification; change both together.
 
 ## What to test
 
