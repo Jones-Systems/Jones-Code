@@ -93,7 +93,7 @@ startup pairing URL automatically without printing it.
 covers isolated synthetic verification; agents must not consume the user's
 pairing token.
 
-Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
+See [Dev container](./01_devcontainer.md) for VS Code and Codespaces setup.
 
 ### Updating dependencies and verifying test scratch cleanup
 
