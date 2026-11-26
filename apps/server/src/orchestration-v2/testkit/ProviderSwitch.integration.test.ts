@@ -2291,7 +2291,7 @@ describe("orchestration v2 provider switching", () => {
     }),
   );
 
-  it.live("drops replacement bookkeeping when the run stops during replacement", () =>
+  it.live("retains the original binding when a stopped replacement has no publication proof", () =>
     Effect.gen(function* () {
       const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
       const failResumeOnce = yield* Ref.make(false);
@@ -2349,24 +2349,31 @@ describe("orchestration v2 provider switching", () => {
             });
             yield* Deferred.succeed(releaseReplacement, undefined);
 
-            // Effects run one at a time per thread, so run 3 settles after run 2's start finishes.
-            // The next turn resumes the original native session with no abandoned replacement.
+            // The returned replacement has no exact publication proof. A later
+            // attempt must not use it or silently reopen the original writer.
             yield* dispatchRequest(3, CLAUDE_MODEL_SELECTION);
             yield* awaitSettled(3);
             const final = yield* orchestrator.getThreadProjection(threadId);
             const run3 = final.runs.at(-1)!;
             assert.equal(final.runs[1]?.status, "interrupted");
             assert.deepEqual(replacementRecordsFor(final, run2.id), []);
-            assert.equal(run3.status, "completed");
+            assert.equal(run3.status, "failed");
+            assert.isNull(run3.startedAt);
+            const refusal = final.turnItems.find(
+              (item) => item.runId === run3.id && item.type === "error",
+            );
+            assert.equal(
+              refusal?.type === "error" ? refusal.failure.code : null,
+              "provider_runtime_binding_binding_establishment_failed",
+            );
             assert.deepEqual(replacementRecordsFor(final, run3.id), []);
             assert.equal(
               final.providerThreads[0]?.nativeThreadRef?.nativeId,
               original.nativeThreadRef?.nativeId,
             );
             const turns = yield* Ref.get(capturedTurns);
-            assert.equal(turns.length, 2);
-            assert.equal(turns[1]?.nativeThreadId, original.nativeThreadRef?.nativeId);
-            assert.include(turns[1]!.text, "Request 3");
+            assert.lengthOf(turns, 1);
+            assert.equal(turns[0]?.nativeThreadId, original.nativeThreadRef?.nativeId);
           }),
       );
     }),
@@ -3110,17 +3117,24 @@ describe("orchestration v2 provider switching", () => {
           assert.equal(handoff?.delivery?.status, "inline");
         }
         assert.notInclude(deliveredHistory, "Earlier successful request.");
+        const startsBeforeReturn = (yield* Ref.get(capturedTurns)).length;
         yield* dispatch("back", "Finish the remaining work", sourceSelection);
-        yield* waitForRun(sourceOrdinal + 2, "completed");
-        const back = (yield* Ref.get(capturedTurns)).at(-1)!;
+        yield* waitForRun(sourceOrdinal + 2, broken ? "failed" : "completed");
         if (broken) {
           const source = (yield* Ref.get(capturedTurns)).find(
             (turn) => turn.modelSelection.instanceId === sourceSelection.instanceId,
           )!;
-          assert.notEqual(back.nativeThreadId, source.nativeThreadId);
-          assert.include(back.text, originalPrompt);
-          assert.include(back.text, partialResponse);
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          const returningRun = after.runs.at(-1)!;
+          assert.lengthOf(yield* Ref.get(capturedTurns), startsBeforeReturn);
+          assert.isNull(returningRun.startedAt);
+          assert.equal(
+            after.providerThreads.find((row) => row.id === source.providerThreadId)?.nativeThreadRef
+              ?.nativeId,
+            source.nativeThreadId,
+          );
         } else {
+          const back = (yield* Ref.get(capturedTurns)).at(-1)!;
           assert.notInclude(back.text, originalPrompt);
           assert.notInclude(back.text, partialResponse);
         }
@@ -5665,7 +5679,7 @@ describe("orchestration v2 provider switching", () => {
     ["queue.resume", "compatible Codex"],
     ["queue.resume", "broken compatible Codex"],
   ] as const)(
-    "delivers a queued PR update on the current provider through %s (%s)",
+    "handles a queued PR update on the current provider through %s (%s)",
     ([delivery, target]) =>
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace(`pr-wake-${delivery}`);
@@ -5841,13 +5855,31 @@ describe("orchestration v2 provider switching", () => {
           yield* worker.drain();
           const after = yield* orchestrator.getThreadProjection(threadId);
           const turns = yield* Ref.get(capturedTurns);
+          const delivered = after.runs.find((run) => run.id === wake.id)!;
+          if (broken) {
+            // Exact writer retirement is missing for the unavailable native
+            // conversation. The PR update remains visible without a replay.
+            assert.lengthOf(turns, 1);
+            assert.equal(delivered.status, "failed");
+            assert.isNull(delivered.startedAt);
+            assert.deepEqual(after.thread.modelSelection, selection);
+            assert.equal(
+              after.messages.find((message) => message.id === delivered.userMessageId)?.text,
+              "Review the new PR comments",
+            );
+            assert.equal(
+              after.providerThreads.find((row) => row.id === turns[0]!.providerThreadId)
+                ?.nativeThreadRef?.nativeId,
+              turns[0]!.nativeThreadId,
+            );
+            return;
+          }
           assert.lengthOf(turns, delivery === "automatic" ? 3 : 2);
           const executed = turns.at(-1)!;
           assert.equal(executed.driver, compatible ? CODEX_DRIVER : CLAUDE_DRIVER);
           assert.include(executed.text, "Review the new PR comments");
           assert.deepEqual(executed.modelSelection, selection);
           assert.deepEqual(after.thread.modelSelection, selection);
-          const delivered = after.runs.find((run) => run.id === wake.id)!;
           assert.equal(delivered.status, "completed");
           assert.deepEqual(delivered.modelSelection, selection);
           assert.equal(delivered.providerInstanceId, selection.instanceId);
@@ -5857,12 +5889,7 @@ describe("orchestration v2 provider switching", () => {
             assert.equal(executed.providerThreadId, turns[1]!.providerThreadId);
             assert.equal(executed.nativeThreadId, turns[1]!.nativeThreadId);
           }
-          if (broken) {
-            assert.notEqual(executed.nativeThreadId, turns[0]!.nativeThreadId);
-            assert.isFalse(executed.nativeThreadHasTurns);
-            assert.include(executed.text, "Original work");
-          }
-          if (compatible && !broken) {
+          if (compatible) {
             assert.equal(executed.nativeThreadId, turns[0]!.nativeThreadId);
             assert.isEmpty(after.contextHandoffs);
           }
