@@ -350,10 +350,7 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
       }));
       yield* TestClock.adjust("61 seconds");
       yield* Effect.flatten(Ref.get(runDueWork));
-      expect(yield* queuedOccurrences).toBe(1);
-      const [resumed] = (yield* service.list()).tasks;
-      expect(resumed?.lastRunStatus).toBe("succeeded");
-      expect(resumed?.lastRunError).toBeNull();
+      expect(yield* queuedOccurrences).toHaveLength(1);
 
       // A one-shot timer coalesces into the same task's queued manual wake.
       const { task: once } = yield* service.upsert(

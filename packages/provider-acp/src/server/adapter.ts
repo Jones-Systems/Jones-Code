@@ -3268,8 +3268,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
           });
 
-        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+        // Streaming events already belong to the runtime callback; avoid a span per chunk.
+        const emitProviderEvent = Effect.fnUntraced(function* (
+          event: ProviderAdapter.ProviderAdapterV2Event,
+        ) {
+          const producer = (yield* AcpEventProducerContext) ?? sessionEventProducer.origin;
+          yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
+        });
         const withModelContextWindow = Effect.fnUntraced(function* (
           sessionId: string,
           usage: ThreadTokenUsageSnapshot,
@@ -9135,6 +9140,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               });
             }
             yield* reportStartupPhase("resume");
+            yield* admitProducer(yield* Ref.get(runtimeCallbackGeneration), threadId);
             return canLoadSession
               ? yield* runtime.loadSession(sessionId, activationOptions)
               : yield* runtime.resumeSession(sessionId, activationOptions);
@@ -10237,6 +10243,115 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           return true;
         });
 
+        const validateTarget = (thread: OrchestrationV2ProviderThread, threadId: ThreadId) =>
+          thread.appThreadId === threadId &&
+          thread.driver === driver &&
+          thread.providerInstanceId === options.instanceId &&
+          (thread.providerSessionId === null ||
+            thread.providerSessionId === input.providerSessionId)
+            ? Effect.void
+            : bindingFailure("The stored ACP provider row belongs to a different session.");
+        const publishThread = Effect.fn("AcpAdapterV2.publishThread")(function* (
+          thread: OrchestrationV2ProviderThread,
+          selection: ModelSelection,
+        ) {
+          if (runtimeLifecycle === undefined) return thread;
+          const callbackGeneration = yield* Ref.get(runtimeCallbackGeneration);
+          const reserved = reservations.get(callbackGeneration);
+          const producer = callbackProducers.get(callbackGeneration);
+          const threadId = thread.appThreadId;
+          const sessionId = thread.nativeThreadRef?.nativeId;
+          if (
+            reserved === undefined ||
+            reserved.exited ||
+            producer === undefined ||
+            !producer.accepting ||
+            threadId === null ||
+            sessionId == null ||
+            thread.nativeThreadRef?.driver !== driver ||
+            thread.providerInstanceId !== options.instanceId ||
+            thread.providerSessionId !== input.providerSessionId ||
+            thread.driver !== driver ||
+            sessionId !== (yield* Ref.get(activeSessionId))
+          )
+            return yield* bindingFailure(
+              "The observed ACP session does not match its producer and thread.",
+            );
+          const requested = ProviderAdapter.requestedRuntimeIdentity(selection, driver);
+          const retained = pendingPublications.get(threadId);
+          if (retained !== undefined) {
+            if (
+              retained.input.providerThread.id !== thread.id ||
+              retained.input.providerThread.nativeThreadRef?.nativeId !== sessionId ||
+              retained.input.runtimeGeneration !== reserved.generation
+            )
+              return yield* bindingFailure("An earlier ACP binding still awaits publication.");
+            return yield* retained.complete;
+          }
+          const publicationInput: ProviderAdapter.RuntimeBindingPublicationInput = {
+            providerThread: thread,
+            runtimeGeneration: reserved.generation,
+            requested,
+            observed: ProviderAdapter.unobservedRuntimeIdentity(),
+            producerOrigin: producer.origin,
+          };
+          let handle: ProviderAdapter.CapturedRuntimeBindingPublication | undefined;
+          let legacyAttempted = false;
+          const stillCurrent = Effect.gen(function* () {
+            if (
+              reserved.exited ||
+              !producer.accepting ||
+              callbackGeneration !== (yield* Ref.get(runtimeCallbackGeneration)) ||
+              sessionId !== (yield* Ref.get(activeSessionId))
+            )
+              return yield* bindingFailure("The original ACP producer changed before publication.");
+          });
+          const complete = Effect.gen(function* () {
+            yield* stillCurrent;
+            let published: OrchestrationV2ProviderThread;
+            if (runtimeLifecycle.prepareBindingPublication !== undefined) {
+              handle ??= yield* runtimeLifecycle.prepareBindingPublication(publicationInput);
+              if (
+                handle.binding.threadId !== threadId ||
+                handle.binding.providerThreadId !== thread.id ||
+                handle.binding.nativeThreadId !== sessionId ||
+                handle.binding.runtimeGeneration !== reserved.generation ||
+                handle.binding.providerSessionId !== input.providerSessionId ||
+                handle.binding.providerInstanceId !== options.instanceId ||
+                handle.binding.driver !== driver
+              )
+                return yield* bindingFailure("Prepared ACP publication names a different binding.");
+              published = yield* handle.complete;
+            } else {
+              if (legacyAttempted)
+                return yield* bindingFailure("The original ACP publication is unresolved.");
+              legacyAttempted = true;
+              published = yield* runtimeLifecycle.bind(publicationInput);
+            }
+            yield* stillCurrent;
+            if (
+              published.id !== thread.id ||
+              published.appThreadId !== threadId ||
+              published.providerInstanceId !== options.instanceId ||
+              published.driver !== driver ||
+              published.providerSessionId !== input.providerSessionId ||
+              published.nativeThreadRef?.driver !== driver ||
+              published.nativeThreadRef.nativeId !== sessionId ||
+              published.runtimeIdentity?.runtimeGeneration !== reserved.generation
+            )
+              return yield* bindingFailure(
+                "Published ACP thread does not match its captured runtime binding.",
+              );
+            yield* Ref.update(providerThreadByNativeSessionId, (current) =>
+              new Map(current).set(sessionId, published),
+            );
+            pendingPublications.delete(threadId);
+            return published;
+          });
+          pendingPublications.set(threadId, { input: publicationInput, complete });
+          return yield* complete;
+        });
+
         const commitAcpAppContext = Effect.fnUntraced(function* (input: {
           readonly context: ActiveAcpTurn;
           readonly entries: ReadonlyArray<AcpAppContextEntry>;
@@ -11336,6 +11451,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     ...(itemIdentityVersion === undefined ? {} : { itemIdentityVersion }),
                     now,
                   });
+                  if (
+                    runtimeLifecycle !== undefined &&
+                    !threadInput.forceNewNativeThread &&
+                    target?.nativeThreadRef?.nativeId != null &&
+                    target.nativeThreadRef.nativeId !== sessionId
+                  )
+                    return yield* bindingFailure(
+                      "The stored ACP provider row names a different conversation.",
+                    );
                   const replayedUsage = (yield* Ref.get(contextUsageBySessionId)).get(sessionId);
                   const contextUsage =
                     replayedUsage === undefined
@@ -11346,10 +11470,29 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       new Map(current).set(sessionId, contextUsage),
                     );
                   }
-                  const providerThread =
-                    threadInput.forceNewNativeThread && threadInput.existingProviderThread
-                      ? { ...created, id: threadInput.existingProviderThread.id }
-                      : { ...created, contextUsage };
+                  let providerThread: OrchestrationV2ProviderThread = { ...created, contextUsage };
+                  if (target !== undefined && runtimeLifecycle !== undefined) {
+                    providerThread = {
+                      ...target,
+                      providerSessionId: input.providerSessionId,
+                      nativeThreadRef: created.nativeThreadRef,
+                      nativeConversationHeadRef: threadInput.forceNewNativeThread
+                        ? null
+                        : target.nativeConversationHeadRef,
+                      contextUsage: threadInput.forceNewNativeThread
+                        ? null
+                        : (contextUsage ?? target.contextUsage ?? null),
+                      nativeMetadata:
+                        created.nativeMetadata === null
+                          ? target.nativeMetadata
+                          : { ...target.nativeMetadata, ...created.nativeMetadata },
+                      status: created.status,
+                      updatedAt: now,
+                    };
+                  } else if (threadInput.forceNewNativeThread && target !== undefined) {
+                    providerThread = { ...created, id: target.id, contextUsage: null };
+                  }
+                  providerThread = yield* publishThread(providerThread, threadInput.modelSelection);
                   yield* Ref.update(providerThreadByNativeSessionId, (current) =>
                     new Map(current).set(sessionId, providerThread),
                   );

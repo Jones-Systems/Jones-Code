@@ -2865,10 +2865,6 @@ export class Launcher {
       activeVersion: pending.targetVersion,
       update: committed,
     };
-    await this.#selectState(next);
-    child.role = "active";
-    // The commit is already durable, so answer before the cleanup: the trial waits only
-    // 30 seconds for this reply, and dropping the backup can take longer than that.
     try {
       await this.#selectState(next, writeServiceState, () => {
         if (pending.qualified === undefined) return;
@@ -2906,8 +2902,11 @@ export class Launcher {
       if (pending.qualified === undefined || attempt?.updateId !== pending.id) throw cause;
       throw new QualifiedCommitFailure(attempt, cause);
     } finally {
-      await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
-      await this.#repointServiceUnit(committed.targetVersion);
+      if (
+        this.#state.activeVersion === pending.targetVersion &&
+        this.#state.update?.status === "committed"
+      )
+        await this.#repointServiceUnit(pending.targetVersion);
     }
   }
 
@@ -2938,13 +2937,12 @@ export class Launcher {
         ) {
           return;
         }
-        const repointed = repointServiceUnit(contents, version);
-        if (repointed !== contents) {
-          await replaceFileDurably(
-            unit.path,
-            unit.path.endsWith(".xml") ? encodeServiceTask(repointed) : repointed,
-          );
-        }
+        const repointed = repointServiceUnit(
+          contents,
+          version,
+          this.#state.update?.qualified !== undefined,
+        );
+        if (repointed !== contents) await replaceFileDurably(unit.path, repointed);
         // A previous rename may have succeeded before reload failed.
         await unit.reload();
       } finally {

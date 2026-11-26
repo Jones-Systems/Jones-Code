@@ -15,7 +15,7 @@ import {
   ThreadId,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
+import type * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -908,23 +908,22 @@ const laterWakeAfterCancellation = (cancel: (typeof cancelCommands)[number]) =>
                       ),
                     ),
                   ),
-                ),
-                offer: () => Effect.void,
-                setModel: () => Effect.void,
-                applyFlagSettings: () => Effect.void,
-                setPermissionMode: () => Effect.void,
-                renameSession: () => Effect.void,
-                backgroundTasks: () => Effect.succeed(false),
-                mcpServerStatus: Effect.succeed([]),
-                readMcpResource: () => Effect.die("unexpected MCP resource read"),
-                callMcpTool: () => Effect.die("unexpected MCP tool call"),
-                mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
-                mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
-                reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
-                listPermissionRules: Effect.die("unexpected permission rules read"),
-                stopTask: () => Effect.void,
-                interrupt: Effect.void,
-                close: Effect.void,
+                  offer: () => Effect.void,
+                  setModel: () => Effect.void,
+                  applyFlagSettings: () => Effect.void,
+                  setPermissionMode: () => Effect.void,
+                  renameSession: () => Effect.void,
+                  backgroundTasks: () => Effect.succeed(false),
+                  mcpServerStatus: Effect.succeed([]),
+                  readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                  callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                  listPermissionRules: Effect.die("unexpected permission rules read"),
+                  stopTask: () => Effect.void,
+                  interrupt: Effect.void,
+                  close: Queue.end(messages).pipe(Effect.asVoid),
+                  // No owned process exists; the fixture session ends with its close.
+                  termination: Effect.void,
+                };
               }),
             forkSession: () => Effect.die("unused"),
             subagentLaunchToolUseId: () => Effect.succeed(null),

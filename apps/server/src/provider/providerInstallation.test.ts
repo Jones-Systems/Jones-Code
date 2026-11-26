@@ -78,8 +78,9 @@ const makeHarness = Effect.fn("providerInstallation.test.makeHarness")(function*
   const dependencies = Layer.mergeAll(
     ServerSettings.layerTest(input.settings),
     Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-      getInstance: (id) => Effect.succeed(all.find((entry) => entry.instanceId === id)),
-      listInstances: Effect.succeed(all),
+      getCatalogSource: (id) => (id === configured.instanceId ? configured : undefined),
+      getInstance: (id) => Effect.succeed(id === configured.instanceId ? configured : undefined),
+      listInstances: Effect.succeed([configured]),
     }),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
       refreshInstance: (id) =>

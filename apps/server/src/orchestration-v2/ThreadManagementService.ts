@@ -1140,18 +1140,24 @@ const make = Effect.gen(function* () {
     }
 
     // Turn start would fail on its own after the send reported success; a replay keeps its answer.
-    // A live steer and a receipt replay without a target turn need no workspace.
-    if (!missingSteeringTarget && dispatchMode.type !== "steer_active") {
-      yield* worktreeRestore
-        .restore(target.thread)
-        .pipe(
-          Effect.catch((cause) =>
-            hasReceipt(input.commandId).pipe(
-              Effect.flatMap((replay) =>
-                replay
-                  ? Effect.void
-                  : Effect.fail(
-                      new ThreadManagementWorktreeRestoreError({ threadId: input.threadId, cause }),
+    // A live steer starts no turn, so it needs no workspace.
+    if (dispatchMode.type !== "steer_active") {
+      const restoration = hasReceipt(input.commandId).pipe(
+        Effect.flatMap((replay) =>
+          replay
+            ? Effect.void
+            : worktreeRestore.restore(target.thread).pipe(
+                Effect.catch((cause) =>
+                  hasReceipt(input.commandId).pipe(
+                    Effect.flatMap((replayed) =>
+                      replayed
+                        ? Effect.void
+                        : Effect.fail(
+                            new ThreadManagementWorktreeRestoreError({
+                              threadId: input.threadId,
+                              cause,
+                            }),
+                          ),
                     ),
                   ),
                 ),
@@ -1185,8 +1191,14 @@ const make = Effect.gen(function* () {
       ...(input.freshContext ? { freshContext: true } : {}),
       ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
       dispatchMode,
-      ...(mode === "auto" ? { deliveryIntent: "auto" } : {}),
-      ...(mode === "queue" ? { explicitQueue: true as const } : {}),
+      ...(mode === "auto" ? { deliveryIntent: "auto" as const } : {}),
+      ...(mode === "queue" || mode === "separate_turn" ? { explicitQueue: true as const } : {}),
+      ...(input.creationSource === "mcp" &&
+      (input.senderThreadId !== undefined || (yield* IncomingLinkedMessage)) &&
+      input.scheduledTaskId === undefined &&
+      (input.mode === "queue" || input.mode === "auto")
+        ? { queuedToolBoundaryEligible: true }
+        : {}),
       createdBy: input.createdBy,
       creationSource: input.creationSource,
     });
@@ -2306,7 +2318,7 @@ const make = Effect.gen(function* () {
     getThreadLinkMetadata: orchestrator.getThreadLinkMetadata,
     listProjectThreads,
     sendToThread,
-    submitRunOutput,
+    promoteQueuedBatch,
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
     hasReceipt,

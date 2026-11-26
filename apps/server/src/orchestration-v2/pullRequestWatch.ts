@@ -21,11 +21,8 @@ const SNIPPET_LENGTH = 200;
 export type PullRequestWatchChange =
   | { readonly kind: "checks-failed"; readonly failed: ReadonlyArray<PullRequestCheck> }
   | { readonly kind: "checks-passed"; readonly count: number; readonly required: boolean }
-  | {
-      readonly kind: "checks-finished";
-      readonly passed: number;
-      readonly failing: ReadonlyArray<PullRequestCheck>;
-    }
+  | { readonly kind: "checks-settled" }
+  | ObservedPass
   | { readonly kind: "checks-awaiting-approval"; readonly checks: ReadonlyArray<PullRequestCheck> }
   | { readonly kind: "remarks"; readonly remarks: ReadonlyArray<PullRequestComment> }
   | { readonly kind: "no-checks"; readonly minutes: number }
@@ -96,7 +93,30 @@ export function evaluatePullRequestWatch(
   const awaiting = checks.filter((check) => check.status === "action-required");
   const failedBefore = failedChecks;
   const newlyFailed = failed.filter((check) => !failedBefore.includes(check.name));
-  if (checks.length > 0) {
+  // Jones: a host that bound its observation to this head decides failures and the gate from it.
+  const observed =
+    detail.jonesCheckObservation === undefined
+      ? undefined
+      : evaluateObservedChecks({
+          headSha,
+          checks,
+          // A placeholder stands for checks the host could not list, so the read is incomplete.
+          observation: unread
+            ? { ...detail.jonesCheckObservation, enumerationComplete: false }
+            : detail.jonesCheckObservation,
+          failedChecks,
+          passed,
+          passedChecks,
+          owedChecks,
+        });
+  if (observed !== undefined) {
+    if (checks.length > 0) checksPending = checks.some((check) => check.status === "pending");
+    if (!checksBaseline && observed.newlyFailed.length > 0) {
+      changes.push({ kind: "checks-failed", failed: observed.newlyFailed });
+    }
+    if (!checksBaseline && observed.pass !== undefined) changes.push(observed.pass);
+    ({ failedChecks, passed, passedChecks, owedChecks } = observed);
+  } else if (checks.length > 0) {
     // A run awaiting approval waits on a person, like a review, so only running checks count.
     // An unfinished baseline read keeps the seed below for the next one.
     checksPending =
@@ -463,7 +483,7 @@ function changeLines(
 const SUMMARY: Record<PullRequestWatchChange["kind"], string> = {
   "checks-failed": "checks failed",
   "checks-passed": "checks passed",
-  "checks-finished": "checks finished",
+  "checks-settled": "check wait ended",
   "checks-awaiting-approval": "checks await approval",
   remarks: "new comments",
   "no-checks": "no checks reported",

@@ -14,7 +14,18 @@ import * as LinkedThreads from "./jones/linkedThreads/LinkedThreads.ts";
 import { assertServerProcessPlacement } from "./jones/processPlacement/processPlacement.ts";
 import * as ProcessPlacementRuntime from "./jones/processPlacement/processPlacementRuntime.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
-import * as DatabaseMigrationProgress from "./persistence/DatabaseMigrationProgress.ts";
+import * as FleetUpdates from "./jones/fleetUpdates/service.ts";
+import { fleetUpdatesHttpApiLayer } from "./jones/fleetUpdates/http.ts";
+import { importedHistoryHttpApiLayer } from "./jones/importedHistory/http.ts";
+import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
+import * as JonesHttp from "./jones/http/registration.ts";
+import * as JonesUpdates from "./jones/updates/service.ts";
+import { jonesUpdatesHttpApiLayer } from "./jones/updates/http.ts";
+import * as JonesSourceRelation from "./jones/updates/sourceRelation.ts";
+import * as UpdateAdmissionFence from "./jones/updates/UpdateAdmissionFence.ts";
+import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
+import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
+import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
 import * as EnvironmentKeys from "./cloud/environmentKeys.ts";
@@ -283,6 +294,7 @@ import {
   readTailscaleStatus,
 } from "@t3tools/tailscale";
 import * as ServerActivation from "./serverActivation.ts";
+import * as DatabaseMigrationProgress from "./persistence/DatabaseMigrationProgress.ts";
 
 // Escaped MCP handoff provenance can exceed find-my-way's 100-character segment default.
 const HTTP_ROUTER_CONFIG = {
@@ -693,6 +705,8 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
   }),
 );
 
+const layerStartAdmission = RuntimeLayer.layerStartAdmission;
+
 const layerTaskFolders = TaskFolders.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -708,6 +722,7 @@ const layerTaskFolders = TaskFolders.layer.pipe(
 );
 
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
+  Layer.provide(layerStartAdmission),
   Layer.provide(
     WorkflowForge.layer.pipe(
       Layer.provide(layerIssueService),
@@ -715,6 +730,7 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
       Layer.provide(RuntimeLayer.layerProjectService),
     ),
   ),
+  Layer.provide(DependencyChanges.layer),
   Layer.provide(UsageLimitSources.layerResetFallback),
   Layer.provide(layerTaskFolders),
   Layer.provide(layerScheduledTaskWebhookOrigin),
@@ -856,10 +872,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
-  // One hub, which the feeders above and the workflow store inside the runtime publish to.
-  Layer.provideMerge(MilestoneHub.layer),
-  Layer.provideMerge(Layer.merge(layerTaskFolders, LayoutCommandApprovalWrites.layer)),
-  Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
+  Layer.provideMerge(RepoFreshness.layer),
+  Layer.provideMerge(
+    RuntimeLayer.layerEventInfrastructure.pipe(Layer.provide(DependencyChanges.layer)),
+  ),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(SecretCheck.layer),
   Layer.provideMerge(SecretResolver.layer),
@@ -877,7 +893,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(
     ProviderInstanceRegistryHydration.layer.pipe(
       Layer.provide(SqlitePersistence.layerConfig),
-      Layer.provide(layerNativeTelemetry),
+      // Codex adapters check the control admission the runtime records into. The
+      // layer memoizes by reference, so this is the start-admission instance.
+      Layer.provide(ControlAdmission.layer),
     ),
   ),
   // One gate for the server, below hydration so the Claude adapter sees it: layers memoize by
@@ -1014,7 +1032,7 @@ const layerMakeRoutes = Layer.mergeAll(
     LinkThreadHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
-    PreviewTunnel.routeLayer,
+    JonesHttp.previewCompanionRouteLayer.pipe(Layer.provide(layerPreviewCompanionServices)),
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
     speechStreamRouteLayer,
@@ -1035,30 +1053,18 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
-).pipe(
-  Layer.provide(
-    PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
-  ),
-  // delegate_task to a linked environment, from /mcp and the follower above.
-  Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
-  // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
-  Layer.provide(PeerLinkRequests.layer),
-  // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
-  Layer.provide(layerPullRequestService),
-  Layer.provide(layerThreadIssueService),
-  Layer.provide(layerIssueService),
-  // The same activity instance RunExecutionService reports to, by layer memoization.
-  Layer.provide(
-    ServerBrowser.layer.pipe(
-      Layer.provide(Layer.merge(DesktopBrowserChannel.layer, PreviewAgentActivity.layer)),
+)
+  .pipe(
+    Layer.provide(
+      ReceiverRegistration.runtimeLayer.pipe(
+        Layer.provide(TextGeneration.layer.pipe(Layer.provide(layerSourceControlProviderRegistry))),
+      ),
     ),
-  ),
-  Layer.provide(PreviewBrowser.layer),
-  // Links to other environments, shared by clients (WebSocket) and agents (/mcp).
-  Layer.provide(
-    Layer.mergeAll(PeerForwarding.layer, PeerThreadRelay.layer, PeerClientPairing.layer).pipe(
-      Layer.provideMerge(PeerMcpClient.layer),
-      Layer.provideMerge(PeerLinks.layer),
+    Layer.provide(layerThreadResultDependencies),
+    Layer.provide(ShellMaterialization.layer),
+    Layer.provide(LinkedThreads.layer),
+    Layer.provide(
+      PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
     ),
     // delegate_task to a linked environment, from /mcp and the follower above.
     Layer.provide(
@@ -1067,16 +1073,57 @@ const layerMakeRoutes = Layer.mergeAll(
         Layer.provide(ProjectionStoreV2.layer),
       ),
     ),
-  ),
-  Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
-  Layer.provide(layerServerSettings),
-  Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
-  Layer.provide(ProviderMaintenanceRunner.layer),
-  Layer.provide(layerCommandReadiness),
-  Layer.provide(ServerHttp.layerBrowserApiCors),
-  Layer.provide(ServerHttp.layerHttpCompression),
-);
+    // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
+    Layer.provide(PeerLinkRequests.layer),
+    // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
+    Layer.provide(layerPullRequestService),
+    // The same activity instance RunExecutionService reports to, by layer memoization.
+    Layer.provide(
+      ServerBrowser.layer.pipe(
+        Layer.provide(layerPreviewCompanionServices),
+        Layer.provide(Layer.merge(DesktopBrowserChannel.layer, PreviewAgentActivity.layer)),
+      ),
+    ),
+    Layer.provide(PreviewBrowser.layer),
+  )
+  .pipe(
+    Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),
+    // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
+    Layer.provide(
+      Layer.merge(PeerForwarding.layer, OriginRegistration.workerLayer).pipe(
+        Layer.provideMerge(OriginRegistration.servicesLayer),
+        // Forwarded follow-ups reserve in the orchestrator's own command transaction; the same
+        // layer reference memoizes to the owner RemoteDelegation captures above.
+        Layer.provide(CoreFollowUpOwner.layer),
+        Layer.provideMerge(PeerMcpClient.layer),
+        Layer.provideMerge(PeerLinks.layer),
+      ),
+    ),
+    Layer.provide(LinkedThreads.layer),
+    // Dictation: local models or the cloud, with the settings that choose between them.
+    Layer.provide(
+      SpeechService.layer.pipe(
+        Layer.provide(layerServerSettings),
+        Layer.provide(SpeechModelStore.layer),
+      ),
+    ),
+    Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
+    Layer.provide(layerServerSettings),
+    Layer.provide(PreviewAutomationBroker.layer),
+    Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
+    Layer.provide(layerJonesUpdates),
+    Layer.provide(layerServerSelfUpdate),
+    Layer.provide(layerCommandReadiness),
+    Layer.provide(ServerHttp.layerBrowserApiCors),
+    Layer.provide(ServerHttp.layerHttpCompression),
+    Layer.provide(
+      QueueCompatibility.layer.pipe(
+        Layer.provide(layerProjectCloneTracker),
+        // Jones: routes queue-dispatched threads to a clearly matching Workstream.
+        Layer.provide(WorkstreamAutoRoute.layer),
+      ),
+    ),
+  );
 
 const layerMakeServer = Layer.unwrap(
   Effect.gen(function* () {
@@ -1557,7 +1604,8 @@ const layerMakeServer = Layer.unwrap(
       Layer.provide(ProcessRunner.layer),
       Layer.provideMerge(ProcessPlacementRuntime.layer),
       Layer.provideMerge(layerPlatformServices),
-      Layer.provideMerge(FeatureFlags.layer),
+      Layer.provide(NetService.layer),
+      Layer.provide(Layer.succeed(HeldRuntimeOwner, { token: ownership.heldRuntimeOwner })),
       Layer.provide(Layer.succeed(HostProcess.InvokedAs, invokedAs)),
     );
   }),

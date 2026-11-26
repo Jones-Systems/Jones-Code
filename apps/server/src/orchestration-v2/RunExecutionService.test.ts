@@ -4065,58 +4065,9 @@ it.effect("keeps completed runs completed when pull request refresh fails", () =
   }),
 );
 
-it.effect.each(["completed", "failed"] as const)(
-  "persists a background-task roster clear that arrives after a %s turn",
-  (status) =>
-    Effect.gen(function* () {
-      const pending = yield* Ref.make(true);
-      const ingested = yield* Ref.make<Array<ProviderAdapter.ProviderAdapterV2Event>>([]);
-      yield* captureRootRunTermination({
-        key: `roster-clear-${status}`,
-        shouldFinalizeRun: () => Effect.succeed(true),
-        hasPendingBackgroundWorkForThread: () => Ref.get(pending),
-        events: (ids) => {
-          const runningBuild: OrchestrationV2PendingBackgroundTask = {
-            taskId: "running-build",
-            kind: "command",
-          };
-          const roster = (hasTask: boolean): ProviderAdapter.ProviderAdapterV2Event => {
-            const pendingBackgroundTasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask> =
-              hasTask ? [runningBuild] : [];
-            return {
-              type: "provider_thread.updated",
-              driver,
-              providerThread: {
-                id: ids.providerThreadId,
-                driver,
-                appThreadId: ids.threadId,
-                pendingBackgroundTasks,
-              } as OrchestrationV2ProviderThread,
-            };
-          };
-          return Stream.fromIterable([roster(true), rootTerminalEvent(ids, status), roster(false)]);
-        },
-        // The adapter clears its live roster before ingestion reaches the queued clear.
-        beforeTerminalWrite: () => Ref.set(pending, false).pipe(Effect.as(true)),
-        ingestNormalized: (input) =>
-          Ref.update(ingested, (all) => [...all, input.event]).pipe(
-            Effect.as(
-              input.event.type === "provider_thread.updated"
-                ? [{} as OrchestrationV2StoredEvent]
-                : [],
-            ),
-          ),
-      });
-      const rosters = (yield* Ref.get(ingested)).flatMap((event) =>
-        event.type === "provider_thread.updated"
-          ? [event.providerThread.pendingBackgroundTasks]
-          : [],
-      );
-      assert.deepEqual(rosters.at(-1), [], "an ended task must leave the persisted roster");
-    }),
-);
+registerAcceptedTerminalRecoveryTests(captureRootRunTermination, rootTerminalEvent);
 
-function captureRootRunTermination(input: {
+export function captureRootRunTermination(input: {
   readonly key: string;
   readonly driver?: ProviderDriverKind;
   readonly shouldFinalizeRun: () => Effect.Effect<boolean, ProjectionStore.ProjectionStoreV2Error>;

@@ -81,7 +81,10 @@ function withFakeClaudeEnv<A, E, R>(
     imageAttemptLog?: string;
     configDirMustBe?: string;
     cwdMustNotBe?: string;
-    settingsLog?: string;
+    capturePath?: string;
+    evaluation?: boolean;
+    investigation?: boolean;
+    managedMcpConfig?: boolean;
     claudeConfig?: Partial<ClaudeSettings>;
   },
   effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
@@ -155,87 +158,228 @@ const reviewGuideInput = {
 };
 
 it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
-  it.effect("reads a relative settings path for a review guide from the project folder", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-guide-" });
-      const project = path.join(root, "project");
-      const checkout = path.join(root, "checkout");
-      for (const [directory, origin] of [
-        [project, "project"],
-        [checkout, "checkout"],
-      ] as const) {
-        yield* fs.makeDirectory(directory);
-        yield* fs.writeFileString(
-          path.join(directory, "claude.json"),
-          JSON.stringify({ env: { ORIGIN: origin } }),
-        );
-      }
-      const settingsLog = path.join(root, "settings.json");
-      yield* withFakeClaudeEnv(
+  it.effect.each(["pass", "hold", "malformed"] as const)(
+    "evaluates remote requests with tools disabled and preserves %s output",
+    (outcome) =>
+      withFakeClaudeEnv(
         {
-          output: JSON.stringify({ structured_output: { stops: [] } }),
-          expectedTools: "Read,Grep,Glob,Bash",
-          settingsLog,
-          claudeConfig: { homePath: path.join(root, "home"), launchArgs: "--settings claude.json" },
-        },
-        (textGeneration) =>
-          textGeneration.generateReviewGuide({
-            ...reviewGuideInput,
-            cwd: checkout,
-            projectCwd: project,
+          output: JSON.stringify({
+            structured_output: {
+              verdict: outcome === "malformed" ? "pass" : outcome,
+              category: outcome === "pass" ? "none" : "risky",
+              reason: "Synthetic evaluation.",
+            },
           }),
-      );
-      expect(JSON.parse(yield* fs.readFileString(settingsLog))).toEqual({
-        env: { ORIGIN: "project" },
-        disableAllHooks: true,
-      });
-    }),
+          argsMustContain: "--disallowedTools mcp__*",
+          stdinMustContain: "Untrusted request JSON:",
+          cwdMustNotBe: process.cwd(),
+          evaluation: true,
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const result = yield* generation
+              .evaluateRemoteRequest({
+                cwd: process.cwd(),
+                message: "Fix the parser",
+                modelSelection: createModelSelection(
+                  ProviderInstanceId.make("claudeAgent"),
+                  SYNTHETIC_CLAUDE_STANDARD_MODEL,
+                ),
+              })
+              .pipe(Effect.result);
+            if (outcome === "malformed") {
+              expect(Result.isFailure(result)).toBe(true);
+              if (Result.isFailure(result)) {
+                expect(result.failure.operation).toBe("evaluateRemoteRequest");
+                expect(result.failure.detail).toContain("invalid structured output");
+              }
+            } else {
+              expect(Result.isSuccess(result)).toBe(true);
+              if (Result.isSuccess(result)) expect(result.success.verdict).toBe(outcome);
+            }
+          }),
+      ),
   );
 
-  it.effect("gives a review guide the user's settings without their pre-approved tools", () =>
+  it.effect.each([false, true])(
+    "denies evaluator MCP tools with managed MCP configuration=%s",
+    (managedMcpConfig) =>
+      withFakeClaudeEnv(
+        {
+          output: JSON.stringify({
+            structured_output: { verdict: "pass", category: "none", reason: "Bounded work." },
+          }),
+          evaluation: true,
+          managedMcpConfig,
+          cwdMustNotBe: process.cwd(),
+          claudeConfig: {
+            launchArgs: "--chrome --mcp-config ignored.json --tools Read WebSearch",
+          },
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            expect(
+              yield* generation.evaluateRemoteRequest({
+                cwd: process.cwd(),
+                message: "Fix the parser",
+                modelSelection: createModelSelection(
+                  ProviderInstanceId.make("claudeAgent"),
+                  SYNTHETIC_CLAUDE_STANDARD_MODEL,
+                ),
+              }),
+            ).toEqual({ verdict: "pass", category: "none", reason: "Bounded work." });
+          }),
+      ),
+  );
+
+  it.effect("kills an interrupted evaluator and removes its isolated cwd", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-guide-" });
-      const home = path.join(root, "home");
-      yield* fs.makeDirectory(home);
-      yield* fs.writeFileString(
-        path.join(home, "settings.json"),
-        JSON.stringify({
-          env: { ENDPOINT: "user", SHARED: "user" },
-          permissions: { allow: ["Bash(touch:*)"], deny: ["Read(./private/**)"] },
-        }),
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "claude-evaluation-cancel-" });
+      const capturePath = path.join(tempDir, "launch.json");
+      const probe = yield* makeProcessProbe;
+      yield* withFakeClaudeEnv(
+        {
+          output: "",
+          lifecyclePort: probe.port,
+          capturePath,
+          evaluation: true,
+          cwdMustNotBe: process.cwd(),
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const fiber = yield* generation
+              .evaluateRemoteRequest({
+                cwd: process.cwd(),
+                message: "Fix the parser",
+                modelSelection: createModelSelection(
+                  ProviderInstanceId.make("claudeAgent"),
+                  SYNTHETIC_CLAUDE_STANDARD_MODEL,
+                ),
+              })
+              .pipe(Effect.forkScoped);
+            yield* probe.started;
+            const launch = yield* decodeCapturedLaunch(yield* fs.readFileString(capturePath));
+            expect(yield* fs.exists(launch.cwd)).toBe(true);
+            const interrupted = yield* Fiber.interrupt(fiber).pipe(Effect.forkScoped);
+            yield* probe.exited;
+            yield* Fiber.join(interrupted);
+            const exit = yield* Fiber.await(fiber);
+            expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+            expect(yield* fs.exists(launch.cwd)).toBe(false);
+          }),
       );
-      const settingsLog = path.join(root, "settings.json");
-      const launchSettings = JSON.stringify({
-        env: { SHARED: "launch" },
-        permissions: { allow: ["Bash(npm test:*)"], deny: ["Read(./keys/**)"] },
-      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps review-guide investigation in the checkout with read-only tool policy", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "claude-review-guide-" });
+      const capturePath = path.join(tempDir, "launch.json");
       yield* withFakeClaudeEnv(
         {
           output: JSON.stringify({ structured_output: { stops: [] } }),
-          // The CLI loads no settings file of its own.
-          argsMustContain: "--setting-sources  --disable-slash-commands",
-          argsMustNotContain: "ENDPOINT",
-          expectedTools: "Read,Grep,Glob,Bash",
-          settingsLog,
-          claudeConfig: { homePath: home, launchArgs: `--settings '${launchSettings}'` },
+          investigation: true,
+          capturePath,
         },
-        (textGeneration) =>
-          textGeneration.generateReviewGuide({
-            ...reviewGuideInput,
-            cwd: process.cwd(),
-            projectCwd: process.cwd(),
+        (generation) =>
+          Effect.gen(function* () {
+            const generated = yield* generation.generateReviewGuide({
+              cwd: process.cwd(),
+              number: 1,
+              title: "Synthetic guide",
+              description: "Explain the parser change.",
+              baseBranch: "main",
+              baseCommit: "synthetic-base",
+              settledReview: "No outstanding findings.",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              ),
+            });
+            expect(generated).toEqual({ stops: [] });
           }),
       );
-      expect(JSON.parse(yield* fs.readFileString(settingsLog))).toEqual({
-        env: { ENDPOINT: "user", SHARED: "launch" },
-        permissions: { deny: ["Read(./private/**)", "Read(./keys/**)"] },
-        disableAllHooks: true,
-      });
-    }),
+      const launch = yield* decodeCapturedLaunch(yield* fs.readFileString(capturePath));
+      expect(launch.cwd).toBe(yield* fs.realPath(process.cwd()));
+      expect(launch.stdin).toContain("Investigate before you answer, read-only.");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("forwards Claude thinking settings without passing unsupported effort", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            subject: "Add important change",
+            body: "",
+          },
+        }),
+        argsMustContain: '--settings {"disableAllHooks":true,"alwaysThinkingEnabled":false}',
+        argsMustNotContain: "--effort",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateCommitMessage({
+            cwd: process.cwd(),
+            branch: "feature/claude-effect",
+            stagedSummary: "M README.md",
+            stagedPatch: "diff --git a/README.md b/README.md",
+            modelSelection: {
+              ...createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_THINKING_MODEL,
+                [
+                  { id: "thinking", value: false },
+                  { id: "effort", value: "high" },
+                ],
+              ),
+            },
+          });
+
+          expect(generated.subject).toBe("Add important change");
+        }),
+    ),
+  );
+
+  it.effect("keeps a configured custom alias opaque to the Claude CLI", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            title: "Keep custom model",
+            body: "",
+          },
+        }),
+        argsMustContain: `--model ${SYNTHETIC_CLAUDE_COLLIDING_ALIAS} --effort max --settings {"disableAllHooks":true}`,
+        claudeConfig: { customModels: [SYNTHETIC_CLAUDE_COLLIDING_ALIAS] },
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generatePrContent({
+            cwd: process.cwd(),
+            baseBranch: "main",
+            headBranch: "feature/custom-model",
+            commitSummary: "Keep custom model",
+            diffSummary: "1 file changed",
+            diffPatch: "diff --git a/README.md b/README.md",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              SYNTHETIC_CLAUDE_COLLIDING_ALIAS,
+              [
+                { id: "effort", value: "max" },
+                { id: "fastMode", value: true },
+                { id: "contextWindow", value: "expanded" },
+              ],
+            ),
+          });
+
+          expect(generated.title).toBe("Keep custom model");
+        }),
+    ),
   );
 
   it.effect(

@@ -305,14 +305,13 @@ const mergeProviderModels = (
     nextModels.length > 0 && !nextModels.some((model) => model.isDefault === true);
   const mergedModels = nextModels.map((model) => {
     const previousModel = previousBySlug.get(model.slug);
-    if (!previousModel) {
-      return model;
-    }
-    const retainCapabilities = !hasModelCapabilities(model) && hasModelCapabilities(previousModel);
+    if (!previousModel) return model;
+    const retainCapabilities =
+      !hasModelCapabilities(model) &&
+      hasModelCapabilities(previousModel) &&
+      !hasAuthoritativeEmptyModelOptions(provider, model);
     const retainDefault = preserveDefault && previousModel.isDefault === true;
-    if (!retainCapabilities && !retainDefault) {
-      return model;
-    }
+    if (!retainCapabilities && !retainDefault) return model;
     const aliases = retainDefault
       ? [...new Set([...(model.aliases ?? []), ...(previousModel.aliases ?? [])])]
       : undefined;
@@ -1167,69 +1166,16 @@ export const layer = Layer.effect(
                 return machineSnapshot;
               }),
           );
-          if (haveProvidersChanged(previousProviders, providers)) {
-            yield* PubSub.publish(changesPubSub, providers);
-          }
-        }
-
-        // Subscribe before reading so a probe completing mid-sync is observed by at least one path.
-        for (const [, instance] of newlyAdded) {
-          const source = buildSnapshotSource(instance);
-          yield* Stream.runForEach(source.streamChanges, (provider) =>
-            correlateSnapshotWithSource(source, provider).pipe(Effect.flatMap(syncProvider)),
-          ).pipe(Effect.forkScoped);
-          if (instance.workspaceRescans) {
-            yield* Stream.runForEach(instance.workspaceRescans, (cwd) =>
-              Queue.offer(workspaceRescans, { instance, cwd }),
-            ).pipe(Effect.forkScoped);
-          }
-        }
-        yield* Effect.yieldNow;
-
-        yield* Effect.forEach(
-          newlyAdded,
-          ([, instance]) =>
-            Effect.gen(function* () {
-              const source = buildSnapshotSource(instance);
-              const provider = yield* source.getSnapshot;
-              // Boot shows the cached status until this instance's first check publishes a result.
-              if (
-                awaitingBootInstances.has(instance) &&
-                (yield* instance.snapshot.isAwaitingFirstCheck ?? Effect.succeed(false))
-              ) {
-                return yield* refreshCompatibility;
-              }
-              yield* correlateSnapshotWithSource(source, provider).pipe(
-                Effect.flatMap(syncProvider),
-              );
-            }).pipe(Effect.ignoreCause({ log: true })),
-          { concurrency: "unbounded", discard: true },
-        );
-        // A rename keeps the instance live, so its new label only arrives from a fresh read.
-        const published = new Map(
-          (yield* Ref.get(providersRef)).map((provider) => [provider.instanceId, provider]),
-        );
-        yield* Effect.forEach(
-          carriedOver.values(),
-          (instance) =>
-            Effect.gen(function* () {
-              // Its first check publishes the new label anyway; the placeholder must not replace the cache.
-              if (yield* instance.snapshot.isAwaitingFirstCheck ?? Effect.succeed(false)) return;
-              const provider = yield* instance.snapshot.getSnapshot;
-              const previous = published.get(instance.instanceId);
-              if (
-                previous?.displayName !== provider.displayName ||
-                previous?.accentColor !== provider.accentColor
-              ) {
-                yield* syncProvider(provider);
-              }
-            }).pipe(Effect.ignoreCause({ log: true })),
-          { concurrency: "unbounded", discard: true },
-        );
-        yield* upsertProviders(unavailableProviders, {
-          persist: false,
-          replace: true,
-        });
+          yield* Ref.update(
+            maintenanceActionStatesRef,
+            (previous) =>
+              new Map(
+                [...previous].filter(([id]) => instanceRegistry.getCatalogSource(id) !== undefined),
+              ),
+          );
+          return { newlyAdded, unavailableProviders, invalidations };
+        }),
+      );
 
       const initialReads = Effect.forEach(
         newlyAdded,

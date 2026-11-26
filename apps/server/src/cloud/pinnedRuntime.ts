@@ -23,9 +23,14 @@ import {
 } from "@t3tools/shared/cliRelease";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
-
-import * as ProcessRunner from "../processRunner.ts";
 import { windowsPowerShellPath } from "@t3tools/shared/windowsSystem";
+
+import * as JonesArtifact from "../jones/hostService/artifactVerification.ts";
+import {
+  JonesRuntimePolicyError,
+  requireExplicitJonesReleaseBaseUrl,
+} from "../jones/hostService/releasePolicy.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import { isExactServiceVersion, parseServiceState, SERVICE_STATE_FILE } from "./serviceProtocol.ts";
 
 const PINNED_RUNTIME_DIR = "runtime";
@@ -128,6 +133,22 @@ interface PinnedRuntimeInstallInput {
   /** Reuse a cached runtime only while the release source still lists it, as a policy mirror does. */
   readonly requirePublishedRelease?: boolean;
   readonly onProgress?: ((progress: PinnedRuntimeProgress) => void) | undefined;
+}
+
+interface PinnedRuntimeTransactionInput extends Omit<
+  PinnedRuntimeInstallInput,
+  "httpClient" | "releaseBaseUrl"
+> {
+  readonly prepareArchive: Effect.Effect<
+    Uint8Array,
+    PinnedRuntimeInstallError | JonesRuntimePolicyError
+  >;
+  readonly requireInstall: Effect.Effect<void, JonesRuntimePolicyError>;
+  readonly requirePublished: Effect.Effect<
+    void,
+    PinnedRuntimeInstallError | JonesRuntimePolicyError
+  >;
+  readonly expectedProvenance?: JonesArtifact.JonesArtifactMetadata | undefined;
 }
 
 // GitHub release downloads intermittently answer 5xx during incidents; a retry usually lands.
@@ -305,8 +326,8 @@ const downloadArchive = Effect.fn("cloud.pinned_runtime.download_archive")(funct
   return archive;
 });
 
-const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(function* (
-  input: PinnedRuntimeInstallInput,
+const extractArchive = Effect.fn("cloud.pinned_runtime.extract_archive")(function* (
+  input: Pick<PinnedRuntimeInstallInput, "fs" | "path" | "runner" | "platform" | "onProgress">,
   stagingDir: string,
   archive: Uint8Array,
 ) {
@@ -441,7 +462,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   );
   // Downloads are buffered in memory and can take hours; staging only once they finish keeps a
   // staging directory's age a sign of abandonment for prunes in other processes.
-  const archive = yield* downloadArchive(input);
+  const archive = yield* input.prepareArchive;
   const stagingDir = yield* fs
     .makeTempDirectory({
       directory: versionsDir,
@@ -463,7 +484,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   };
 
   return yield* Effect.gen(function* () {
-    yield* installFromArchive(input, stagingDir, archive);
+    yield* extractArchive(input, stagingDir, archive);
 
     input.onProgress?.({ stage: "validate" });
     yield* input.validate(stagingPaths);
@@ -643,7 +664,7 @@ export const ensurePinnedRuntimeInstalled = (input: PinnedRuntimeInstallInput) =
             }
             yield* publishedArchive(input, platformKey);
           }),
-          installArchive: (stagingDir) => installFromArchive(input, stagingDir),
+          prepareArchive: downloadArchive(input),
         }),
       );
 
@@ -708,7 +729,7 @@ export const installPinnedRuntimeFromLocalArchive = Effect.fn(
       expectedProvenance: metadata,
       requireInstall: Effect.void,
       requirePublished: Effect.void,
-      installArchive: (stagingDir) => extractArchive(input, stagingDir, archive),
+      prepareArchive: Effect.succeed(archive),
       validate: Effect.fn("cloud.pinned_runtime.validate_local_jones_artifact")(function* (
         paths: PinnedRuntimePaths,
       ) {
@@ -1233,9 +1254,10 @@ const hasJonesRuntimeState = Effect.fn("cloud.pinned_runtime.has_jones_state")(f
 });
 
 /**
- * Keep runtimes named by callers, service state, running processes, launchers, or references,
- * and anything published within an hour. Only prune completed runtimes and staging directories
- * untouched for an hour; leave symlinks and unexpected entries untouched.
+ * Prune completed immutable runtimes that cannot start again, keeping caller, active/rollback/pending,
+ * running-process, launcher and explicit references, plus versions published within the last hour.
+ * Never touch staging directories, symlinks or unexpected entries. Exclude Jones homes because their
+ * qualified staging/rollback references are outside upstream state. Return removed versions.
  */
 export const prunePinnedRuntimes = Effect.fn("cloud.pinned_runtime.prune")(function* (input: {
   readonly baseDir: string;

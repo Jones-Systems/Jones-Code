@@ -376,8 +376,30 @@ export const make = Effect.gen(function* () {
 
   const readChecks = (input: ProviderRepositoryRef & { readonly number: number }) =>
     cli.getPullRequestDetail(input).pipe(
-      Effect.flatMap((pullRequest) =>
-        (pullRequest.state !== "open"
+      Effect.flatMap(
+        (
+          pullRequest,
+        ): Effect.Effect<
+          GitHubPullRequestCore & {
+            readonly jonesCheckObservation?: PullRequestCheckObservation | undefined;
+            readonly unfinishedWorkflowRuns?: ReadonlyArray<GitHubWorkflowRunApproval>;
+          },
+          GitHubPullRequestApi.GitHubPullRequestApiError
+        > =>
+          pullRequest.state !== "open"
+            ? Effect.succeed({ ...pullRequest, jonesCheckObservation: undefined })
+            : cli
+                .getPullRequestCheckObservation({
+                  ...input,
+                  headSha: pullRequest.headSha,
+                  baseBranch: pullRequest.baseBranch,
+                  headBranch: pullRequest.headBranch,
+                  checks: pullRequest.checks,
+                })
+                .pipe(Effect.map((observation) => ({ ...pullRequest, ...observation }))),
+      ),
+      Effect.flatMap(({ unfinishedWorkflowRuns, ...pullRequest }) =>
+        (pullRequest.state !== "open" || pullRequest.isCrossRepository !== true
           ? Effect.succeed({
               runs: [] as ReadonlyArray<GitHubWorkflowRunApproval>,
               unavailable: false,
@@ -547,10 +569,10 @@ export const make = Effect.gen(function* () {
 
     getChangeRequestChecks: (input) =>
       cli.revalidateChecks(input, readChecks(input)).pipe(
-        Effect.map(({ state, checks, workflowApprovalsRequired }) => ({
+        Effect.map(({ state, checks, jonesCheckObservation }) => ({
           state,
           checks,
-          ...(workflowApprovalsRequired === undefined ? {} : { workflowApprovalsRequired }),
+          ...(jonesCheckObservation === undefined ? {} : { jonesCheckObservation }),
         })),
         Effect.mapError(fail("getChangeRequestChecks")),
       ),

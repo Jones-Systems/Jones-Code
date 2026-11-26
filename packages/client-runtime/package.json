@@ -667,6 +667,158 @@
       "types": "./src/providerInstanceIds.ts",
       "default": "./src/providerInstanceIds.ts"
     },
+    "./jones/thread-activity-label": {
+      "types": "./src/jones/threadActivityLabel.ts",
+      "default": "./src/jones/threadActivityLabel.ts"
+    },
+    "./jones/workstreams/personal": {
+      "types": "./src/jones/workstreams/personal/index.ts",
+      "default": "./src/jones/workstreams/personal/index.ts"
+    },
+    "./jones/deliveryEvidence": {
+      "types": "./src/jones/deliveryEvidence.ts",
+      "default": "./src/jones/deliveryEvidence.ts"
+    },
+    "./jones/planCreationOperation": {
+      "types": "./src/jones/planCreationOperation.ts",
+      "default": "./src/jones/planCreationOperation.ts"
+    },
+    "./jones/preparedThreadTurn": {
+      "types": "./src/jones/preparedThreadTurn.ts",
+      "default": "./src/jones/preparedThreadTurn.ts"
+    },
+    "./jones/linked-threads": {
+      "types": "./src/jones/linkedThreads/index.ts",
+      "default": "./src/jones/linkedThreads/index.ts"
+    },
+    "./jones/remote-admission": {
+      "types": "./src/jones/remoteAdmission/index.ts",
+      "default": "./src/jones/remoteAdmission/index.ts"
+    },
+    "./jones/queue": {
+      "types": "./src/jones/queue/queuedSteerBatch.ts",
+      "default": "./src/jones/queue/queuedSteerBatch.ts"
+    },
+    "./jones/provider-updates": {
+      "types": "./src/jones/providerUpdates/index.ts",
+      "default": "./src/jones/providerUpdates/index.ts"
+    },
+    "./jones/fleet-updates": {
+      "types": "./src/jones/fleetUpdates/index.ts",
+      "default": "./src/jones/fleetUpdates/index.ts"
+    },
+    "./jones/provider-workspace-refresh": {
+      "types": "./src/jones/providerWorkspaceRefresh.ts",
+      "default": "./src/jones/providerWorkspaceRefresh.ts"
+    },
+    "./jones/host-status/http": {
+      "types": "./src/jones/hostStatus/http.ts",
+      "default": "./src/jones/hostStatus/http.ts"
+    },
+    "./jones/preview-companion/http": {
+      "types": "./src/jones/previewCompanion/http.ts",
+      "default": "./src/jones/previewCompanion/http.ts"
+    },
+    "./jones/preview-companion/stream-unavailable": {
+      "types": "./src/jones/previewCompanion/streamUnavailable.ts",
+      "default": "./src/jones/previewCompanion/streamUnavailable.ts"
+    },
+    "./jones/imported-history/commands": {
+      "types": "./src/jones/importedHistory/commands.ts",
+      "default": "./src/jones/importedHistory/commands.ts"
+    },
+    "./jones/imported-history/continuation": {
+      "types": "./src/jones/importedHistory/continuation.ts",
+      "default": "./src/jones/importedHistory/continuation.ts"
+    },
+    "./jones/design-requests": {
+      "types": "./src/jones/designRequests/index.ts",
+      "default": "./src/jones/designRequests/index.ts"
+    },
+    "./jones/updates": {
+      "types": "./src/jones/updates/jonesUpdates.ts",
+      "default": "./src/jones/updates/jonesUpdates.ts"
+    },
+    "./work-queue-metadata": {
+      "types": "./src/jones/workQueueMetadata.ts",
+      "default": "./src/jones/workQueueMetadata.ts"
+    },
+    "./jones/settlement-notifications": {
+      "types": "./src/jones/settlementNotifications/index.ts",
+      "default": "./src/jones/settlementNotifications/index.ts"
+    },
+    "./jones/settlement-restore": {
+      "types": "./src/jones/settlementRestore/index.ts",
+      "default": "./src/jones/settlementRestore/index.ts"
+    },
+    "./jones/thread-read-dwell": {
+      "types": "./src/jones/threadReadDwell.ts",
+      "default": "./src/jones/threadReadDwell.ts"
+    },
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "default": "./src/jones/threadReferenceExcerpt.ts"
+    },
+    "./jones/activity/report-lanes": {
+      "types": "./src/jones/activity/reportLanes.ts",
+      "default": "./src/jones/activity/reportLanes.ts"
+    },
+    "./jones/thread-monitor": {
+      "types": "./src/jones/threadMonitor/index.ts",
+      "default": "./src/jones/threadMonitor/index.ts"
+    },
+    "./jones/install-plan": {
+      "types": "./src/jones/installPlan/index.ts",
+      "default": "./src/jones/installPlan/index.ts"
+    },
+    "./jones/install-plan/model": {
+      "types": "./src/jones/installPlan/model.ts",
+      "default": "./src/jones/installPlan/model.ts"
+    },
+    "./jones/updates/action-journal": {
+      "types": "./src/jones/updates/actionJournal.ts",
+      "default": "./src/jones/updates/actionJournal.ts"
+    },
+    "./jones/updates/executor": {
+      "types": "./src/jones/updates/executor.ts",
+      "default": "./src/jones/updates/executor.ts"
+    },
+    "./jones/updates/target-status": {
+      "types": "./src/jones/updates/targetStatus.ts",
+      "default": "./src/jones/updates/targetStatus.ts"
+    },
+    "./jones/descendant-approval": {
+      "types": "./src/jones/descendantApproval/index.ts",
+      "default": "./src/jones/descendantApproval/index.ts"
+    },
+    "./voice-review/fixtures": {
+      "types": "./src/voiceReview/fixtures.ts",
+      "default": "./src/voiceReview/fixtures.ts"
+    },
+    "./conversations": {
+      "types": "./src/conversations/index.ts",
+      "default": "./src/conversations/index.ts"
+    },
+    "./voice-review": {
+      "types": "./src/voice-review.ts",
+      "default": "./src/voice-review.ts"
+    },
+    "./jones/remoteAdmission/controller": {
+      "types": "./src/jones/remoteAdmission/controller.ts",
+      "default": "./src/jones/remoteAdmission/controller.ts"
+    },
+    "./jones/repo-freshness": {
+      "types": "./src/jones/repoFreshness.ts",
+      "default": "./src/jones/repoFreshness.ts"
+    },
+    "./jones/remoteAdmission/adapter": {
+      "types": "./src/jones/remoteAdmission/adapter.ts",
+      "default": "./src/jones/remoteAdmission/adapter.ts"
+    },
+    "./jones/remoteAdmission/reviewHttp": {
+      "types": "./src/jones/remoteAdmission/reviewHttp.ts",
+      "default": "./src/jones/remoteAdmission/reviewHttp.ts"
+    },
     "./pull-request-references": {
       "types": "./src/pullRequestReferences.ts",
       "default": "./src/pullRequestReferences.ts"

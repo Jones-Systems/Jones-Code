@@ -292,15 +292,7 @@ export type ResolvedServerConfig = ServerConfig.ServerConfig["Service"] & {
 export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(function* (
   flags: CliServerFlags,
   cliLogLevel: Option.Option<LogLevel.LogLevel>,
-  options?: {
-    readonly startupPresentation?: ServerConfig.StartupPresentation;
-    readonly forceAutoBootstrapProjectFromCwd?: boolean;
-    readonly rejectRunningServer?: boolean;
-    readonly selectAutomaticPort?: (
-      preferred: number,
-      host: string | undefined,
-    ) => Effect.Effect<number, NetService.NetError | CliError.UserError>;
-  },
+  options?: ServerConfigOptions,
 ) {
   const { findAvailablePort } = yield* NetService.NetService;
   const selectAutomaticPort = options?.selectAutomaticPort ?? findAvailablePort;

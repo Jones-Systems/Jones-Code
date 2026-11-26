@@ -764,7 +764,7 @@ const make = Effect.gen(function* () {
     profilesDir: NodePath.join(config.stateDir, "server-browser", "profiles"),
     idleBrowserMs: 5 * 60_000,
     executable: () => runPromise(previewBrowser.executable),
-    chrome: { version: PreviewBrowser.VERSION, platform: host.platform },
+    chrome: { version: PreviewBrowser.VERSION, platform: browserHost.platform },
     // An agent scope keeps Chrome out of the server's memory protection and OOM score.
     launcher: async (executable) => {
       const launch = await runPromise(
@@ -1344,9 +1344,9 @@ const make = Effect.gen(function* () {
     const cdp = await context.newCDPSession(page);
     await installPdfDocumentNavigation(cdp);
     // The desktop's page is already a normal browser. A popup's first request
-    // precedes this override, so its Sec-CH-UA brands still name HeadlessChrome.
-    if (!desktop) await presentAsChrome(cdp, host);
-    if (!desktop) await recordCopies(cdp);
+    // went out before it became a tab; everything after presents as Chrome.
+    if (!desktop) await presentAsChrome(cdp, browserHost);
+    if (!desktop || desktop.origin !== "local") await recordCopies(cdp);
     page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
     page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
     const control = new SessionControl(snapshot.automationOwner ?? null, () =>
@@ -3189,15 +3189,7 @@ const make = Effect.gen(function* () {
               // Only an explicit show is sure to reach a client; desktop tabs are visible without a viewer.
               const remainingMs = deadlineMs - performance.now();
               if (reveal === true && tab.viewers.size === 0 && tab.desktop === null)
-                shown = awaitViewer(tab, Math.min(REVEAL_VIEWER_WAIT_MS, remainingMs));
-              // A desktop panel reports the revealed tab shown a few hops after the reveal.
-              else if (reveal === true && !isVisible(tab))
-                shown = runPromise(
-                  desktopChannel.awaitShown(
-                    tab,
-                    Math.max(0, Math.min(REVEAL_DESKTOP_SHOWN_WAIT_MS, remainingMs)),
-                  ),
-                ).then(constVoid);
+                shown = awaitViewer(tab, Math.min(REVEAL_VIEWER_WAIT_MS, deadlineMs - Date.now()));
             }
             await shown;
             return statusWithTitle(tab, request.agentSessionId);
@@ -3375,9 +3367,8 @@ const make = Effect.gen(function* () {
             viewport: tab.page.viewportSize() ?? UNATTACHED_FILL_VIEWPORT,
           };
         }
-        const changed =
-          tab.desktopResizeUndrawn || from?.width !== to?.width || from?.height !== to?.height;
-        const remainingMs = () => Math.max(0, deadlineMs - performance.now());
+        const changed = from?.width !== to?.width || from?.height !== to?.height;
+        const remainingMs = () => Math.max(0, deadlineMs - Date.now());
         const within = <A>(promise: Promise<A>, ms: number) =>
           runPromise(
             Effect.promise(() => promise).pipe(
@@ -3480,14 +3471,10 @@ const make = Effect.gen(function* () {
         return recordAction(tab, "upload", () =>
           uploadFiles(tab, input as PreviewAutomationUploadInput),
         );
-      case "type": {
-        // As for click: typing stops at the broker's deadline instead of running on after the reply.
-        const typeInput = {
-          ...(input as PreviewAutomationTypeInput),
-          timeoutMs: Math.max(1, Math.floor(deadlineMs - performance.now())),
-        };
-        return recordAction(tab, "type", () => ServerBrowserPage.type(tab.page, typeInput));
-      }
+      case "type":
+        return recordAction(tab, "type", () =>
+          ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput, onDispatch),
+        );
       case "press":
         return recordAction(tab, "press", () =>
           ServerBrowserPage.press(tab.page, input as PreviewAutomationPressInput, onDispatch),
@@ -4271,8 +4258,7 @@ const make = Effect.gen(function* () {
     } satisfies ServerBrowserViewer;
   });
 
-  // Subscribe before forking: a forked stream subscribes only once it runs, so a tab opened
-  // right after startup would publish its `opened` event to no one and never load.
+  // Buffer opens before exposing the service, even if the mirror fiber has not run yet.
   const managerEvents = yield* manager.subscribeEvents;
   yield* Stream.fromSubscription(managerEvents).pipe(
     Stream.runForEach(mirrorManagerEvent),

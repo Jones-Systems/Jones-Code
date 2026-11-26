@@ -52,9 +52,30 @@ import {
   verifyPinnedRuntimeProvenance,
 } from "./pinnedRuntime.ts";
 import { bootServiceProgramOf, bootServiceUnitPath } from "./bootService.ts";
-import { runStagedServicePreflight } from "./servicePreflight.ts";
+import {
+  decodeServicePreflightResult,
+  qualifiedServicePreflightFailure,
+} from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
-import { decodeServiceUnit, isExactServiceVersion } from "./serviceProtocol.ts";
+import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import * as Duration from "effect/Duration";
+import { decodeServiceUnit } from "./serviceProtocol.ts";
+import {
+  PinnedRuntimePreflightBlockedError,
+  pinnedRuntimeCommand,
+  PinnedRuntimeInstallError,
+} from "./pinnedRuntime.ts";
+
+export type QualifiedStageVerifier = (input: {
+  readonly stagedHandle: string;
+  readonly activeVersion: string;
+  readonly signal: AbortSignal;
+}) => Promise<StagedQualifiedRuntime>;
+
+const decodePreflightJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+
+// A staged runtime's cold start can take over a minute on a loaded, swapping host.
+const PREFLIGHT_TIMEOUT = Duration.minutes(3);
 
 export function resolveServerSelfUpdateCapability(input: {
   readonly desktopManaged: boolean;
@@ -303,14 +324,100 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         arch,
         releaseBaseUrl,
         requirePublishedRelease: mirror !== undefined,
-        validate: (runtime) =>
-          runStagedServicePreflight({
-            runner,
-            runtime,
-            targetVersion,
-            databasePath: serverConfig.dbPath,
-            launcherProtocol,
-          }),
+        validate: (runtime) => {
+          // A deferred install must be able to verify the published runtime again.
+          const verifyStaged =
+            input.stageOnly === true
+              ? verifyPinnedRuntimeProvenance({
+                  fs,
+                  path,
+                  version: targetVersion,
+                  platform,
+                  arch,
+                  paths: runtime,
+                }).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new PinnedRuntimePreflightBlockedError({
+                        version: targetVersion,
+                        reason: cause.message,
+                      }),
+                  ),
+                )
+              : Effect.void;
+          return verifyStaged.pipe(
+            Effect.andThen(
+              runner
+                .run({
+                  command: pinnedRuntimeCommand(runtime).command,
+                  args: [
+                    ...pinnedRuntimeCommand(runtime).args,
+                    "__service-preflight",
+                    "--database-path",
+                    serverConfig.dbPath,
+                    "--launcher-protocol",
+                    String(launcherProtocol),
+                  ],
+                  timeout: PREFLIGHT_TIMEOUT,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new PinnedRuntimeInstallError({
+                        step: "running the staged service preflight",
+                        cause,
+                      }),
+                  ),
+                ),
+            ),
+            Effect.flatMap(
+              (
+                result,
+              ): Effect.Effect<
+                void,
+                PinnedRuntimeInstallError | PinnedRuntimePreflightBlockedError
+              > => {
+                if (result.code !== 0) {
+                  return Effect.fail(
+                    new PinnedRuntimeInstallError({
+                      step: "running the staged service preflight",
+                      exitCode: Number(result.code),
+                      stdoutLength: result.stdout.length,
+                      stderrLength: result.stderr.length,
+                    }),
+                  );
+                }
+                let parsed: unknown;
+                try {
+                  parsed = JSON.parse(result.stdout.trim());
+                } catch (cause) {
+                  return Effect.fail(
+                    new PinnedRuntimeInstallError({
+                      step: "decoding the staged service preflight",
+                      cause,
+                    }),
+                  );
+                }
+                const preflight = decodeServicePreflightResult(parsed, launcherProtocol);
+                if (preflight === undefined || preflight.version !== targetVersion) {
+                  return Effect.fail(
+                    new PinnedRuntimeInstallError({
+                      step: "verifying the staged service preflight",
+                    }),
+                  );
+                }
+                return preflight.status === "ready"
+                  ? Effect.void
+                  : Effect.fail(
+                      new PinnedRuntimePreflightBlockedError({
+                        version: targetVersion,
+                        reason: preflight.reason,
+                      }),
+                    );
+              },
+            ),
+          );
+        },
       }).pipe(
         Effect.mapError((error) => {
           if (error._tag === "PinnedRuntimePreflightBlockedError") {

@@ -494,7 +494,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
     }
     return null;
   });
-  const localCache = new Map<string, { fingerprint: string; executable: CodexExecutable | null }>();
+  const localCache = new Map<string, { fingerprint: string; executable: CodexExecutable }>();
   const resolveLocal = Effect.fn("CodexInstallation.resolveLocal")(
     function* () {
       const executablePath = yield* resolveCommandPath("codex", { env: environment }).pipe(
@@ -558,7 +558,6 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
         cached?.fingerprint === fingerprint
           ? cached.executable
           : ((yield* persisted) ?? (yield* probe));
-      localCache.set(executablePath, { fingerprint, executable });
       if (!executable) return null;
       localCache.set(executablePath, { fingerprint, executable });
       const advisory = yield* compatibility(executable.version);

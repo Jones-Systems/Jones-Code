@@ -394,22 +394,8 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
   const path = yield* Path.Path;
   const environment = yield* HostProcess.Environment;
   const platform = yield* HostProcess.Platform;
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  // The launcher that commits a remote update is the old one; its reload after commit
-  // keeps oomd's watch only if the policy is mirrored before it.
-  const keepOomdWatch =
-    platform === "linux"
-      ? spawner
-          .exitCode(
-            ChildProcess.make("/bin/sh", ["-c", RESTORE_OOMD_WATCH_SCRIPT], {
-              env: environment,
-              stdin: "ignore",
-              stdout: "ignore",
-              stderr: "ignore",
-            }),
-          )
-          .pipe(Effect.timeout("30 seconds"), Effect.ignore)
-      : Effect.void;
+  const qualifiedOperations = yield* QualifiedTrialOperations;
+  const updateAdmission = yield* UpdateAdmission.UpdateAdmissionFence;
 
   const exchange = (
     message: ServiceLauncherChildMessage,
@@ -641,34 +627,78 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     context?.update === undefined || context.update.status === "pending"
       ? undefined
       : context.update;
-  const prepareTrial = (input: { readonly baseDir: string }) =>
-    pending !== undefined
-      ? Effect.andThen(
-          keepOomdWatch,
-          exchange(
-            { type: "prepared", updateId: pending.id },
-            (reply) => reply.type === "committed" && reply.updateId === pending.id,
-          ).pipe(
-            Effect.flatMap((reply) =>
-              reply.type !== "committed"
-                ? Effect.die("service launcher returned an impossible prepared response")
-                : repointLaunchers({
-                    baseDir: input.baseDir,
-                    targetVersion: pending.targetVersion,
-                  }).pipe(
-                    Effect.provideService(FileSystem.FileSystem, fs),
-                    Effect.provideService(Path.Path, path),
-                    Effect.provideService(HostProcess.Environment, environment),
-                    Effect.provideService(HostProcess.Platform, platform),
-                    Effect.as({
-                      id: pending.id,
-                      fromVersion: pending.fromVersion,
-                      targetVersion: pending.targetVersion,
-                      status: "committed" as const,
-                    }),
-                  ),
-            ),
-          ),
+  const qualifiedTransaction =
+    context?.update !== undefined &&
+    "qualified" in context.update &&
+    context.update.qualified !== undefined;
+  const requiresQualifiedTrialGate = pending !== undefined && pending.qualified !== undefined;
+  let qualifiedAttempted = false;
+  const prepareQualifiedTrial: ServiceLauncherClient["Service"]["prepareQualifiedTrial"] = (
+    witness,
+  ) =>
+    Effect.suspend(() => {
+      if (qualifiedAttempted)
+        return Effect.fail(new ServiceLauncherClientError({ operation: "qualified-replay" }));
+      qualifiedAttempted = true;
+      if (
+        !requiresQualifiedTrialGate ||
+        pending?.qualified === undefined ||
+        context?.protocol !== SERVICE_LAUNCHER_PROTOCOL ||
+        context.qualifiedUpdatesProtocol !== 1 ||
+        context.startupGateProtocol !== 1
+      )
+        return Effect.fail(new ServiceLauncherClientError({ operation: "qualified-proof" }));
+      const qualified = pending.qualified;
+      return Effect.gen(function* () {
+        const receipt = yield* qualifiedOperation(async (signal) => {
+          const receipt = await qualifiedOperations.receipt({
+            updateId: pending.id,
+            qualified,
+            witness,
+            signal,
+          });
+          assertQualifiedTrialBinding({ updateId: pending.id, qualified, receipt });
+          await qualifiedOperations.assertUnreserved(receipt);
+          return receipt;
+        }, "qualified-proof");
+        const reply = yield* exchange(
+          { type: "prepared", updateId: pending.id, startupGateProtocol: 1, qualified: receipt },
+          (reply) => reply.type === "committed",
+          receipt,
+        );
+        if (reply.type !== "committed" || reply.qualified === undefined)
+          return yield* new ServiceLauncherClientError({ operation: "qualified-proof" });
+        yield* qualifiedOperation(
+          (signal) => qualifiedOperations.reserve({ receipt, signal }),
+          "qualified-reservation",
+        );
+        outcome = {
+          id: pending.id,
+          fromVersion: pending.fromVersion,
+          targetVersion: pending.targetVersion,
+          status: "committed",
+        };
+        return outcome;
+      });
+    });
+  const ordinaryPrepareTrial = yield* Effect.cached(
+    pending !== undefined && !requiresQualifiedTrialGate
+      ? exchange(
+          { type: "prepared", updateId: pending.id },
+          (reply) => reply.type === "committed" && reply.updateId === pending.id,
+        ).pipe(
+          Effect.flatMap((reply) => {
+            if (reply.type !== "committed") {
+              return Effect.die("service launcher returned an impossible prepared response");
+            }
+            outcome = {
+              id: pending.id,
+              fromVersion: pending.fromVersion,
+              targetVersion: pending.targetVersion,
+              status: "committed" as const,
+            };
+            return Effect.succeed(outcome);
+          }),
         )
       : Effect.succeed(outcome),
   );

@@ -2048,7 +2048,17 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             : undefined;
           const startModel = yield* resolveModel(args.modelSelection);
           const permissionProfile = musePermissionProfile(args.runtimePolicy.runtimeMode);
-          if (requestedId) yield* reportStartupPhase("resume");
+          if (lifecycle) {
+            if (runtimeProducer?.runtimeGeneration === undefined)
+              return yield* protocolError("The Muse host generation is unavailable");
+            yield* lifecycle.admit({
+              threadId: args.threadId,
+              runtimeGeneration: runtimeProducer.runtimeGeneration,
+            });
+            yield* runtimeProducer.revalidateCurrent.pipe(
+              Effect.mapError((cause) => protocolError("The admitted Muse host has exited", cause)),
+            );
+          }
           const result = yield* request(
             requestedId ? "session/resume" : "session/start",
             requestedId
@@ -2304,7 +2314,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                   {
                     type: "text",
                     text: buildRuntimeInstructions({
-                      agentFeedback: hasT3Mcp ? (turnInput.agentFeedback ?? "off") : "off",
+                      ...(providerHost.appIdentity === undefined
+                        ? {}
+                        : { appIdentity: providerHost.appIdentity }),
                       harness: "Muse Code",
                       model: session.model ?? undefined,
                       reasoningEffort: effort,

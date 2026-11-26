@@ -56,9 +56,12 @@ if (
   if (launcher !== undefined && launcherOptions !== undefined) {
     await launcher.runServiceLauncherCli(launcherOptions);
   } else if (process.argv[2] === "__process-launcher") {
-    // Single executables host the launcher here; other builds start process-launcher.mjs directly.
     const { runProcessLauncher } = await import("./process/processLauncherWorker.ts");
     runProcessLauncher();
+  } else if (process.argv[2] === "__jones-server-compute" && NodeSea.isSea()) {
+    const { runServerComputeWorkerCommand } =
+      loadSeaEntry<typeof import("./jones/serverCompute/worker.ts")>("serverComputeWorker.mjs");
+    await runServerComputeWorkerCommand(process.argv.slice(3));
   } else {
     const { runCliCommand } = await loadCliMain();
     await runCliCommand();

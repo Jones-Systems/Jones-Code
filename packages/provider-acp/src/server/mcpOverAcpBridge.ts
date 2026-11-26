@@ -1,5 +1,4 @@
-// @effect-diagnostics globalJsonInEffect:off
-import * as Deferred from "effect/Deferred";
+// @effect-diagnostics preferSchemaOverJson:off
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -7,6 +6,7 @@ import * as Stream from "effect/Stream";
 import type * as AcpSchema from "effect-acp/compat";
 
 import { responsePayloads } from "@t3tools/shared/mcpResponsePayloads";
+import * as Deferred from "effect/Deferred";
 
 const MAX_CONNECTIONS = 16;
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;

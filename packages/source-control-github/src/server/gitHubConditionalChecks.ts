@@ -193,9 +193,9 @@ export const makeChecksRevalidator = Effect.gen(function* () {
           const value = {
             state: fresh.state,
             checks: fresh.checks,
-            ...(fresh.workflowApprovalsRequired === undefined
+            ...(fresh.jonesCheckObservation === undefined
               ? {}
-              : { workflowApprovalsRequired: fresh.workflowApprovalsRequired }),
+              : { jonesCheckObservation: fresh.jonesCheckObservation }),
           };
           entry.value =
             fresh.workflowApprovalsRequired !== undefined && fresh.headSha === head.head.sha

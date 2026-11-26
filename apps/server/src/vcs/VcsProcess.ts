@@ -429,12 +429,10 @@ export const make = Effect.gen(function* () {
         }),
       );
     }
-    const shared = input.command === "git" ? bounded : nonGitProcesses.withPermits(1)(bounded);
-    const keyed = input.concurrency === undefined ? shared : keyedPermit(input.concurrency)(shared);
-    // Taken first, so a background call still waiting holds no permit another call needs.
-    return yield* input.command !== "git" && (yield* Background)
-      ? backgroundProcesses.withPermits(1)(keyed)
-      : keyed;
+    // Discovery already has its own pool, so it holds no git slot and no forge-call slot.
+    const shared =
+      input.command === "git" || discovery ? bounded : nonGitProcesses.withPermits(1)(bounded);
+    return yield* input.concurrency === undefined ? shared : keyedPermit(input.concurrency)(shared);
   });
 
   return VcsProcess.of({ run });

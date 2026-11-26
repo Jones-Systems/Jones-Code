@@ -1,4 +1,24 @@
-import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import * as PersonalWorkstreams from "./jones/workstreams/personal/service.ts";
+import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
+import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
+import { withClientSettlementOrigin } from "./jones/settlementOrigins/clientIngress.ts";
+import { withOwnerSelectionIngress } from "./jones/threadConfiguration/ownerIngress.ts";
+import { QueueDispatchCommand } from "@t3tools/contracts";
+import * as RetainedWsHandlers from "./jones/ws/retainedHandlers.ts";
+import * as RepoFreshnessWs from "./jones/repoFreshness/wsHandlers.ts";
+import * as WorktreeMcpService from "./mcp/WorktreeMcpService.ts";
+import { TerminalCwdStatError } from "@t3tools/contracts";
+import { readRemoteTaskOwnerIds } from "./jones/remoteDelegation/ShellRetention.ts";
+import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
+import { makeDependencyStore } from "./jones/threadResultDependencies/DependencyStore.ts";
+import { makeJonesTablePresence } from "./jones/persistence/JonesTablePresence.ts";
+import { refreshItems as dependencyRefreshItems } from "./jones/orchestration/shellThreadRefresh.ts";
+import { createShellDeliveryGuard } from "./jones/orchestration/shellDelivery.ts";
+import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
+import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
+import { EnvironmentAuthenticatedPrincipal } from "@t3tools/contracts";
+import { makeCompactVisitCompatibility } from "./jones/compactThreadVisits/compatibility.ts";
+import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
@@ -34,8 +54,7 @@ import {
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
   AuthOrchestrationOperateScope,
-  AuthTerminalOperateScope,
-  AuthProvidersManageScope,
+  AuthSourceControlWriteScope,
   type AuthEnvironmentScope,
   ProviderDriverKind,
   type ScheduledTaskListResult,
@@ -309,6 +328,7 @@ import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import { requestUrl } from "./requestUrl.ts";
+import { AuthTerminalOperateScope, GitCommandError } from "@t3tools/contracts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -2143,53 +2163,81 @@ export const layerWsRpc = (
 
       const personalWorkstreams = yield* PersonalWorkstreams.PersonalWorkstreams;
       const handlers = ServerWsRpcGroup.of({
-        [WS_METHODS.issuesList]: (input) => issues.list(input),
-        [WS_METHODS.issuesDetail]: (input) => issues.detail(input),
-        [WS_METHODS.issuesComments]: (input) => issues.comments(input),
-        [WS_METHODS.issuesTemplates]: (input) => issues.templates(input),
-        [WS_METHODS.issuesCandidates]: (input) => issues.candidates(input),
-        [WS_METHODS.issuesLinkedThreads]: (input) => threadIssues.linkedThreads(input),
-        [WS_METHODS.issuesCreate]: (input) => issues.create(input),
-        [WS_METHODS.issuesComment]: (input) => issues.comment(input),
-        [WS_METHODS.issuesUpdate]: (input) => issues.update(input),
-        [WS_METHODS.issuesSetState]: (input) => issues.setState(input),
-        [WS_METHODS.issuesReact]: (input) => issues.react(input),
-        [WS_METHODS.issueTrackersList]: () => issueTrackers.list,
-        [WS_METHODS.issueTrackersConnect]: (input) => issueTrackers.connect(input),
-        [WS_METHODS.issueTrackersBindProject]: (input) => issueTrackers.bindProject(input),
+        ...(yield* RepoFreshnessWs.make()),
+        "workstreamsPersonal.subscribe": () => personalWorkstreams.changes,
+        "workstreamsPersonal.members": ({ workstreamId }) =>
+          personalWorkstreams.members(workstreamId),
+        "workstreamsPersonal.put": ({ workstream, expected }) =>
+          personalWorkstreams.put(workstream, expected),
+        "workstreamsPersonal.assign": (input) =>
+          personalWorkstreams.assign(input, { supersedeInitialAutoAssignment: true }),
+        ...retainedHandlers,
+        [WS_METHODS.pullRequestsCiStatus]: (input) => pullRequests.ciStatus(input),
+        [WS_METHODS.serverReadTokenAccounting]: (_input) => tokenAccounting.read,
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
-          Effect.annotateCurrentSpan({
-            "orchestration_v2.command_id": command.commandId,
-            "orchestration_v2.command_type": command.type,
-            "orchestration_v2.thread_id":
-              command.type === "thread.fork" || command.type === "thread.merge_back"
-                ? command.targetThreadId
-                : command.type === "delegated_task.request" ||
-                    command.type === "delegated_task.wake-policy" ||
-                    command.type === "delegated_task.completion-delivery.acknowledge" ||
-                    command.type === "delegated_task.completion-delivery.dispose" ||
-                    command.type === "thread.created.record"
-                  ? command.parentThreadId
-                  : command.threadId,
-            ...(command.type === "thread.fork" || command.type === "thread.merge_back"
-              ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
-              : {}),
-          }).pipe(
-            Effect.andThen(
-              startup
-                .enqueueCommand(
-                  (command.type === "prepared-run.retry"
-                    ? threadLaunch.retryPreparation(command)
-                    : ThreadMessageIntake.dispatchCommand(
-                        ThreadManagementService.withCreationProvenance(command, {
-                          createdBy: "user",
-                          creationSource:
-                            "creationSource" in command ? command.creationSource : "web",
-                        }),
-                        {
-                          managesProviders:
-                            currentSession.scopes.includes(AuthProvidersManageScope),
-                        },
+          isQueueDispatchCommand(command)
+            ? Effect.annotateCurrentSpan({
+                "rpc.aggregate": "orchestration",
+                "orchestration.command_id": command.commandId,
+              }).pipe(
+                Effect.andThen(
+                  startup
+                    .enqueueCommand(
+                      queueCompatibility
+                        .dispatch(command, "legacy_websocket")
+                        .pipe(withOwnerSelectionIngress),
+                    )
+                    .pipe(
+                      Effect.mapError((error) => {
+                        const cause = error.cause;
+                        return isOrchestrationDispatchCommandError(cause)
+                          ? cause
+                          : new OrchestrationDispatchCommandError({
+                              message:
+                                isQueueCompatibilityQueueCompatibilityError(error) &&
+                                error.reason === "dispatch_guard_rejected"
+                                  ? "Dispatch guard rejected."
+                                  : "Failed to dispatch orchestration command.",
+                              cause,
+                            });
+                      }),
+                    ),
+                ),
+              )
+            : Effect.annotateCurrentSpan({
+                "rpc.aggregate": "orchestrationV2",
+                "orchestration_v2.command_id": command.commandId,
+                "orchestration_v2.command_type": command.type,
+                "orchestration_v2.thread_id":
+                  command.type === "thread.fork" || command.type === "thread.merge_back"
+                    ? command.targetThreadId
+                    : command.type === "delegated_task.request" ||
+                        command.type === "delegated_task.wake-policy" ||
+                        command.type === "delegated_task.completion-delivery.acknowledge" ||
+                        command.type === "delegated_task.completion-delivery.dispose" ||
+                        command.type === "thread.created.record"
+                      ? command.parentThreadId
+                      : command.threadId,
+                ...(command.type === "thread.fork" || command.type === "thread.merge_back"
+                  ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
+                  : {}),
+              }).pipe(
+                Effect.andThen(
+                  withClientSettlementOrigin(
+                    command,
+                    startup
+                      .enqueueCommand(
+                        // A retry also restarts the preparation work the launch owns.
+                        (command.type === "prepared-run.retry"
+                          ? threadLaunch.retryPreparation(command)
+                          : ThreadMessageIntake.dispatchCommand(
+                              ThreadManagementService.withCreationProvenance(command, {
+                                createdBy: "user",
+                                creationSource:
+                                  "creationSource" in command ? command.creationSource : "web",
+                              }),
+                            )
+                        ).pipe(Effect.provide(intakeContext), withOwnerSelectionIngress),
                       )
                       .pipe(
                         Effect.tap((result) =>
@@ -2215,18 +2263,6 @@ export const layerWsRpc = (
                         ),
                       ),
                   ),
-                  Effect.map((result) => ({ sequence: result.sequence })),
-                  Effect.mapError((cause) => {
-                    if (cause._tag === "EnvironmentAuthorizationError") return cause;
-                    const detail = userFacingDispatchErrorMessage(cause);
-                    return new OrchestrationV2DispatchCommandError({
-                      commandId: command.commandId,
-                      commandType: command.type,
-                      message: detail ?? "Failed to dispatch orchestration V2 command",
-                      ...(detail === undefined ? {} : { detail }),
-                      cause,
-                    });
-                  }),
                 ),
               ),
         [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) => threadManagement.stopWorkflow(input),
@@ -3552,31 +3588,26 @@ export const layerWsRpc = (
             Effect.tap(() => refreshGitStatus(input.cwd)),
           ),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
-          // A thread's worktree may be a task folder: its repositories' worktrees go with it.
-          taskFolders
-            .removeIfTaskFolder({ path: input.path, force: input.force === true, projectCommands })
-            .pipe(
-              Effect.mapError(
-                (cause) =>
+          taskFolders.removeForProjectFolder(input, projectCommands).pipe(
+            Effect.catchTags({
+              TaskFolderError: (cause) =>
+                Effect.fail(
                   new GitCommandError({
                     operation: "TaskFolders.remove",
                     command: "git worktree remove",
                     cwd: input.cwd,
                     detail: cause.detail,
                   }),
-              ),
-              Effect.flatMap((removed) =>
-                removed ? Effect.void : gitWorkflow.removeWorktree(input),
-              ),
-              // No project-root refresh here: the client awaits vcs.refreshStatus right after, and a
-              // second refresh would queue behind this one and reread an unchanged repository.
-              // Subscribers of the removed checkout learn it is no longer a repository.
-              Effect.tap(() =>
-                vcsStatusBroadcaster
-                  .refreshLocalStatus(input.path)
-                  .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid),
-              ),
+                ),
+            }),
+            Effect.tap(() => refreshGitStatus(input.cwd)),
+            // Subscribers of the removed checkout learn it is no longer a repository.
+            Effect.tap(() =>
+              vcsStatusBroadcaster
+                .refreshLocalStatus(input.path)
+                .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid),
             ),
+          ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           (input.switchRef
             ? assertCheckoutIdle("GitWorkflowService.createRef", input.cwd)
@@ -4076,13 +4107,13 @@ export const layer = Layer.unwrap(
               Layer.provide(SettlementOrigins.layer),
               Layer.provide(AcpRegistrySessions.layer),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
-              // Installs outlive the connection that started them and lock across clients.
               Layer.provide(
-                Layer.succeed(
-                  ProviderMaintenanceRunner.ProviderMaintenanceRunner,
-                  providerMaintenanceRunner,
-                ),
+                Layer.succeed(ShellMaterialization.ShellMaterialization, shellMaterialization),
               ),
+              Layer.provide(
+                Layer.succeed(QueueCompatibility.QueueCompatibility, queueCompatibility),
+              ),
+              Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(NpmRelease.NpmRelease, npmRelease)),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
               // Share server-lifetime PR caches so WS mutations invalidate every client's HTTP diffs.

@@ -14,8 +14,7 @@ import {
   isPullRequestWatchTask,
   turnItemUpdateCanEndBackgroundWork,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { resolveProjectScripts, settleProjectScript } from "@t3tools/shared/projectScripts";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { resolveProjectSettings, resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   CommandId,
@@ -60,6 +59,7 @@ import { makeNoPullRequestRechecks } from "./noPullRequestRechecks.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { QUIET_AFTER_MS, QUIET_SYNC_INTERVAL_MS } from "./PullRequestSyncReactor.ts";
+import { settleProjectScript, resolveProjectScripts } from "@t3tools/shared/projectScripts";
 
 const isRetirementError = Schema.is(RetirementReceipts.RetirementError);
 
@@ -853,7 +853,14 @@ export const make = Effect.gen(function* () {
       expected?: RetirementReceipts.SettlementIntent;
     }) {
       const settled = yield* projections.getThread(threadId);
-      if (settled.deletedAt !== null || settled.settledOverride !== "settled") return;
+      if (settled.settledOverride !== "settled") return;
+      if (
+        expected &&
+        (settled.worktreePath !== expected.worktree ||
+          settled.settledAt === null ||
+          DateTime.formatIso(settled.settledAt) !== expected.settled_at)
+      )
+        return;
       yield* terminals.closeOnSettle({ threadId });
       const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
       const afterClose = yield* projections.getThread(threadId);
@@ -882,7 +889,14 @@ export const make = Effect.gen(function* () {
       }
       // Recheck after closing and worktree I/O; only live, settled threads may run scripts.
       const thread = yield* projections.getThread(threadId);
-      if (thread.deletedAt !== null || thread.settledOverride !== "settled") return;
+      if (
+        thread.settledOverride !== "settled" ||
+        thread.worktreePath !== worktreePath ||
+        thread.projectId !== settled.projectId ||
+        thread.branch !== settled.branch ||
+        toMillis(thread.settledAt) !== toMillis(settled.settledAt)
+      )
+        return;
       const settledAtMs = toMillis(thread.settledAt);
       // The parent's worktree belongs to the parent; shared-worktree children
       // skip duplicate cleanup there.

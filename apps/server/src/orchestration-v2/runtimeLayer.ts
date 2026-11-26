@@ -102,6 +102,24 @@ export const layerEventInfrastructure = Layer.mergeAll(
   OrchestrationCommandReceipts.layer,
 );
 
+const nativeCreationOwnersProvided = Layer.merge(
+  NativeCreationRepositorySqlite.layer,
+  NativeCreationAuthority.NativeCreationAuthorityUnavailable.pipe(
+    Layer.provide(Layer.merge(NativeCreationRepositorySqlite.layer, AuthSessions.layer)),
+  ),
+);
+
+// The same layer objects serve core, native starts and the external dependency
+// reactor. Probe success cannot substitute for the recorded start admission.
+const layerGoalContinuity = GoalContinuityRuntime.layer;
+export const layerStartAdmission = StartRefusalProbe.layer.pipe(
+  Layer.provideMerge(StartRefusal.layer),
+  Layer.provideMerge(ControlAdmission.layer),
+  Layer.provide(layerGoalContinuity),
+  Layer.provide(ProjectionStore.layer),
+  Layer.provide(ServerEnvironment.layerIdentity),
+);
+
 const layerWorkspaceFoldersProvided = WorkspaceFolders.layer.pipe(
   Layer.provide(Layer.merge(ProjectStore.layer, TaskFolderStore.layer)),
 );
@@ -128,9 +146,21 @@ const layerStores = Layer.mergeAll(
   TurnItemPositionStore.layer,
 );
 
-// The server provides this same layer to thread subscriptions; memoized, they share one registry.
 export const layerEventSink = EventSink.layerFromStores.pipe(
+  Layer.provide(StartRefusal.layer),
+  Layer.provide(DependencyChanges.layer),
+  Layer.provide(nativeCreationOwnersProvided),
   Layer.provide(Layer.merge(layerStores, ThreadViewers.layer)),
+);
+const layerRestartPreparationProvided = RestartPreparation.layer.pipe(
+  Layer.provide(Layer.merge(layerStores, layerEventSink)),
+);
+// Construct admission where the worker's stores are already memoized. No second
+// sink, outbox, receipt store or captured provider runtime is created here.
+export const layerNativeStartAdmission = NativeStartAdmission.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(layerStores, layerEventSink, ControlAdmission.layer, StartRefusal.layer),
+  ),
 );
 const layerProjectionMaintenanceProvided = ProjectionMaintenance.layer.pipe(
   Layer.provide(layerStores),

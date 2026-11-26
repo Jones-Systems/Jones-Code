@@ -12,7 +12,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   AuthAccessReadScope,
-  AuthEnvironmentScope,
+  AuthPreviewOperateScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthProvidersManageScope,
@@ -216,6 +216,7 @@ import {
   WS_RPC_SERVER_OPTIONS,
   withLateConfigDiscovery,
 } from "./ws.ts";
+import { AuthEnvironmentScope } from "@t3tools/contracts";
 
 const makeConfigDiscoveryRpc = Effect.fn(function* (discoveries: {
   readonly editors: ReturnType<
@@ -2121,11 +2122,12 @@ it.effect(
               Effect.sync(() => seen.push(options.projectCommands)).pipe(
                 Effect.as({ worktree: { path: "/repo-worktrees/feature", refName: "feature" } }),
               ),
-            removeIfTaskFolder: (input) =>
-              Effect.sync(() => seen.push(input.projectCommands)).pipe(Effect.as(true)),
+            removeForProjectFolder: (_input, projectCommands) =>
+              Effect.sync(() => void seen.push(projectCommands)),
           }),
           Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
             refreshStatus: () => Effect.die("unused"),
+            refreshLocalStatus: () => Effect.void,
           }),
           Layer.mock(ExternalLauncher.ExternalLauncher)({}),
           Layer.mock(ProviderRegistry.ProviderRegistry)({}),
@@ -3278,296 +3280,564 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
   ),
 );
 
-const workflowTags = [
-  WS_METHODS.workflowsGet,
-  WS_METHODS.workflowsAnswer,
-  WS_METHODS.workflowsResume,
-  WS_METHODS.workflowsCancel,
-] as const;
-const workflowRpcs = WsRpcGroup.omit(
-  ...[...WsRpcGroup.requests.keys()].filter(
-    (
-      tag,
-    ): tag is Exclude<
-      keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
-      (typeof workflowTags)[number]
-    > => !(workflowTags as ReadonlyArray<string>).includes(tag),
+// Uses the production WS handler and the same selection instance its publisher consumes.
+it.effect("WS preview opens freeze host selection before later defaults can change it", () =>
+  Effect.gen(function* () {
+    const selection = yield* RenderHostSelection.RenderHostSelection;
+    const manager = yield* PreviewManager.PreviewManager;
+    const threadId = ThreadId.make("ws-preview-binding");
+    yield* selection.setThread(threadId, { _tag: "companion", hostId: "original-host" });
+    const onlyOpen = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
+          typeof WS_METHODS.previewOpen
+        > => tag !== WS_METHODS.previewOpen,
+      ),
+    );
+    const client = yield* RpcTest.makeClient(onlyOpen).pipe(
+      Effect.provide(
+        layerWsRpc(
+          {
+            sessionId: AuthSessionId.make("preview-binding-test"),
+            subject: "preview-binding-test",
+            method: "browser-session-cookie",
+            scopes: [AuthPreviewOperateScope],
+          },
+          {},
+          yield* ServerBrowser.ServerBrowser,
+          () => Effect.void,
+          { secretReferences: true },
+        ).pipe(Layer.merge(RpcAuthorization.layer([AuthPreviewOperateScope]))),
+      ),
+    );
+    const first = yield* client[WS_METHODS.previewOpen]({ threadId, runtime: "server" });
+    yield* selection.setThread(threadId, { _tag: "server" });
+    const second = yield* client[WS_METHODS.previewOpen]({ threadId, runtime: "server" });
+    assert.deepEqual(yield* selection.binding(first), {
+      _tag: "companion",
+      hostId: "original-host",
+    });
+    assert.deepEqual(yield* selection.binding(second), { _tag: "server" });
+    assert.equal((yield* manager.list({ threadId })).sessions.length, 2);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        PreviewManager.layer,
+        RenderHostSelection.layer,
+        Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+        Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+        Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+        Layer.mock(ServerBrowser.ServerBrowser)({}),
+      ).pipe(Layer.provideMerge(Layer.fresh(layerConfigSources))),
+    ),
   ),
 );
-const workflowRun: WorkflowRun = {
-  runId: "run-1",
-  workflow: "release",
-  version: 1,
-  title: "Release 1.2",
-  status: "paused",
-  detail: "build failed: exit 1",
-  result: null,
-  pauses: 1,
-  retired: false,
-  resumesAt: null,
-  parentRunId: null,
-  parentStep: null,
-  startedAt: "2026-11-01T00:00:00.000Z",
-  updatedAt: "2026-11-01T00:01:00.000Z",
-  endedAt: null,
-};
-const workflowStep: WorkflowStep = {
-  name: "build",
-  kind: "step",
-  status: "failed",
-  attempts: 2,
-  detail: "exit 1",
-  threadId: null,
-  environmentId: null,
-  result: null,
-  said: null,
-  startedAt: "2026-11-01T00:00:10.000Z",
-  endedAt: "2026-11-01T00:01:00.000Z",
-};
 
-/** A client for the workflow RPCs whose session holds `scopes`; `calls` records what reached the service. */
-const makeWorkflowClient = Effect.fn("test.makeWorkflowClient")(function* (
-  scopes: ReadonlyArray<AuthEnvironmentScope>,
-  calls: Array<unknown>,
-) {
-  const services = Layer.mergeAll(
-    layerUnusedConfigRpcServices,
-    Layer.mock(ExternalLauncher.ExternalLauncher)({}),
-    Layer.mock(ProviderRegistry.ProviderRegistry)({}),
-    Layer.mock(UsageLimitSources.UsageLimitSources)({}),
-    Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
-    Layer.mock(DirectEndpoints.DirectEndpoints)({}),
-    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
-    Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
-    Layer.mock(ServerEnvironment.ServerEnvironment)({}),
-    Layer.mock(EnvironmentAuth.EnvironmentAuth)({
-      // Another client's session beside this one: the answer names only the one that sent it.
-      listClientSessions: () =>
-        Effect.succeed([
-          { current: false, client: { label: "Desktop", deviceType: "desktop" } },
-          { current: true, client: { label: "Pixel 9", deviceType: "mobile" } },
-        ] as never),
-    }),
-    Layer.mock(Workflows.Workflows)({
-      get: (runId) =>
-        runId === workflowRun.runId
-          ? Effect.succeed({ run: workflowRun, steps: [workflowStep], references: [] })
-          : Effect.fail(new Workflows.WorkflowRunNotFoundError({ runId })),
-      answer: (runId, name, value, answeredBy) =>
-        Effect.sync(() => calls.push({ answer: [runId, name], value, answeredBy })),
-      resume: (runId) => Effect.sync(() => calls.push({ resume: runId })),
-      cancel: (runId, reason) => Effect.sync(() => calls.push({ cancel: runId, reason })),
-    }),
-  );
-  return yield* RpcTest.makeClient(workflowRpcs).pipe(
-    Effect.provide(
-      layerWsRpc(
-        {
-          sessionId: AuthSessionId.make("workflow-test"),
-          subject: "workflow-test",
-          method: "browser-session-cookie",
-          scopes: [...scopes],
-        },
-        {},
-        yield* ServerBrowser.ServerBrowser,
-        () => Effect.void,
-        { secretReferences: true },
-      ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
-    ),
-  );
-});
-const layerWorkflowRpcTest = Layer.mergeAll(
-  Layer.fresh(layerConfigSources),
-  Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
-  Layer.mock(ServerBrowser.ServerBrowser)({}),
-);
-
-/** A client for the ACP Registry RPCs; `calls` records what reached the agent or the catalog. */
-const makeAcpRegistryClient = Effect.fn("test.makeAcpRegistryClient")(function* (
-  calls: Array<string>,
-  options: {
-    readonly nativeSessions?: { readonly canList: boolean };
-    readonly managedPolicy?: ManagedPolicySummary;
-  },
-) {
-  const scopes = [AuthOrchestrationReadScope, AuthProvidersManageScope];
-  const instance = {
-    driverKind: acpDriver,
-    snapshot: { getSnapshot: Effect.succeed({ nativeSessions: options.nativeSessions }) },
-  } as unknown as ProviderInstance;
-  const services = Layer.mergeAll(
-    layerUnusedConfigRpcServices,
-    Layer.mock(ExternalLauncher.ExternalLauncher)({}),
-    Layer.mock(ProviderRegistry.ProviderRegistry)({}),
-    Layer.mock(UsageLimitSources.UsageLimitSources)({}),
-    Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
-    Layer.mock(DirectEndpoints.DirectEndpoints)({}),
-    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
-    Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
-    Layer.mock(ServerEnvironment.ServerEnvironment)({}),
-    Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
-    ServerSettings.layerTest({}, options.managedPolicy),
-    Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({
-      prepare: ({ agentId }) =>
-        Effect.sync(() => calls.push(`prepare:${agentId}`)).pipe(
-          Effect.as({ agentId, version: "1.0.0", distribution: "npx", prepared: true } as const),
+it.effect(
+  "previewOpen freezes the production render-host selection before the held mirror runs",
+  () =>
+    Effect.gen(function* () {
+      const companionServices = yield* Layer.build(
+        JonesHttp.previewCompanionServicesLayer.pipe(
+          Layer.provide(DesktopBrowserChannel.layer),
+          Layer.provide(
+            Layer.mock(ServerEnvironment.ServerEnvironment)({
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("open-binding-test")),
+            }),
+          ),
         ),
-    }),
-    Layer.mock(AcpRegistrySessions.AcpRegistrySessions)({
-      project: () => Effect.succeed({ workspaceRoot: "/workspace/acp" } as never),
-      sessionManager: () =>
-        Effect.succeed({
-          instance,
-          manager: {
-            listSessions: () =>
-              Effect.sync(() => calls.push("listSessions")).pipe(
-                Effect.as({ sessions: [], nextCursor: null }),
-              ),
-          } as unknown as NonNullable<ProviderInstance["acpSessionManagement"]>,
+      );
+      const selection = Context.get(companionServices, RenderHostSelection.RenderHostSelection);
+      const placement = Context.get(companionServices, RenderPlacement.RenderPlacement);
+      const registry = Context.get(companionServices, CompanionHostRegistry.CompanionHostRegistry);
+      const managerContext = yield* Layer.build(PreviewManager.layer);
+      const manager = Context.get(managerContext, PreviewManager.PreviewManager);
+      const services = Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        Layer.succeedContext(companionServices),
+        Layer.succeedContext(managerContext),
+        Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: process.cwd(),
         }),
-    }),
-  );
-  return yield* RpcTest.makeClient(acpSessionRpcs).pipe(
-    Effect.provide(
-      layerWsRpc(
+        Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+      );
+      const handlers = yield* Effect.all({
+        open: WsRpcGroup.accessHandler(WS_METHODS.previewOpen),
+        close: WsRpcGroup.accessHandler(WS_METHODS.previewClose),
+      }).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("open-binding-test"),
+              subject: "open-binding-test",
+              method: "browser-session-cookie",
+              scopes: [],
+            },
+            {},
+            yield* ServerBrowser.ServerBrowser,
+            () => Effect.void,
+            { secretReferences: true },
+          ).pipe(Layer.provide(services)),
+        ),
+      );
+      const options = {
+        client: new Rpc.ServerClient(0),
+        requestId: RpcMessage.RequestId("open-binding-test"),
+        headers: Headers.empty,
+      };
+      const open = (input: PreviewOpenInput) =>
+        handlers.open(input, options).pipe(
+          Effect.filterOrElse(
+            (result): result is PreviewSessionSnapshot => !Deferred.isDeferred(result),
+            (result) => Deferred.await(result),
+          ),
+        );
+      // Subscribe without consuming: placement cannot race ahead and hide a missing WS hook.
+      const mirror = yield* manager.subscribeEvents;
+      const threadId = ThreadId.make("thread");
+      const first = yield* open({ threadId, runtime: "server" });
+      assert.deepEqual(yield* selection.binding(first), { _tag: "server" });
+      yield* selection.setDefault({ _tag: "companion", hostId: "mini" });
+      const firstEvent = yield* PubSub.take(mirror);
+      assert.equal(firstEvent.type, "opened");
+      assert.equal(firstEvent.tabId, first.tabId);
+      if (firstEvent.type !== "opened") return yield* Effect.die("Missing opened event");
+      assert.deepEqual(yield* placement.place(firstEvent.snapshot), { _tag: "headless" });
+
+      const second = yield* open({ threadId, runtime: "server" });
+      assert.deepEqual(yield* selection.binding(second), { _tag: "companion", hostId: "mini" });
+      yield* PubSub.take(mirror);
+
+      // A real companion handshake followed by disconnect leaves a known offline host.
+      const input = yield* Queue.unbounded<ReadonlyArray<string>>();
+      const output = yield* Queue.unbounded<CompanionDown>();
+      const connection = yield* registry
+        .connect({
+          read: Queue.take(input).pipe(
+            Effect.mapError(
+              (cause) => new CompanionHostRegistry.CompanionTransportError({ cause }),
+            ),
+          ),
+          write: (text) =>
+            Queue.offer(output, JSON.parse(text) as CompanionDown).pipe(Effect.asVoid),
+          close: () => Effect.void,
+          writableLength: () => 0,
+        })
+        .pipe(Effect.scoped, Effect.forkScoped);
+      yield* Queue.offer(input, [
+        JSON.stringify({
+          type: "hello",
+          protocol: 1,
+          hostId: "mini",
+          label: "Mini",
+          platform: "test",
+          runtimeIdentity: {
+            schemaVersion: 1,
+            runtimeKind: "electron",
+            runtimeInstanceId: "synthetic-mini",
+            appVersion: "test",
+            buildCommit: null,
+          },
+          capabilities: {
+            cdp: true,
+            clipboardText: true,
+            uploads: false,
+            downloads: false,
+            recording: false,
+          },
+        }),
+      ]);
+      assert.equal((yield* Queue.take(output)).type, "welcome");
+      assert.equal((yield* Queue.take(output)).type, "assignments");
+      yield* Fiber.interrupt(connection);
+      assert.isFalse((yield* registry.status("mini"))?.online);
+      yield* selection.setDefault({ _tag: "server" });
+      const unavailable = yield* placement.place(second).pipe(Effect.flip);
+      assert.equal(unavailable._tag, "CompanionHostUnavailable");
+      assert.equal(unavailable.hostId, "mini");
+      assert.equal(unavailable.state, "offline");
+      assert.equal(unavailable.outcome, "not_started");
+
+      yield* handlers.close({ threadId, tabId: second.tabId }, options);
+      const closed = yield* PubSub.take(mirror);
+      assert.equal(closed.type, "closed");
+      assert.equal(closed.tabId, second.tabId);
+      // Resume the close consumer at the same placement-release seam used by ServerBrowser.
+      yield* placement.release(closed);
+      assert.isUndefined(yield* selection.binding(second));
+      assert.equal((yield* manager.list({ threadId })).sessions.length, 1);
+    }).pipe(Effect.scoped, Effect.provide(layerConfigDiscoveryTest)),
+);
+
+it.effect("resends a file manager reveal kind that missed the snapshot", () =>
+  Effect.gen(function* () {
+    const events = yield* withLateConfigDiscovery(
+      snapshotConfig({ availableEditors: ["file-manager"] }),
+      Stream.empty,
+      {
+        resolveAvailableEditors: () => Effect.succeed(["file-manager"]),
+        resolveFileManagerRevealKind: () => Effect.succeed("file-explorer"),
+      },
+      { resolveTargets: () => Effect.succeed([]) },
+      { resolve: () => Effect.succeed([]) },
+    ).pipe(Stream.runCollect);
+
+    const [late] = Array.from(events);
+    assert.equal(events.length, 1);
+    assert.equal(late?.type, "snapshot");
+    if (late?.type === "snapshot") {
+      assert.equal(late.config.shellRevealInFileManagerKind, "file-explorer");
+    }
+  }),
+);
+
+it.effect.each(["none", ...discoveryNames, "all"] as const)(
+  "starts all config discoveries before release and preserves fields with %s timing out",
+  (timeout) =>
+    Effect.gen(function* () {
+      // endpoints denotes the blocking local/cache read; network discovery has its own lifetime.
+      const gates = yield* Effect.forEach(["editors", "targets", "cache", "network"] as const, () =>
+        Effect.all({
+          started: Deferred.make<void>(),
+          release: Deferred.make<void>(),
+          completed: Deferred.make<void>(),
+          interrupted: Deferred.make<void>(),
+        }),
+      );
+      const calls = [0, 0, 0, 0];
+      const waitForLocalTimeout = timeout !== "none";
+      const fallbackRemoteTargets =
+        timeout === "targets" || timeout === "all" ? [] : discoveryTargets;
+      const discover = <A>(index: number, value: A) =>
+        Effect.sync(() => {
+          calls[index] = calls[index]! + 1;
+        }).pipe(
+          Effect.andThen(Deferred.succeed(gates[index]!.started, undefined)),
+          Effect.andThen(Deferred.await(gates[index]!.release)),
+          Effect.andThen(Deferred.succeed(gates[index]!.completed, undefined)),
+          Effect.as(value),
+          Effect.onInterrupt(() => Deferred.succeed(gates[index]!.interrupted, undefined)),
+        );
+      const networkEndpoints = [
+        ...discoveryEndpoints,
+        { kind: "tailnet" as const, httpBaseUrl: "http://100.77.1.9:3773/" },
+      ];
+      const rpc = yield* makeConfigDiscoveryRpc({
+        editors: discover(0, ["file-manager"] as const),
+        targets: discover(1, discoveryTargets),
+        available: discover(2, discoveryEndpoints),
+        endpoints: discover(3, networkEndpoints),
+      });
+      yield* Deferred.await(gates[0]!.started);
+      yield* TestClock.adjust("0 millis");
+      for (const gate of gates) assert.isTrue(yield* Deferred.isDone(gate.started));
+      assert.deepEqual(calls, [1, 1, 1, 1]);
+      yield* TestClock.adjust("4 seconds");
+      if (timeout !== "targets" && timeout !== "all") {
+        // Complete remote work before allowing the local snapshot to race its completed-result poll.
+        yield* Deferred.succeed(gates[1]!.release, undefined);
+        yield* Deferred.await(gates[1]!.completed);
+        yield* TestClock.adjust("0 millis");
+      }
+      for (const index of [2, 0]) {
+        if (timeout !== "all" && timeout !== discoveryNames[index])
+          yield* Deferred.succeed(gates[index]!.release, undefined);
+      }
+      if (timeout === "none" || timeout === "targets") {
+        yield* TestClock.adjust("0 millis");
+        assert.equal(yield* Queue.size(rpc.responses), 1);
+        if (timeout === "targets") assert.isFalse(yield* Deferred.isDone(gates[1]!.completed));
+        const snapshot = yield* Queue.take(rpc.responses);
+        assert.equal(snapshot.type, "snapshot");
+        if (snapshot.type !== "snapshot")
+          return yield* Effect.die("Expected initial config snapshot");
+        assert.deepEqual(snapshot.config.availableEditors, ["file-manager"]);
+        assert.equal(snapshot.config.shellRevealInFileManager, true);
+        assert.equal(snapshot.config.shellRevealInFileManagerKind, "file-explorer");
+        assert.deepEqual(
+          snapshot.config.remoteOpenTargets,
+          timeout === "none" ? discoveryTargets : [],
+        );
+        assert.deepEqual(snapshot.config.directEndpoints, discoveryEndpoints);
+        assert.deepEqual(calls, [1, 1, 1, 1]);
+        // Network results may finish while the initial snapshot is waiting for its exact ACK.
+        yield* Deferred.succeed(gates[3]!.release, undefined);
+        yield* Deferred.await(gates[3]!.completed);
+        yield* TestClock.adjust("0 millis");
+        assert.equal(yield* Queue.size(rpc.responses), 0);
+        yield* rpc.acknowledge;
+        const direct = yield* Queue.take(rpc.responses);
+        assert.equal(direct.type, "snapshot");
+        if (direct.type !== "snapshot")
+          return yield* Effect.die("Expected late direct config snapshot");
+        assert.deepEqual(direct.config.availableEditors, ["file-manager"]);
+        assert.equal(direct.config.shellRevealInFileManager, true);
+        assert.equal(direct.config.shellRevealInFileManagerKind, "file-explorer");
+        assert.deepEqual(
+          direct.config.remoteOpenTargets,
+          timeout === "none" ? discoveryTargets : [],
+        );
+        assert.deepEqual(direct.config.directEndpoints, networkEndpoints);
+        yield* rpc.acknowledge;
+        yield* TestClock.adjust("0 millis");
+        assert.deepEqual(calls, [2, 1, 1, 1]); // Only the documented editor lookup runs again after ACK.
+        if (timeout === "targets") {
+          yield* TestClock.adjust("1 second");
+          assert.isFalse(yield* Deferred.isDone(gates[1]!.completed));
+          assert.isFalse(yield* Deferred.isDone(gates[1]!.interrupted));
+          assert.equal(calls[1], 1);
+          assert.equal(yield* Queue.size(rpc.responses), 0);
+          yield* TestClock.adjust("1 second");
+          yield* Deferred.succeed(gates[1]!.release, undefined);
+          yield* Deferred.await(gates[1]!.completed);
+          const remote = yield* Queue.take(rpc.responses);
+          assert.equal(remote.type, "snapshot");
+          if (remote.type !== "snapshot")
+            return yield* Effect.die("Expected late remote config snapshot");
+          assert.deepEqual(remote.config.availableEditors, ["file-manager"]);
+          assert.equal(remote.config.shellRevealInFileManager, true);
+          assert.equal(remote.config.shellRevealInFileManagerKind, "file-explorer");
+          assert.deepEqual(remote.config.remoteOpenTargets, discoveryTargets);
+          assert.deepEqual(remote.config.directEndpoints, networkEndpoints);
+          yield* rpc.acknowledge;
+          assert.deepEqual(calls, [2, 1, 1, 1]);
+        }
+        yield* rpc.interrupt;
+        return;
+      }
+      if (waitForLocalTimeout) {
+        yield* TestClock.adjust("999 millis");
+        assert.equal(yield* Queue.size(rpc.responses), 0);
+        yield* TestClock.adjust("1 millis");
+      }
+      const snapshot = yield* Queue.take(rpc.responses);
+      assert.equal(snapshot.type, "snapshot");
+      if (snapshot.type !== "snapshot") return yield* Effect.die("Expected config snapshot");
+      const editorsTimedOut = timeout === "editors" || timeout === "all";
+      assert.deepEqual(snapshot.config.availableEditors, editorsTimedOut ? [] : ["file-manager"]);
+      assert.equal(snapshot.config.shellRevealInFileManager, editorsTimedOut ? undefined : true);
+      assert.equal(
+        snapshot.config.shellRevealInFileManagerKind,
+        editorsTimedOut ? undefined : "file-explorer",
+      );
+      assert.deepEqual(snapshot.config.remoteOpenTargets, fallbackRemoteTargets);
+      assert.deepEqual(
+        snapshot.config.directEndpoints,
+        timeout === "endpoints" || timeout === "all" ? [] : discoveryEndpoints,
+      );
+      yield* rpc.interrupt;
+    }).pipe(Effect.provide(layerConfigDiscoveryTest), Effect.scoped),
+);
+
+it.effect(
+  "interrupting config discovery cancels all three probes without publishing a snapshot",
+  () =>
+    Effect.gen(function* () {
+      const probes = yield* Effect.forEach([...discoveryNames, "direct-network"], () =>
+        Effect.all({ started: Deferred.make<void>(), interrupted: Deferred.make<void>() }),
+      );
+      const discover = (index: number) =>
+        Deferred.succeed(probes[index]!.started, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.onInterrupt(() => Deferred.succeed(probes[index]!.interrupted, undefined)),
+        );
+      const rpc = yield* makeConfigDiscoveryRpc({
+        editors: discover(0),
+        targets: discover(1),
+        available: discover(2),
+        endpoints: discover(3),
+      });
+      yield* Deferred.await(probes[0]!.started);
+      yield* TestClock.adjust("0 millis");
+      for (const probe of probes) assert.isTrue(yield* Deferred.isDone(probe.started));
+      yield* rpc.interrupt;
+      yield* TestClock.adjust("0 millis");
+      for (const probe of probes) assert.isTrue(yield* Deferred.isDone(probe.interrupted));
+      assert.equal(yield* Queue.size(rpc.responses), 0);
+    }).pipe(Effect.provide(layerConfigDiscoveryTest), Effect.scoped),
+);
+
+it.effect(
+  "preserves settings during discovery and keybindings during snapshot ACK at the config RPC boundary",
+  () =>
+    Effect.gen(function* () {
+      const keybindings = yield* Keybindings.Keybindings;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const keybindingsSubscribed = yield* Deferred.make<void>();
+      const settingsSubscribed = yield* Deferred.make<void>();
+      const keybindingsChanges = keybindings.subscribeChanges.pipe(
+        Effect.tap(() => Deferred.succeed(keybindingsSubscribed, undefined)),
+      );
+      const settingsChanges = settings.subscribeChanges.pipe(
+        Effect.tap(() => Deferred.succeed(settingsSubscribed, undefined)),
+      );
+      const initialKeybindings = (yield* keybindings.getSnapshot).keybindings;
+      const discoveryStarted = yield* Deferred.make<void>();
+      const finishDiscovery = yield* Deferred.make<void>();
+      const responses = yield* Queue.unbounded<ServerConfigStreamEvent>();
+      const configRpcServices = Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        Layer.mock(ExternalLauncher.ExternalLauncher)({
+          resolveAvailableEditors: () =>
+            Deferred.succeed(discoveryStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(finishDiscovery)),
+              Effect.as([]),
+            ),
+          // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+          resolveFileManagerRevealKind: () => Effect.succeed(undefined),
+        }),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([]),
+          streamChanges: Stream.never,
+        }),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({ streamChanges: Stream.make([]) }),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
+          resolveTargets: () => Effect.succeed([]),
+        }),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({
+          resolve: () => Effect.succeed([]),
+          resolveAvailable: () => Effect.succeed([]),
+        }),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          scratchRoot: Effect.succeedNone,
+          namedProjectsRoot: process.cwd(),
+        }),
+        Layer.mock(ServerEnvironment.ServerEnvironment)({
+          getDescriptor: Effect.succeed({
+            environmentId: EnvironmentId.make("config-test"),
+            label: "Config test",
+            platform: { os: "linux", arch: "x64" },
+            serverVersion: "0.0.0",
+            capabilities: { repositoryIdentity: false },
+          }),
+        }),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+          getDescriptor: () =>
+            Effect.succeed({
+              policy: "loopback-browser",
+              bootstrapMethods: [],
+              sessionMethods: ["browser-session-cookie"],
+              sessionCookieName: "config-test-session",
+            }),
+        }),
+        // Signal subscription on either accessor so the test also fails, rather
+        // than hangs, against a handler that subscribes after the snapshot.
+        Layer.succeed(Keybindings.Keybindings, {
+          ...keybindings,
+          streamChanges: Stream.unwrap(keybindingsChanges),
+          subscribeChanges: keybindingsChanges,
+        }),
+        Layer.succeed(ServerSettings.ServerSettingsService, {
+          ...settings,
+          streamChanges: Stream.unwrap(settingsChanges),
+          subscribeChanges: settingsChanges,
+        }),
+      );
+      const server = yield* RpcServer.makeNoSerialization(
+        RpcGroup.make(WsSubscribeServerConfigRpc),
         {
-          sessionId: AuthSessionId.make("acp-test"),
-          subject: "acp-test",
-          method: "browser-session-cookie",
-          scopes,
+          ...WS_RPC_SERVER_OPTIONS,
+          onFromServer: (response) =>
+            response._tag === "Chunk"
+              ? Effect.forEach(response.values, (event) => Queue.offer(responses, event), {
+                  discard: true,
+                })
+              : Effect.void,
         },
-        {},
-        yield* ServerBrowser.ServerBrowser,
-        () => Effect.void,
-        { secretReferences: true },
-      ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
-    ),
-  );
-});
+      ).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("config-test"),
+              subject: "config-test",
+              method: "browser-session-cookie",
+              scopes: [],
+            },
+            {},
+            yield* ServerBrowser.ServerBrowser,
+            () => Effect.void,
+            { secretReferences: true },
+          ).pipe(Layer.provide(configRpcServices)),
+        ),
+      );
+      const requestId = RpcMessage.RequestId("config");
+      const acknowledge = server.write(0, { _tag: "Ack", requestId });
+      yield* server.write(0, {
+        _tag: "Request",
+        id: requestId,
+        tag: WS_METHODS.subscribeServerConfig,
+        payload: {},
+        headers: Headers.empty,
+      });
+      yield* Deferred.await(discoveryStarted);
 
-it.effect("listing ACP sessions reaches only an agent that advertises listing", () =>
-  Effect.gen(function* () {
-    const calls: Array<string> = [];
-    const input = { instanceId: acpInstanceId, projectId: acpProjectId };
+      const duringDiscovery = yield* settings.updateSettings({ defaultAutoPull: true });
+      yield* Deferred.succeed(finishDiscovery, undefined);
+      const snapshot = yield* Queue.take(responses);
+      assert.equal(snapshot.type, "snapshot");
+      if (snapshot.type !== "snapshot") return yield* Effect.die("Missing initial snapshot");
+      assert.isFalse(snapshot.config.settings.defaultAutoPull);
+      assert.deepEqual(snapshot.config.keybindings, initialKeybindings);
+      const duringAck = yield* keybindings.upsertKeybindingRule({
+        key: "mod+alt+y",
+        command: "terminal.toggle",
+      });
+      yield* acknowledge;
+      yield* Deferred.await(keybindingsSubscribed);
+      yield* Deferred.await(settingsSubscribed);
 
-    const unprobed = yield* makeAcpRegistryClient(calls, {});
-    const refused = yield* unprobed[WS_METHODS.serverListAcpRegistrySessions](input).pipe(
-      Effect.flip,
-    );
-    assert.strictEqual(
-      refused._tag === "AcpRegistryOperationError" ? refused.reason : refused._tag,
-      "session_list_unsupported",
-    );
-    assert.deepEqual(calls, []);
-
-    const probed = yield* makeAcpRegistryClient(calls, { nativeSessions: { canList: true } });
-    yield* probed[WS_METHODS.serverListAcpRegistrySessions](input);
-    assert.deepEqual(calls, ["listSessions"]);
-  }).pipe(Effect.provide(layerWorkflowRpcTest)),
-);
-
-it.effect("preparing an ACP Registry agent follows the policy's allowed providers", () =>
-  Effect.gen(function* () {
-    const calls: Array<string> = [];
-    const policy = (...allowedDrivers: ReadonlyArray<string>): ManagedPolicySummary => ({
-      organization: "Example Corp",
-      lockedSettings: [],
-      limits: {
-        providers: {
-          allowedDrivers: [
-            ProviderDriverKind.make("codex"),
-            ...allowedDrivers.map((driver) => ProviderDriverKind.make(driver)),
-          ],
-          lockedInstanceFields: {},
-        },
-      },
-    });
-
-    const excluded = yield* makeAcpRegistryClient(calls, { managedPolicy: policy() });
-    const refused = yield* excluded[WS_METHODS.serverPrepareAcpRegistryAgent]({
-      agentId: "example-agent",
-    }).pipe(Effect.flip);
-    assert.strictEqual(
-      refused._tag === "AcpRegistryOperationError" ? refused.message : refused._tag,
-      "Example Corp's policy does not allow the ACP Registry provider.",
-    );
-    assert.deepEqual(calls, []);
-
-    const included = yield* makeAcpRegistryClient(calls, {
-      managedPolicy: policy("acpRegistry"),
-    });
-    yield* included[WS_METHODS.serverPrepareAcpRegistryAgent]({ agentId: "example-agent" });
-    const unmanaged = yield* makeAcpRegistryClient(calls, {});
-    yield* unmanaged[WS_METHODS.serverPrepareAcpRegistryAgent]({ agentId: "example-agent" });
-    assert.deepEqual(calls, ["prepare:example-agent", "prepare:example-agent"]);
-  }).pipe(Effect.provide(layerWorkflowRpcTest)),
-);
-
-it.effect("workflow RPCs read a run and pass an answer, a resume and a cancel to the service", () =>
-  Effect.gen(function* () {
-    const calls: Array<unknown> = [];
-    const client = yield* makeWorkflowClient(
-      [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
-      calls,
-    );
-
-    assert.deepEqual(yield* client[WS_METHODS.workflowsGet]({ runId: "run-1" }), {
-      run: workflowRun,
-      steps: [workflowStep],
-      references: [],
-    });
-    const missing = yield* client[WS_METHODS.workflowsGet]({ runId: "gone" }).pipe(Effect.flip);
-    assert.deepEqual(
-      [missing._tag, missing.message],
-      ["WorkflowRequestError", "Workflow run gone was not found."],
-    );
-
-    yield* client[WS_METHODS.workflowsAnswer]({
-      runId: "run-1",
-      name: "approve",
-      choice: "yes",
-      reason: "Looks good",
-    });
-    yield* client[WS_METHODS.workflowsAnswer]({ runId: "run-1", name: "approve", choice: "no" });
-    yield* client[WS_METHODS.workflowsResume]({ runId: "run-1" });
-    yield* client[WS_METHODS.workflowsCancel]({ runId: "run-1" });
-    yield* client[WS_METHODS.workflowsCancel]({ runId: "run-1", reason: "Wrong branch" });
-
-    assert.deepEqual(calls, [
-      {
-        answer: ["run-1", "approve"],
-        value: { choice: "yes", reason: "Looks good" },
-        answeredBy: { label: "Pixel 9", sessionId: "workflow-test" },
-      },
-      {
-        answer: ["run-1", "approve"],
-        value: { choice: "no" },
-        answeredBy: { label: "Pixel 9", sessionId: "workflow-test" },
-      },
-      { resume: "run-1" },
-      { cancel: "run-1", reason: undefined },
-      { cancel: "run-1", reason: "Wrong branch" },
-    ]);
-  }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
-);
-
-it.effect("a session that can only read sees a workflow run but cannot steer it", () =>
-  Effect.gen(function* () {
-    const calls: Array<unknown> = [];
-    const client = yield* makeWorkflowClient([AuthOrchestrationReadScope], calls);
-
-    assert.equal((yield* client[WS_METHODS.workflowsGet]({ runId: "run-1" })).run.runId, "run-1");
-    const refused = yield* Effect.all([
-      client[WS_METHODS.workflowsAnswer]({ runId: "run-1", name: "approve", choice: "yes" }).pipe(
-        Effect.flip,
+      // Later updates expose a dropped buffered event as a value mismatch, not a timeout.
+      const latestSettings = yield* settings.updateSettings({ enableProviderUpdateChecks: false });
+      const latestKeybindings = yield* keybindings.upsertKeybindingRule({
+        key: "mod+alt+z",
+        command: "terminal.split",
+      });
+      const expectedSettings = [duringDiscovery, latestSettings].map((value) =>
+        ServerSettings.redactServerSettingsForClient(value, { secretReferences: true }),
+      );
+      const expectedKeybindings = [duringAck.keybindings, latestKeybindings.keybindings];
+      // The two sources can interleave, but each must retain its own publication order.
+      for (let i = 0; i < 4; i++) {
+        const event = yield* Queue.take(responses);
+        if (event.type === "settingsUpdated") {
+          assert.deepEqual(event.payload.settings, expectedSettings.shift());
+        } else {
+          assert.equal(event.type, "keybindingsUpdated");
+          if (event.type !== "keybindingsUpdated")
+            return yield* Effect.die("Unexpected config event");
+          assert.deepEqual(event.payload.keybindings, expectedKeybindings.shift());
+          assert.deepEqual(event.payload.issues, []);
+        }
+        yield* acknowledge;
+      }
+      assert.isEmpty(expectedSettings);
+      assert.isEmpty(expectedKeybindings);
+      yield* server.write(0, { _tag: "Interrupt", requestId, interruptors: [] });
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.fresh(layerConfigSources),
+          Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
+          Layer.mock(ServerBrowser.ServerBrowser)({}),
+        ),
       ),
-      client[WS_METHODS.workflowsResume]({ runId: "run-1" }).pipe(Effect.flip),
-      client[WS_METHODS.workflowsCancel]({ runId: "run-1" }).pipe(Effect.flip),
-    ]);
-    assert.deepEqual(
-      refused.map((error) => error._tag),
-      Array.from({ length: 3 }, () => "EnvironmentAuthorizationError"),
-    );
-    assert.deepEqual(calls, []);
-  }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
+      Effect.scoped,
+    ),
 );

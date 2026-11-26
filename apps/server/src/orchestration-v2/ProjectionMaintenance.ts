@@ -1,4 +1,4 @@
-import type { ThreadId } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -10,6 +10,13 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
+import * as LegacyStorage from "../jones/legacyBootstrap/Storage.ts";
+import {
+  type JonesForeignHistoryMaintenanceBlockedError,
+  requireHistoryMaintenanceSafety,
+} from "../jones/persistence/historyMaintenancePreflight.ts";
+import type { JonesSettlementProofMigrationRequiredError } from "../jones/persistence/settlementCompactionPreflight.ts";
+import { backgroundRead, interactiveRead } from "../jones/serverParallelism/readClassification.ts";
 import {
   EVENT_LOG_PRUNE_MARK,
   EVENT_LOG_PRUNED_THROUGH,
@@ -36,7 +43,22 @@ export class ProjectionMaintenanceError extends Schema.TaggedError<ProjectionMai
   },
 ) {}
 
+type HistoryMaintenanceError =
+  | ProjectionMaintenanceError
+  | JonesForeignHistoryMaintenanceBlockedError
+  | JonesSettlementProofMigrationRequiredError;
+
 export interface ProjectionMaintenanceV2Shape {
+  readonly verify: Effect.Effect<ProjectionVerificationV2, ProjectionMaintenanceError>;
+  readonly rebuild: Effect.Effect<ProjectionVerificationV2, ProjectionMaintenanceError>;
+  readonly compactEventStore: (betweenPages?: Effect.Effect<void>) => Effect.Effect<
+    {
+      readonly deletedEventCount: number;
+      readonly deletedReceiptCount: number;
+      readonly reclaimableBytes: number;
+    },
+    ProjectionMaintenanceError
+  >;
   /**
    * Deletes events the projections already cover once they are older than the retained history,
    * then purges any deleted thread that still holds conversation content.
@@ -48,7 +70,7 @@ export interface ProjectionMaintenanceV2Shape {
       readonly purgedRowCount: number;
       readonly reclaimableBytes: number;
     },
-    ProjectionMaintenanceError
+    HistoryMaintenanceError
   >;
   /**
    * Removes a deleted thread's conversation, and that of deleted run-fork sources it alone kept.
@@ -56,7 +78,7 @@ export interface ProjectionMaintenanceV2Shape {
    */
   readonly purgeDeletedThread: (
     threadId: ThreadId,
-  ) => Effect.Effect<number, ProjectionMaintenanceError>;
+  ) => Effect.Effect<number, HistoryMaintenanceError>;
 }
 
 export class ProjectionMaintenanceV2 extends Context.Service<
@@ -91,6 +113,21 @@ export const DELETED_THREAD_CONTENT_TABLES = [
   "mcp_app_model_context",
   // A legacy thread's transcript source; deleting it means the importer has nothing to restore.
   "projection_thread_messages",
+] as const;
+
+const DELETED_THREAD_PURGE_TABLES = [
+  ...DELETED_THREAD_CONTENT_TABLES,
+  "orchestration_events",
+  "orchestration_v2_effect_outbox",
+  "orchestration_v2_legacy_imports",
+  "orchestration_v2_projection_threads",
+  "projection_threads",
+] as const;
+
+const HISTORY_SWEEP_TABLES = [
+  ...DELETED_THREAD_PURGE_TABLES,
+  "orchestration_command_receipts",
+  "orchestration_v2_projection_metadata",
 ] as const;
 
 type MetadataRow = {
@@ -257,6 +294,14 @@ export const layer: Layer.Layer<
         effect.pipe(
           Effect.mapError((cause) => new ProjectionMaintenanceError({ operation, cause })),
         );
+
+    const mapHistoryMaintenanceError = (operation: string) =>
+      Effect.mapError(
+        (
+          cause: SqlError.SqlError | Exclude<HistoryMaintenanceError, ProjectionMaintenanceError>,
+        ): HistoryMaintenanceError =>
+          cause._tag === "SqlError" ? new ProjectionMaintenanceError({ operation, cause }) : cause,
+      );
 
     // Keep thread.created as the verification and replay anchor; clients recognize deletion by thread.deleted event type.
     const SUPERSEDABLE_THREAD_EVENT_TYPES = [
@@ -784,10 +829,9 @@ export const layer: Layer.Layer<
     `.pipe(NodeSqliteClient.readOnly);
 
     const purgeThreads = Effect.fnUntraced(function* (
-      deletedThreadId: ThreadId | undefined,
+      threads: ReadonlyArray<{ readonly thread_id: string }>,
       betweenPages: Effect.Effect<void>,
     ) {
-      const threads = yield* purgeableThreads(deletedThreadId);
       const now = DateTime.formatIso(yield* DateTime.now);
       let purged = 0;
       // Each statement commits on its own, so a huge thread never holds the writer for long.
@@ -903,91 +947,100 @@ export const layer: Layer.Layer<
       return purged;
     });
 
-    const purgeDeletedThread: ProjectionMaintenanceV2Shape["purgeDeletedThread"] = (threadId) =>
-      purgeThreads(threadId, Effect.void).pipe(
-        Effect.withSpan("ProjectionMaintenance.purgeDeletedThread"),
-        Effect.mapError(
-          (cause) => new ProjectionMaintenanceError({ operation: "purge deleted thread", cause }),
-        ),
+    const purgeDeletedThread: ProjectionMaintenanceV2Shape["purgeDeletedThread"] = Effect.fn(
+      "ProjectionMaintenance.purgeDeletedThread",
+    )(function* (threadId) {
+      const threads = yield* purgeableThreads(threadId);
+      if (threads.length === 0) return 0;
+      yield* requireHistoryMaintenanceSafety(DELETED_THREAD_PURGE_TABLES).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        NodeSqliteClient.readOnly,
       );
+      return yield* purgeThreads(threads, Effect.void);
+    }, mapHistoryMaintenanceError("purge deleted thread"));
 
     // A pass prunes through the mark the previous pass left once that mark is a day old, so
     // at least RETAINED_EVENT_HISTORY of events always remains. Receipts stay for idempotency.
-    const pruneEventStore = Effect.fn("ProjectionMaintenance.pruneEventStore")(
-      function* (betweenPagesHook?: Effect.Effect<void>) {
-        // DatabaseStorage's automatic pass supplies its duty-cycle hook; the offline/manual
-        // DatabaseMaintenance caller supplies none. Keep its reads interactive.
-        const classifyRead = betweenPagesHook === undefined ? interactiveRead : backgroundRead;
-        const betweenPages = betweenPagesHook ?? Effect.void;
-        const now = yield* DateTime.now;
-        const metadata = yield* sql<MetadataRow>`
+    const pruneEventStore = Effect.fn("ProjectionMaintenance.pruneEventStore")(function* (
+      betweenPagesHook?: Effect.Effect<void>,
+    ) {
+      // DatabaseStorage's automatic pass supplies its duty-cycle hook; the offline/manual
+      // DatabaseMaintenance caller supplies none. Keep its reads interactive.
+      const classifyRead = betweenPagesHook === undefined ? interactiveRead : backgroundRead;
+      const betweenPages = betweenPagesHook ?? Effect.void;
+      // Preflight before advancing the watermark or pruning any legacy receipts or events.
+      yield* requireHistoryMaintenanceSafety(HISTORY_SWEEP_TABLES).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        NodeSqliteClient.readOnly,
+        classifyRead,
+      );
+      const now = yield* DateTime.now;
+      const metadata = yield* sql<MetadataRow>`
           SELECT projection_name, last_sequence, updated_at
           FROM orchestration_v2_projection_metadata
           WHERE projection_name IN (
             'thread-projections', ${EVENT_LOG_PRUNE_MARK}, ${EVENT_LOG_PRUNED_THROUGH}
           )
         `.pipe(NodeSqliteClient.readOnly, classifyRead);
-        const read = (name: string) => metadata.find((row) => row.projection_name === name);
-        const projected = read("thread-projections")?.last_sequence ?? 0;
-        const mark = read(EVENT_LOG_PRUNE_MARK);
-        const prunedThrough = read(EVENT_LOG_PRUNED_THROUGH)?.last_sequence ?? 0;
-        // Fixed bounds: foreground commits during the pass wait for the next one.
-        const bounds = yield* sql<{ readonly sequence: number; readonly receipt_row_id: number }>`
+      const read = (name: string) => metadata.find((row) => row.projection_name === name);
+      const projected = read("thread-projections")?.last_sequence ?? 0;
+      const mark = read(EVENT_LOG_PRUNE_MARK);
+      const prunedThrough = read(EVENT_LOG_PRUNED_THROUGH)?.last_sequence ?? 0;
+      // Fixed bounds: foreground commits during the pass wait for the next one.
+      const bounds = yield* sql<{ readonly sequence: number; readonly receipt_row_id: number }>`
           SELECT
             COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS sequence,
             COALESCE((SELECT MAX(rowid) FROM orchestration_command_receipts), 0) AS receipt_row_id
         `.pipe(NodeSqliteClient.readOnly, classifyRead);
-        const head = bounds[0]?.sequence ?? 0;
+      const head = bounds[0]?.sequence ?? 0;
 
-        let deletedEventCount = 0;
-        const markIsDue =
-          mark !== undefined &&
-          DateTime.toEpochMillis(now) - Date.parse(mark.updated_at) >=
-            Duration.toMillis(RETAINED_EVENT_HISTORY);
-        if (mark !== undefined && markIsDue) {
-          const throughSequence = Math.max(Math.min(mark.last_sequence, projected), prunedThrough);
-          if (throughSequence > prunedThrough) {
-            // Publish the boundary first so resuming clients take a snapshot, never a partial replay.
-            yield* writeMetadata(EVENT_LOG_PRUNED_THROUGH, throughSequence, now);
-          }
-          deletedEventCount += yield* pruneEvents(
-            throughSequence,
-            head,
-            betweenPages,
-            classifyRead,
-          );
+      let deletedEventCount = 0;
+      const markIsDue =
+        mark !== undefined &&
+        DateTime.toEpochMillis(now) - Date.parse(mark.updated_at) >=
+          Duration.toMillis(RETAINED_EVENT_HISTORY);
+      if (mark !== undefined && markIsDue) {
+        const throughSequence = Math.max(Math.min(mark.last_sequence, projected), prunedThrough);
+        if (throughSequence > prunedThrough) {
+          // Publish the boundary first so resuming clients take a snapshot, never a partial replay.
+          yield* writeMetadata(EVENT_LOG_PRUNED_THROUGH, throughSequence, now);
         }
-        if (mark === undefined || markIsDue) yield* writeMetadata(EVENT_LOG_PRUNE_MARK, head, now);
+        deletedEventCount += yield* pruneEvents(throughSequence, head, betweenPages, classifyRead);
+      }
+      if (mark === undefined || markIsDue) yield* writeMetadata(EVENT_LOG_PRUNE_MARK, head, now);
 
-        // Catches threads deleted before purging existed, and any purge a crash interrupted.
-        // It runs first so the legacy prune below takes the v1 events of threads it marks.
-        const purgedRowCount = yield* purgeThreads(undefined, betweenPages);
+      // Catches threads deleted before purging existed, and any purge a crash interrupted.
+      // It runs first so the legacy prune below takes the v1 events of threads it marks.
+      const threads = yield* purgeableThreads(undefined).pipe(classifyRead);
+      const purgedRowCount = yield* purgeThreads(threads, betweenPages);
 
-        const legacy = yield* pruneImportedLegacyHistory(
-          head,
-          bounds[0]?.receipt_row_id ?? 0,
-          betweenPages,
-          classifyRead,
-        );
-        deletedEventCount += legacy.deletedEventCount;
+      const legacy = yield* pruneImportedLegacyHistory(
+        head,
+        bounds[0]?.receipt_row_id ?? 0,
+        betweenPages,
+        classifyRead,
+      );
+      deletedEventCount += legacy.deletedEventCount;
 
-        const freelistRows = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
-        const pageSizeRows = yield* sql<{ readonly page_size: number }>`PRAGMA page_size`;
-        const reclaimableBytes =
-          (freelistRows[0]?.freelist_count ?? 0) * (pageSizeRows[0]?.page_size ?? 0);
+      const freelistRows = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
+      const pageSizeRows = yield* sql<{ readonly page_size: number }>`PRAGMA page_size`;
+      const reclaimableBytes =
+        (freelistRows[0]?.freelist_count ?? 0) * (pageSizeRows[0]?.page_size ?? 0);
 
-        return {
-          deletedEventCount,
-          deletedReceiptCount: legacy.deletedReceiptCount,
-          purgedRowCount,
-          reclaimableBytes,
-        };
-      },
-      Effect.mapError(
-        (cause) => new ProjectionMaintenanceError({ operation: "prune event store", cause }),
-      ),
-    );
+      return {
+        deletedEventCount,
+        deletedReceiptCount: legacy.deletedReceiptCount,
+        purgedRowCount,
+        reclaimableBytes,
+      };
+    }, mapHistoryMaintenanceError("prune event store"));
 
-    return ProjectionMaintenanceV2.of({ pruneEventStore, purgeDeletedThread });
+    return ProjectionMaintenanceV2.of({
+      verify: mapError("verify")(verify),
+      rebuild: mapError("rebuild")(rebuild),
+      compactEventStore,
+      pruneEventStore,
+      purgeDeletedThread,
+    });
   }),
 );

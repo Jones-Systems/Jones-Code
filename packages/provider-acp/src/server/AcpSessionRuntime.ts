@@ -1418,19 +1418,23 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       return;
     }
     const enriched = yield* enrichProcessExitWithStderr(error);
-    const firstTermination = yield* Ref.modify(terminationErrorRef, (current) =>
-      Option.isSome(current)
-        ? ([false, current] as const)
-        : ([true, Option.some(enriched)] as const),
+    yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const firstTermination = yield* Ref.modify(terminationErrorRef, (current) =>
+          Option.isSome(current)
+            ? ([false, current] as const)
+            : ([true, Option.some(enriched)] as const),
+        );
+        if (!firstTermination) return yield* restore(Deferred.await(terminationRecorded));
+        yield* Effect.gen(function* () {
+          yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
+          yield* Queue.offer(eventQueue, { _tag: "ConnectionTerminated", error: enriched });
+          // Release pending RPCs before the callback takes the adapter's runtime permit.
+          yield* Deferred.fail(terminationFailure, enriched);
+          yield* restore(options.onTermination?.(enriched) ?? Effect.void);
+        }).pipe(Effect.ensuring(Deferred.succeed(terminationRecorded, undefined)));
+      }),
     );
-    if (!firstTermination) {
-      return yield* Deferred.await(terminationRecorded);
-    }
-    yield* Effect.gen(function* () {
-      yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
-      yield* Queue.offer(eventQueue, { _tag: "ConnectionTerminated", error: enriched });
-      yield* options.onTermination?.(enriched) ?? Effect.void;
-    }).pipe(Effect.ensuring(Deferred.succeed(terminationRecorded, undefined)));
   });
 
   const logRequest = (event: AcpSessionRequestLogEvent) =>
@@ -1508,6 +1512,8 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   const commandLookupEnv = spawnExtendsEnv(options.spawn)
     ? { ...process.env, ...options.spawn.env }
     : (options.spawn.env ?? {});
+
+  const defaultLinuxCgroupController = yield* AcpLinuxCgroupControllerRef;
   const linuxCgroupLease =
     options.ownDescendantProcessGroups === true && options.processGroupPlatform === "linux"
       ? yield* Effect.sync(() => {
@@ -1817,9 +1823,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       ...(options.onIncomingRequest ? { onIncomingRequest: options.onIncomingRequest } : {}),
       onTermination: (error) =>
         recordTermination(error).pipe(
-          Effect.ensuring(
-            Scope.close(runtimeScope, Exit.fail(error)).pipe(Effect.forkDetach, Effect.asVoid),
-          ),
+          Effect.ensuring(closeRuntime(Exit.fail(error)).pipe(Effect.forkDetach, Effect.asVoid)),
         ),
       ...(options.onOutgoingResponseFailure
         ? { onOutgoingResponseFailure: options.onOutgoingResponseFailure }

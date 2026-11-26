@@ -73,9 +73,8 @@ describe("buildRuntimeInstructions", () => {
       "As your next call, use link_pull_request for each PR you create, take over, or push to.",
     );
     assert.include(instructions, "every stack layer");
-    assert.include(instructions, "link_issue");
-    assert.include(instructions, "Skip PRs you only read or review");
-    assert.include(instructions, "If linking fails, say so.");
+    assert.include(instructions, "Skip read-only and background PRs.");
+    assert.include(instructions, "Use full URLs and report failures.");
     assert.notInclude(instructions, "git log -1");
     assert.notInclude(instructions, "work on");
     assert.include(instructions, "list_thread_pull_requests");

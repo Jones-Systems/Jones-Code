@@ -13,11 +13,19 @@ if (permissionIndex === -1 || argv[permissionIndex + 1] !== "dontAsk") {
   fail("text generation must deny permission prompts", 12);
 }
 const toolsIndex = argv.indexOf("--tools");
-if (
-  toolsIndex === -1 ||
-  argv[toolsIndex + 1] !== (process.env.T3_FAKE_CLAUDE_EXPECTED_TOOLS ?? "")
-) {
-  fail("text generation did not receive the expected tool set", 6);
+const investigation = process.env.T3_FAKE_CLAUDE_INVESTIGATION === "1";
+if (toolsIndex === -1 || argv[toolsIndex + 1] !== (investigation ? "Read,Grep,Glob,Bash" : "")) {
+  fail("text generation must receive the exact task tool set", 6);
+}
+if (investigation) {
+  const allowed = argv[argv.indexOf("--allowedTools") + 1];
+  const denied = argv[argv.indexOf("--disallowedTools") + 1];
+  if (
+    allowed !== "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)" ||
+    denied !== "Bash(git * --output*),Bash(git * -o *)"
+  ) {
+    fail("investigation must retain read-only tool restrictions", 17);
+  }
 }
 if (argv.includes("--dangerously-skip-permissions")) {
   fail("text generation must not bypass permissions", 7);
@@ -79,21 +87,28 @@ if (stdinMustContain && !stdinContent.includes(stdinMustContain)) {
   fail("stdin missing expected content", 4);
 }
 
-const imageRejection = process.env.T3_FAKE_CLAUDE_IMAGE_REJECTION;
-if (imageRejection && stdinContent.includes('"type":"image"')) {
-  if (process.env.T3_FAKE_CLAUDE_IMAGE_ATTEMPT_LOG) {
-    NodeFS.appendFileSync(process.env.T3_FAKE_CLAUDE_IMAGE_ATTEMPT_LOG, "image\n");
+if (process.env.T3_FAKE_CLAUDE_EVALUATION === "1") {
+  if (investigation || argv[argv.indexOf("--disallowedTools") + 1] !== "mcp__*") {
+    fail("evaluation must deny every MCP tool and investigation", 18);
   }
-  process.stdout.write(
-    JSON.stringify({
-      type: "result",
-      subtype: "success",
-      is_error: true,
-      api_error_status: 400,
-      result: `API Error: 400 ${imageRejection}`,
-    }) + "\n",
+  for (const flag of [
+    "--allowedTools",
+    "--chrome",
+    "--mcp-config",
+    "--plugin-dir",
+    "--agents",
+    "--add-dir",
+  ]) {
+    if (argv.includes(flag)) fail("evaluation must not enable task extensions", 19);
+  }
+}
+
+const capturePath = process.env.T3_FAKE_CLAUDE_CAPTURE_PATH;
+if (capturePath) {
+  NodeFS.writeFileSync(
+    capturePath,
+    JSON.stringify({ argv, cwd: process.cwd(), stdin: stdinContent }),
   );
-  process.exit(1);
 }
 
 const configDirMustBe = process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;

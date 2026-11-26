@@ -393,93 +393,31 @@ export const layerTest = (
   managedPolicy?: ManagedPolicySummary,
 ) => Layer.effect(ServerSettingsService, makeTest(overrides, managedPolicy));
 
-// Accept retired token delivery only on load so one old value cannot reset all settings.
-const PersistedResponseStreamingMode = Schema.Union([
-  ResponseStreamingMode,
-  Schema.Literal("token"),
-]).pipe(
-  Schema.decodeTo(
-    ResponseStreamingMode,
-    SchemaTransformation.transform({
-      decode: (mode) => (mode === "token" ? "paragraph" : mode),
-      encode: (mode) => mode,
-    }),
-  ),
-);
-const PersistedServerSettings = Schema.Struct({
-  ...ServerSettings.fields,
-  responseStreamingMode: PersistedResponseStreamingMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
-  ),
-  projectSettingsOverrides: Schema.Record(
-    ProjectId,
-    keepUnknownOverrideKeys(
-      Schema.Struct({
-        ...ProjectSettingsOverrides.fields,
-        responseStreamingMode: Schema.optionalKey(PersistedResponseStreamingMode),
-      }),
-    ),
-  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-});
-// Parse first and decode second, so a managed policy can fill its defaults in between.
-const decodeSettingsFileJsonExit = Schema.decodeUnknownExit(fromLenientJson(Schema.Unknown));
-const decodePersistedServerSettingsExit = Schema.decodeUnknownExit(PersistedServerSettings);
+function decodeSettingsFile(
+  raw: string | undefined,
+  managed: ManagedPolicy.ManagedPolicy["Service"]["settings"],
+) {
+  const decoded = decodePersistedServerSettings(raw, managed);
+  if (decoded.settingsFileTrusted) return decoded;
+  const settings: ServerSettings = {
+    ...decoded.settings,
+    usageHistoryRetentionDays: "unlimited",
+    requireConnectDeviceApproval: true,
+    enablePreviewTunnel: false,
+    enableAgentBrowserAccess: false,
+    defaultRuntimeMode: "approval-required",
+  };
+  return { ...decoded, settings };
+}
 
-/**
- * The settings on disk with the managed policy laid over them, read without the service: no
- * database, no write, no legacy migration. A missing or unreadable file reads as the defaults.
- */
+/** Reads the environment's policy and saved settings without loading or migrating its database. */
 export const readServerSettingsFromDisk = Effect.gen(function* () {
   const { settingsPath } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const { settings: managed } = yield* ManagedPolicy.ManagedPolicy;
   const raw = yield* fs.readFileString(settingsPath).pipe(Effect.option);
-  return managed.applyLocks(
-    Option.isNone(raw) ? managed.defaults : decodeSettingsFile(raw.value, managed).settings,
-  );
+  return managed.applyLocks(decodeSettingsFile(Option.getOrUndefined(raw), managed).settings);
 }).pipe(Effect.withSpan("ServerSettings.readServerSettingsFromDisk"));
-const LegacyProviderSettingsJson = fromLenientJson(
-  Schema.Struct({
-    providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-    bitbucket: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-    github: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-  }),
-);
-const decodeLegacyProviderSettingsJsonExit = Schema.decodeUnknownExit(LegacyProviderSettingsJson);
-
-/**
- * A settings file as the server reads it: its settings, or the defaults when the file or its
- * legacy fields are rejected, with the cause. Pure, so the CLI reads files as the server does.
- */
-function decodeSettingsFile(
-  raw: string,
-  managed: ManagedPolicy.ManagedPolicy["Service"]["settings"],
-) {
-  const parsed = decodeSettingsFileJsonExit(raw);
-  const decoded = Exit.isFailure(parsed)
-    ? parsed
-    : decodePersistedServerSettingsExit(managed.withDefaults(parsed.value));
-  const legacy = decodeLegacyProviderSettingsJsonExit(raw);
-  const failure = Exit.isFailure(decoded)
-    ? decoded.cause
-    : Exit.isFailure(legacy)
-      ? legacy.cause
-      : undefined;
-  const settings: ServerSettings =
-    Exit.isSuccess(decoded) && failure === undefined
-      ? decoded.value
-      : // The file may hold choices we can no longer read, so opt-in behaviour stays off.
-        {
-          ...managed.defaults,
-          continueThreadsAfterServerUpdate: false,
-          usageHistoryRetentionDays: "unlimited",
-          requireConnectDeviceApproval: true,
-          enablePreviewTunnel: false,
-          enableAgentBrowserAccess: false,
-          defaultRuntimeMode: "approval-required",
-        };
-  return { settings, legacy: Exit.isSuccess(legacy) ? legacy.value : undefined, failure };
-}
 
 const LEGACY_BITBUCKET_SECRET_NAMES: Readonly<Record<string, string>> = {
   accessToken: "bitbucket-access-token",
@@ -589,6 +527,19 @@ function migrateLegacyProviderSettings(
 
 type DriverAllowed = (driver: ProviderDriverKind) => boolean;
 const anyDriver: DriverAllowed = () => true;
+const ACP_REGISTRY_DRIVER = ProviderDriverKind.make("acpRegistry");
+
+function selectionSupportsTextGeneration(
+  settings: ServerSettings,
+  selection: ModelSelection,
+  isDriverAllowed: DriverAllowed = anyDriver,
+): boolean {
+  if (textGeneratorForSelection(settings, selection.instanceId) !== undefined) return true;
+  const driver =
+    settings.providerInstances[selection.instanceId]?.driver ??
+    ProviderDriverKind.make(selection.instanceId);
+  return driver !== ACP_REGISTRY_DRIVER && isDriverAllowed(driver);
+}
 
 function validateExplicitTextGenerationSelection(
   settings: ServerSettings,
@@ -623,14 +574,15 @@ function configuredTextGeneration(
   const selection =
     settings.projectSettingsOverrides[projectId]?.textGenerationModelSelection ??
     settings.textGenerationModelSelection;
-  if (!resolveTextGenerationSelectionEnabled(settings, projectId, selection.instanceId))
+  if (
+    !resolveTextGenerationSelectionEnabled(settings, projectId, selection.instanceId) ||
+    !selectionSupportsTextGeneration(settings, selection, isDriverAllowed)
+  )
     return null;
-  if (textGeneratorForSelection(settings, selection.instanceId))
-    return { selection, transport: "generator" };
-  const driver =
-    settings.providerInstances[selection.instanceId]?.driver ??
-    ProviderDriverKind.make(selection.instanceId);
-  return isDriverAllowed(driver) ? { selection, transport: "provider" } : null;
+  return {
+    selection,
+    transport: textGeneratorForSelection(settings, selection.instanceId) ? "generator" : "provider",
+  };
 }
 
 function resolveTextGenerationProvider(
@@ -639,10 +591,7 @@ function resolveTextGenerationProvider(
 ): ServerSettings {
   const selection = settings.textGenerationModelSelection;
   return isModelSelectionProviderEnabled(settings, selection) &&
-    isDriverAllowed(
-      settings.providerInstances[selection.instanceId]?.driver ??
-        ProviderDriverKind.make(selection.instanceId),
-    )
+    selectionSupportsTextGeneration(settings, selection, isDriverAllowed)
     ? settings
     : fallbackTextGenerationProvider(settings, isDriverAllowed);
 }
@@ -653,12 +602,15 @@ function fallbackTextGenerationProvider(
 ): ServerSettings {
   const fallback = fallbackTextGenerationModelSelection(
     settings.providerInstances,
-    (instanceId, driver) =>
+    (instanceId, driver) => {
       // A default instance id can be configured with another driver.
-      isDriverAllowed(settings.providerInstances[instanceId]?.driver ?? driver) &&
-      resolveProviderInstanceEnabled(
-        settings.providerInstances[instanceId] ?? { driver, config: {} },
-      ),
+      const instance = settings.providerInstances[instanceId] ?? { driver, config: {} };
+      return (
+        instance.driver !== ACP_REGISTRY_DRIVER &&
+        isDriverAllowed(instance.driver) &&
+        resolveProviderInstanceEnabled(instance)
+      );
+    },
     { defaultModelSelection: settings.defaultModelSelection },
   );
   return fallback === null ? settings : { ...settings, textGenerationModelSelection: fallback };
@@ -912,26 +864,21 @@ const make = Effect.gen(function* () {
   );
 
   const loadSettingsFromDisk = Effect.gen(function* () {
-    let settings = managed.defaults;
-    let legacyProviders: Readonly<Record<string, unknown>> | undefined;
-    let legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {};
-    let parseFailure = Option.none<unknown>();
-
-    if (yield* readConfigExists) {
-      const file = decodeSettingsFile(yield* readRawConfig, managed);
-      if (file.legacy !== undefined) {
-        legacyProviders = file.legacy.providers;
-        legacySourceControl = { bitbucket: file.legacy.bitbucket, github: file.legacy.github };
-      }
-      settings = file.settings;
-      if (file.failure !== undefined) {
-        parseFailure = Option.some(Cause.squash(file.failure));
-        yield* Effect.logWarning("failed to parse settings.json, using defaults", {
-          path: settingsPath,
-          issues: Cause.pretty(file.failure),
-          cause: file.failure,
-        });
-      }
+    const raw = (yield* readConfigExists) ? yield* readRawConfig : undefined;
+    const decoded = decodeSettingsFile(raw, managed);
+    const legacyProviders = decoded.legacy.providers;
+    const legacySourceControl = decoded.legacy;
+    const settingsFileTrusted = decoded.settingsFileTrusted;
+    const parseFailure =
+      decoded.cause === undefined
+        ? Option.none<unknown>()
+        : Option.some(Cause.squash(decoded.cause));
+    if (decoded.cause !== undefined) {
+      yield* Effect.logWarning("failed to parse settings.json, using defaults", {
+        path: settingsPath,
+        issues: Cause.pretty(decoded.cause),
+        cause: decoded.cause,
+      });
     }
     const settings = withIdleCompaction(decoded.settings, globalIdleCompaction(decoded.settings));
 

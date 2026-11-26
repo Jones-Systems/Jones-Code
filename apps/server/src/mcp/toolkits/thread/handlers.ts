@@ -286,18 +286,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           threads,
           projection: { thread },
         } = yield* readThread(input.threadId);
-        const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
-        yield* refuseAgentModePick({
-          callerRuntimeMode: (yield* readCaller()).limits.runtimeMode,
-          picked: modelSelection.options,
-          descriptors: providerOptionDescriptors(
-            providers.find((provider) => provider.instanceId === modelSelection.instanceId),
-          ),
-          held:
-            thread.modelSelection.instanceId === modelSelection.instanceId
-              ? thread.modelSelection.options
-              : undefined,
-        });
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        if (scope.thread?.threadId === thread.id)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Use t3_thread_self_configure with the revision and execution precondition from reading t3_thread_configure to safely change your own thread.",
+          });
         const type = modelSelectionCommandType(thread.providerInstanceId, modelSelection);
         const result = yield* threads
           .dispatch({ type, threadId: thread.id, commandId: yield* newCommandId(), modelSelection })
@@ -413,26 +408,16 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         switch (input.action) {
           case "edit": {
             const text = yield* required(input.text, "text");
-            const { threads, projection } = yield* readThread(input.threadId);
-            // An agent must not turn a person's queued message into a provider sign-out.
-            const command = yield* ThreadMessageIntake.withQueuedAttachmentsOnSignOutText({
-              type: "queued-run.edit",
-              commandId: yield* newCommandId(),
-              threadId: projection.thread.id,
-              runId,
-              text,
-            }).pipe(
-              Effect.mapError((error) =>
-                error._tag === "EnvironmentAuthorizationError"
-                  ? new OrchestratorMcpFailure({
-                      code: "invalid_request",
-                      message: "A queued message cannot be edited into a provider sign-out.",
-                    })
-                  : dispatchFailure(error),
-              ),
+            return yield* dispatch(
+              input.threadId,
+              (common) => ({
+                ...common,
+                type: "queued-run.edit",
+                runId,
+                text,
+              }),
+              true,
             );
-            const result = yield* threads.dispatch(command).pipe(Effect.mapError(dispatchFailure));
-            return { sequence: result.sequence };
           }
           case "reorder": {
             const beforeRunId = yield* required(input.beforeRunId, "beforeRunId");

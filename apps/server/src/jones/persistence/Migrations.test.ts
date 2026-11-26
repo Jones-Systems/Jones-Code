@@ -939,7 +939,7 @@ it.effect("Jones pending batch rollback leaves the completed upstream head durab
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("late guarded Jones failure suppresses FINISHED after upstream 96 commits", () =>
+it.effect("late guarded Jones failure suppresses FINISHED after the upstream track commits", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: 80 });
@@ -967,5 +967,13 @@ it.effect("late guarded Jones failure suppresses FINISHED after upstream 96 comm
     );
     yield* sql`DROP TABLE jones_peer_wake_holds`;
     assert.deepStrictEqual(yield* runMigrations(), []);
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM effect_sql_migrations WHERE migration_id = 100`,
+      [{ name: "TurnStartReadIndexes" }],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM jones_sql_migrations WHERE migration_id = 100`,
+      [{ name: "NativeCreationExecution" }],
+    );
   }).pipe(Effect.provide(memory)),
 );

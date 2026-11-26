@@ -1,23 +1,27 @@
 import type { AgentFeedbackMode } from "@t3tools/contracts";
+import type { JonesAppIdentity } from "@t3tools/contracts/jones/organizationMetadata";
 
+import { buildAppIdentityInstructions } from "./jones/AppIdentity.ts";
 import type { ProviderAdapterV2RuntimePolicy } from "./ProviderAdapter.ts";
 
-/** None while agent feedback is off, so users who never opt in pay no context for it. */
+/** Feedback guidance is present only when the environment has opted in. */
 export const AGENT_FEEDBACK_INSTRUCTIONS = {
   off: "",
-  "on-request": "Use `t3_feedback` only when the user asks you to send T3 feedback.",
-  auto: "`t3_feedback` reports are wanted and cheap. Send one, then continue, when a T3 tool or `t3` command fails or gives a wrong result, the user corrects how you use T3 Code, or a T3 capability you looked for is missing. Once per problem; also when the user asks. Only about T3 Code, never the user's code or other tools.",
+  "on-request": "Use `t3_feedback` only when the user asks you to send app feedback.",
+  auto: "`t3_feedback` reports are wanted and cheap. Send one, then continue, when an app tool or `t3` command fails or gives a wrong result, the user corrects how you use the app, or an app capability you looked for is missing. Once per problem. Also when the user asks. Limit feedback to this app and its tools.",
 } satisfies Record<AgentFeedbackMode, string>;
 
 /** Session-invariant; harnesses with a native system-prompt append can carry it once per session. */
 export const PULL_REQUEST_LINKING_INSTRUCTIONS = `<pull_request_linking>
-Link each PR you create, take over, or push to: link_pull_request, or link_pull_requests for several, full URL, every stack layer, as your next call. Host tools don't link for you. If linking fails, say so. Skip PRs you only read or review and PRs named only as background. Call watch_pull_request when asked to monitor or babysit, or when work you were asked to do, such as a merge, still waits on checks or reviews, even after an earlier unwatch. Finish any needed branch update and push first, then watch and end your turn. Otherwise act now or hand back. Delegated children never watch, even if the brief says babysit. After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>. Links and watches persist across pushes. For PR waits, no sleep, loops, gh --watch, Monitor or ScheduleWakeup. Before handback, call unwatch_pull_request on any PR you watch. When pull_request_* tools are listed, use them, not gh or cafe, to read, list, open, edit, review, reply on, close, or merge PRs, and ci_logs and ci_rerun for their checks. pull_request_create links for you.
-If available, call link_issue for each issue you take on or file, even via CLI; skip issues you only read.
+As your next call, use link_pull_request for each PR you create, take over, or push to. Use link_pull_requests for several, including every stack layer. Use full URLs and report failures. Skip read-only and background PRs. Before handback, use list_thread_pull_requests to find and link missing work PRs, then call unwatch_pull_request for each you watch.
+Call watch_pull_request when asked to monitor or babysit, or when assigned work still needs checks or reviews. Push any updates first, then watch and end your turn. Links and watches persist across pushes. Rearm if new work needs observation. Recheck on a watch event, owner request, or new PR action. An automatic goal turn alone needs no PR check or status update. For PR waits, no sleep, loops, gh --watch, Monitor or ScheduleWakeup.
+Delegated children never watch, even if the brief says babysit. After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>.
 </pull_request_linking>`;
 
 /** Omit model and effort when the harness manages them dynamically. */
 export function buildRuntimeInstructions(runtime: {
   readonly harness: string;
+  readonly appIdentity?: JonesAppIdentity;
   readonly agentFeedback?: AgentFeedbackMode;
   readonly model?: string | undefined;
   readonly modelName?: string | undefined;
@@ -35,7 +39,11 @@ export function buildRuntimeInstructions(runtime: {
     modelName && modelName !== model ? `${modelName} (model slug: ${model})` : model;
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
-  const runtimeInfo = `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images, video, and audio using Markdown image syntax with absolute file paths. Link every other file you cite or produce by its absolute path, as in [http.ts:42](/abs/path/http.ts:42), so the user can open it in T3 Code's files viewer.</runtime_info>`;
+  const remoteFileLinks =
+    runtime.appIdentity?.productId === "jones-code"
+      ? " For a file on another Jones Code computer, use Markdown `[name](t3-file://v1/<encoded environment ID>/<encoded absolute path>)`, percent-encoding each segment separately. Use the exact environment ID of the computer holding the file."
+      : "";
+  const runtimeInfo = `<runtime_info>In case you're asked: you are running ${runtime.appIdentity === undefined ? "" : `in ${toSingleLine(runtime.appIdentity.productName)} `}through the ${harness} harness${modelInfo}${effortInfo}. ${buildAppIdentityInstructions(runtime.appIdentity)} No need to mention this otherwise. You can embed images, video, and audio using Markdown image syntax with absolute file paths. Link every other file you cite or produce by its absolute path, as in [http.ts:42](/abs/path/http.ts:42), so the user can open it in the app files viewer.${remoteFileLinks}</runtime_info>`;
   const feedbackLine = AGENT_FEEDBACK_INSTRUCTIONS[runtime.agentFeedback ?? "off"];
   const feedback = feedbackLine ? `\n${feedbackLine}` : "";
   const workspace =

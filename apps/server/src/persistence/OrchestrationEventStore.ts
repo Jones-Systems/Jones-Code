@@ -193,10 +193,10 @@ interface ApplicationEventRow {
 
 const decodeV2EventJson = Schema.decodeUnknownEffect(OrchestrationV2RecordedEventJson);
 const encodeV2EventJson = Schema.encodeEffect(OrchestrationV2DomainEventJson);
-const decodeV2StoredEvent = Schema.decodeUnknownEffect(OrchestrationV2StoredEvent);
-// decodeV2EventJson already validated the event; decoding it again here is the hot cost in replay.
+const decodeV2StoredEvent = Schema.decodeUnknownEffect(OrchestrationV2RecordedStoredEvent);
+// The replay decoder has already validated the event body.
 const decodeV2StoredEventHeader = Schema.decodeUnknownEffect(
-  OrchestrationV2StoredEvent.mapFields(({ event: _event, ...fields }) => fields),
+  OrchestrationV2RecordedStoredEvent.mapFields(({ event: _event, ...fields }) => fields),
 );
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -771,7 +771,7 @@ const makeEventStore = Effect.gen(function* () {
           ),
         ),
       ),
-      Stream.withSpan("OrchestrationEventStore.readApplicationEvents"),
+      Stream.filter(isPublicApplicationEvent),
     );
 
   const streamProjectedApplicationEvents: OrchestrationEventStore["Service"]["streamProjectedApplicationEvents"] =

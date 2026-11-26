@@ -1030,19 +1030,9 @@ it.live.each(accountSwitchModes)(
           createdBy: "user",
           creationSource: "web",
         });
-        const dispatch = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
-          Effect.gen(function* () {
-            const terminal = yield* orchestrator.streamDomainEvents.pipe(
-              Stream.filter((event) =>
-                active && step === "first"
-                  ? event.type === "provider-turn.updated" && event.payload.status === "running"
-                  : event.type === "run.updated" && event.payload.status === "completed",
-              ),
-              Stream.take(1),
-              Stream.runDrain,
-              Effect.forkScoped,
-            );
-            yield* orchestrator.dispatch({
+        const send = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
+          orchestrator
+            .dispatch({
               type: "message.dispatch",
               commandId: CommandId.make(`${name}:${step}`),
               threadId,
@@ -1125,19 +1115,24 @@ it.live.each(accountSwitchModes)(
         const targetThread = second.providerThreads.find(
           (thread) => thread.id === second.thread.activeProviderThreadId,
         )!;
-        if (separateHome) {
-          assert.notEqual(targetThread.id, originalThread.id);
-          assert.lengthOf(second.contextHandoffs, 1);
-          assert.deepEqual(
-            second.turnItems.flatMap((item) =>
-              item.type === "handoff" ? [item.contextHandoffId] : [],
-            ),
-            [second.contextHandoffs[0]!.id],
+        // Each account owns its runtime binding to the shared native conversation.
+        assert.notEqual(targetThread.id, originalThread.id);
+        assert.equal(
+          second.providerThreads.find((thread) => thread.id === originalThread.id)
+            ?.providerInstanceId,
+          providerInstanceId,
+        );
+        if (mode === "active") {
+          assert.equal(
+            second.attempts.find((attempt) => attempt.id === first.runs[0]?.activeAttemptId)
+              ?.providerThreadId,
+            originalThread.id,
           );
-          assert.lengthOf(second.contextTransfers, 1);
-          assert.isEmpty(resumes);
-          assert.notEqual(messages[1], "second");
-          return;
+          assert.equal(
+            second.providerThreads.find((thread) => thread.id === originalThread.id)
+              ?.providerSessionId,
+            originalThread.providerSessionId,
+          );
         }
         assert.deepEqual(targetThread.nativeThreadRef, originalThread.nativeThreadRef);
         assert.equal(targetThread.providerInstanceId, targetId);

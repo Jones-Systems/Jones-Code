@@ -629,10 +629,12 @@ export function layerWithRegistryAndServices<Error>(
   | ThreadCommandExecutor.ThreadCommandExecutor,
   Error | ReplayInfrastructureError
 > {
-  const layerServerConfig = Layer.effect(
-    ServerConfig.ServerConfig,
-    makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
-  ).pipe(Layer.provide(NodeServices.layer));
+  const layerServerConfig =
+    options.serverConfigLayer ??
+    Layer.effect(
+      ServerConfig.ServerConfig,
+      makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
+    ).pipe(Layer.provide(NodeServices.layer));
   // A thread without a worktree would otherwise fall back to process.cwd(), so checkpoints
   // would run git against the checkout running the tests and race its other users.
   const layerScenarioWorkspacePolicy = Layer.effect(
@@ -719,7 +721,9 @@ export function layerWithRegistryAndServices<Error>(
           ),
         ));
   const layerEventSinkProvided = EventSink.layerFromStores.pipe(
-    Layer.provide(Layer.mergeAll(layerStores, layerDatabase, ThreadViewers.layer)),
+    Layer.provide(
+      Layer.mergeAll(layerStores, layerStartRefusals, options.checkoutIntentLayer ?? Layer.empty),
+    ),
   );
   const layerRuntime = RuntimePolicy.layerEnforcingCeiling.pipe(
     Layer.provide(Layer.merge(layerRuntimeBase, layerServerSettings)),
@@ -730,9 +734,10 @@ export function layerWithRegistryAndServices<Error>(
   const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)(
-          options.providerInstances ?? { getInstance: () => Effect.undefined },
-        ),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: () => Effect.undefined,
+          getCatalogSource: () => undefined,
+        }),
         layerStores,
         layerEventSinkProvided,
         IdAllocator.layer,

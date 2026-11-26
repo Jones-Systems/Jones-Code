@@ -1,3 +1,31 @@
+import * as DocumentSections from "../jones/documentSections/DocumentSections.ts";
+import * as DocumentRepositoryAccess from "../jones/documentSections/DocumentRepositoryAccess.ts";
+import * as GoalControl from "../jones/goals/GoalControl.ts";
+import * as GoalStartDispatch from "../jones/goals/GoalStartDispatch.ts";
+import * as GoalContinuityRuntime from "../jones/goals/continuity/RuntimeIntegration.ts";
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import * as ThreadSelfConfigurationService from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
+import * as ThreadSelfConfigurationTools from "../jones/threadConfiguration/tools.ts";
+import * as AgentWorkstreams from "../jones/workstreams/personal/agentService.ts";
+import { WorkstreamToolkit } from "../jones/mcp/workstreams/tools.ts";
+import { handlers as workstreamHandlers } from "../jones/mcp/workstreams/handlers.ts";
+import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
+import * as ThreadResultMcpDependencies from "../jones/threadResultDependencies/McpDependencies.ts";
+import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts";
+import { handlers as userResponseRequestHandlers } from "../jones/mcp/userResponseRequest/handlers.ts";
+import { UserResponseRequestToolkit } from "../jones/mcp/userResponseRequest/tools.ts";
+import * as RemoteAdmissionProtocol from "../jones/remoteAdmissionIntegration/protocolTools.ts";
+import * as RequestManagement from "../jones/remoteAdmissionIntegration/RequestManagement.ts";
+import * as RequestManagementMcp from "../jones/remoteAdmissionIntegration/requestManagementMcp.ts";
+import {
+  LINKED_MESSAGE_ORIGIN_HEADER,
+  withLinkedMessageOrigin,
+} from "../jones/peerTransport/LinkedMessageOrigin.ts";
+import {
+  LINKED_REQUEST_CONTEXT_HEADER,
+  IncomingLinkedRequestContext,
+  bindLinkedRequestContext,
+} from "../jones/peerTransport/LinkedRequestContext.ts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -405,14 +433,26 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       limited.thread === undefined
         ? undefined
         : yield* Cache.get(forgeOfThread, limited.thread.threadId);
-    return {
-      ...limited,
-      linkedEnvironments,
-      agentFeedback,
-      workflows,
-      origin,
-      ...(forge === undefined ? {} : { forge }),
-    };
+    const attributed = withLinkedMessageOrigin(
+      {
+        ...limited,
+        linkedEnvironments,
+        agentFeedback,
+        workflows,
+        origin,
+        ...(forge === undefined ? {} : { forge }),
+      },
+      request.headers[LINKED_MESSAGE_ORIGIN_HEADER],
+    );
+    if (attributed === undefined)
+      return HttpServerResponse.jsonUnsafe(
+        {
+          error: "invalid_linked_message_origin",
+          message: "The linked message origin is malformed or this credential is not a peer link.",
+        },
+        { status: 400, headers: { "cache-control": "no-store" } },
+      );
+    return attributed;
   });
   // Untraced: a span here would wrap the tool call; the HTTP server span already covers it.
   return Effect.fnUntraced(function* (httpEffect) {
@@ -1376,6 +1416,11 @@ const withClientInput = Effect.fn("McpHttpServer.withClientInput")(function* <A,
   return yield* registration.pipe(Effect.provideService(McpServer.McpServer, askingServer));
 });
 
+const decodeThreadReadArguments = Schema.decodeUnknownEffect(
+  Schema.toCodecJson(OrchestratorToolkit.tools.t3_thread_read.parametersSchema),
+  { onExcessProperty: "error" },
+);
+
 /** `McpServer.registerToolkit` advertises the full codec schema; agents get the compact one. */
 const withAdvertisedSchemas = Effect.fn("McpHttpServer.withAdvertisedSchemas")(function* <
   Tools extends Record<string, Tool.Any>,
@@ -1512,7 +1557,10 @@ export const layerThreadSelfConfigurationToolkit = toolkitRegistration(
   ThreadSelfConfigurationTools.layer,
 );
 
-export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
+export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer).pipe(
+  Layer.provide(ThreadMetadataReads.layer),
+);
+
 const layerWorkflowToolkit = toolkitRegistration(WorkflowToolkit, WorkflowHandlers.layer);
 
 export const layerMessageToolkit = toolkitRegistration(MessageToolkit, MessageHandlers.layer);
@@ -1682,6 +1730,22 @@ export const layerTools = Layer.mergeAll(
   layerOrchestratorToolkit,
   layerThreadToolkit,
   layerWorkflowToolkit,
+  Layer.unwrap(
+    Effect.serviceOption(ThreadSelfConfigurationService.ThreadSelfConfiguration).pipe(
+      Effect.map((service) =>
+        Option.isNone(service)
+          ? Layer.empty
+          : layerThreadSelfConfigurationToolkit.pipe(
+              Layer.provide(
+                Layer.succeed(
+                  ThreadSelfConfigurationService.ThreadSelfConfiguration,
+                  service.value,
+                ),
+              ),
+            ),
+      ),
+    ),
+  ),
   layerAttachmentToolkit,
   layerProjectRegistration,
   layerFeedbackToolkit,

@@ -1008,8 +1008,11 @@ const checkOpenCode2 = Effect.fn("checkOpenCode2")(function* (
     models: openCode2ProviderModels(settings, catalog.models, catalog.complete),
     slashCommands: [COMPACT_SLASH_COMMAND],
     probe:
-      result.value.length > 0
-        ? probe("ready", openCode2ReadyMessage(version, result.value.length))
+      catalog.models.length > 0
+        ? probe(
+            "ready",
+            `OpenCode ${version} lists ${catalog.models.length} model${catalog.models.length === 1 ? "" : "s"}.`,
+          )
         : probe("warning", "OpenCode 2 is running, but it did not list any models yet."),
   });
 });

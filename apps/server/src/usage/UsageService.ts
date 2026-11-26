@@ -888,10 +888,7 @@ export const make = Effect.gen(function* () {
         ? 0
         : Math.max(0, startedAtMs - settings.usageHistoryRetentionDays * 24 * 60 * 60 * 1000);
 
-    const inWindow = usageTimestampFilter({ ...input, ...hourlyWindow });
-    const windowEndMs =
-      hourlyWindow?.untilTimeMs ??
-      Date.parse(`${input.untilDay}T00:00:00Z`) + 86400000 + MTIME_SLACK_MS;
+    const inWindow = usageTimestampFilter({ ...input, ...exactWindow });
 
     const awaitRefresh = input.awaitRefresh === true;
     const collect = Effect.gen(function* () {
@@ -1035,6 +1032,9 @@ export const make = Effect.gen(function* () {
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
     });
 
+    const windowEndMs =
+      exactWindow?.untilTimeMs ??
+      Date.parse(`${input.untilDay}T00:00:00Z`) + 86400000 + MTIME_SLACK_MS;
     let resolvedAny = false;
     for (const { reader } of transcriptReaders) {
       if (reader.resolveServiceTiers === undefined || fromMemory) continue;

@@ -1158,6 +1158,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         const backgroundShells = new Map<
           string,
           {
+            readonly agent: CursorLiveAgent;
             readonly providerThreadId: OrchestrationV2ProviderThread["id"];
             readonly runId: ProviderAdapter.ProviderAdapterV2TurnInput["runId"];
             readonly pid: number | undefined;
@@ -1168,10 +1169,22 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         >();
         // Runs a Stop ended; a shell they started that is reported only afterwards is stopped too.
         const stoppedRuns = new Set<ProviderAdapter.ProviderAdapterV2TurnInput["runId"]>();
-        let latestRunId: ProviderAdapter.ProviderAdapterV2TurnInput["runId"] | undefined;
         // A Stop or rollback bumps this, which drops wakes still queued behind another run.
         let wakeGeneration = 0;
         const publishedProviderThread = yield* Ref.make<OrchestrationV2ProviderThread | null>(null);
+        const lifecycle = input.runtimeLifecycle;
+        const awaitTerminalPersistence = lifecycle !== undefined;
+        const openLock = yield* Semaphore.make(1);
+        let retirementUnknown: ProviderControlOutcomeUnknown | undefined;
+        let openUnknown: ProviderAdapter.ProviderRuntimeBindingError | undefined;
+        const retiredGenerations = new Set<string>();
+        const releaseRetiredGenerations = Effect.gen(function* () {
+          if (lifecycle === undefined) return;
+          for (const generation of retiredGenerations) {
+            yield* lifecycle.abandon(generation);
+            retiredGenerations.delete(generation);
+          }
+        });
         const planIds = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact["id"]>());
 
         const emitProviderEvent = Effect.fn("CursorAdapterV2.emitProviderEvent")(
@@ -1230,19 +1243,28 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         const emitProviderThread = Effect.fn("CursorAdapterV2.emitProviderThread")(function* (
           providerThread: OrchestrationV2ProviderThread,
           sessionScoped = false,
+          producer?: ProviderEventOrigin.ProviderEventProducerOrigin,
         ) {
           const listed = withBackgroundShells(providerThread);
           yield* Ref.set(publishedProviderThread, listed);
-          yield* emitProviderEvent({
-            type: "provider_thread.updated",
-            driver: CursorAgentSdk.CURSOR_PROVIDER,
-            providerThread: listed,
-            ...(sessionScoped ? { sessionScoped: true } : {}),
-          });
+          yield* emitProviderEvent(
+            {
+              type: "provider_thread.updated",
+              driver: CursorAgentSdk.CURSOR_PROVIDER,
+              providerThread: listed,
+              ...(sessionScoped ? { sessionScoped: true } : {}),
+            },
+            producer,
+          );
         });
 
         const publishBackgroundShells = Effect.fn("CursorAdapterV2.publishBackgroundShells")(
-          function* (providerThreadId: OrchestrationV2ProviderThread["id"]) {
+          function* (
+            providerThreadId: OrchestrationV2ProviderThread["id"],
+            capturedAgent?: CursorLiveAgent,
+          ) {
+            const agent = yield* Ref.get(liveAgent);
+            if (agent === null || (capturedAgent !== undefined && capturedAgent !== agent)) return;
             const published = yield* Ref.get(publishedProviderThread);
             if (published?.id !== providerThreadId) return;
             const turn = yield* Ref.get(activeTurn);
@@ -1250,6 +1272,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             yield* emitProviderThread(
               { ...published, updatedAt: yield* DateTime.now },
               turn === null || turn.finalized,
+              agent.eventProducer.origin,
             );
           },
         );
@@ -1257,11 +1280,18 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         const onBackgroundShell = Effect.fn("CursorAdapterV2.onBackgroundShell")(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           shell: CursorAgentSdk.CursorBackgroundShellEvent,
+          agent: CursorLiveAgent,
         ) {
           const providerThreadId = turnInput.providerThread.id;
           if (shell.type === "started") {
-            if (stoppedRuns.has(turnInput.runId)) return shell.stop();
+            if (
+              agent.retirement !== undefined ||
+              !agent.eventProducer.accepting ||
+              stoppedRuns.has(turnInput.runId)
+            )
+              return shell.stop();
             backgroundShells.set(shell.id, {
+              agent,
               providerThreadId,
               runId: turnInput.runId,
               pid: shell.pid,
@@ -1269,14 +1299,14 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               stop: shell.stop,
               awaited: false,
             });
-            return yield* publishBackgroundShells(providerThreadId);
+            return yield* publishBackgroundShells(providerThreadId, agent);
           }
           const started = backgroundShells.get(shell.id);
-          if (started === undefined) return;
+          if (started?.agent !== agent) return;
           backgroundShells.delete(shell.id);
-          yield* publishBackgroundShells(providerThreadId);
-          // Nobody waits to hear about a shell the agent or a Stop killed.
-          if (shell.stopped) return;
+          yield* publishBackgroundShells(providerThreadId, agent);
+          if (shell.stopped || agent.retirement !== undefined || stoppedRuns.has(started.runId))
+            return;
           // The run that started it is still working, so the agent can read the result itself.
           const turn = yield* Ref.get(activeTurn);
           if (
@@ -1324,6 +1354,16 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 shell.stop();
               }
             }
+          });
+
+        const stopCapturedRunShells = (
+          agent: CursorLiveAgent,
+          providerThreadId: OrchestrationV2ProviderThread["id"],
+        ) =>
+          Effect.gen(function* () {
+            const run = agent.lastTurn?.input;
+            if (run?.providerThread.id === providerThreadId) stoppedRuns.add(run.runId);
+            yield* stopBackgroundShells(providerThreadId);
           });
 
         const resolveItemOrdinal = (context: ActiveCursorTurn, nativeItemId: string) =>
@@ -2674,16 +2714,18 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               }).pipe(Effect.as(undefined)),
             ),
           );
-          // Cursor only keeps a run in conversation history once it saves its first checkpoint.
+          // An unreadable checkpoint cannot establish that the prompt was dropped.
           const promptDropped =
             (input.status === "failed" || input.status === "cancelled") &&
             !input.context.compacted &&
             input.context.prompt !== undefined &&
-            !(yield* (
-              input.context.session.runCheckpointed?.(input.context.run.runId) ??
-              Effect.succeed(false)
-            ).pipe(Effect.orElseSucceed(() => false)));
-          yield* emitProviderEvent({
+            (yield* (
+              input.context.session.runCheckpointed?.(input.context.run.runId) ?? Effect.undefined
+            ).pipe(Effect.orElseSucceed(() => undefined))) === false;
+          const terminalTurnEvent: Extract<
+            ProviderAdapter.ProviderAdapterV2Event,
+            { readonly type: "provider_turn.updated" }
+          > = {
             type: "provider_turn.updated",
             driver: CursorAgentSdk.CURSOR_PROVIDER,
             providerTurn: providerTurnPayload({
@@ -2701,16 +2743,24 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                     },
                   }),
             }),
-          });
-          yield* emitProviderThread({
-            ...input.context.input.providerThread,
-            providerSessionId: session.id,
-            status: "active",
-            firstRunOrdinal:
-              input.context.input.providerThread.firstRunOrdinal ?? input.context.input.runOrdinal,
-            lastRunOrdinal: input.context.input.runOrdinal,
-            updatedAt: completedAt,
-          });
+          };
+          if (awaitTerminalPersistence)
+            input.context.agent.terminalDrain.capture(terminalTurnEvent);
+          yield* emitProviderEvent(terminalTurnEvent);
+          yield* emitProviderThread(
+            {
+              ...input.context.input.providerThread,
+              providerSessionId: session.id,
+              status: "active",
+              firstRunOrdinal:
+                input.context.input.providerThread.firstRunOrdinal ??
+                input.context.input.runOrdinal,
+              lastRunOrdinal: input.context.input.runOrdinal,
+              updatedAt: completedAt,
+            },
+            false,
+            input.context.agent.eventProducer.origin,
+          );
           const threadDisposition = input.threadDisposition ?? "reusable";
           const terminalEvent: Extract<
             ProviderAdapter.ProviderAdapterV2Event,
@@ -2746,8 +2796,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                   failure: null,
                   threadDisposition,
                   ...(promptDropped ? { promptDropped: true as const } : {}),
-                },
-          );
+                };
+          if (awaitTerminalPersistence) input.context.agent.terminalDrain.capture(terminalEvent);
+          yield* emitProviderEvent(terminalEvent);
           if (input.context.runtimeInstructions !== undefined) {
             const deliveredRuntime =
               input.status === "completed" && !input.context.compacted
@@ -2823,55 +2874,12 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               );
         };
 
-        const openAgent = Effect.fnUntraced(function* (openInput: {
-          readonly operation: "create" | "resume";
-          readonly threadId: ThreadId;
-          readonly modelSelection: ModelSelection;
-          readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
-          readonly agentId?: string;
-          readonly storeCwd?: string | undefined;
-        }) {
-          const existing = yield* Ref.get(liveAgent);
-          const cwd = openInput.runtimePolicy.cwd ?? process.cwd();
-          const storeCwd =
-            openInput.storeCwd ??
-            (openInput.operation === "resume"
-              ? existing !== null && existing.nativeThreadId === openInput.agentId
-                ? existing.storeCwd
-                : input.resumeFromSession?.cwd
-              : undefined) ??
-            cwd;
-          if (
-            existing !== null &&
-            openInput.operation === "resume" &&
-            existing.nativeThreadId === openInput.agentId &&
-            existing.session.isAlive?.() !== false
-          ) {
-            return existing;
-          }
-          if (existing !== null) {
-            yield* existing.session.close.pipe(Effect.ignore);
-            yield* Ref.set(liveAgent, null);
-          }
-          const options = makeCursorAgentOptions({
-            ...(apiKey === undefined ? {} : { apiKey }),
-            modelSelection: openInput.modelSelection,
-            models: adapterOptions.getModels?.() ?? [],
-            sdkModels: adapterOptions.getSdkModels?.() ?? [],
-            runtimePolicy: openInput.runtimePolicy,
-            platform,
-            threadId: openInput.threadId,
-            mcpSession: yield* mcpSessions.read(openInput.threadId),
-          });
-          if (
-            platform === "win32" &&
-            openInput.runtimePolicy.sandboxPolicy === undefined &&
-            openInput.runtimePolicy.runtimeMode !== "full-access" &&
-            options.local?.sandboxOptions?.enabled === false &&
-            !(yield* Ref.getAndSet(warnedUnsupportedSandbox, true))
-          ) {
-            yield* Effect.logWarning(
-              "Cursor cannot sandbox the filesystem on Windows; this thread runs without filesystem isolation.",
+        const retireAgent = Effect.fn("CursorAdapterV2.retireAgent")(
+          function* (agent: CursorLiveAgent, cancel = false) {
+            const inheritedDeadline = yield* ProviderControlDeadline;
+            const deadline = Math.min(
+              (yield* Clock.currentTimeMillis) + 10_000,
+              inheritedDeadline ?? Infinity,
             );
             if (agent.retirement === undefined) {
               const captured = agent.lastTurn;
@@ -3317,12 +3325,14 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             });
           }
           const runtimeInstructions = buildRuntimeInstructions({
-            agentFeedback: mcpServers === undefined ? "off" : (turnInput.agentFeedback ?? "off"),
             harness: "Cursor",
+            ...(host.appIdentity === undefined ? {} : { appIdentity: host.appIdentity }),
+            ...(mcpServers === undefined || turnInput.agentFeedback === undefined
+              ? {}
+              : { agentFeedback: turnInput.agentFeedback }),
             model: turnInput.modelSelection.model,
             runtimePolicy: turnInput.runtimePolicy,
           });
-          // Resend only on a new/compacted/rewound conversation or when the instructions change.
           const sendRuntimeInstructions = delivered.runtime !== runtimeInstructions;
           const text = sendRuntimeInstructions
             ? userText.length === 0
@@ -3430,7 +3440,15 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               ...(yield* resolveWorkspaceMcpServers(turnInput.runtimePolicy)),
               ...mcpServers,
             };
+            yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            if (agent.retirement !== undefined) {
+              return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                detail: "The captured Cursor producer began retirement before dispatch.",
+              });
+            }
             let starting = true;
+            agent.pendingSend = true;
             const sdkRun = yield* agent.session
               .send({
                 message,
@@ -3457,8 +3475,11 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                     Effect.provideService(CursorEventProducerContext, agent.eventProducer.origin),
                   );
                 },
-                onBackgroundShell: (shell) => onBackgroundShell(turnInput, shell),
-                onStartupPhase: (phase) => (starting ? emitStartupPhase(phase) : Effect.void),
+                onBackgroundShell: (shell) => onBackgroundShell(turnInput, shell, agent),
+                onStartupPhase: (phase) =>
+                  starting && agent.retirement === undefined
+                    ? emitStartupPhase(phase)
+                    : Effect.void,
               })
               .pipe(
                 Effect.ensuring(
@@ -3467,7 +3488,17 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                     return emitStartupPhase(undefined);
                   }),
                 ),
-                Effect.mapError(classifyCursorModelRejection(turnInput.modelSelection)),
+                Effect.mapError((cause) => {
+                  const rejection = classifyCursorModelRejection(turnInput.modelSelection)(cause);
+                  if (
+                    cause.method === "run.start" &&
+                    rejection._tag === "CursorModelUnavailableError" &&
+                    pendingUpdates.length === 0
+                  ) {
+                    agent.pendingSend = false;
+                  }
+                  return rejection;
+                }),
               );
             // A resume sends no new instructions, and a native one still continues the stopped request.
             if (resume === undefined) {
@@ -3524,22 +3555,28 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             agent.lastTurn = context;
             agent.pendingSend = false;
             yield* Ref.set(activeTurn, context);
-            latestRunId = turnInput.runId;
-            yield* emitProviderEvent({
-              type: "provider_turn.updated",
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              providerTurn: providerTurnPayload({
-                context,
-                status: "running",
-                completedAt: null,
-              }),
-            });
-            yield* emitProviderThread({
-              ...turnInput.providerThread,
-              providerSessionId: session.id,
-              status: "active",
-              updatedAt: startedAt,
-            });
+            yield* emitProviderEvent(
+              {
+                type: "provider_turn.updated",
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                providerTurn: providerTurnPayload({
+                  context,
+                  status: "running",
+                  completedAt: null,
+                }),
+              },
+              agent.eventProducer.origin,
+            );
+            yield* emitProviderThread(
+              {
+                ...turnInput.providerThread,
+                providerSessionId: session.id,
+                status: "active",
+                updatedAt: startedAt,
+              },
+              false,
+              agent.eventProducer.origin,
+            );
             for (const update of pendingUpdates) {
               yield* handleInteractionUpdate(context, update).pipe(
                 Effect.provideService(CursorEventProducerContext, agent.eventProducer.origin),
@@ -3678,7 +3715,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           instanceId: adapterOptions.instanceId,
           driver: CursorAgentSdk.CURSOR_PROVIDER,
           providerSessionId: input.providerSessionId,
-          providerSession: session,
+          get providerSession() {
+            return startupPhase === undefined ? session : { ...session, startupPhase };
+          },
           getModelContextWindow: (selection) =>
             selection.instanceId === adapterOptions.instanceId
               ? cursorContextWindowTokens(selection, adapterOptions.getModels?.() ?? [])
@@ -3770,16 +3809,36 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 interrupted.agent === nativeThreadId(keptInput.providerThread)
               )
                 return true;
-              const agent = yield* openAgent({
-                operation: "resume",
-                agentId: nativeThreadId(keptInput.providerThread),
-                storeCwd: keptInput.providerThread.nativeMetadata?.cursorStoreCwd,
-                threadId: keptInput.providerThread.appThreadId ?? input.threadId,
-                modelSelection: input.modelSelection,
-                runtimePolicy: input.runtimePolicy,
-              });
+              const agent = yield* Ref.get(liveAgent);
+              if (
+                agent === null ||
+                agent.retirement !== undefined ||
+                agent.pendingSend ||
+                keptInput.providerThread.providerSessionId !== input.providerSessionId ||
+                keptInput.providerThread.providerInstanceId !== adapterOptions.instanceId ||
+                agent.nativeThreadId !== nativeThreadId(keptInput.providerThread) ||
+                keptInput.providerThread.runtimeIdentity?.runtimeGeneration !==
+                  agent.runtimeGeneration
+              ) {
+                return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                  driver: CursorAgentSdk.CURSOR_PROVIDER,
+                  detail: "Cursor checkpoint lookup has no matching loaded conversation.",
+                });
+              }
+              // An SDK without checkpoint inspection cannot prove that a prompt is gone.
               if (agent.session.runCheckpointed === undefined) return true;
-              return yield* agent.session.runCheckpointed(keptInput.nativeTurnId);
+              const kept = yield* agent.session.runCheckpointed(keptInput.nativeTurnId);
+              if (
+                (yield* Ref.get(liveAgent)) !== agent ||
+                agent.retirement !== undefined ||
+                agent.pendingSend
+              ) {
+                return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                  driver: CursorAgentSdk.CURSOR_PROVIDER,
+                  detail: "Cursor checkpoint lookup lost its original loaded conversation.",
+                });
+              }
+              return kept;
             },
             (effect, keptInput) =>
               effect.pipe(
@@ -3896,6 +3955,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 (capturedAgent.pendingSend ||
                   (retirementUnknown !== undefined && capturedAgent.retirement === undefined))
               ) {
+                // A pending send can still report a shell after this Stop.
+                if (turnInput.requestRuntimeRestart === true)
+                  yield* stopCapturedRunShells(capturedAgent, turnInput.providerThread.id);
                 // Even without a returned run handle, attempt this captured
                 // session's close once. Its missing witness remains unknown.
                 yield* retireAgent(capturedAgent, true);
@@ -3906,16 +3968,32 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 capturedAgent.lastTurn?.providerTurnId === turnInput.providerTurnId &&
                 capturedAgent.nativeThreadId === turnInput.providerThread.nativeThreadRef?.nativeId
               ) {
+                if (turnInput.requestRuntimeRestart === true)
+                  yield* stopCapturedRunShells(capturedAgent, turnInput.providerThread.id);
                 yield* retireAgent(capturedAgent, true);
                 return;
               }
               const context = yield* Ref.get(activeTurn);
-              // A user Stop ends what the agent left running too; a steer leaves it alone.
-              if (turnInput.requestRuntimeRestart === true) {
-                if (latestRunId !== undefined) stoppedRuns.add(latestRunId);
-                yield* stopBackgroundShells(turnInput.providerThread.id);
+              if (context === null && turnInput.requestRuntimeRestart === true) {
+                if (
+                  capturedAgent !== null &&
+                  capturedAgent.nativeThreadId ===
+                    turnInput.providerThread.nativeThreadRef?.nativeId
+                ) {
+                  if (
+                    capturedAgent.lastTurn !== null &&
+                    capturedAgent.lastTurn.providerTurnId !== turnInput.providerTurnId
+                  ) {
+                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CursorAgentSdk.CURSOR_PROVIDER,
+                      detail: `Cursor provider turn ${turnInput.providerTurnId} is not active.`,
+                    });
+                  }
+                  yield* stopCapturedRunShells(capturedAgent, turnInput.providerThread.id);
+                  yield* retireAgent(capturedAgent, true);
+                }
+                return;
               }
-              if (context === null && turnInput.requestRuntimeRestart === true) return;
               if (context?.providerTurnId !== turnInput.providerTurnId) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CursorAgentSdk.CURSOR_PROVIDER,
@@ -3923,6 +4001,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 });
               }
               context.interrupted = true;
+              if (turnInput.requestRuntimeRestart === true)
+                yield* stopCapturedRunShells(context.agent, turnInput.providerThread.id);
               yield* retireAgent(context.agent, true);
             },
             (effect, turnInput) =>
@@ -4053,14 +4133,23 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                     detail: `Provider turn ${target.providerTurn.id} has no Cursor run id.`,
                   });
                 }
-                const agent = yield* openAgent({
-                  operation: "resume",
-                  agentId: nativeThreadId(rollbackInput.providerThread),
-                  storeCwd: rollbackInput.providerThread.nativeMetadata?.cursorStoreCwd,
-                  threadId,
-                  modelSelection: input.modelSelection,
-                  runtimePolicy: input.runtimePolicy,
-                });
+                const providerThread = rollbackInput.providerThread;
+                const agent = yield* Ref.get(liveAgent);
+                const captured = agent?.lastTurn;
+                if (
+                  agent === null ||
+                  agent.nativeThreadId !== nativeThreadId(providerThread) ||
+                  providerThread.runtimeIdentity?.runtimeGeneration !== agent.runtimeGeneration ||
+                  agent.pendingSend ||
+                  agent.retirement !== undefined ||
+                  captured?.input.providerThread.id !== providerThread.id ||
+                  captured?.finalized !== true
+                ) {
+                  return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                    driver: CursorAgentSdk.CURSOR_PROVIDER,
+                    detail: "Cursor rewind requires the captured idle native writer.",
+                  });
+                }
                 if (agent.session.rewindAfterRun === undefined) {
                   return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                     driver: CursorAgentSdk.CURSOR_PROVIDER,
@@ -4069,11 +4158,10 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 }
                 yield* agent.session.rewindAfterRun(keptRunId);
                 yield* forgetConversation(agent.nativeThreadId);
-                yield* agent.session.close.pipe(Effect.ignore);
-                yield* Ref.set(liveAgent, null);
+                yield* retireAgent(agent);
                 return {
                   providerThread: {
-                    ...rollbackInput.providerThread,
+                    ...providerThread,
                     providerSessionId: input.providerSessionId,
                     status: "idle" as const,
                     updatedAt: now,
@@ -4083,30 +4171,16 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 };
               }
               // The first run starts without a checkpoint, so there is nothing to rewind onto.
-              const opened = yield* openAgent({
+              const { agent, providerThread } = yield* openAgent({
                 operation: "create",
                 threadId,
                 modelSelection: input.modelSelection,
                 runtimePolicy: input.runtimePolicy,
+                providerThread: rollbackInput.providerThread,
               });
-              yield* forgetConversation(opened.nativeThreadId);
+              yield* forgetConversation(agent.nativeThreadId);
               return {
-                providerThread: {
-                  ...rollbackInput.providerThread,
-                  providerSessionId: input.providerSessionId,
-                  nativeThreadRef: {
-                    driver: CursorAgentSdk.CURSOR_PROVIDER,
-                    nativeId: opened.nativeThreadId,
-                    strength: "strong" as const,
-                  },
-                  nativeConversationHeadRef: null,
-                  nativeMetadata: {
-                    ...rollbackInput.providerThread.nativeMetadata,
-                    cursorStoreCwd: opened.storeCwd,
-                  },
-                  status: "idle" as const,
-                  updatedAt: now,
-                },
+                providerThread,
                 messages: [],
                 runtimeRequests: [],
               };

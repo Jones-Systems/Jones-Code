@@ -685,9 +685,35 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const previous = yield* replay;
             if (previous !== null) return previous;
-            const { runs } = yield* projections.getThreadRecords(input.threadId, ["runs"], {
-              runStatuses: ["queued", "starting"],
+            const {
+              thread,
+              runs: visibleRuns,
+              providerThreads,
+            } = yield* projections.getThreadRecords(input.threadId, ["runs", "providerThreads"], {
+              runStatuses: ["queued", "starting", "running", "waiting"],
             });
+            const runs = visibleRuns.filter(
+              (run) => run.status === "queued" || run.status === "starting",
+            );
+            const { binding } = captured;
+            // A previously captured retirement can remain observable after its run is replaced.
+            const attributedRun =
+              thread.activeProviderThreadId === binding.providerThreadId &&
+              providerThreads.some((provider) => matchesCapture(provider, binding)) &&
+              (yield* captured.isCurrent)
+                ? visibleRuns
+                    .filter(
+                      (run) =>
+                        (run.status === "starting" ||
+                          run.status === "running" ||
+                          run.status === "waiting") &&
+                        run.completedAt === null &&
+                        run.activeAttemptId !== null &&
+                        run.providerThreadId === binding.providerThreadId &&
+                        run.providerInstanceId === binding.providerInstanceId,
+                    )
+                    .toSorted((left, right) => right.ordinal - left.ordinal)[0]
+                : undefined;
             const affectedRunIds = runs.map((run) => run.id);
             const identity = {
               request: input,
@@ -698,9 +724,9 @@ const make = Effect.gen(function* () {
               },
               actorDigest,
               affectedRunIds,
+              ...(attributedRun === undefined ? {} : { attributedRunId: attributedRun.id }),
             };
             const now = yield* DateTime.now;
-            const { binding } = captured;
             const candidates = runs.filter(
               (run) =>
                 run.status === "starting" && run.providerThreadId === binding.providerThreadId,
@@ -713,12 +739,20 @@ const make = Effect.gen(function* () {
               threadId: input.threadId,
               commandType: "provider-session.detach",
               acceptedAt: now,
-              runtimeStop: { identity, revalidate },
+              runtimeStop: {
+                identity,
+                revalidate: Effect.gen(function* () {
+                  yield* revalidate;
+                  if (attributedRun !== undefined && !(yield* captured.isCurrent))
+                    return yield* error("captured_runtime_replaced");
+                }),
+              },
               events: [
                 {
                   id: EventId.make(`event:${input.commandId}:captured-runtime-stop`),
                   type: "provider-session.detach-requested",
                   threadId: input.threadId,
+                  ...(attributedRun === undefined ? {} : { runId: attributedRun.id }),
                   driver: binding.driver,
                   providerInstanceId: binding.providerInstanceId,
                   occurredAt: now,

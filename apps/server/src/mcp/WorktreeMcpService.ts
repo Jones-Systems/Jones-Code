@@ -40,6 +40,7 @@ import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.t
 import * as ServerSettings from "../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as TaskFolders from "../workspace/TaskFolders.ts";
+import { clientModeCeiling } from "./McpInvocationContext.ts";
 import type { McpInvocationScope, McpThreadInvocationScope } from "./McpInvocationContext.ts";
 
 export class WorktreeMcpService extends Context.Service<
@@ -202,6 +203,7 @@ export const make = Effect.gen(function* () {
   const performHandoff = Effect.fn("WorktreeMcpService.performHandoff")(function* (
     scope: McpThreadInvocationScope,
     input: WorktreeMcpHandoffInput,
+    beforeWrite: Effect.Effect<void, WorktreeMcpFailure>,
   ) {
     const alreadyInWorktree = (worktreePath: string) =>
       failure(
@@ -224,12 +226,25 @@ export const make = Effect.gen(function* () {
     const projectCwd = project.workspaceRoot;
     // The agent asks, so its thread's modes decide what of the project's own code runs for it:
     // as they are when each piece is about to run, since the fetch in between can take a while.
-    const projectCommandsNow = loadThread(scope).pipe(
-      Effect.map(({ thread }) =>
-        TaskFolders.projectCommandsForAgent(thread.linkOrigin, thread, maxRuntimeMode),
-      ),
-      // A thread that cannot be read might be below Full access.
-      Effect.orElseSucceed((): TaskFolders.ProjectCommands => "agent-below-full-access"),
+    const projectCommandsForCurrentThread = Effect.gen(function* () {
+      const { thread } = yield* loadThread(scope);
+      if (scope.client !== undefined) {
+        const ceiling = clientModeCeiling(scope.client);
+        if (ceiling.runtimeMode !== "full-access" || ceiling.interactionMode !== "default")
+          return "request-not-permitted" as const;
+      }
+      const allowed = TaskFolders.projectCommandsForAgent(
+        thread.linkOrigin,
+        thread,
+        maxRuntimeMode,
+      );
+      return allowed === "permitted"
+        ? TaskFolders.projectCommandsForAgent(thread.linkOrigin, thread, scope.runtimeModeCeiling)
+        : allowed;
+    }).pipe(Effect.orElseSucceed((): TaskFolders.ProjectCommands => "request-not-permitted"));
+    const projectCommandsNow = beforeWrite.pipe(
+      Effect.andThen(projectCommandsForCurrentThread),
+      Effect.orElseSucceed((): TaskFolders.ProjectCommands => "request-not-permitted"),
     );
 
     // A project that tracks repositories moves into a task folder: its own folder, which need
@@ -237,6 +252,11 @@ export const make = Effect.gen(function* () {
     const taskPlan = yield* taskFolders
       .plan({ projectId: project.id })
       .pipe(asOperationFailed("Unable to read the project's repositories"));
+    if (taskPlan !== null && input.continuationPrompt !== undefined)
+      return yield* failure(
+        "operation_failed",
+        "Task folder handoff with a continuation requires a durable receipt for the whole workspace and its setup.",
+      );
     const projectIsRepository = taskPlan === null || taskPlan.projectIsRepository;
     const localStatus = yield* gitWorkflow
       .localStatus({ cwd: projectCwd })
@@ -293,6 +313,7 @@ export const make = Effect.gen(function* () {
     let worktreeBaseRef = baseRef;
     let baseRefName = baseRef;
     let startedFromOrigin = false;
+    yield* beforeWrite;
     if (startFromOrigin && projectIsRepository) {
       const resolvedRemoteBase = yield* gitWorkflow
         .fetchWorktreeBaseCommit({ cwd: projectCwd, refName: baseRef })
@@ -314,6 +335,7 @@ export const make = Effect.gen(function* () {
     // Mask interruption after worktree creation through setup; binding can detach and interrupt the caller.
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
+        yield* beforeWrite;
         const worktree = yield* restore(
           Effect.suspend(
             (): Effect.Effect<
@@ -370,33 +392,36 @@ export const make = Effect.gen(function* () {
             }).pipe(Effect.as({ status: "failed", detail } as const));
           });
 
-        const createdTaskFolder = worktree.taskFolder;
-        const removeCreatedWorktree = Effect.suspend(
-          (): Effect.Effect<unknown, GitCommandError | TaskFolderError> =>
-            createdTaskFolder === null
-              ? gitWorkflow
-                  .removeWorktree({ cwd: projectCwd, path: worktreePath, force: true })
-                  .pipe(
-                    Effect.andThen(
-                      Effect.suspend(() =>
-                        gitWorkflow.deleteLocalBranch({
-                          cwd: projectCwd,
-                          refName: worktree.refName,
-                          force: true,
-                        }),
-                      ),
-                    ),
-                  )
-              : taskFolders.remove({
-                  root: createdTaskFolder,
-                  force: true,
-                  forget: true,
-                  projectCommands: projectCommandsNow,
-                  deleteBranch: worktree.refName,
-                }),
-        ).pipe(Effect.ignoreCause({ log: true }));
+        let bindingIssued = false;
+        const removeCreatedWorktree = Effect.gen(function* () {
+          if (bindingIssued) return;
+          if (worktree.taskFolder === null) {
+            yield* taskFolders.removeForProjectFolder(
+              { cwd: projectCwd, path: worktreePath, force: false },
+              "request-not-permitted",
+            );
+            yield* gitWorkflow.deleteLocalBranch({
+              cwd: projectCwd,
+              refName: worktree.refName,
+              force: false,
+            });
+          } else {
+            const { kept } = yield* taskFolders.remove({
+              root: worktree.taskFolder,
+              force: false,
+              forget: true,
+              projectCommands: "request-not-permitted",
+            });
+            if (kept.length > 0)
+              yield* Effect.logWarning("Failed handoff retained task folder members", {
+                root: worktree.taskFolder,
+                kept,
+              });
+          }
+        }).pipe(Effect.ignoreCause({ log: true }));
 
         const recheckAndBind = Effect.gen(function* () {
+          yield* beforeWrite;
           // A concurrent UI binding may have landed during git work; do not orphan a second worktree.
           const recheck = yield* loadThread(scope);
           if (recheck.thread.worktreePath !== null) {
@@ -408,6 +433,20 @@ export const make = Effect.gen(function* () {
               `Thread '${scope.thread.threadId}' was archived while the worktree was being created; the handoff was rolled back.`,
             );
           }
+          if (worktree.taskFolder !== null) {
+            const taskFolder = yield* taskFolders
+              .find(worktreePath)
+              .pipe(asOperationFailed("Unable to verify task folder"));
+            if (taskFolder?.root !== worktree.taskFolder || taskFolder.projectId !== project.id)
+              return yield* failure(
+                "operation_failed",
+                "The task folder binding could not be verified.",
+              );
+            yield* taskFolders
+              .assertReady({ taskFolder, branch: worktree.refName })
+              .pipe(asOperationFailed("Unable to verify task folder checkouts"));
+          }
+          bindingIssued = true;
           return yield* threadManagement
             .dispatch({
               type: "thread.metadata.update",
@@ -482,7 +521,7 @@ export const make = Effect.gen(function* () {
         // The saved setup script is the project's code too: below Full access it waits for a person.
         const setupWaitsForFullAccess =
           (input.runSetupScript ?? true) &&
-          (yield* projectCommandsNow) === "agent-below-full-access";
+          (yield* projectCommandsForCurrentThread) !== "permitted";
         if ((input.runSetupScript ?? true) && !setupWaitsForFullAccess) {
           setupScript = yield* setupScriptRunner
             .runForThread({
@@ -497,16 +536,26 @@ export const make = Effect.gen(function* () {
               },
             })
             .pipe(
-              Effect.map((result): WorktreeMcpSetupScriptStatus =>
-                result.status === "started"
-                  ? {
-                      status: "started",
-                      scriptName: result.scriptName,
-                      terminalId: result.terminalId,
-                    }
-                  : result.status === "skipped-for-link"
-                    ? { status: "skipped" }
-                    : { status: "no-script" },
+              Effect.flatMap(
+                (
+                  result,
+                ): Effect.Effect<
+                  WorktreeMcpSetupScriptStatus,
+                  ProjectSetupScriptRunner.ProjectSetupScriptRunnerError
+                > =>
+                  result.status === "started"
+                    ? (worktree.taskFolder === null ? Effect.void : result.writeCompletion).pipe(
+                        Effect.as({
+                          status: "started" as const,
+                          scriptName: result.scriptName,
+                          terminalId: result.terminalId,
+                        }),
+                      )
+                    : Effect.succeed(
+                        result.status === "skipped-for-link"
+                          ? { status: "skipped" }
+                          : { status: "no-script" },
+                      ),
               ),
               reportFailed("worktree handoff setup script failed"),
             );
@@ -574,6 +623,14 @@ export const make = Effect.gen(function* () {
       );
     if (previous?.phase === "done")
       return previous.result ?? (yield* failure("operation_failed", "Handoff result is missing."));
+    const taskPlan = yield* taskFolders
+      .plan({ projectId: project.id })
+      .pipe(asOperationFailed("Unable to read the project's repositories"));
+    if (taskPlan !== null)
+      return yield* failure(
+        "operation_failed",
+        "Task folder handoff is held because this handoff receipt only covers one checkout.",
+      );
     yield* beforeWrite;
     let commit = previous?.commit;
     let baseRef = previous?.baseRef;
@@ -850,7 +907,7 @@ export const make = Effect.gen(function* () {
           return restore(
             Option.isSome(conversationPolicy)
               ? durableHandoff(scope.thread.threadId, input, beforeWrite)
-              : beforeWrite.pipe(Effect.andThen(performHandoff(scope, input))),
+              : performHandoff(scope, input, beforeWrite),
           ).pipe(
             Effect.ensuring(
               Effect.sync(() => handoffThreadsInFlight.delete(scope.thread.threadId)),

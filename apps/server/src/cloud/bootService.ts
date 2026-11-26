@@ -1,4 +1,4 @@
-import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
+import { readLauncherPointer } from "../jones/cloud/launcherPointer.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SERVICE_MANAGER_STOP_TIMEOUT_SECONDS } from "../jones/cloud/shutdownBudget.ts";
 import * as Config from "effect/Config";
@@ -59,6 +59,7 @@ import {
   systemdUnitDirectoryOf,
   type ServiceState,
 } from "./serviceProtocol.ts";
+import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
 
 export {
   serviceUnitBaseDirOf as bootServiceBaseDirOf,
@@ -425,16 +426,14 @@ function systemdManager(input: {
         args: ["--user", "restart", input.identity.systemdUnitFile],
       },
     ],
-    handoff: {
-      prepare: prepareActivation,
-      restart: [
-        {
-          step: "restarting the service",
-          command: "systemctl",
-          args: ["--user", "restart", "--no-block", BOOT_SERVICE_UNIT_FILE],
-        },
-      ],
-    },
+    handoff: [
+      ...prepareActivation,
+      {
+        step: "restarting the service",
+        command: "systemctl",
+        args: ["--user", "restart", "--no-block", input.identity.systemdUnitFile],
+      },
+    ],
     deactivate: [
       {
         step: "stopping the service",
@@ -1779,7 +1778,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
               (problems) =>
                 !problems.includes("service-disabled") || !problems.includes("service-stopped"),
             )
-          : yield* launchdJobLoaded;
+          : succeeded(yield* probe("launchctl", ["print", `gui/${uid}/${identity.launchdLabel}`]));
     return yield* Effect.acquireUseRelease(
       // Restoration requires every stop step; uninstall skips could leave the database held.
       // A failed stop may still have taken effect, so restore on either outcome.

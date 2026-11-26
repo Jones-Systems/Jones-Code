@@ -32,6 +32,7 @@ export const RuntimeStopIdentity = Schema.Struct({
   }),
   actorDigest: Schema.NonEmptyString,
   affectedRunIds: Schema.Array(RunId),
+  attributedRunId: Schema.optionalKey(RunId),
 });
 export type RuntimeStopIdentity = typeof RuntimeStopIdentity.Type;
 export interface RuntimeStopCommitContext {
@@ -170,6 +171,21 @@ export const makeRuntimeStopMethods = (
     AND json_extract(intent.identity_json,'$.request.target.binding.driver')=${binding.driver}
     AND json_extract(intent.identity_json,'$.request.target.binding.nativeThreadId')=${binding.nativeThreadId}
     AND json_extract(intent.identity_json,'$.request.target.binding.runtimeGeneration')=${binding.runtimeGeneration}`;
+  const hasAttributedRunStop = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    runId: RunId,
+    binding?: ProviderRuntimeBinding,
+  ) {
+    if (!(yield* available)) return false;
+    const rows = yield* sql`
+      SELECT 1 FROM jones_runtime_stop_intents AS intent
+      WHERE intent.thread_id = ${threadId}
+        AND json_extract(intent.identity_json, '$.attributedRunId') = ${runId}
+        ${binding === undefined ? sql`` : sql`AND ${matchesBinding(binding)}`}
+      LIMIT 1
+    `;
+    return rows.length !== 0;
+  });
   const hasStopIntent = Effect.fnUntraced(function* (binding: ProviderRuntimeBinding) {
     if (!(yield* available)) return false;
     const rows = yield* sql`
@@ -354,6 +370,7 @@ export const makeRuntimeStopMethods = (
     complete,
     assertStartAllowed,
     hasRunFence,
+    hasAttributedRunStop,
     readRunFences,
     hasStopIntent,
     hasStoppedRuntime,

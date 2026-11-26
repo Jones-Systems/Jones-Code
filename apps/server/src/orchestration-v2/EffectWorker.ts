@@ -142,7 +142,6 @@ export const layerExecutor: Layer.Layer<
   | RuntimeRequestService.RuntimeRequestServiceV2
   | ThreadTitleRegenerationService.ThreadTitleRegenerationService
   | ThreadManagementService.ThreadManagementService
-  | ProjectionStore.ProjectionStoreV2
   | ProjectionMaintenance.ProjectionMaintenanceV2
   | ServerSettings.ServerSettingsService
 > = Layer.effect(
@@ -155,6 +154,7 @@ export const layerExecutor: Layer.Layer<
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const projectionMaintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const restartPreparation = yield* RestartPreparation.RestartPreparation;
     const providerTurnControl = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
@@ -163,8 +163,6 @@ export const layerExecutor: Layer.Layer<
     const threadTitleRegeneration =
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
-    const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
-    const projectionMaintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
     const settings = yield* ServerSettings.ServerSettingsService;
     const startRun = (
       effect: EffectOutbox.OrchestrationEffectV2,
@@ -267,7 +265,9 @@ export const layerExecutor: Layer.Layer<
               ...(effect.request.processLossCount === undefined
                 ? {}
                 : { processLossCount: effect.request.processLossCount }),
-              ...(effect.request.cause === undefined ? {} : { cause: effect.request.cause }),
+              ...(effect.request.continueWithoutPreference === undefined
+                ? {}
+                : { continueWithoutPreference: effect.request.continueWithoutPreference }),
             }).pipe(
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ServerSettings.ServerSettingsService, settings),
@@ -796,9 +796,9 @@ export const layerExecutor: Layer.Layer<
                     : providerSessions.detach({
                         providerSessionId: request.providerSessionId,
                         threadId: effect.threadId,
-                        messageId: message.id,
-                        ...(error.steerDeclined ? { steerFollowUpOfRunId: run.id } : {}),
-                        ...(effect.request.steerFollowUpAfterRunOrdinal !== undefined
+                        requireWriterRetirement: true,
+                        providerThreadId: request.providerThreadId,
+                        ...(request.sessionTransition.type === "replace"
                           ? {
                               replacementProviderSessionId:
                                 request.sessionTransition.replacementProviderSessionId,
@@ -869,31 +869,49 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
           }
-          case "provider-thread.rollback":
-            return checkpointRollback
-              .execute({
-                threadId: effect.threadId,
-                providerThreadId: effect.request.providerThreadId,
-                checkpointId: effect.request.checkpointId,
-                scopeId: effect.request.scopeId,
-                requestId: effect.commandId,
-                ...(effect.request.restoreFiles === undefined
-                  ? {}
-                  : { restoreFiles: effect.request.restoreFiles }),
-              })
-              .pipe(
-                Effect.tapCause((cause) =>
-                  willRetry || Cause.hasInterruptsOnly(cause)
-                    ? Effect.void
-                    : threads
-                        .dispatch({
-                          type: "checkpoint.rollback.fail",
-                          commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
-                          threadId: effect.threadId,
-                          requestId: effect.commandId,
-                          message: Option.match(Cause.findErrorOption(cause), {
-                            onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
-                            onSome: CheckpointRollbackService.rollbackFailureClientMessage,
+          case "provider-thread.rollback": {
+            const request = effect.request;
+            return Effect.serviceOption(CurrentEffectClaim).pipe(
+              Effect.flatMap((claim) => {
+                const lost = () => new EffectClaimLost({ effectId: effect.id });
+                const checkClaim = Option.isNone(claim)
+                  ? Effect.fail(lost())
+                  : claim.value.use((current) =>
+                      sameOperationRequest(current, effect) ? Effect.void : Effect.fail(lost()),
+                    );
+                return checkpointRollback.execute(
+                  {
+                    threadId: effect.threadId,
+                    requestId: effect.commandId,
+                    providerThreadId: request.providerThreadId,
+                    checkpointId: request.checkpointId,
+                    scopeId: request.scopeId,
+                    ...(request.restoreFiles === undefined
+                      ? {}
+                      : { restoreFiles: request.restoreFiles }),
+                  },
+                  checkClaim,
+                );
+              }),
+              Effect.tapCause((cause) =>
+                willRetry || Cause.hasInterruptsOnly(cause)
+                  ? Effect.void
+                  : threads
+                      .dispatch({
+                        type: "checkpoint.rollback.fail",
+                        commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
+                        threadId: effect.threadId,
+                        requestId: effect.commandId,
+                        message: Option.match(Cause.findErrorOption(cause), {
+                          onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+                          onSome: CheckpointRollbackService.rollbackFailureClientMessage,
+                        }),
+                      })
+                      .pipe(
+                        Effect.catchCause((recordCause) =>
+                          Effect.logWarning("Failed to record rollback failure", {
+                            effectId: effect.id,
+                            cause: recordCause,
                           }),
                         ),
                       ),

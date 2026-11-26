@@ -2101,32 +2101,10 @@ const make = Effect.fn("makeWithDatabase")(function* (
       mode: "rows" | "raw" | "values" = "rows",
     ) =>
       Effect.withFiber<ReadonlyArray<any>, SqlError>((fiber) => {
-        let arrays = false;
-        let result: Exit.Exit<ReadonlyArray<unknown>, SqlError>;
-        try {
-          statement.setReadBigInts(Boolean(Context.get(fiber.context, Client.SafeIntegers)));
-          if (hasRows(statement)) {
-            arrays = mode === "values";
-            if (arrays) statement.setReturnArrays(true);
-            result = Exit.succeed(statement.all(...(params as any)));
-          } else {
-            // `run` reports the connection's last insert rowid even for BEGIN. One above 2^53
-            // throws on conversion after the statement already took effect, so a discarded
-            // result is read as BigInt.
-            if (mode !== "raw") statement.setReadBigInts(true);
-            const value = statement.run(...(params as any));
-            result = Exit.succeed(
-              mode === "raw" ? (value as unknown as ReadonlyArray<unknown>) : [],
-            );
-          }
-        } catch (cause) {
-          result = Exit.fail(
-            new SqlError({
-              reason: classifyError(cause, "Failed to execute statement", "execute"),
-            }),
-          );
-        }
-        if (arrays) {
+        const classification = checkpointClassifications.get(statement);
+        const execute = () => {
+          let arrays = false;
+          let result: Exit.Exit<ReadonlyArray<unknown>, SqlError>;
           try {
             const value = withClassification(classification, () => {
               statement.setReadBigInts(Boolean(Context.get(fiber.context, Client.SafeIntegers)));

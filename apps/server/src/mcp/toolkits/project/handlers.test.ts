@@ -1,5 +1,14 @@
-// @effect-diagnostics nodeBuiltinImport:off - a directory junction needs no privilege on Windows.
-import * as NodeFSP from "node:fs/promises";
+import { makeClientLaunchHarness } from "../../../jones/mcp/clientLaunch/ClientLaunch.testkit.ts";
+import { clientLaunchIds } from "../../../jones/mcp/clientLaunch/ClientLaunchIdentity.ts";
+import { ClaudeProviderCapabilitiesV2 } from "../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { CodexProviderCapabilitiesV2 } from "../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as Deferred from "effect/Deferred";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as CommandReceipts from "../../../orchestration-v2/CommandReceiptStore.ts";
+import * as EventSink from "../../../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../../../jones/orchestration/SupersededTerminalTrace.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { expect, it } from "@effect/vitest";
 import {
@@ -48,6 +57,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
+import * as NodeFSP from "node:fs/promises";
 
 function launchProjectLayer(projectId: ProjectId) {
   return Layer.mock(Project.ProjectService)({
@@ -505,31 +515,6 @@ const clientLaunchHarness = Effect.fn("test.clientLaunchHarness")(function* (inp
       getProviders: Effect.succeed(input.providers ?? []),
       refreshWorkspaceSnapshot: () => Effect.succeed(input.providers ?? []),
     }),
-    ServerSettings.layerTest({
-      fallbackModelSelection: input.fallbackModel ?? null,
-      ...(input.defaultRuntimeMode === undefined
-        ? {}
-        : { defaultRuntimeMode: input.defaultRuntimeMode }),
-      ...(input.newWorktreesStartFromOrigin === undefined
-        ? {}
-        : { newWorktreesStartFromOrigin: input.newWorktreesStartFromOrigin }),
-      ...(input.defaultThreadEnvMode === undefined
-        ? {}
-        : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
-      ...(input.overrideModel === undefined
-        ? {}
-        : {
-            projectSettingsFolded: true,
-            projectSettingsOverrides: {
-              [projectId]: {
-                defaultModelSelection: input.overrideModel,
-                ...(input.overrideScripts === undefined
-                  ? {}
-                  : { defaultProjectScripts: input.overrideScripts }),
-              },
-            },
-          }),
-    }),
     Layer.succeed(McpInvocationContext.McpInvocationContext, {
       environmentId: EnvironmentId.make("environment"),
       requestNamespace: "client:session-1",
@@ -544,71 +529,6 @@ const clientLaunchHarness = Effect.fn("test.clientLaunchHarness")(function* (inp
       },
       issuedAt: 0,
       capabilities: new Set(["orchestration" as const]),
-    }),
-    Layer.mock(ThreadManagement.ThreadManagementService)({
-      // A thread exists once a launch started it.
-      getThreadShell: (threadId) => {
-        const launch = input.launched.find((candidate) => candidate.threadId === threadId);
-        return Effect.succeed(
-          launch === undefined
-            ? null
-            : ({
-                id: launch.threadId,
-                projectId: launch.projectId,
-                modelSelection: launch.modelSelection,
-                deletedAt: null,
-              } as unknown as OrchestrationV2ThreadShell),
-        );
-      },
-    }),
-    Layer.mock(ThreadLaunch.ThreadLaunchService)({
-      checkWorktreeBase: input.checkWorktreeBase ?? (() => Effect.void),
-      launch: (launch) => {
-        input.launched.push(launch);
-        if (input.refusedByCeiling) {
-          return Effect.fail(
-            new ThreadLaunch.ThreadLaunchError({
-              operation: "create-thread",
-              commandId: launch.commandId,
-              projectId: launch.projectId,
-              cause: new OrchestratorRuntimeModeAboveCeilingError({
-                commandId: launch.commandId,
-                threadId: launch.threadId ?? ThreadId.make("thread:refused"),
-                refused: "mode",
-                runtimeMode: launch.runtimeMode,
-                maxRuntimeMode: "approval-required",
-                organization: "Example Corp",
-              }),
-            }),
-          );
-        }
-        return Effect.succeed({
-          threadId: launch.threadId,
-          projection: {
-            thread: {
-              id: launch.threadId,
-              projectId: launch.projectId,
-              title: launch.title,
-              modelSelection: launch.modelSelection,
-            },
-            runs: [],
-          },
-          resumed: false,
-        } as unknown as ThreadLaunch.ThreadLaunchResult);
-      },
-    }),
-    Layer.mock(Project.ProjectService)({
-      getById: (id) =>
-        Effect.succeed(
-          id === projectId
-            ? Option.some({
-                id,
-                workspaceRoot: input.workspaceRoot ?? "/projects/client-target",
-                defaultModelSelection: projectDefaults.model,
-              } as unknown as ProjectRecord)
-            : Option.none(),
-        ),
-      workspaceScanDirectory: Effect.succeed,
     }),
     Layer.mock(PeerForwarding.PeerForwarding)({}),
     DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
@@ -1356,26 +1276,16 @@ it.effect("a launch into a new worktree creates nothing when its base ref has no
       runtimeModeCeiling: "auto",
       launched,
       checkWorktreeBase: ({ projectId, workspaceStrategy }) =>
-        workspaceStrategy.type !== "worktree"
-          ? Effect.void
-          : workspaceStrategy.baseRef === "t3/renamed"
-            ? Effect.fail(
-                new ThreadLaunch.ThreadLaunchBaseRefError({
-                  projectId,
-                  projectTitle: "Client target",
-                  workspaceRoot: "/projects/client-target",
-                  baseRef: workspaceStrategy.baseRef,
-                }),
-              )
-            : workspaceStrategy.branch === "feature/taken"
-              ? Effect.fail(
-                  new ThreadLaunch.ThreadLaunchBranchExistsError({
-                    projectId,
-                    projectTitle: "Client target",
-                    branch: workspaceStrategy.branch,
-                  }),
-                )
-              : Effect.void,
+        workspaceStrategy.type === "worktree" && workspaceStrategy.baseRef === "t3/renamed"
+          ? Effect.fail(
+              new ThreadLaunch.ThreadLaunchBaseRefError({
+                projectId,
+                projectTitle: "Client target",
+                workspaceRoot: "/projects/client-target",
+                baseRef: workspaceStrategy.baseRef ?? "HEAD",
+              }),
+            )
+          : Effect.void,
     });
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
@@ -1966,63 +1876,287 @@ it.effect("an agent cannot delete the built-in scratch project, even with force"
   }),
 );
 
-it.effect("reading a project shows the default model and actions saved in Settings", () =>
+it.effect(
+  "a linked launch retried with the same clientRequestId retains its origin and modes",
+  () =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = yield* clientLaunchHarness({
+        runtimeModeCeiling: "auto",
+        linked: true,
+        narrowedTo: { runtimeMode: "approval-required", interactionMode: "plan" },
+        launched,
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const launch = (clientRequestId: string | undefined) =>
+        toolkit
+          .handle("t3_thread_launch", {
+            title: "Fix",
+            projectId,
+            message: "Fix the bug",
+            delegatedFrom: {
+              environmentId: EnvironmentId.make("source-environment"),
+              threadId: ThreadId.make("source-parent"),
+              title: "Parent task",
+            },
+            ...(clientRequestId === undefined ? {} : { clientRequestId }),
+          })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+
+      yield* launch("fix-1");
+      yield* launch("fix-1");
+      yield* launch("fix-2");
+      yield* launch(undefined);
+      yield* launch(undefined);
+      const ids = launched.map((input) => [input.commandId, input.threadId]);
+      // The same key sends the same command and thread ids, which the launch
+      // service replays instead of starting a second thread.
+      expect(ids[0]).toEqual(ids[1]);
+      expect(ids[0]).toEqual([
+        "mcp:launch:13323d3d71845a7f2c293a894f39437ca1b337408c1927ee33499e96d5a002a8",
+        "mcp:launch:13323d3d71845a7f2c293a894f39437ca1b337408c1927ee33499e96d5a002a8",
+      ]);
+      expect(ids[2]).toEqual([
+        "mcp:launch:cd0220b9ca42aaa97fde52795c9105489747f3786347088272dc8b23e173456d",
+        "mcp:launch:cd0220b9ca42aaa97fde52795c9105489747f3786347088272dc8b23e173456d",
+      ]);
+      expect(ids[2]).not.toEqual(ids[0]);
+      // Without a key every launch is new.
+      expect(ids[3]).not.toEqual(ids[4]);
+      for (const input of launched) {
+        expect(input.threadId).toBe(input.commandId);
+        expect(input.initialMessage?.messageId).toBe(input.commandId);
+        expect(input.linkOrigin).toEqual({
+          sessionId: "session-1",
+          label: "Claude Code",
+          access: "auto",
+        });
+        expect(input.delegatedFrom).toEqual({
+          environmentId: "source-environment",
+          threadId: "source-parent",
+          title: "Parent task",
+        });
+        expect(input.runtimeMode).toBe("approval-required");
+        expect(input.interactionMode).toBe("plan");
+      }
+    }),
+);
+
+it.effect(
+  "derives linked keyed-launch ids as upstream's fixed-length hash, pinned by golden vectors",
+  () =>
+    Effect.gen(function* () {
+      // Vectors computed outside this code: sha256 of the JSON pair [namespace, key].
+      const vectors = [
+        [
+          "client:session-1",
+          "fix-1",
+          "mcp:launch:13323d3d71845a7f2c293a894f39437ca1b337408c1927ee33499e96d5a002a8",
+        ],
+        [
+          "client:session-1",
+          "fix-2",
+          "mcp:launch:cd0220b9ca42aaa97fde52795c9105489747f3786347088272dc8b23e173456d",
+        ],
+        [
+          "fwd:0123abcd",
+          "key with space/é",
+          "mcp:launch:a04b39bdceb432506effe49944eeef206dec806c6af11bcbec5e824666eec89f",
+        ],
+      ] as const;
+      for (const [namespace, key, expected] of vectors) {
+        expect(yield* ProjectHandlers.linkedLaunchCommandId(namespace, key)).toBe(expected);
+      }
+      // The caller stays apart from the key.
+      expect(yield* ProjectHandlers.linkedLaunchCommandId("a:b", "c")).not.toBe(
+        yield* ProjectHandlers.linkedLaunchCommandId("a", "b:c"),
+      );
+      // The earlier derivation, kept only to recognise a retry, is the percent-encoded form.
+      expect(ProjectHandlers.legacyLinkedLaunchCommandId("client:session-1", "fix-1")).toBe(
+        "mcp:launch:client%3Asession-1:fix-1",
+      );
+    }).pipe(Effect.provide(NodeCrypto.layer)),
+);
+
+it.effect("a linked keyed launch gets a short id with no percent-encoded separators", () =>
   Effect.gen(function* () {
-    const overrideModel = {
-      instanceId: ProviderInstanceId.make("claudeAgent"),
-      model: "claude-sonnet",
-    };
-    const overrideScripts = [
-      { id: "test", name: "Test", command: "pnpm test", icon: "test", runOnWorktreeCreate: false },
-    ] satisfies ProjectScript[];
-    const harness = clientLaunchHarness({
-      runtimeModeCeiling: "full-access",
-      overrideModel,
-      overrideScripts,
-      launched: [],
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = yield* clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      linked: true,
+      launched,
     });
-    const dependencies = Layer.merge(
-      harness.dependencies,
-      Layer.mock(Project.ProjectService)({
-        getById: (projectId) =>
-          Effect.succeedSome({
-            id: projectId,
-            title: "Client target",
-            workspaceRoot: "/projects/client-target",
-            defaultModelSelection: null,
-            scripts: [
-              {
-                id: "stale",
-                name: "Stale",
-                command: "true",
-                icon: "play",
-                runOnWorktreeCreate: false,
-              },
-            ],
-            createdAt: "2026-01-01T00:00:00.000Z",
-            updatedAt: "2026-01-01T00:00:00.000Z",
-            deletedAt: null,
-          }),
-      }),
-    );
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
         McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
       ),
     );
-
-    const read = yield* toolkit
-      .handle("t3_project_read", { projectId: harness.projectId })
+    yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Fix",
+        projectId,
+        message: "Fix the bug",
+        clientRequestId: `fwd:${"ab".repeat(32)}`,
+      })
       .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
-
-    expect(read.at(-1)?.result).toMatchObject({
-      defaultModelSelection: overrideModel,
-      scripts: overrideScripts,
-    });
+    expect(launched).toHaveLength(1);
+    expect(launched[0]?.commandId).toMatch(/^mcp:launch:[0-9a-f]{64}$/);
+    expect(launched[0]?.commandId).not.toContain("%");
+    expect(launched[0]?.commandId.length).toBeLessThan(80);
+    expect(launched[0]?.threadId).toBe(launched[0]?.commandId);
   }),
 );
 
-it.effect("a project update or create that is refused tells the agent why", () =>
+it.effect(
+  "a linked keyed launch accepted under the earlier id is replayed under it, not duplicated",
+  () =>
+    Effect.gen(function* () {
+      const legacyId = ProjectHandlers.legacyLinkedLaunchCommandId("client:session-1", "fix-1");
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = yield* clientLaunchHarness({
+        runtimeModeCeiling: "auto",
+        linked: true,
+        acceptedCommandIds: new Set([legacyId]),
+        launched,
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const launch = (clientRequestId: string) =>
+        toolkit
+          .handle("t3_thread_launch", {
+            title: "Fix",
+            projectId,
+            message: "Fix the bug",
+            clientRequestId,
+          })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      // The retried key was accepted before the upgrade: the same ids reach the launch service.
+      yield* launch("fix-1");
+      expect(launched[0]?.commandId).toBe(legacyId);
+      expect(launched[0]?.threadId).toBe(legacyId);
+      expect(launched[0]?.initialMessage?.messageId).toBe(legacyId);
+      // A key with no earlier acceptance takes the hashed id.
+      yield* launch("fix-2");
+      expect(launched[1]?.commandId).toBe(
+        "mcp:launch:cd0220b9ca42aaa97fde52795c9105489747f3786347088272dc8b23e173456d",
+      );
+    }),
+);
+
+it.effect("a linked keyed launch stops when the earlier-id receipt cannot be read", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = yield* clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      linked: true,
+      receiptReadFails: true,
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const result = yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Fix",
+        projectId,
+        message: "Fix the bug",
+        clientRequestId: "fix-1",
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    // Guessing an id could create a second thread, so nothing launches.
+    expect(result.at(-1)?.result).toMatchObject({ code: "orchestration_error" });
+    expect(launched).toHaveLength(0);
+  }),
+);
+
+it.effect("a delegated linked launch preserves inherited modes over project defaults", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = yield* clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      defaultRuntimeMode: "approval-required",
+      linked: true,
+      narrowedTo: { runtimeMode: "auto", interactionMode: "default" },
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Inherited delegated task",
+        projectId,
+        delegatedFrom: {
+          environmentId: EnvironmentId.make("source-environment"),
+          threadId: ThreadId.make("source-parent"),
+          title: "Parent task",
+        },
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(launched).toHaveLength(1);
+    expect(launched[0]?.runtimeMode).toBe("auto");
+    expect(launched[0]?.interactionMode).toBe("default");
+    expect(launched[0]?.linkOrigin?.access).toBe("full-access");
+  }),
+);
+
+it.effect.each(["without delegation", "without source modes"] as const)(
+  "a linked launch %s keeps its project mode default",
+  (scenario) =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = yield* clientLaunchHarness({
+        runtimeModeCeiling: "full-access",
+        defaultRuntimeMode: "approval-required",
+        linked: true,
+        ...(scenario === "without delegation"
+          ? { narrowedTo: { runtimeMode: "auto" as const, interactionMode: "default" as const } }
+          : {}),
+        launched,
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      yield* toolkit
+        .handle("t3_thread_launch", {
+          title: "Ordinary linked launch",
+          projectId,
+          ...(scenario === "without source modes"
+            ? {
+                delegatedFrom: {
+                  environmentId: EnvironmentId.make("source-environment"),
+                  threadId: ThreadId.make("source-parent"),
+                  title: "Parent task",
+                },
+              }
+            : {}),
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(launched).toHaveLength(1);
+      expect(launched[0]?.runtimeMode).toBe("approval-required");
+    }),
+);
+
+it.effect("an update the project refuses tells the agent why", () =>
   Effect.gen(function* () {
     const harness = yield* clientLaunchHarness({ runtimeModeCeiling: "full-access", launched: [] });
     const detail = "Project monograms must contain at most two characters.";

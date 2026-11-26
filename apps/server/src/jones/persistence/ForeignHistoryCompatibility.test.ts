@@ -4,11 +4,16 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { readerPoolOptions } from "../serverParallelism/persistenceOptions.ts";
 import { assert, it } from "@effect/vitest";
+import { ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
+import * as ProjectionMaintenance from "../../orchestration-v2/ProjectionMaintenance.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import effectCancellation from "../../persistence/Migrations/OrchestrationV2/EffectCancellation.ts";
 import foreignHistory from "./fixtures/foreignJonesHistory.json" with { type: "json" };
@@ -20,6 +25,9 @@ const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 // migration its released databases ran before 7-13 created their tables.
 const foreignUpstream = 56;
 const latestJones = jonesMigrationEntries.at(-1)!;
+const maintenanceLayer = ProjectionMaintenance.layer.pipe(
+  Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
+);
 
 // Released Jones 1-6 as those databases hold them. 002 then added this column;
 // the current 002 is a no-op, so the released ALTER is replayed here.
@@ -51,6 +59,112 @@ const snapshotForeign = (names: ReadonlySet<string>) =>
       yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id < 100 ORDER BY migration_id`;
     return { objects, rows, ledger };
   });
+
+const deletedLegacyThread = ThreadId.make("fixture-thread");
+const prepareDeletedLegacyThread = Effect.fn("prepareDeletedLegacyThread")(function* (
+  fixture: "populated foreign schema" | "missing settlement proof" | "empty foreign schema",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`PRAGMA foreign_keys = ON`;
+  yield* releasedJones;
+  for (const migration of foreignHistory.migrations.slice(0, 2)) {
+    for (const statement of migration.statements) yield* sql.unsafe(statement);
+    yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (${migration.id}, ${migration.name})`;
+  }
+  // The last three statements populate the foreign evidence tables. The first three seed upstream.
+  const seeds = foreignHistory.syntheticSeeds;
+  for (const statement of fixture === "populated foreign schema" ? seeds : seeds.slice(0, 3)) {
+    yield* sql.unsafe(statement);
+  }
+  if (fixture === "missing settlement proof") {
+    yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
+    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id < 107));
+  } else {
+    yield* runMigrations();
+  }
+  // A completed effect leaves the thread eligible for purge, but a released foreign hold
+  // can still reference that effect. The transcript and deletion event must survive a refusal.
+  yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'succeeded' WHERE effect_id = 'fixture-effect'`;
+  const at = "2026-10-03T00:00:00.000Z";
+  yield* sql`
+    INSERT INTO orchestration_v2_projection_threads (
+      thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+      created_at, updated_at, deleted_at, payload_json
+    ) VALUES (
+      ${deletedLegacyThread}, 'fixture-project', 'Retained title', 'codex', 'full-access', 'default',
+      ${at}, ${at}, ${at}, '{"title":"Retained title"}'
+    )
+  `;
+  yield* sql`
+    INSERT INTO projection_thread_messages (
+      message_id, thread_id, role, text, is_streaming, created_at, updated_at
+    ) VALUES ('fixture-legacy-message', ${deletedLegacyThread}, 'user', 'Retained transcript', 0, ${at}, ${at})
+  `;
+  yield* sql`
+    INSERT INTO orchestration_v2_legacy_imports (thread_id, source_updated_at, shell_imported_at)
+    VALUES (${deletedLegacyThread}, ${at}, ${at})
+  `;
+  yield* sql`
+    INSERT INTO orchestration_events (
+      event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind,
+      payload_json, metadata_json, application_event_version
+    ) VALUES ('fixture-v1-message', 'thread', ${deletedLegacyThread}, 3, 'thread.message-sent',
+      ${at}, 'client', '{"text":"Retained transcript"}', '{}', 1)
+  `;
+});
+
+it.effect.each([
+  ["populated foreign schema", "JonesForeignHistoryMaintenanceBlockedError"],
+  ["missing settlement proof", "JonesSettlementProofMigrationRequiredError"],
+] as const)("direct purge and sweep refuse %s before writing", (fixture, blocker) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    yield* prepareDeletedLegacyThread(fixture);
+    const snapshot = snapshotForeign(
+      new Set([
+        "orchestration_events",
+        "orchestration_command_receipts",
+        "orchestration_v2_effect_outbox",
+        "orchestration_v2_projection_metadata",
+        "orchestration_v2_projection_threads",
+        "orchestration_v2_legacy_imports",
+        "projection_thread_messages",
+        "orchestration_v2_unknown_effect_holds",
+        "orchestration_v2_thread_deletion_commands",
+        "orchestration_v2_workstream_settlement_witnesses",
+      ]),
+    );
+    const before = yield* snapshot;
+
+    const direct = yield* maintenance.purgeDeletedThread(deletedLegacyThread).pipe(Effect.flip);
+    assert.strictEqual(direct._tag, blocker);
+    assert.deepStrictEqual(yield* snapshot, before);
+    const sweep = yield* maintenance.pruneEventStore(Effect.void).pipe(Effect.flip);
+    assert.strictEqual(sweep._tag, blocker);
+    assert.deepStrictEqual(yield* snapshot, before);
+    assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
+  }).pipe(Effect.provide(maintenanceLayer), Effect.provide(memory)),
+);
+
+it.effect("an empty foreign schema allows deleted-thread and legacy history reclamation", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    yield* prepareDeletedLegacyThread("empty foreign schema");
+
+    assert.isAbove((yield* maintenance.pruneEventStore()).purgedRowCount, 0);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM projection_thread_messages`, []);
+    assert.deepStrictEqual(
+      yield* sql`SELECT event_id FROM orchestration_events WHERE application_event_version = 1`,
+      [],
+    );
+    assert.deepStrictEqual(yield* sql`SELECT title FROM orchestration_v2_projection_threads`, [
+      { title: ProjectionMaintenance.DELETED_THREAD_TITLE },
+    ]);
+    assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
+  }).pipe(Effect.provide(maintenanceLayer), Effect.provide(memory)),
+);
 
 it.effect.each([11, 13])(
   "receiving startup preserves populated foreign history 7-%i without adopting it",

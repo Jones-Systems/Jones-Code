@@ -190,6 +190,29 @@ const projectedThreadIds = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =
       : [event.threadId],
   );
 
+interface RuntimeWriteContext {
+  readonly skipUnchangedProviderNodes?: boolean;
+  readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
+  readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
+  readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
+  readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
+  readonly runtimeIdentityObservation?: RequestedRuntimeIdentity;
+  readonly runtimeIdentityBoundary?: {
+    readonly expectedGeneration: string | null;
+    readonly expectedActiveProviderThreadId?: ProviderThreadId;
+    readonly expectedProviderThreadIdentity?: Pick<
+      OrchestrationV2ProviderThread,
+      | "id"
+      | "appThreadId"
+      | "driver"
+      | "providerInstanceId"
+      | "providerSessionId"
+      | "nativeThreadRef"
+    >;
+  };
+  readonly settleRunOnLostRuntimeEvidence?: boolean;
+}
+
 export interface EventSinkV2Shape {
   readonly idleWorktreeAdmission?: IdleWorktreeAdmission.Store;
   readonly readDeletionWorktreeRemovalStartForTarget?: (
@@ -242,6 +265,10 @@ export interface EventSinkV2Shape {
   ) => Effect.Effect<import("@t3tools/contracts").ProviderRuntimeBinding | null, EventSinkV2Error>;
   readonly hasStoppedRuntime: (
     binding: import("@t3tools/contracts").ProviderRuntimeBinding,
+  ) => Effect.Effect<boolean, EventSinkV2Error>;
+  readonly hasAttributedRuntimeStop: (
+    threadId: ThreadId,
+    runId: RunId,
   ) => Effect.Effect<boolean, EventSinkV2Error>;
   readonly supersededTerminalTrace: ReturnType<typeof SupersededTerminalTrace.make>;
   readonly writeHistoricalTerminal: (
@@ -557,11 +584,57 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const threadViewers = yield* ThreadViewers.ThreadViewers;
+    const legacyStorage = LegacyStorage.make(sql);
+    const validateLegacyGuard = (
+      command: Parameters<Effect.Success<ReturnType<typeof makeDispatchGuard>>>[0],
+    ) =>
+      makeDispatchGuard().pipe(
+        Effect.provideService(EventSinkV2, eventSinkService),
+        Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
+        Effect.flatMap((validate) => validate(command)),
+      );
+    const deletionAdmission = yield* makeDeletionAdmission.pipe(Effect.provide(NodePath.layer));
+    const idleWorktreeAdmission = IdleWorktreeAdmission.makeIdleWorktreeAdmission(sql);
+    const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
+    const captureCommittedProvenance = yield* WorkspaceProvenance.optionalCommittedCapture;
+    const provenance = yield* Effect.serviceOption(WorkspaceProvenanceStore.ProvenanceStore);
+    const admission = yield* Effect.serviceOption(UpdateAdmissionFence.UpdateAdmissionFence);
+    if (Option.isSome(admission)) yield* admission.value.attach;
+    const nativeCreation = yield* Effect.serviceOption(
+      NativeCreationRepository.NativeCreationRepository,
+    );
+    const captureSettlementProof = (
+      receipt: CommandReceiptStore.CommandReceiptV2,
+      storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
+    ) =>
+      receipt.commandType === "thread.settle" || receipt.commandType === "thread.unsettle"
+        ? captureNativeProviderSettlementProof({
+            receipt: {
+              commandId: receipt.commandId,
+              aggregateKind: "thread",
+              aggregateId: receipt.threadId,
+              commandType: receipt.commandType,
+              acceptedAt: DateTime.formatIso(receipt.acceptedAt),
+              resultSequence: receipt.resultSequence,
+              status: receipt.status,
+            },
+            events: storedEvents.map((stored) => ({
+              eventId: stored.event.id,
+              commandId: stored.commandId,
+              aggregateKind: "thread" as const,
+              aggregateId: stored.event.threadId,
+              sequence: stored.sequence,
+              type: stored.event.type,
+              occurredAt: DateTime.formatIso(stored.event.occurredAt),
+              applicationEventVersion: 2,
+            })),
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+        : Effect.void;
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const threadViewers = yield* ThreadViewers.ThreadViewers;
     const legacyCleanup = yield* Effect.serviceOption(LegacyCleanup.TerminalCleanupWorker);
     const historicalTerminals = yield* HistoricalTerminalHistory.make;
     const supersededTerminalTrace = SupersededTerminalTrace.make();
@@ -2499,38 +2572,50 @@ const layerBase: Layer.Layer<
       );
     };
 
-    // Waits only for queued provider snapshots of `threadIds`, the threads this write touches.
-    const commitThenPublish = <A, E, R>(
-      threadIds: ReadonlyArray<ThreadId>,
+    const commitThenPublish = Effect.fn("orchestrationV2.EventSink.commitThenPublish")(function* <
+      A,
+      E,
+      R,
+    >(
       transaction: Effect.Effect<A, E, R>,
       publish: (committed: A) => Effect.Effect<void>,
-    ) =>
-      Effect.flatMap(CurrentProviderBatch, (batch) =>
-        batch === undefined
-          ? Effect.flatMap(Effect.serviceOption(sql.transactionService), (existing) =>
-              Option.isSome(existing)
-                ? commitThenPublishNow(transaction, publish)
-                : coordinator.barrier(commitThenPublishNow(transaction, publish), threadIds),
-            )
-          : transaction.pipe(
-              Effect.tap((committed) =>
-                Effect.sync(() => {
-                  batch.publish.push(publish(committed));
-                }),
-              ),
-            ),
-      );
+      local?: {
+        readonly acceptance: import("../jones/ordinaryCheckout/CheckoutPreparation.ts").LocalAcceptance;
+        readonly commandId: CommandId;
+        readonly authorityRevision: string;
+      },
+      preserveFiber = false,
+    ) {
+      const batch = yield* CurrentProviderBatch;
+      if (batch !== undefined) {
+        if (local !== undefined) return yield* new CheckoutError({ reason: "unavailable" });
+        const committed = yield* sql.withTransaction(
+          transaction.pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        );
+        batch.publish.push(publish(committed));
+        return committed;
+      }
+      // Only our batch owns a deferred publication lane for an existing transaction.
+      // A savepoint cannot acknowledge a command before somebody else's outer COMMIT.
+      if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
+        return yield* new CheckoutError({ reason: "unavailable" });
+      if (preserveFiber) {
+        yield* coordinator.barrier(Effect.void);
+        return yield* commitThenPublishNow(transaction, publish, local);
+      }
+      return yield* coordinator.barrier(commitThenPublishNow(transaction, publish, local));
+    });
 
     const withProviderBatch: EventSinkV2Shape["withProviderBatch"] = Effect.fn(
       "orchestrationV2.EventSink.providerBatch",
     )(function* <A, E, R>(effect: Effect.Effect<A, E, R>) {
       if ((yield* CurrentProviderBatch) !== undefined) return yield* effect;
-      const batch: ProviderBatchPublication = {
-        publish: [],
-        eventCount: 0,
-        projection: { nodeReads: new Map(), threadTouches: new Map() },
-        projectedSequence: undefined,
-      };
+      if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
+        return yield* new EventSinkWriteError({
+          eventCount: 0,
+          cause: new CheckoutError({ reason: "unavailable" }),
+        });
+      const batch: ProviderBatchPublication = { publish: [], eventCount: 0 };
       let started = false;
       const result = yield* commitThenPublishNow(
         Effect.sync(() => {
@@ -2701,6 +2786,8 @@ const layerBase: Layer.Layer<
         runtimeStops.readStoppedRuntime(provider).pipe(Effect.mapError(stopError)),
       hasStoppedRuntime: (binding) =>
         runtimeStops.hasStoppedRuntime(binding).pipe(Effect.mapError(stopError)),
+      hasAttributedRuntimeStop: (threadId, runId) =>
+        runtimeStops.hasAttributedRunStop(threadId, runId).pipe(Effect.mapError(stopError)),
       assertRuntimeStopStartAllowed: (input) =>
         runtimeStops.assertStartAllowed(input).pipe(Effect.mapError(stopError)),
       reviewImportedHistory: (input) =>

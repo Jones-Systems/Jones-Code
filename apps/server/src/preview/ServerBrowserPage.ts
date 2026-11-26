@@ -1003,7 +1003,11 @@ const typeKeys = async (page: Page, text: string, timeoutMs: number, deadline: n
   }
 };
 
-export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
+export const type = async (
+  page: Page,
+  input: PreviewAutomationTypeInput,
+  onDispatch: () => void | Promise<void> = constVoid,
+) => {
   // One deadline across steps keeps the reply inside the broker's grace; Playwright reads 0 as none.
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
@@ -1013,10 +1017,12 @@ export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
     // Pickers and sliders take a value such as 2026-01-31 only from fill, and some reject an empty one.
     const timeout = remaining();
     if (await pageAnswer(locator.evaluate(valueOnlyInput, undefined, { timeout }), timeout)) {
+      await onDispatch();
       await locator.fill(input.text, { timeout: remaining() });
       return;
     }
     // fill follows a label to its control and leaves that control focused for the keys.
+    await onDispatch();
     await locator.fill("", { timeout: remaining() });
     await typeKeys(page, input.text, timeoutMs, deadline);
     return;

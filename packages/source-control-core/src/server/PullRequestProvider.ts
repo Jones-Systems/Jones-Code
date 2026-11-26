@@ -440,7 +440,10 @@ export interface PullRequestProviderApi {
 
   readonly getChangeRequestChecks?: (
     input: ProviderRepositoryRef & { readonly number: number },
-  ) => Effect.Effect<Omit<PullRequestChecks, "observedAt">, PullRequestProviderError>;
+  ) => Effect.Effect<
+    Pick<PullRequestChecks, "state" | "checks" | "jonesCheckObservation">,
+    PullRequestProviderError
+  >;
 
   readonly getChangeRequest: (
     input: ProviderRepositoryRef & { readonly number: number },

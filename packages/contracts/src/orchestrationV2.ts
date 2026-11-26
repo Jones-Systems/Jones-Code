@@ -539,7 +539,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
-  branch: Schema.NullOr(GitRefName),
+  threadMessagesBlocked: Schema.optional(Schema.Boolean),
+  branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   pullRequests: Schema.optional(Schema.Array(ThreadPullRequestLink)),
@@ -850,6 +851,13 @@ const worktreeLaunchFields = {
   baseRef: Schema.optional(TrimmedNonEmptyString),
   branch: Schema.optional(TrimmedNonEmptyString),
   startFromOrigin: Schema.optional(Schema.Boolean),
+  repositories: Schema.optional(
+    Schema.Array(Schema.Struct({ path: TrimmedNonEmptyString }))
+      .check(Schema.isMaxLength(PROJECT_TRACKED_FOLDERS_MAX))
+      .annotate({
+        description: "Tracked Git folders to give a worktree. Default: all, or none above 8.",
+      }),
+  ),
 };
 
 export const OrchestrationV2ThreadLaunchToolWorkspaceStrategy = Schema.Union([
@@ -860,17 +868,9 @@ export const OrchestrationV2ThreadLaunchToolWorkspaceStrategy = Schema.Union([
 export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
   ...nonWorktreeLaunchStrategies,
   Schema.Struct({
-    type: Schema.Literal("worktree"),
-    baseRef: GitRefName,
-    branch: Schema.optional(GitRefName),
-    startFromOrigin: Schema.optional(Schema.Boolean),
-    repositories: Schema.optional(
-      Schema.Array(Schema.Struct({ path: TrimmedNonEmptyString }))
-        .check(Schema.isMaxLength(PROJECT_TRACKED_FOLDERS_MAX))
-        .annotate({
-          description: "Tracked Git folders to give a worktree. Default: all, or none above 8.",
-        }),
-    ),
+    ...worktreeLaunchFields,
+    // Capability-aware clients select this policy and preparation retains it for replay.
+    baseFreshness: Schema.optional(OrchestrationV2WorktreeBaseFreshness),
   }),
 ]);
 export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
@@ -899,8 +899,10 @@ export const OrchestrationV2Run = Schema.Struct({
   status: OrchestrationV2RunStatus,
   queuePosition: Schema.optional(Schema.NullOr(PositiveInt)),
   queueHeld: Schema.optional(Schema.Boolean),
-  /** The sender asked for a separate turn; it is not an ordering barrier for a later auto send. */
+  /** Explicit separate-turn delivery is independent of an automatic follow-up. */
   explicitQueue: Schema.optional(Schema.Literal(true)),
+  /** Recorded queue admission; absent or false keeps separate-turn delivery. */
+  queuedToolBoundaryEligible: Schema.optional(Schema.Boolean),
   steerWhenReadyRunId: Schema.optional(RunId),
   requestedAt: Schema.DateTimeUtc,
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
@@ -2473,6 +2475,7 @@ export const OrchestrationV2PrivateEvent = Schema.Union([
 ]);
 export type OrchestrationV2PrivateEvent = typeof OrchestrationV2PrivateEvent.Type;
 export const OrchestrationV2ThreadProjection = Schema.Struct({
+  capturedRuntimeStopRunId: Schema.optionalKey(RunId),
   thread: OrchestrationV2AppThread,
   runs: Schema.Array(OrchestrationV2Run),
   attempts: Schema.Array(OrchestrationV2RunAttempt),
@@ -2545,7 +2548,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
-  branch: Schema.NullOr(GitRefName),
+  threadMessagesBlocked: Schema.optional(Schema.Boolean),
+  branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   pullRequests: Schema.optional(Schema.Array(ThreadPullRequestLink)),
@@ -3805,6 +3809,8 @@ export const OrchestrationV2Command = Schema.Union([
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
     explicitQueue: Schema.optional(Schema.Literal(true)),
+    /** Explicitly opt a follow-up into automatic tool-boundary delivery if queued. */
+    queuedToolBoundaryEligible: Schema.optional(Schema.Boolean),
     delegatedCompletion: Schema.optional(
       Schema.Struct({
         parentRunId: RunId,
@@ -4019,15 +4025,7 @@ export const OrchestrationV2Command = Schema.Union([
 export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
-const OrchestrationV2InternalCommand = Schema.Union([
-  // The server issues this after checking the value against the run's declared schema.
-  Schema.Struct({
-    type: Schema.Literal("run.output.submit"),
-    commandId: CommandId,
-    threadId: ThreadId,
-    runId: RunId,
-    value: Schema.Json,
-  }),
+export const OrchestrationV2InternalCommand = Schema.Union([
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),

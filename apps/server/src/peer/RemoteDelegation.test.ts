@@ -63,8 +63,6 @@ import * as Digest from "effect/crypto/Digest";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Tracer from "effect/Tracer";
-import * as FetchHttpClient from "effect/http/FetchHttpClient";
-import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
 
@@ -101,6 +99,7 @@ import * as PeerLinks from "./PeerLinks.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 // The laptop's agent delegates a task to the box through a link. The box is
 // its real /mcp behind real OAuth, with one thread the test finishes; the
@@ -363,29 +362,62 @@ const boxToolkitLayer = (thread: BoxThread) => {
         yield* Deferred.succeed(thread.interruptedOnce, undefined);
       }
     });
-  const layerBoxThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
-    getThreadShell: shellOf,
-    getProjectThreadRecords: (input) => projectionOf(input.threadId),
-    getThreadRecords: (threadId) => projectionOf(threadId),
-    getRunCount: (threadId) =>
-      projectionOf(threadId).pipe(Effect.map((projection) => projection.runs.length)),
-    waitForThread: (input) =>
-      Effect.gen(function* () {
-        yield* Ref.update(thread.waitedFor, (seen) => [...seen, input.runId]);
-        // A thread with no run has nothing to wait for.
-        if (yield* Ref.get(thread.runless)) {
-          return { threadId: input.threadId, run: null, timedOut: false };
-        }
-        if (yield* Ref.get(thread.gone)) {
-          return yield* new ThreadManagement.ThreadManagementThreadNotFoundError({
-            projectId: boxProject,
-            threadId: input.threadId,
-          });
-        }
-        // The queued run's own task stays open while the follow-up ahead of it settles.
-        if (input.runId === boxQueuedRunId) return yield* Effect.never;
-        if (input.runId === boxLaterRunId) {
-          const laterDone = yield* Deferred.await(thread.laterFinished).pipe(
+  // The box's own database keeps the receipts of sends its link makes, as its orchestrator does.
+  const layerBoxThreads = Layer.unwrap(
+    Effect.map(SqlClient.SqlClient, (sql) => boxThreadsWith(acceptingSendReceipts(sql))),
+  );
+  const boxThreadsWith = (receipts: ReturnType<typeof acceptingSendReceipts>) =>
+    Layer.mock(ThreadManagement.ThreadManagementService)({
+      remoteSendReceipts: receipts.remoteSendReceipts,
+      getThreadShell: shellOf,
+      getProjectThreadRecords: (input) => projectionOf(input.threadId),
+      getThreadRecords: (threadId) => projectionOf(threadId),
+      waitForThread: (input) =>
+        Effect.gen(function* () {
+          yield* Ref.update(thread.waitedFor, (seen) => [...seen, input.runId]);
+          yield* Deferred.succeed(thread.waitStarted, undefined);
+          // A thread with no run has nothing to wait for.
+          if (yield* Ref.get(thread.runless)) {
+            return { threadId: input.threadId, run: null, timedOut: false };
+          }
+          if (yield* Ref.get(thread.gone)) {
+            return yield* new ThreadManagement.ThreadManagementThreadNotFoundError({
+              projectId: boxProject,
+              threadId: input.threadId,
+            });
+          }
+          // The queued run's own task stays open while the follow-up ahead of it settles.
+          if (input.runId === boxQueuedRunId) return yield* Effect.never;
+          if (input.runId === boxLaterRunId) {
+            const laterDone = yield* Deferred.await(thread.laterFinished).pipe(
+              Effect.timeoutOption(input.timeoutMs),
+            );
+            // Settled, the thread's answer is the run queued behind it, once there is one.
+            const queued =
+              Option.isSome(laterDone) &&
+              input.untilDelegatedWorkSettled === true &&
+              (yield* Ref.get(thread.queuedReply)) !== null;
+            // A restarted run is reported as its continuation, as the box follows the chain.
+            const restarted = (yield* Ref.get(thread.restart))?.of;
+            const latest = (runId: RunId) => (runId === restarted ? continuationOf(runId) : runId);
+            return {
+              threadId: input.threadId,
+              run: {
+                id: latest(boxLaterRunId),
+                status: Option.isSome(laterDone) ? "completed" : "running",
+              } as OrchestrationV2Run,
+              timedOut: Option.isNone(laterDone),
+              ...(queued
+                ? {
+                    resultRun: {
+                      id: latest(boxQueuedRunId),
+                      status: "completed",
+                    } as OrchestrationV2Run,
+                  }
+                : {}),
+            };
+          }
+          const done = yield* Deferred.await(thread.finished).pipe(
             Effect.timeoutOption(input.timeoutMs),
           );
           // Only a waiter that asks waits past the run for the thread's own task.
@@ -533,168 +565,10 @@ const boxToolkitLayer = (thread: BoxThread) => {
               visible.some((entry) => entry.position > matching.at(-1)!.position),
             hasEarlier: false,
           };
-        }
-        // Unpinned, a wait reports the latest run: a later one once there is one.
-        const later = input.runId === undefined && (yield* Ref.get(thread.laterReply)) !== null;
-        return {
-          threadId: input.threadId,
-          run: {
-            id: later ? boxLaterRunId : runId,
-            status: later ? "completed" : yield* Ref.get(thread.status),
-          } as OrchestrationV2Run,
-          timedOut: Option.isNone(done),
-        };
-      }),
-    getTimelinePage: (threadId, options) =>
-      Effect.gen(function* () {
-        if (options.afterPosition === 299 && options.itemId === undefined) {
-          yield* Ref.getAndSet(thread.beforeTail, Effect.void).pipe(Effect.flatten);
-        }
-        if (
-          (yield* Ref.get(thread.holdRead)) ||
-          (options.itemId !== undefined && (yield* Ref.get(thread.holdRefill)))
-        ) {
-          yield* Deferred.succeed(thread.readStarted, undefined);
-          yield* Deferred.await(thread.releaseRead);
-        }
-        const reply = yield* Ref.get(thread.reply);
-        const later = yield* Ref.get(thread.laterReply);
-        const queued = yield* Ref.get(thread.queuedReply);
-        const error = yield* Ref.get(thread.error);
-        const laterError = yield* Ref.get(thread.laterError);
-        const restart = yield* Ref.get(thread.restart);
-        // One item per page, with errors available only in the activity view.
-        const replies = (
-          (yield* Ref.get(thread.timeline)) ?? [
-            ...(reply === null
-              ? []
-              : [
-                  {
-                    id: TurnItemId.make("item:reply"),
-                    runId,
-                    text: reply,
-                    type: "assistant_message",
-                  },
-                ]),
-            ...(error === null
-              ? []
-              : [{ id: TurnItemId.make("item:error"), runId, text: error, type: "error" }]),
-            ...(later === null
-              ? []
-              : [
-                  {
-                    id: TurnItemId.make("item:later-reply"),
-                    runId: boxLaterRunId,
-                    text: later,
-                    type: "assistant_message",
-                  },
-                ]),
-            ...(laterError === null
-              ? []
-              : [
-                  {
-                    id: TurnItemId.make("item:later-error"),
-                    runId: boxLaterRunId,
-                    text: laterError,
-                    type: "error",
-                  },
-                ]),
-            ...(queued === null
-              ? []
-              : [
-                  {
-                    id: TurnItemId.make("item:queued-reply"),
-                    runId: boxQueuedRunId,
-                    text: queued,
-                    type: "assistant_message",
-                  },
-                ]),
-            ...(restart === null
-              ? []
-              : [
-                  {
-                    id: TurnItemId.make("item:restarted-reply"),
-                    runId: continuationOf(restart.of),
-                    text: restart.reply,
-                    type: "assistant_message",
-                  },
-                ]),
-          ]
-        )
-          // Position 0 is the task's prompt, which the follower reads past.
-          .map((entry, index) => ({ ...entry, position: index + 1 }));
-        const visible =
-          options.itemId === undefined
-            ? replies.filter(
-                (entry) => options.view === "activity" || entry.type === "assistant_message",
-              )
-            : replies.filter((entry) => entry.id === options.itemId);
-        const matching = visible
-          .filter((entry) => entry.position > (options.afterPosition ?? -1))
-          .slice(0, yield* Ref.get(thread.pageSize));
-        return {
-          items: matching.map(({ id, runId: itemRunId, text, position, type }) => ({
-            position,
-            visibility: "local" as const,
-            sourceThreadId: threadId,
-            sourceItemId: id,
-            item: {
-              id,
-              threadId,
-              runId: itemRunId,
-              nodeId: null,
-              providerThreadId: null,
-              providerTurnId: null,
-              nativeItemRef: null,
-              parentItemId: null,
-              ordinal: 1,
-              status: "completed" as const,
-              title: null,
-              startedAt: DateTime.makeUnsafe(0),
-              completedAt: DateTime.makeUnsafe(0),
-              updatedAt: DateTime.makeUnsafe(0),
-              ...(type === "error"
-                ? { type, failure: { message: text } }
-                : {
-                    type: "assistant_message" as const,
-                    messageId: MessageId.make(`message:${id}`),
-                    text,
-                    streaming: false,
-                  }),
-            } as never,
-          })),
-          totalItems: replies.length + 1,
-          hasMore:
-            options.itemId === undefined &&
-            matching.length > 0 &&
-            visible.some((entry) => entry.position > matching.at(-1)!.position),
-          hasEarlier: false,
-        };
-      }),
-    interruptThread: (input) =>
-      recordStop(input.commandId, "interrupt").pipe(
-        Effect.as({ type: "interrupt_requested", run: runOf("running") } as never),
-      ),
-    dispatch: (command) =>
-      command.type === "thread.stop"
-        ? recordStop(command.commandId, "thread.stop").pipe(
-            Effect.tap(() =>
-              Effect.gen(function* () {
-                if (!(yield* Ref.getAndSet(thread.holdFirstStop, false))) return;
-                yield* Deferred.succeed(thread.stopStarted, undefined);
-                yield* Deferred.await(thread.releaseStop);
-              }),
-            ),
-            Effect.as({ sequence: 0, storedEvents: [] } as never),
-          )
-        : Effect.die(`The box does not expect ${command.type}`),
-    stopDelegatedTasks: (input) => recordStop(input.commandId, "delegated-tasks"),
-    sendToThread: (input) =>
-      Ref.update(thread.sent, (seen) => [...seen, input.text]).pipe(
-        Effect.as(
-          (input.mode === "queue"
-            ? { run: { id: boxQueuedRunId, status: "queued" }, delivery: "queued" }
-            : { run: { id: boxLaterRunId, status: "running" }, delivery: "started" }) as never,
+        }),
+      interruptThread: (input) =>
+        recordStop(input.commandId, "interrupt").pipe(
+          Effect.as({ type: "interrupt_requested", run: runOf("running") } as never),
         ),
       dispatch: (command) =>
         command.type === "thread.stop"
@@ -1086,9 +960,8 @@ const makeLaptop = (
       Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
       Layer.provide(NodeCrypto.layer),
       Layer.provideMerge(layerThreads),
-      Layer.provide(
-        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
-      ),
+      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
+      Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
       Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
@@ -4642,6 +4515,7 @@ it.effect.each(["pass", "hold"] as const)(
             boxToolkitLayer(thread),
             McpHttpServer.toolkitRegistration(AdmissionCancel.toolkit, AdmissionCancel.handlers),
           ).pipe(Layer.provide(Layer.succeedContext(admissionContext))),
+          Layer.empty,
           Layer.succeedContext(admissionContext),
         );
         receivingAuth = b.auth;

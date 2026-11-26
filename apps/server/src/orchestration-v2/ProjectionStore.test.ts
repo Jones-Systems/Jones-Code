@@ -2,6 +2,7 @@ import * as NodeSqlite from "node:sqlite";
 
 import { assert, it, vi } from "@effect/vitest";
 import {
+  AuthSessionId,
   EnvironmentId,
   EventId,
   CommandId,
@@ -13,6 +14,7 @@ import {
   MessageId,
   type ModelSelection,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2Run,
   type OrchestrationV2TurnItem,
   type OrchestrationV2ThreadHistoryPage,
   type OrchestrationV2ThreadShellSnapshot,
@@ -46,6 +48,7 @@ import * as Statement from "effect/sql/Statement";
 import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
 import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
 
+import { makeRuntimeStopMethods } from "../jones/runtime/RuntimeStopSqlite.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -301,6 +304,156 @@ it.effect("detach intent preserves the pure projection and persisted activity ti
     assert.strictEqual(ProjectionStore.applyToProjection(before, event), before);
     yield* store.apply(event);
     assert.deepEqual(yield* store.getThreadProjection(threadId), before);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("restores a captured Stop only for a live run on the captured runtime", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = yield* addRolledBackRecoveryCandidate("captured-stop");
+    const initial = yield* store.getThreadProjection(threadId);
+    const now = DateTime.add(initial.updatedAt, { seconds: 1 });
+    const binding = {
+      threadId,
+      providerThreadId: ProviderThreadId.make("provider-thread:captured-stop"),
+      providerSessionId: ProviderSessionId.make("session:captured-stop"),
+      providerInstanceId,
+      driver,
+      nativeThreadId: "native:captured-stop",
+      runtimeGeneration: "captured-generation",
+    };
+    const runtimeIdentity = {
+      runtimeGeneration: binding.runtimeGeneration,
+      evidenceRevision: 1,
+      requested: {
+        providerInstanceId,
+        providerDriver: driver,
+        model: modelSelection.model,
+        serviceTier: null,
+      },
+      observed: {
+        backend: { status: "unknown" },
+        model: { status: "unknown" },
+        account: { status: "unknown" },
+        serviceTier: { status: "unknown" },
+      },
+    } as const;
+    const provider: OrchestrationV2ProviderThread = {
+      id: binding.providerThreadId,
+      appThreadId: threadId,
+      driver,
+      providerInstanceId,
+      providerSessionId: binding.providerSessionId,
+      ownerNodeId: null,
+      nativeThreadRef: { driver, nativeId: binding.nativeThreadId, strength: "strong" },
+      nativeConversationHeadRef: null,
+      status: "active",
+      firstRunOrdinal: 2,
+      lastRunOrdinal: 2,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+      runtimeIdentity,
+      pendingBackgroundTasks: [],
+      contextUsage: null,
+      nativeMetadata: null,
+      goal: null,
+    };
+    const writeProvider = (suffix: string, payload: OrchestrationV2ProviderThread) =>
+      store.apply({
+        id: EventId.make(`event:captured-stop:${suffix}`),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload,
+      });
+    yield* writeProvider("provider", provider);
+    const writeRun = (type: "run.created" | "run.updated", payload: OrchestrationV2Run) =>
+      store.apply({
+        id: EventId.make(`event:captured-stop:${type}:${payload.id}`),
+        type,
+        threadId,
+        runId: payload.id,
+        occurredAt: now,
+        payload,
+      });
+    const activeRun = {
+      ...initial.runs[0]!,
+      id: RunId.make("run:captured-stop"),
+      ordinal: 2,
+      providerThreadId: provider.id,
+      activeAttemptId: RunAttemptId.make("attempt:captured-stop"),
+      status: "running",
+      requestedAt: now,
+      startedAt: now,
+      completedAt: null,
+    } as const;
+    yield* writeRun("run.created", activeRun);
+    const heldRunId = RunId.make("run:held-after-captured-stop");
+    yield* writeRun("run.created", {
+      ...activeRun,
+      id: heldRunId,
+      ordinal: 3,
+      userMessageId: MessageId.make("message:held-after-captured-stop"),
+      activeAttemptId: null,
+      status: "queued",
+      startedAt: null,
+      queueHeld: true,
+    });
+    const before = yield* store.getThreadProjection(threadId);
+    assert.isUndefined(before.capturedRuntimeStopRunId);
+    const runtimeStops = makeRuntimeStopMethods(sql);
+    const recordStop = (commandId: CommandId, attributedRunId?: RunId) =>
+      runtimeStops.record({
+        identity: {
+          request: { commandId, threadId, target: { binding, evidenceRevision: 1 } },
+          actor: {
+            sessionId: AuthSessionId.make("actor:stop"),
+            subject: "Fixture",
+            method: "browser-session-cookie",
+          },
+          actorDigest: "fixture-stop-actor",
+          affectedRunIds: [heldRunId],
+          ...(attributedRunId === undefined ? {} : { attributedRunId }),
+        },
+        revalidate: Effect.void,
+      });
+    yield* recordStop(CommandId.make("command:legacy-captured-stop"));
+    assert.isUndefined((yield* store.getThreadProjection(threadId)).capturedRuntimeStopRunId);
+    yield* recordStop(CommandId.make("command:captured-stop"), activeRun.id);
+    const reopened = yield* Effect.service(ProjectionStore.ProjectionStoreV2).pipe(
+      Effect.provide(Layer.fresh(ProjectionStore.layer)),
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    assert.deepEqual((yield* reopened.getThreadSnapshot(threadId)).projection, {
+      ...before,
+      capturedRuntimeStopRunId: activeRun.id,
+    });
+    const bounded = yield* reopened.getThreadSnapshotWindow(threadId, { rowLimit: 0 });
+    assert.equal(bounded.projection.capturedRuntimeStopRunId, activeRun.id);
+    assert.equal((yield* reopened.getThreadShell(threadId))?.latestRunId, activeRun.id);
+
+    yield* writeProvider("replacement", {
+      ...provider,
+      runtimeIdentity: { ...runtimeIdentity, runtimeGeneration: "replacement-generation" },
+    });
+    assert.isUndefined((yield* reopened.getThreadProjection(threadId)).capturedRuntimeStopRunId);
+
+    yield* writeProvider("reuse-captured-binding", provider);
+    yield* writeRun("run.updated", { ...activeRun, status: "interrupted", completedAt: now });
+    const newRunId = RunId.make("run:after-captured-stop");
+    yield* writeRun("run.created", {
+      ...activeRun,
+      id: newRunId,
+      ordinal: 4,
+      userMessageId: MessageId.make("message:after-captured-stop"),
+      activeAttemptId: RunAttemptId.make("attempt:after-captured-stop"),
+    });
+    const after = yield* reopened.getThreadSnapshotWindow(threadId, { rowLimit: 0 });
+    assert.isTrue(after.projection.runs.some((run) => run.id === newRunId));
+    assert.isUndefined(after.projection.capturedRuntimeStopRunId);
   }).pipe(Effect.provide(layerTest)),
 );
 

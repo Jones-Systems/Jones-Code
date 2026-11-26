@@ -886,13 +886,20 @@ export const layer: Layer.Layer<
         const shouldFinalizeRun =
           input.shouldFinalizeRun === undefined ? true : yield* input.shouldFinalizeRun();
         if (!shouldFinalizeRun) {
-          const restoredHandoffEvents = yield* buildRestoredHandoffEvents();
-          const unpairedInterruptEvents =
-            input.terminal.status === "interrupted" &&
-            (input.hasUnpairedRunInterruptRequest === undefined
-              ? false
-              : yield* input.hasUnpairedRunInterruptRequest())
-              ? [
+          if (input.terminal.status === "interrupted") {
+            const hasUnpairedRequest =
+              input.hasUnpairedRunInterruptRequest === undefined
+                ? false
+                : yield* input.hasUnpairedRunInterruptRequest();
+            if (hasUnpairedRequest) {
+              const reason =
+                input.loadRunInterruptReason === undefined
+                  ? undefined
+                  : yield* input.loadRunInterruptReason();
+              const interruptResult = {
+                ...(runtimeEvidence === undefined ? {} : { runtimeEvidence }),
+                effects: [],
+                events: [
                   {
                     id: yield* allocateEventId(),
                     type: "turn-item.updated" as const,
@@ -913,14 +920,21 @@ export const layer: Layer.Layer<
                       completedAt,
                     }),
                   },
-                ]
-              : [];
-          const earlyEvents = [...unpairedInterruptEvents, ...restoredHandoffEvents];
-          if (earlyEvents.length > 0) {
-            yield* eventSink.writeWithEffects({
-              effects: [],
-              events: earlyEvents,
-            });
+                ],
+              } satisfies Parameters<typeof eventSink.writeWithEffects>[0];
+              if (input.publicationTerminal === undefined)
+                yield* eventSink.writeWithEffects(interruptResult);
+              else
+                yield* publishTerminal(input.publicationTerminal, "interrupt-result", {
+                  type: "unconditional",
+                  input: interruptResult,
+                });
+              yield* input.refreshAfterTurn;
+            }
+          }
+          const restoredHandoffs = yield* buildRestoredHandoffEvents();
+          if (restoredHandoffs.length > 0) {
+            yield* eventSink.writeWithEffects({ effects: [], events: restoredHandoffs });
             yield* input.refreshAfterTurn;
           }
           return false;
@@ -971,7 +985,10 @@ export const layer: Layer.Layer<
           status: finalProviderThreadStatus(input.terminal.threadDisposition),
           updatedAt: completedAt,
         };
-        const restoredHandoffEvents = yield* buildRestoredHandoffEvents();
+        const persistedProviderTurn =
+          input.persistProviderTurn === false
+            ? input.abandonedProviderTurn
+            : (input.terminal.providerTurn ?? input.abandonedProviderTurn);
         const runEventId = yield* allocateEventId();
         const nodeEventId = yield* allocateEventId();
         const providerThreadEventId = yield* allocateEventId();
@@ -979,6 +996,7 @@ export const layer: Layer.Layer<
           `command:effect:checkpoint.capture:${input.run.id}`,
         );
         // Stopped runs capture rollback points for the next message; enqueue before later starts on this effect lane.
+        const restoredHandoffEvents = yield* buildRestoredHandoffEvents();
         const finalization = {
           ...(runtimeEvidence === undefined ? {} : { runtimeEvidence }),
           effects:
@@ -1051,69 +1069,36 @@ export const layer: Layer.Layer<
                   },
                 ]
               : []),
-            // Codex reports a hook that stops the turn as completed; keep its reason visible.
-            ...(input.terminal.status === "completed" && input.terminal.reason !== undefined
-              ? [
-                  {
+            ...(yield* Effect.forEach(
+              finalizationFailureItems({
+                terminal: input.terminal,
+                ...(input.acceptedNativeTerminal === undefined
+                  ? {}
+                  : { acceptedNativeTerminal: input.acceptedNativeTerminal }),
+                ...(input.acceptedNativeCompletedAt === undefined
+                  ? {}
+                  : { acceptedNativeCompletedAt: input.acceptedNativeCompletedAt }),
+                failureItemPersisted: input.failureItemPersisted,
+                threadId: input.run.threadId,
+                runId: input.run.id,
+                nodeId: input.rootNode.id,
+                attemptId: input.attempt.id,
+                completedAt,
+              }),
+              (payload) =>
+                Effect.gen(function* () {
+                  return {
                     id: yield* allocateEventId(),
                     type: "turn-item.updated" as const,
                     threadId: input.run.threadId,
                     runId: input.run.id,
                     nodeId: input.rootNode.id,
                     providerInstanceId: input.run.providerInstanceId,
-                    occurredAt: completedAt,
-                    payload: {
-                      id: idAllocator.derive.runSignalTurnItem({
-                        runId: input.run.id,
-                        signal: PROVIDER_STOP_REASON_SIGNAL,
-                      }),
-                      threadId: input.run.threadId,
-                      runId: input.run.id,
-                      nodeId: input.rootNode.id,
-                      providerThreadId: input.providerThread.id,
-                      providerTurnId: input.rootNode.providerTurnId,
-                      nativeItemRef: null,
-                      parentItemId: null,
-                      ordinal: input.run.ordinal * 100 + 98,
-                      status: "completed" as const,
-                      title: "Stopped by the provider",
-                      startedAt: completedAt,
-                      completedAt,
-                      updatedAt: completedAt,
-                      type: "system_notice" as const,
-                      level: "warning" as const,
-                      message: input.terminal.reason,
-                    },
-                  },
-                ]
-              : []),
-            ...(input.terminal.status === "failed" && !input.failureItemPersisted
-              ? [
-                  {
-                    id: yield* allocateEventId(),
-                    type: "turn-item.updated" as const,
-                    threadId: input.run.threadId,
-                    runId: input.run.id,
-                    nodeId: input.rootNode.id,
-                    providerInstanceId: input.run.providerInstanceId,
-                    occurredAt: completedAt,
-                    payload: makeProviderFailureTurnItem({
-                      ...(input.terminal.failureItemId === undefined
-                        ? {}
-                        : { id: input.terminal.failureItemId }),
-                      driver: input.terminal.driver,
-                      threadId: input.run.threadId,
-                      runId: input.run.id,
-                      nodeId: input.rootNode.id,
-                      providerThreadId: input.terminal.providerThreadId,
-                      providerTurnId: input.terminal.providerTurnId,
-                      itemOrdinal: input.terminal.failureItemOrdinal,
-                      failure: input.terminal.failure,
-                      occurredAt: completedAt,
-                    }),
-                  },
-                ]
-              : []),
+                    occurredAt: payload.completedAt ?? completedAt,
+                    payload,
+                  };
+                }),
+            )),
             {
               id: runEventId,
               type: "run.updated",
@@ -1183,14 +1168,48 @@ export const layer: Layer.Layer<
                 input: finalWrite,
               });
           if (!result.committed) {
-            if (restoredHandoffEvents.length > 0) {
-              yield* eventSink.writeWithEffects({
-                effects: [],
-                events: restoredHandoffEvents,
-              });
-              yield* input.refreshAfterTurn;
-            }
-            return false;
+            // Jones: a terminal whose provider thread lost its producer evidence still settles
+            // its own current run. The same run check makes a second settlement impossible, and
+            // the turn is written here because its own guarded update was rejected the same way.
+            if (runtimeEvidence === undefined) return false;
+            const lostEvidenceWrite = {
+              runtimeEvidence,
+              settleRunOnLostRuntimeEvidence: true as const,
+              ...(finalWrite.unlessInterruptRequested === undefined
+                ? {}
+                : { unlessInterruptRequested: finalWrite.unlessInterruptRequested }),
+              threadId: input.run.threadId,
+              runId: input.run.id,
+              activeAttemptId: input.writeIfRunCurrent.activeAttemptId,
+              expectedStatus: input.writeIfRunCurrent.expectedStatus,
+              events:
+                input.persistProviderTurn !== false ||
+                providerSettlement === null ||
+                input.terminal.providerTurn === undefined
+                  ? finalization.events
+                  : [
+                      {
+                        id: yield* allocateEventId(),
+                        type: "provider-turn.updated" as const,
+                        threadId: input.run.threadId,
+                        runId: input.run.id,
+                        nodeId: input.rootNode.id,
+                        providerInstanceId: input.run.providerInstanceId,
+                        driver: input.terminal.driver,
+                        occurredAt: completedAt,
+                        payload: input.terminal.providerTurn,
+                      },
+                      ...finalization.events,
+                    ],
+              effects: finalization.effects,
+            } satisfies Parameters<typeof eventSink.writeIfRunCurrent>[0];
+            const settled = yield* input.publicationTerminal === undefined
+              ? eventSink.writeIfRunCurrent(lostEvidenceWrite)
+              : publishTerminal(input.publicationTerminal, `${publicationStage}-lost-evidence`, {
+                  type: "current",
+                  input: lostEvidenceWrite,
+                });
+            if (!settled.committed) return false;
           }
         } else if (input.publicationTerminal === undefined) {
           yield* eventSink.writeWithEffects(finalization);
@@ -1230,10 +1249,12 @@ export const layer: Layer.Layer<
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause)
               ? Effect.interrupt
-              : Effect.logWarning(
-                  "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
-                  { runId: input.run.id, cause },
-                ),
+              : findEffectClaimLost(cause) !== undefined
+                ? Effect.die(Cause.squash(cause))
+                : Effect.logWarning(
+                    "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
+                    { runId: input.run.id },
+                  ),
           ),
         );
     });
@@ -1471,55 +1492,49 @@ export const layer: Layer.Layer<
           }
           const providerThread = yield* Ref.get(latestProviderThread);
           const openSubagents = yield* Ref.get(openRunOwnedSubagents);
-          const writeTerminal = Effect.fnUntraced(
-            function* (settledTerminal: ProviderTerminalEvent) {
-              const restoredHandoffs =
-                settledTerminal.promptDropped === true &&
-                input.loadDroppedInlineHandoffs !== undefined
-                  ? yield* input.loadDroppedInlineHandoffs()
-                  : undefined;
-              return yield* writeFinalRunEvents({
-                run: input.run,
-                rootNode: input.rootNode,
-                checkpointScope: input.checkpointScope,
-                providerThread,
-                attempt: input.attempt,
-                ...(input.shouldFinalizeRun === undefined
-                  ? {}
-                  : {
-                      shouldFinalizeRun: input.shouldFinalizeRun,
-                      // Stop may commit between the ownership read and this
-                      // terminal write. Gate the events and checkpoint together.
-                      writeIfRunCurrent: {
-                        activeAttemptId: input.attempt.id,
-                        expectedStatus: "running" as const,
-                        unlessInterruptRequested: settledTerminal !== terminal,
-                      },
-                    }),
-                ...(input.hasUnpairedRunInterruptRequest === undefined
-                  ? {}
-                  : {
-                      hasUnpairedRunInterruptRequest: input.hasUnpairedRunInterruptRequest,
-                    }),
-                ...(input.loadRunInterruptReason === undefined
-                  ? {}
-                  : { loadRunInterruptReason: input.loadRunInterruptReason }),
-                openRunOwnedSubagents: openSubagents,
-                openRunOwnedSubagentsTerminal: terminal,
-                ...(abandonedProviderTurn === undefined ? {} : { abandonedProviderTurn }),
-                ...(restoredHandoffs === undefined ? {} : { restoredHandoffs }),
-                terminal: settledTerminal,
-                failureItemPersisted: settledTerminal.status === "failed",
-                refreshAfterTurn,
-              });
-            },
-            (effect) =>
-              effect.pipe(
-                Effect.mapError(
-                  (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
-                ),
+          const accepted = yield* Ref.get(acceptedRootTerminal);
+          const writeTerminal = (settledTerminal: ProviderTerminalEvent) =>
+            writeFinalRunEvents({
+              run: input.run,
+              rootNode: input.rootNode,
+              checkpointScope: input.checkpointScope,
+              providerThread,
+              attempt: input.attempt,
+              ...(readFinalizationOwnership === undefined
+                ? {}
+                : {
+                    shouldFinalizeRun: readFinalizationOwnership!,
+                    // Stop may commit between the ownership read and this
+                    // terminal write. Gate the events and checkpoint together.
+                    writeIfRunCurrent: {
+                      activeAttemptId: input.attempt.id,
+                      expectedStatus: "running" as const,
+                      unlessInterruptRequested: settledTerminal !== terminal,
+                    },
+                  }),
+              ...(input.hasUnpairedRunInterruptRequest === undefined
+                ? {}
+                : {
+                    hasUnpairedRunInterruptRequest: input.hasUnpairedRunInterruptRequest,
+                  }),
+              ...(input.loadRunInterruptReason === undefined
+                ? {}
+                : { loadRunInterruptReason: input.loadRunInterruptReason }),
+              openRunOwnedSubagents: openSubagents,
+              openRunOwnedSubagentsTerminal: terminal,
+              persistProviderTurn,
+              ...(abandonedProviderTurn === undefined ? {} : { abandonedProviderTurn }),
+              publicationTerminal: accepted?.event ?? terminal,
+              ...(accepted === null ? {} : { completedAt: accepted.completedAt }),
+              terminal: settledTerminal,
+              ...(settledTerminal === terminal ? {} : { acceptedNativeTerminal: terminal }),
+              failureItemPersisted: settledTerminal.status === "failed",
+              refreshAfterTurn,
+            }).pipe(
+              Effect.mapError(
+                (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
               ),
-          );
+            );
           // A workspace handoff detaches the session and stops the turn that asked
           // for it: the run completes, while its native subagents still settle
           // as interrupted. The completed write refuses in the same transaction
@@ -2475,10 +2490,6 @@ export const layer: Layer.Layer<
                       expectedStatus: "running",
                     },
                     openRunOwnedSubagents: openSubagents,
-                    ...(abandonedProviderTurn === null ? {} : { abandonedProviderTurn }),
-                    ...(recoveredHandoffs === undefined
-                      ? {}
-                      : { restoredHandoffs: recoveredHandoffs }),
                     lostToolCalls,
                     ...(acceptedTerminal === null
                       ? abandonedProviderTurn === null
@@ -2494,19 +2505,9 @@ export const layer: Layer.Layer<
                             : { abandonedProviderTurn: acceptedTerminal.providerTurn }),
                         }),
                     completedAt,
-                    terminal: {
-                      ...makeFailedTerminalEvent(
-                        makeProviderFailure({
-                          cause: squashed,
-                          message:
-                            knownProviderFailureMessage(squashed) ??
-                            userFacingDatabaseErrorMessage(squashed),
-                          class: "unknown",
-                        }),
-                        latestItemOrdinal + 1,
-                      ),
-                      ...(droppedPrompt ? { promptDropped: true as const } : {}),
-                    },
+                    terminal: failureTerminal,
+                    publicationTerminal: accepted?.event ?? failureTerminal,
+                    publicationStage: "failure-finalization",
                     failureItemPersisted: false,
                     refreshAfterTurn,
                   }).pipe(

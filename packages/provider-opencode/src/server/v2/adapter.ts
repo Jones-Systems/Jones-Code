@@ -284,8 +284,7 @@ interface ActiveTurn {
   readonly settledInbox: Set<string>;
   // Reconnects replay finished tools, so each nested html_render / send_to_user takes its record only once.
   readonly takenPages: Set<string>;
-  readonly takenSentMessages: Map<string, string | null>;
-  heldEnd: TurnTerminal | undefined;
+  heldEnd: (TurnTerminal & { readonly evidenceKind: ExecutionEndEvidence }) | undefined;
   awaitingStart: boolean;
   /** Scope child tool IDs because model-generated IDs can repeat parent IDs. */
   readonly scope: string;
@@ -2566,7 +2565,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       );
       const window = windowOf(turn.input.runtimePolicy.cwd, turn.input.modelSelection.model);
       const lastStep = turn.lastStep;
-      yield* emitProviderTurn(turn, {
+      const finalizedTurn: OrchestrationV2ProviderTurn = {
         ...turn.providerTurn,
         status: terminal.status,
         completedAt,
@@ -3458,10 +3457,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       evidenceKind: ExecutionEndEvidence = "provider_result",
     ) {
       if (end.status === "completed" && (turn.steers.size > 0 || goalHoldsTurn(state))) {
-        turn.heldEnd = end;
-        // OpenCode can pause a goal without telling this server, such as another process's
-        // restart sweep, so confirm the goal is still active before waiting on it.
-        if (goalHoldsTurn(state) && !state.goalRefreshing) yield* refreshGoal(state);
+        turn.heldEnd = { ...end, evidenceKind };
         return;
       }
       yield* finishTurn(state, end, "reusable", evidenceKind);
@@ -4043,8 +4039,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       const scope = yield* Scope.make();
       const { next, nextAdoption, stream } = yield* Effect.gen(function* () {
         const next = yield* borrow.pipe(Effect.provideService(Scope.Scope, scope));
-        const events = next.events.pipe(Effect.provideService(Scope.Scope, scope));
-        return { next, stream: yield* whileAlive(next.processExit, events) };
+        const nextAdoption = yield* adopt(next);
+        return {
+          next,
+          nextAdoption,
+          stream: yield* next.events.pipe(Effect.provideService(Scope.Scope, scope)),
+        };
       }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       const previous = currentScope;
       if (next !== connection) eventProducer.retire();
@@ -4063,31 +4063,50 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       };
       currentScope = scope;
       yield* Scope.close(previous, Exit.void);
-      // A restarted server forgot T3's MCP servers; the next turn adds them again.
-      // The gap may have started a pending prompt unseen, so none may set a later wake's boundary.
-      for (const state of threads.values()) {
-        state.mcp = undefined;
-        state.goalFresh = false;
-        state.goalRefreshing = false;
-        state.goalRevision += 1;
-        for (const prompt of state.externalPrompts.values()) prompt.leads = false;
-      }
-      if (supportsNativeGoals()) {
-        yield* Effect.forEach(
-          [...threads.values()],
-          (state) => readGoal(state).pipe(Effect.ignore({ log: true })),
-          { concurrency: 4, discard: true },
-        ).pipe(Effect.timeout(INVENTORY_TIMEOUT), Effect.ignore({ log: true }));
-      }
-      for (const state of threads.values()) {
-        yield* recoverShells(state).pipe(Effect.ignore({ log: true }));
-      }
-      // An owned process's exit, rather than a read deadline, bounds recovery; the bounded retry
-      // below then borrows a restarted server. HTTP waits stay outside the event lock so Stop can still settle.
-      yield* next.processExit === undefined
-        ? reconcile().pipe(Effect.timeout(RECONCILE_TIMEOUT))
-        : whileAlive(next.processExit, reconcile());
-      return stream;
+      yield* Effect.gen(function* () {
+        // A restarted server forgot T3's MCP servers; the next turn adds them again.
+        // The gap may have started a pending prompt unseen, so none may set a later wake's boundary.
+        for (const state of threads.values()) {
+          state.mcp = undefined;
+          state.goalFresh = false;
+          state.goalRefreshing = false;
+          state.goalRevision += 1;
+          for (const prompt of state.externalPrompts.values()) prompt.leads = false;
+        }
+        if (supportsNativeGoals()) {
+          yield* Effect.forEach(
+            [...threads.values()],
+            (state) => readGoal(state).pipe(Effect.ignore({ log: true })),
+            { concurrency: 4, discard: true },
+          ).pipe(Effect.timeout(INVENTORY_TIMEOUT), Effect.ignore({ log: true }));
+        }
+        for (const state of threads.values()) {
+          yield* recoverShells(state).pipe(Effect.ignore({ log: true }));
+        }
+        // An owned process's exit, rather than a read deadline, bounds recovery; the bounded retry
+        // below then borrows a restarted server. HTTP waits stay outside the event lock so Stop can still settle.
+        yield* lock.withPermit(
+          Effect.gen(function* () {
+            if (adoption !== undefined) {
+              for (const state of threads.values()) {
+                if (state.providerThread.appThreadId === input.threadId) {
+                  state.providerThread = yield* bindAdoption(state.providerThread);
+                }
+              }
+            }
+          }),
+        );
+        const exited = next.processExit;
+        yield* exited === undefined
+          ? reconcile().pipe(Effect.timeout(RECONCILE_TIMEOUT))
+          : reconcile().pipe(
+              Effect.retry(OWNED_RECOVERY_RETRY),
+              Effect.raceFirst(
+                exited.pipe(Effect.andThen(Effect.fail(new OpenCode2ServerExitedError()))),
+              ),
+            );
+      }).pipe(Effect.provideService(OpenCode2EventProducerContext, producer.origin));
+      return { stream, producer };
     }).pipe(
       // Borrows and process exits stay bounded; only a live owned process is waited on above.
       Effect.retry({
@@ -4615,10 +4634,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       }
       const instructions = [
         buildRuntimeInstructions({
-          agentFeedback: mcpAvailable ? (turnInput.agentFeedback ?? "off") : "off",
           harness: "OpenCode",
           model: turnInput.modelSelection.model,
-          runtimePolicy: turnInput.runtimePolicy,
+          ...(host.appIdentity === undefined ? {} : { appIdentity: host.appIdentity }),
         }),
         t3OrchestrationSystemPrompt(mcpAvailable, mcpSession?.capabilities?.has("device") === true),
         mcpAvailable

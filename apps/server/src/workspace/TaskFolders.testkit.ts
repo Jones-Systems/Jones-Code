@@ -28,6 +28,7 @@ export const taskFoldersTestProjectId = ProjectId.make("project:task-folders");
 /** What the mocked stores answer with; a test fills it in once its folders exist. */
 export interface TaskFoldersTestState {
   workspaceRoot: string;
+  additionalProjectRoots?: ReadonlyArray<string>;
   trackedFolders: ReadonlyArray<ProjectTrackedFolder>;
   thread: { worktreePath: string | null; branch: string | null } | null;
   /** Runs after each read of an approval, in the fiber that asked. */
@@ -129,12 +130,28 @@ export const layerTaskFoldersWithGit = (
       Layer.mergeAll(
         Layer.mock(ProjectStore.ProjectStoreV2)({
           get: () => Effect.succeedSome(project()),
+          listShells: () =>
+            Effect.succeed(
+              [state.workspaceRoot, ...(state.additionalProjectRoots ?? [])].map(
+                (workspaceRoot, index) => ({
+                  ...project(),
+                  id:
+                    index === 0
+                      ? taskFoldersTestProjectId
+                      : ProjectId.make(`project:other-${index}`),
+                  workspaceRoot,
+                  repositoryIdentity: null,
+                  trackedFolders: index === 0 ? state.trackedFolders : [],
+                }),
+              ),
+            ),
           findActiveByWorkspaceRoot: (workspaceRoot) =>
             Effect.succeed(
               workspaceRoot === state.workspaceRoot ? Option.some(project()) : Option.none(),
             ),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThreadWorktreePaths: () => Effect.succeed([]),
           getThreadShell: () =>
             Effect.succeed(
               state.thread === null

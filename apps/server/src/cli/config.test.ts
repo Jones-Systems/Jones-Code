@@ -32,10 +32,10 @@ import {
   SERVICE_LAUNCHER_CONTEXT_ENV,
   SERVICE_LAUNCHER_PROTOCOL,
 } from "../cloud/serviceProtocol.ts";
-import { deriveServerPaths } from "../config.ts";
-import * as ProcessRunner from "../processRunner.ts";
-import { acquireServerOwnership } from "../serverOwnership.ts";
+import { deriveServerPaths, ensureServerDirectories } from "../config.ts";
 import { resolveServerConfig } from "./config.ts";
+import { acquireServerOwnership } from "../serverOwnership.ts";
+import * as ProcessRunner from "../processRunner.ts";
 
 const deriveExplicitServerPaths = (baseDir: string, devUrl: URL | undefined) =>
   deriveServerPaths(baseDir, devUrl, { baseDirIsExplicit: true });

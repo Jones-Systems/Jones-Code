@@ -10,8 +10,10 @@ import type * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
-import type { ProviderCompatibilityLookup } from "./compatibility.ts";
+import type { JonesAppIdentity } from "@t3tools/contracts/jones/organizationMetadata";
+
 import type { ProviderCredentialError } from "./errors.ts";
+import type { ProviderCompatibilityLookup } from "./compatibility.ts";
 
 export interface ProviderHostPaths {
   readonly cwd: string;

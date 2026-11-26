@@ -1,6 +1,5 @@
 import {
-  AuthAccessWriteScope,
-  AuthRevokePairingLinkInput,
+  AuthAdministrativeScopes,
   AuthSessionId,
   AuthStandardClientScopes,
 } from "@t3tools/contracts";
@@ -30,6 +29,7 @@ import {
   resolveCliAuthConfig,
 } from "./config.ts";
 import * as RunningServer from "./runningServer.ts";
+import { AuthAccessWriteScope, AuthRevokePairingLinkInput } from "@t3tools/contracts";
 
 const runWithEnvironmentAuth = Effect.fn("auth.runWithEnvironmentAuth")(function* <A, E, R>(
   flags: CliAuthLocationFlags,

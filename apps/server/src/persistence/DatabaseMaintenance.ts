@@ -16,6 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
 import * as SettlementCompactionPreflight from "../jones/persistence/settlementCompactionPreflight.ts";
+import { JonesForeignHistoryMaintenanceBlockedError } from "../jones/persistence/historyMaintenancePreflight.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -128,6 +129,7 @@ export class DatabaseMaintenance extends Context.Service<
       | DatabaseMissingError
       | DatabaseInUseError
       | DatabaseCompactError
+      | JonesForeignHistoryMaintenanceBlockedError
       | SettlementCompactionPreflight.JonesSettlementProofMigrationRequiredError
     >;
     /** Deletes only the pre-0.1.0 database; earlier versions still use it. */
@@ -143,6 +145,9 @@ export class DatabaseMaintenance extends Context.Service<
 const isDomainError = Schema.is(Schema.Union([DatabaseMissingError, DatabaseInUseError]));
 const isJonesSettlementProofMigrationRequired = Schema.is(
   SettlementCompactionPreflight.JonesSettlementProofMigrationRequiredError,
+);
+const isJonesForeignHistoryMaintenanceBlocked = Schema.is(
+  JonesForeignHistoryMaintenanceBlockedError,
 );
 
 const readStorage = Effect.gen(function* () {
@@ -302,7 +307,9 @@ const make = Effect.gen(function* () {
       effect.pipe(
         Effect.scoped,
         Effect.mapError((cause) =>
-          isDomainError(cause) || isJonesSettlementProofMigrationRequired(cause)
+          isDomainError(cause) ||
+          isJonesSettlementProofMigrationRequired(cause) ||
+          isJonesForeignHistoryMaintenanceBlocked(cause)
             ? cause
             : new DatabaseCompactError({ path: databasePath, cause }),
         ),

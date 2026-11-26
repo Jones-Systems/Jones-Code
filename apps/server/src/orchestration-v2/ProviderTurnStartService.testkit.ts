@@ -24,7 +24,18 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
-import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EventSink from "./EventSink.ts";
+import * as EventStore from "./EventStore.ts";
+import * as ResourceCleanupService from "./ResourceCleanupService.ts";
+import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import * as ThreadViewers from "./ThreadViewers.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as DeviceService from "../device/DeviceService.ts";
+import * as PreviewManager from "../preview/Manager.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -32,6 +43,7 @@ import * as Layer from "effect/Layer";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as TaskFolders from "../workspace/TaskFolders.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 
 // No project in these tests tracks a repository, so no thread works in a task folder.
 export const layerNoTaskFolders = Layer.mock(TaskFolders.TaskFolders)({
@@ -39,7 +51,8 @@ export const layerNoTaskFolders = Layer.mock(TaskFolders.TaskFolders)({
   find: () => Effect.succeed(null),
 });
 
-export const layer = Layer.mergeAll(
+// Replay composition supplies real durable admission; only workspace setup is synthetic.
+export const layerWorkspace = Layer.mergeAll(
   Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
     runForThread: () => Effect.succeed({ status: "no-script" }),
   }),
@@ -70,6 +83,7 @@ export const layerWorkerPersistence = EventSink.layerFromStores.pipe(
       ProjectionStore.layer,
       ProjectStore.layer,
       TurnItemPositionStore.layer,
+      ThreadViewers.layer,
     ),
   ),
   Layer.provideMerge(SqlitePersistence.layerMemory),

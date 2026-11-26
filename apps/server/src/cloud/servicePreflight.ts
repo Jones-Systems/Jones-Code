@@ -3,8 +3,14 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import packageJson from "../../package.json" with { type: "json" };
+import {
+  decodeServicePreflightResult,
+  type ServicePreflightResult,
+} from "../jones/cloud/servicePreflightResult.ts";
+import { jonesMigrationEntries } from "../jones/persistence/JonesMigrations.ts";
+import { readMigrationPlan, type MigrationPlanResult } from "../jones/updates/migrationPlan.ts";
 import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
-import { skippedV2Migrations } from "../persistence/Migrations.ts";
+import { migrationManifest, skippedV2Migrations } from "../persistence/Migrations.ts";
 import { reconciledV2PreviewHistory } from "../persistence/reconcileV2PreviewMigration.ts";
 import type * as ProcessRunner from "../processRunner.ts";
 import {
@@ -23,18 +29,12 @@ import {
 const PREFLIGHT_TIMEOUT = Duration.minutes(3);
 const decodePreflightJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
-export type ServicePreflightResult =
-  | {
-      readonly status: "ready";
-      readonly version: string;
-      /** The launcher protocol the server named; it accepts no other in reply. */
-      readonly launcherProtocol: SupportedLauncherProtocol;
-    }
-  | {
-      readonly status: "blocked";
-      readonly version: string;
-      readonly reason: string;
-    };
+// The launcher decodes output without importing this module's migration graph.
+export {
+  decodeServicePreflightResult,
+  qualifiedServicePreflightFailure,
+  type ServicePreflightResult,
+} from "../jones/cloud/servicePreflightResult.ts";
 
 export function runServicePreflight(input: {
   readonly databasePath: string;
@@ -96,15 +96,13 @@ export function runServicePreflight(input: {
     };
   }
 
-  return { status: "ready", version, launcherProtocol };
-}
-
-function decodeServicePreflightResult(
-  value: unknown,
-  launcherProtocol: SupportedLauncherProtocol,
-): ServicePreflightResult | undefined {
-  if (typeof value !== "object" || value === null) {
-    return undefined;
+  const plan = readMigrationPlan({
+    databasePath: input.databasePath,
+    upstream: migrationManifest,
+    jones: jonesMigrationEntries.map(([id, name]) => [id, name] as const),
+  });
+  if (plan.status === "blocked") {
+    return { status: "blocked", version, reason: plan.reason };
   }
   if (input.migrationPlanResult?.status === "blocked") {
     return { status: "blocked", version, reason: input.migrationPlanResult.reason };

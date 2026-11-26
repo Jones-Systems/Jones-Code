@@ -1,6 +1,6 @@
 import {
   AuthSessionId,
-  AuthAdministrativeClientScopes,
+  AuthAdministrativeScopes,
   AuthStandardClientScopes,
   AuthEnvironmentScopes,
   type AuthClientMetadata,
@@ -618,7 +618,7 @@ export const make = Effect.gen(function* () {
       .createIfAbsent({
         sessionId: devAuth.sessionId,
         subject: "reusable-dev-token",
-        scopes: AuthAdministrativeClientScopes,
+        scopes: AuthAdministrativeScopes,
         method: "browser-session-cookie",
         client: {
           label: "Reusable dev token",
@@ -741,7 +741,7 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("SessionStore.markDisconnected"),
     );
 
-  const encodeClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
+  const encodeClaims = encodeEffectFromJsonStringSessionClaims;
   const signClaims = Effect.fnUntraced(function* (claims: SessionClaims) {
     const encodedPayload = yield* encodeClaims(claims).pipe(
       Effect.map(base64UrlEncode),
@@ -1080,7 +1080,7 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  const encodeWsClaims = Schema.encodeEffect(Schema.fromJsonString(WebSocketClaims));
+  const encodeWsClaims = encodeEffectFromJsonStringWebSocketClaims;
   const issueWebSocketToken: SessionStore["Service"]["issueWebSocketToken"] = Effect.fn(
     "SessionStore.issueWebSocketToken",
   )(function* (sessionId, input) {

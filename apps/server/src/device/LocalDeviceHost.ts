@@ -424,6 +424,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
   const spawnHub = Effect.fn("LocalDeviceHost.spawnHub")(function* (
     hubTool: DeviceToolPaths,
     nodePath: string,
+    platform: DevicePlatform | undefined,
     env: NodeJS.ProcessEnv,
   ): Effect.fn.Return<HubProcess, DeviceHost.DeviceHostError> {
     yield* reapStaleHub;
@@ -519,6 +520,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
         token,
         startedAtMillis,
         nodePath,
+        platform,
         emulatorExtraArgs: env.EXPO_DEVICE_HUB_EMULATOR_EXTRA_ARGS,
         emulatorStamp: stamp,
       };
@@ -577,6 +579,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
             const replacement = yield* spawnHub(
               hubTool,
               hub.nodePath,
+              hub.platform,
               yield* currentHubEnvironment,
             );
             yield* Ref.set(runningRef, { ...current, hub: replacement });
@@ -754,12 +757,31 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     onPhase: (phase: "installing" | "starting", detail?: string) => Effect.Effect<void>,
   ): Effect.fn.Return<RunningHost, DeviceHost.DeviceHostError | NodeRuntimeUnavailableError> {
     const running = yield* Ref.get(runningRef);
+    const nodePath =
+      running?.hub.nodePath ??
+      (yield* resolveNodeExecutable("Local device support", yield* currentHostEnvironment).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(HostProcess.Platform, hostPlatform),
+      ));
+    const platforms = yield* Effect.all([
+      platformAvailability("ios"),
+      platformAvailability("android"),
+    ]);
+    if (!platforms.some(({ available }) => available)) {
+      if (running) yield* stopHub(running.hub);
+      return yield* new DeviceHost.DeviceHostError({
+        hostId,
+        step: unavailablePlatformReason(platforms),
+        cause: platforms,
+      });
+    }
+    const platform = availableHubPlatform(platforms);
     let env: NodeJS.ProcessEnv | undefined;
-    // A dead hub's record stays until a replacement is published: the agent
-    // daemon outlives the hub, and close needs its endpoint if the restart fails.
+    // Keep the record until replacement so close can release the surviving agent daemon.
     if (running) {
       const alive = yield* running.hub.child.isRunning.pipe(Effect.orElseSucceed(() => false));
-      if (alive) {
+      if (alive && running.hub.platform === platform) {
         const stamp = yield* emulatorStamp;
         if (stamp === running.hub.emulatorStamp) return running;
         // An updated emulator can change the camera overrides; replace the hub only if they did.
@@ -769,8 +791,8 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
           yield* Ref.set(runningRef, next);
           return next;
         }
-        yield* stopHub(running.hub);
       }
+      if (alive) yield* stopHub(running.hub);
     }
     const installed = yield* isDeviceHubInstalled(config.baseDir).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -794,7 +816,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       ),
     );
     yield* onPhase("starting");
-    const hub = yield* spawnHub(hubTool, nodePath, env ?? (yield* currentHubEnvironment));
+    const hub = yield* spawnHub(hubTool, nodePath, platform, env ?? (yield* currentHubEnvironment));
     const next = yield* Effect.gen(function* () {
       yield* pruneLocalDeviceTools(config.baseDir, nodePath, "hub").pipe(
         Effect.provideService(Path.Path, path),

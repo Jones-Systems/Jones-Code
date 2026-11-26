@@ -4609,57 +4609,116 @@ describe("OpenCodeAdapterV2", () => {
     }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer))),
   );
 
-  it.effect("reports an unanswered session abort as an interrupt timeout", () =>
-    Effect.gen(function* () {
-      const events = asyncEventStream();
-      const abortCalled = promiseGate<void>();
-      let abortCalls = 0;
-      const harness = yield* makeOpenCodeRuntimeHarness("abort-timeout", "root", {
-        event: {
-          subscribe: async (_input: unknown, options: { signal?: AbortSignal }) => {
-            options.signal?.addEventListener("abort", () => events.close(), { once: true });
-            return { stream: events.stream };
-          },
-        },
-        session: {
-          create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
-          get: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
-          promptAsync: async () => ({ data: true }),
-          status: async () => ({ data: { root: { type: "busy" } } }),
-          messages: async () => ({ data: [] }),
-          children: async () => ({ data: [] }),
-          abort: async (_input: unknown, options?: { readonly signal?: AbortSignal }) => {
-            // Only the Stop request hangs; session teardown still gets an answer.
-            if (++abortCalls > 1) return { data: true };
-            abortCalled.resolve();
-            await new Promise<void>((_resolve, reject) =>
-              options?.signal?.addEventListener("abort", () => reject(options.signal!.reason), {
-                once: true,
+  it.effect.each(["text", "reasoning"] as const)(
+    "finalizes buffered %s before an active OpenCode event stream exits",
+    (kind) =>
+      Effect.gen(function* () {
+        const nativeSessionId = `native-opencode-buffered-exit-${kind}`;
+        const nativeEvents = asyncEventStream();
+        const harness = yield* makeOpenCodeRuntimeHarness(
+          `buffered-exit-${kind}`,
+          nativeSessionId,
+          {
+            event: {
+              subscribe: async (_input: unknown, options: { signal?: AbortSignal }) => {
+                options.signal?.addEventListener("abort", () => nativeEvents.close(), {
+                  once: true,
+                });
+                return { stream: nativeEvents.stream };
+              },
+            },
+            session: {
+              create: async () => ({
+                data: { id: nativeSessionId, time: { created: 1, updated: 1 } },
               }),
-            );
-            return { data: true };
+              promptAsync: async () => ({ data: true }),
+            },
           },
-        },
-        mcp: { add: async () => ({ data: true }) },
-      });
-      yield* harness.startTurn();
-      const turn = yield* harness.awaitLatestTurn();
-      const interrupt = yield* harness.runtime
-        .interruptTurn({ providerThread: harness.providerThread, providerTurnId: turn.id })
-        .pipe(Effect.flip, Effect.forkScoped);
-      yield* Effect.promise(() => abortCalled.promise);
-      yield* TestClock.adjust("10 seconds");
-
-      const error = yield* Fiber.join(interrupt);
-      assert.strictEqual(error._tag, "ProviderAdapterInterruptTimeoutError");
-      assert.deepInclude(error, {
-        providerThreadId: harness.providerThread.id,
-        providerTurnId: turn.id,
-      });
-    }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
-      Effect.scoped,
-    ),
+        );
+        const events = yield* harness.runtime.events.pipe(Stream.runCollect, Effect.forkScoped);
+        yield* harness.startTurn();
+        yield* Effect.promise(() =>
+          nativeEvents.push({
+            type: "message.part.updated",
+            properties: {
+              part: {
+                id: "part-buffered-exit",
+                sessionID: nativeSessionId,
+                messageID: "message-buffered-exit",
+                type: kind,
+                text: "Answer preserved",
+                time: { start: DateTime.toEpochMillis(harness.now) },
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          nativeEvents.push({
+            type: "message.part.delta",
+            properties: {
+              sessionID: nativeSessionId,
+              messageID: "message-buffered-exit",
+              partID: "part-buffered-exit",
+              field: "text",
+              delta: " across provider exit.",
+            },
+          }),
+        );
+        nativeEvents.close();
+        const received = Array.from(yield* Fiber.join(events));
+        const itemType = kind === "text" ? "assistant_message" : "reasoning";
+        const items = received.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === itemType
+            ? [event.turnItem]
+            : [],
+        );
+        const first = items[0]!;
+        const last = items.at(-1)!;
+        assert.equal(first.status, "running");
+        assert.equal(last.status, "completed");
+        if (last.type !== "assistant_message" && last.type !== "reasoning") {
+          return assert.fail("Expected buffered text or reasoning item");
+        }
+        assert.equal(last.text, "Answer preserved across provider exit.");
+        assert.isFalse(last.streaming);
+        assert.equal(last.id, first.id);
+        assert.equal(last.providerTurnId, first.providerTurnId);
+        assert.equal(last.runId, harness.runId);
+        assert.lengthOf(
+          items.filter((item) => item.status === "completed"),
+          1,
+        );
+        const completionIndex = received.findIndex(
+          (event) => event.type === "turn_item.updated" && event.turnItem === last,
+        );
+        const terminalIndex = received.findIndex((event) => event.type === "turn.terminal");
+        assert.isTrue(completionIndex < terminalIndex);
+        const terminal = received[terminalIndex];
+        assert.equal(terminal?.type === "turn.terminal" ? terminal.status : undefined, "failed");
+        assert.equal(
+          terminal?.type === "turn.terminal" ? terminal.evidenceKind : undefined,
+          "local_failure",
+        );
+        if (terminal?.type === "turn.terminal") {
+          assert.equal(terminal.providerTurn?.id, last.providerTurnId);
+          assert.equal(terminal.providerTurn?.status, "failed");
+          assert.isNotNull(terminal.providerTurn?.completedAt);
+        }
+        if (kind === "text") {
+          const message = received.findLast((event) => event.type === "message.updated");
+          assert.equal(
+            message?.type === "message.updated" ? message.message.text : undefined,
+            last.text,
+          );
+          assert.equal(
+            message?.type === "message.updated" ? message.message.streaming : undefined,
+            false,
+          );
+        }
+      }).pipe(
+        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.scoped,
+      ),
   );
 
   it.effect("fails an active turn when the OpenCode event stream ends cleanly", () =>
@@ -5395,31 +5454,135 @@ it.live.each([true, false])("opens an authenticated OpenCode session (external=%
     ]),
   ),
 );
-
-it.effect("refuses a session on a server version the policy rates broken", () =>
-  Effect.gen(function* () {
-    const error = yield* makeOpenCodeRuntimeHarness(
-      "broken-version",
-      "ses_broken",
-      {},
-      {
-        compatibility: () =>
+it.effect(
+  "revoked qualified adoption refuses create and resume before any native SDK request",
+  () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("opencode-revoked-adoption");
+      const threadId = ThreadId.make("thread-opencode-revoked-adoption");
+      const providerSessionId = ProviderSessionId.make("session-opencode-revoked-adoption");
+      const modelSelection = { instanceId, model: "default" };
+      const policy = runtimePolicy("full-access", { cwd: "/workspace" });
+      let authorized = true;
+      const requests: string[] = [];
+      const nativeEvents = asyncEventStream();
+      const client = {
+        event: {
+          subscribe: async (_input: unknown, options: { signal?: AbortSignal }) => {
+            options.signal?.addEventListener("abort", () => nativeEvents.close(), { once: true });
+            return { stream: nativeEvents.stream };
+          },
+        },
+        session: {
+          create: async () => {
+            requests.push("create");
+            throw new Error("Unexpected create");
+          },
+          get: async () => {
+            requests.push("get");
+            throw new Error("Unexpected resume");
+          },
+        },
+      } as unknown as OpencodeClient;
+      const authority: OpenCodeCreationPolicy.OpenCodeQualifiedAuthority = {
+        creationHooks: {
+          reserveGeneration: Effect.die(
+            "The existing synthetic physical owner must not reserve again",
+          ),
+          authorize: () => Effect.die("The existing synthetic physical owner must not start again"),
+          abandonGeneration: () => Effect.die("The live physical parent must not be abandoned"),
+        },
+        authorizeAdoption: () => Effect.succeed(Effect.sync(() => authorized)),
+        authorizeConsumption: () => Effect.void,
+      };
+      const lifecycle: ProviderAdapter.ProviderRuntimeLifecycle = {
+        admit: () => Effect.void,
+        reserve: () => Effect.succeed("synthetic-session-adoption-generation"),
+        abandon: () => Effect.void,
+        bind: ({ providerThread }) => Effect.succeed(providerThread),
+        invalidate: () => Effect.void,
+      };
+      const unused = () => Effect.die("Unexpected runtime operation");
+      const runtime: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
+        startOpenCodeServerProcess: unused,
+        connectToOpenCodeServer: () =>
           Effect.succeed({
-            status: "broken" as const,
-            message: null,
-            recommendedVersion: null,
-            recommendedRange: ">=2.0.18",
+            url: "http://test.invalid",
+            version: "synthetic",
+            external: false,
+            exitCode: null,
+            ownedProcess: {
+              incarnation: Object.freeze({
+                directory: "/workspace",
+                pid: 123,
+                url: "http://test.invalid",
+                runtimeGeneration: "synthetic-physical-generation",
+              }),
+              isCurrent: Effect.succeed(true),
+            },
           }),
-      },
-    ).pipe(Effect.flip);
-    assert.include(JSON.stringify(error), "OpenCode 1.14.19 does not work");
-  }).pipe(
-    Effect.scoped,
-    Effect.provide([
-      NodeServices.layer,
-      TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
-      IdAllocator.layer,
-      McpProviderSessions.layer,
-    ]),
-  ),
+        createOpenCodeSdkClient: () => client,
+        runOpenCodeCommand: unused,
+        loadOpenCodeInventory: unused,
+        loadOpenCodeSkills: unused,
+      };
+      const adapter = yield* makeOpenCodeAdapterV2({
+        instanceId,
+        authority,
+        settings: OPEN_CODE_TEST_SETTINGS,
+        environment: {},
+      }).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime));
+      const session = yield* adapter.openSession({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy: policy,
+        runtimeLifecycle: lifecycle,
+      });
+      authorized = false;
+      const create = yield* session
+        .ensureThread({ threadId, modelSelection, runtimePolicy: policy })
+        .pipe(Effect.flip);
+      assert.equal(create._tag, "ProviderAdapterEnsureThreadError");
+      if (!OpenCodeRuntime.isOpenCodeRuntimeError(create.cause))
+        return yield* Effect.die("Expected adoption currentness refusal");
+      assert.equal(create.cause.operation, "adoptServer");
+      const now = yield* DateTime.now;
+      const providerThread: OrchestrationV2ProviderThread = {
+        id: ProviderThreadId.make("provider-thread-opencode-revoked-adoption"),
+        driver: OPENCODE_PROVIDER,
+        providerInstanceId: instanceId,
+        providerSessionId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: {
+          driver: OPENCODE_PROVIDER,
+          nativeId: "synthetic-native",
+          strength: "strong",
+        },
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const resume = yield* session.resumeThread({ providerThread }).pipe(Effect.flip);
+      assert.equal(resume._tag, "ProviderAdapterResumeThreadError");
+      if (!OpenCodeRuntime.isOpenCodeRuntimeError(resume.cause))
+        return yield* Effect.die("Expected adoption currentness refusal");
+      assert.equal(resume.cause.operation, "adoptServer");
+      assert.deepEqual(requests, []);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          TestProviderHost.layer({ cwd: "/workspace" }).pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+      Effect.scoped,
+    ),
 );

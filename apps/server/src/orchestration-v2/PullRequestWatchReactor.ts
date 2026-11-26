@@ -579,13 +579,43 @@ export const make = Effect.gen(function* () {
         });
   };
 
-  // A merged snapshot still gets one read, so the wake can name the merge commit.
-  const endsWithoutRead = ({ thread }: WatchTarget): WatchEndReason | undefined =>
+  const goalMayBeWaiting = ({ thread, watch }: WatchTarget) =>
+    watchAwaitsChecks(watch)
+      ? projections
+          .getThreadRecords(thread.id, ["providerThreads"])
+          .pipe(Effect.map(threadHasWaitingGoal))
+      : Effect.succeed(false);
+
+  const merged = Effect.fnUntraced(function* (groupKey: string, target: WatchTarget) {
+    if (!(yield* goalMayBeWaiting(target))) {
+      yield* record(target, null).pipe(Effect.tap(() => ended(target, "merged")));
+      return;
+    }
+    yield* hold({
+      groupKey,
+      target,
+      next: null,
+      endedWatch: target.watch,
+      wake: {
+        text: `Pull request #${target.link.number} (${target.link.url}) merged, so Jones Code stopped watching it.`,
+        notification: {
+          source: { kind: "monitor" },
+          outcome: "completed",
+          summary: `#${target.link.number}: merged, stopped watching`,
+        },
+      },
+      reason: "merged",
+    });
+  });
+
+  const endsWithoutRead = ({ thread, link }: WatchTarget): WatchEndReason | undefined =>
     thread.settledOverride === "settled" || thread.settledAt !== null
       ? "settled"
       : thread.lineage.relationshipToParent === "subagent"
         ? "subagent"
-        : undefined;
+        : link.snapshot?.state === "merged"
+          ? "merged"
+          : undefined;
 
   const eachTarget = <E>(
     group: WatchGroup,
@@ -707,7 +737,9 @@ export const make = Effect.gen(function* () {
     }
     if (detail.state !== "open") {
       lastReads.delete(group.key);
-      return yield* eachTarget(group, (target) => finished(group.key, target, detail));
+      return yield* eachTarget(group, (target) =>
+        detail.state === "closed" ? closed(group.key, target) : merged(group.key, target),
+      );
     }
 
     // A failed comments read leaves remarks incomplete, so the next pass reads them again;

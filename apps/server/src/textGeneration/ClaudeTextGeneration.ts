@@ -38,8 +38,10 @@ import {
 } from "../provider/Drivers/ClaudeHome.ts";
 import { readClaudeUserSettings } from "../provider/Drivers/ClaudeSkills.ts";
 import { readClaudeLaunchArgSettings } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import { resolveAttachmentPath } from "../attachmentStore.ts";
+import { classifyClaudeEvaluatorLaunchArgs } from "./jones/claudeEvaluatorLaunch.ts";
+import { claudeCommandFailure } from "./jones/claudeCommandFailure.ts";
 import * as ServerConfig from "../config.ts";
+import { resolveAttachmentPath } from "../attachmentStore.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 /** `--tools` takes bare names; patterns go in the allow list. */
@@ -288,17 +290,18 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         : undefined;
     const fastMode =
       fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
-    const launchArgSettings = yield* readClaudeLaunchArgSettings({
-      settings: claudeSettings,
-      // The investigated checkout holds the change under review, not the user's files.
-      cwd: investigate?.projectCwd ?? cwd,
-      fileSystem,
-      path,
-    }).pipe(
-      Effect.mapError(
-        (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
-      ),
-    );
+    const launchArgSettings = isEvaluation
+      ? undefined
+      : yield* readClaudeLaunchArgSettings({
+          settings: claudeSettings,
+          cwd,
+          fileSystem,
+          path,
+        }).pipe(
+          Effect.mapError(
+            (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
+          ),
+        );
     const settings = {
       ...(investigate
         ? investigationSettings(
@@ -366,8 +369,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           apiModelId,
           ...(cliEffort ? ["--effort", cliEffort] : []),
           "--settings",
-          settingsArgument,
-          ...(investigate
+          settingsJson,
+          ...(!isEvaluation && investigate
             ? [
                 "--tools",
                 CLAUDE_INVESTIGATION_TOOLS,
@@ -377,7 +380,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
                 CLAUDE_INVESTIGATION_DENIED,
               ]
             : ["--tools", ""]),
-          ...(investigate ? ["--setting-sources", ""] : []),
+          ...(isEvaluation ? ["--disallowedTools", "mcp__*"] : []),
           "--disable-slash-commands",
           ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
           // managed-mcp.json already isolates servers and makes Claude reject this flag.

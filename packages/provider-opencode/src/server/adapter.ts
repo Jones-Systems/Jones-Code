@@ -1082,18 +1082,15 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             ? { creationHooks: options.authority.creationHooks }
             : {}),
         });
-        const broken = brokenVersionDetail({
-          name: "OpenCode",
-          version: connection.version,
-          advisory: yield* host.compatibility(OPENCODE_PROVIDER, connection.version),
-        });
-        if (broken !== undefined) {
-          return yield* new ProviderSetupError({
-            instanceId: options.instanceId,
-            operation: "runtime",
-            detail: broken,
-          });
-        }
+        const adoption =
+          options.authority === undefined
+            ? undefined
+            : yield* OpenCodeCreationPolicy.adoptSession({
+                parent: connection.ownedProcess,
+                authority: options.authority,
+                providerInstanceId: options.instanceId,
+                session: input,
+              });
         const client = runtime.createOpenCodeSdkClient({
           baseUrl: connection.url,
           directory: cwd,
@@ -3579,8 +3576,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               buildRuntimeInstructions({
                 harness: "OpenCode",
                 model: turn.modelSelection.model,
-                agentFeedback: hasT3Mcp ? turn.agentFeedback : "off",
-                runtimePolicy: turn.runtimePolicy,
+                ...(host.appIdentity === undefined ? {} : { appIdentity: host.appIdentity }),
               }),
             ]
               .filter(Boolean)

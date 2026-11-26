@@ -139,8 +139,7 @@ const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
       Layer.mock(ProjectService.ProjectService)({}),
       Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
       Layer.mock(PullRequestService.PullRequestService)({}),
-      Layer.mock(GitManager.GitManager)({}),
-      Layer.mock(Orchestrator.OrchestratorV2)({}),
+      Layer.mock(Orchestrator.OrchestratorV2)(unusedCorePorts),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
       ServerSettings.layerTest(),
       NodeServices.layer,
@@ -1934,12 +1933,16 @@ it.effect("offers agent feedback tools only while the setting is on, to every cl
           }),
         ),
         Layer.provide(
-          Layer.succeed(McpHttpServer.McpClientAuthenticator)({
-            authenticate: (request) =>
-              Effect.succeed(
-                request.headers.authorization === "Bearer cliToken" ? cliScope : undefined,
-              ),
-          }),
+          Layer.mergeAll(
+            McpToolAccessTestkit.liveThreadsLayer,
+            Layer.mock(ProjectService.ProjectService)({}),
+            Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+            Layer.mock(PullRequestService.PullRequestService)({}),
+            Layer.mock(Orchestrator.OrchestratorV2)(unusedCorePorts),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       );
       yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(

@@ -102,11 +102,10 @@ it.effect.each(["initial", "waiting"])(
       Layer.provide(
         Layer.mergeAll(
           ThreadCommandExecutor.layer,
-          Layer.mock(CheckpointService.CheckpointServiceV2)({
-            restore,
-            discardRepositorySnapshots: () => Effect.void,
+          Layer.mock(CheckpointService.CheckpointServiceV2)({ restore }),
+          Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
           }),
-          Layer.mock(EventSink.EventSinkV2)({}),
           IdAllocator.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getThread,
@@ -870,17 +869,19 @@ const seedRollbackHistory = Effect.fnUntraced(function* (
       ),
     ),
   );
-  const rollback = (ordinal: number, restoreFiles?: boolean) =>
+  const rollback = (ordinal: number, checkClaim: Effect.Effect<void, string> = Effect.void) =>
     Effect.gen(function* () {
       const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
-      yield* service.execute({
-        threadId,
-        providerThreadId,
-        scopeId,
-        checkpointId: checkpointId(ordinal),
-        ...(restoreFiles === undefined ? {} : { restoreFiles }),
-      });
-    }).pipe(Effect.provide(serviceLayer));
+      yield* service.execute(
+        {
+          threadId,
+          providerThreadId,
+          scopeId,
+          checkpointId: checkpointId(ordinal),
+        },
+        checkClaim,
+      );
+    }).pipe(Effect.provide(Layer.orDie(serviceLayer)));
 
   return {
     store,
@@ -960,66 +961,7 @@ describe("rollback history reads", () => {
         "Failure",
       );
 
-        assert.deepEqual(history.rollbackCounts, [4]);
-        assert.deepEqual(history.restored, [checkpointId(2)]);
-        assert.sameMembers(history.deletedRefs, [3, 4, 5, 6].map(checkpointId));
-        const runs = yield* sql<{ ordinal: number; status: string }>`
-          SELECT ordinal, status FROM orchestration_v2_projection_runs
-          WHERE thread_id = ${threadId} ORDER BY ordinal`;
-        assert.deepEqual(
-          runs.map((run) => run.status),
-          [
-            "completed",
-            "completed",
-            "rolled_back",
-            "rolled_back",
-            "rolled_back",
-            "rolled_back",
-            "rolled_back",
-          ],
-        );
-        const nodes = yield* sql<{ status: string }>`
-          SELECT status FROM orchestration_v2_projection_nodes
-          WHERE thread_id = ${threadId} ORDER BY node_id`;
-        assert.deepEqual(
-          nodes.map((node) => node.status),
-          runs.map((run) => run.status),
-        );
-        const checkpoints = yield* sql<{ status: string }>`
-          SELECT status FROM orchestration_v2_projection_checkpoints
-          WHERE thread_id = ${threadId} AND scope_id != ${history.repositoryScopeId}
-          ORDER BY ordinal_within_scope`;
-        assert.deepEqual(
-          checkpoints.map((checkpoint) => checkpoint.status),
-          ["ready", "ready", "ready", "stale", "stale", "stale", "stale", "stale", "ready"],
-        );
-        // The repository keeps its state at the target and loses what the discarded runs recorded,
-        // including the snapshots that have no record.
-        const repositoryCheckpoints = yield* sql<{ status: string }>`
-          SELECT status FROM orchestration_v2_projection_checkpoints
-          WHERE scope_id = ${history.repositoryScopeId} ORDER BY ordinal_within_scope`;
-        assert.deepEqual(
-          repositoryCheckpoints.map((checkpoint) => checkpoint.status),
-          ["ready", "stale"],
-        );
-        assert.deepEqual(history.discardedRepositoryOrdinals, [3, 4, 5, 6]);
-      }),
-    );
-
-    it.effect("rewinds the conversation to a run whose snapshot capture failed", () =>
-      Effect.gen(function* () {
-        const history = yield* seedRollbackHistory;
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`UPDATE orchestration_v2_projection_checkpoints
-          SET status = 'error', payload_json = json_set(payload_json, '$.status', 'error')
-          WHERE checkpoint_id = ${history.checkpointId(2)}`;
-
-        yield* history.rollback(2, false);
-
-        assert.deepEqual(history.rollbackCounts, [4]);
-        assert.deepEqual(history.restored, []);
-      }),
-    );
+      yield* history.rollback(2);
 
       assert.deepEqual(history.rollbackCounts, [4]);
       assert.deepEqual(history.restored, [checkpointId(2)]);
@@ -1070,49 +1012,35 @@ describe("rollback history reads", () => {
     }).pipe(Effect.provide(layerHistory)),
   );
 
-          assert.deepEqual(history.rollbackCounts, [1, 3, 3]);
-          assert.sameMembers(history.deletedRefs, [1, 2, 3, 4, 5, 6].map(history.checkpointId));
-          assert.sameMembers(
-            history.committed
-              .filter((event) => event.type === "run.updated")
-              .map((event) => event.payload.id),
-            [1, 2, 3, 4, 5, 6].map(history.runId),
-          );
-          const records = yield* history.store.getThreadRecords(history.threadId, [
-            "runs",
-            "nodes",
-            "checkpoints",
-          ]);
-          assert.isTrue(records.runs.every((run) => run.status === "rolled_back"));
-          assert.isTrue(records.nodes.every((node) => node.status === "rolled_back"));
-          assert.sameMembers(
-            records.checkpoints
-              .filter((checkpoint) => checkpoint.status === "ready")
-              .map((checkpoint) => checkpoint.id),
-            [history.checkpointId(0), history.checkpointId(8)],
-          );
-        }),
-    );
+  it.effect("rewinds stopped runs repeatedly without counting discarded provider turns again", () =>
+    Effect.gen(function* () {
+      const history = yield* seedRollbackHistory();
+      yield* history.rollback(5);
+      yield* history.rollback(2);
+      yield* history.rollback(0);
+      yield* history.rollback(0);
 
-    it.effect("skips a pending rollback once the thread is deleted", () =>
-      Effect.gen(function* () {
-        const history = yield* seedRollbackHistory;
-        const thread = yield* history.store.getThread(history.threadId);
-        yield* history.store.apply({
-          id: EventId.make("rollback-history-deleted"),
-          type: "thread.deleted",
-          threadId: history.threadId,
-          providerInstanceId: thread.providerInstanceId,
-          occurredAt: history.now,
-          payload: { ...thread, deletedAt: history.now, updatedAt: history.now },
-        });
-
-        yield* history.rollback(2);
-
-        assert.deepEqual(history.rollbackCounts, []);
-        assert.deepEqual(history.restored, []);
-        assert.deepEqual(history.committed, []);
-      }),
-    );
-  },
-);
+      assert.deepEqual(history.rollbackCounts, [1, 3, 3]);
+      assert.sameMembers(history.deletedRefs, [1, 2, 3, 4, 5, 6].map(history.checkpointId));
+      assert.sameMembers(
+        history.committed
+          .filter((event) => event.type === "run.updated")
+          .map((event) => event.payload.id),
+        [1, 2, 3, 4, 5, 6].map(history.runId),
+      );
+      const records = yield* history.store.getThreadRecords(history.threadId, [
+        "runs",
+        "nodes",
+        "checkpoints",
+      ]);
+      assert.isTrue(records.runs.every((run) => run.status === "rolled_back"));
+      assert.isTrue(records.nodes.every((node) => node.status === "rolled_back"));
+      assert.sameMembers(
+        records.checkpoints
+          .filter((checkpoint) => checkpoint.status === "ready")
+          .map((checkpoint) => checkpoint.id),
+        [history.checkpointId(0), history.checkpointId(8)],
+      );
+    }).pipe(Effect.provide(layerHistory)),
+  );
+});

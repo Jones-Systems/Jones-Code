@@ -917,45 +917,7 @@ if adopt_default_server && [ -n "$ADOPTED_PID" ] && [ -n "$LAUNCHER_ID" ]; then
     break
   done
 fi
-if [ "$REMOTE_MANAGED" = "external" ]; then
-  # A server adopted above has just answered. While it is still alive, probing
-  # it again could catch a momentary stall and launch a second server beside it.
-  if server_running "$ADOPTED_PID"; then
-    :
-  elif [ -z "$REMOTE_PORT" ] || ! wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
-    REMOTE_PID=""
-    REMOTE_PORT=""
-    REMOTE_MANAGED=""
-  fi
-elif [ -n "$REMOTE_PORT" ] && managed_server_running "$REMOTE_PID"; then
-  # Reconnect owns the local tunnel, not the lifetime of an already running
-  # server. A changed runner is the update path and replaces an older server.
-  if [ "$RUNNER_CHANGED" -eq 1 ] && [ "$FOREIGN_LAUNCHER" -eq 0 ] && ! keeps_running_server; then
-    kill "$REMOTE_PID" 2>/dev/null || true
-    wait_for_pid_exit "$REMOTE_PID"
-    REMOTE_PID=""
-    REMOTE_PORT=""
-    REMOTE_MANAGED=""
-  elif managed_server_stopping; then
-    wait_for_pid_exit "$REMOTE_PID"
-    if managed_server_running "$REMOTE_PID"; then
-      printf 'The previous remote T3 server (PID %s) is still shutting down. Retry once it has exited.\\n' "$REMOTE_PID" >&2
-      exit 1
-    fi
-    REMOTE_PID=""
-    REMOTE_PORT=""
-    REMOTE_MANAGED=""
-  elif ! wait_ready "@@T3_READY_TIMEOUT_MS@@"; then
-    printf 'Remote T3 server is still running but did not become ready. Retry the connection; the server was left running.\\n' >&2
-    exit 1
-  elif [ "$FOREIGN_LAUNCHER" -eq 1 ]; then
-    REMOTE_MANAGED="external"
-  fi
-else
-  REMOTE_PID=""
-  REMOTE_PORT=""
-  REMOTE_MANAGED=""
-fi
+${PERSISTENT_REMOTE_REUSE_SCRIPT}
 # The server may answer long before it publishes its runtime record, or never
 # publish one; another alias's launch record still names it. Only one server
 # owns the home, so the first live one decides.
@@ -1192,6 +1154,7 @@ export function buildRemoteNodeEnvScript(input?: RemoteT3RunnerOptions): string 
 }
 
 export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
+  if (input?.hostManagedRuntime) return buildHostRuntimeAttachScript();
   return applyScriptPlaceholders(REMOTE_LAUNCH_SCRIPT, {
     T3_UPDATE_MARKER_FILE: DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
     T3_UPDATE_TTL_MS: String(DESKTOP_UPDATE_IN_PROGRESS_TTL_MS),
@@ -2288,12 +2251,16 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
             yield* closeTunnelEntry(entry);
           }).pipe(Effect.uninterruptible);
         }
-        const launcherId = yield* resolveLauncherId;
-        yield* runWithSshAuth({
-          key,
-          target: resolvedTarget,
-          operation: (authOptions) => stopRemoteServer(resolvedTarget, authOptions, launcherId),
-        });
+        // Jones: disconnect closes only this client's forward. The host-owned
+        // remote server keeps running, so no SSH session or password is needed.
+        if (CLIENT_CLOSE_STOPS_REMOTE_SERVER) {
+          // Explicit disconnect owns the remote stop so its failure reaches the caller.
+          yield* runWithSshAuth({
+            key,
+            target: resolvedTarget,
+            operation: (authOptions) => stopRemoteServer(resolvedTarget, authOptions),
+          });
+        }
         yield* Effect.logInfo("ssh.environment.disconnect.succeeded", {
           ...sshTargetLogFields(resolvedTarget),
           key,

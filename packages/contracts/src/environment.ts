@@ -142,8 +142,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   ),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
-  /** A DPoP session from a pairing link renews at /oauth/token; pair with a bearer where absent. */
-  accessTokenRenewal: Schema.optionalKey(Schema.Boolean),
+  conversationWorkspace: Schema.optionalKey(Schema.Boolean),
+  worktreeDefaultBase: Schema.optionalKey(Schema.Boolean),
   attachmentUploads: Schema.optionalKey(Schema.Boolean),
   questionAttachments: Schema.optionalKey(Schema.Boolean),
   fileAttachments: Schema.optionalKey(
@@ -287,12 +287,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   shellOlderSettled: Schema.optionalKey(Schema.Boolean),
   /** Publishes a pull request refresh when linked-thread answers change; older servers need polling. */
   linkedThreadRefreshes: Schema.optionalKey(Schema.Boolean),
-  /** Honors the `agentFeedback` setting; older servers drop it, so hide its switch where absent. */
-  agentFeedback: Schema.optionalKey(Schema.Boolean),
-  /** Answers `issues.linkedThreads`, the threads an issue is linked to. */
-  issueLinkedThreads: Schema.optionalKey(Schema.Boolean),
-  /** Keeps more than one account per standalone issue tracker; older servers keep one. */
-  issueTrackerAccounts: Schema.optionalKey(Schema.Boolean),
+  requestManagement: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

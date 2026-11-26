@@ -280,7 +280,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
           Effect.provideService(HostProcess.Environment, {}),
         );
         expect(descriptor.capabilities.serverInstallation).toEqual(
-          mode === "web" && platform !== "win32" ? { kind: "npm-global", prefix } : undefined,
+          mode === "web" ? { kind: "npm-global", prefix: canonicalPrefix } : undefined,
         );
         expect(descriptor.capabilities.serverSelfUpdate).toBe(
           mode === "web" ? undefined : "desktop-managed",

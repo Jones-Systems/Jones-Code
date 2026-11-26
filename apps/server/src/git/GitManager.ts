@@ -252,15 +252,13 @@ const MAX_PROGRESS_TEXT_LENGTH = 500;
 const SHORT_SHA_LENGTH = 7;
 const TOAST_DESCRIPTION_MAX = 72;
 const STATUS_RESULT_CACHE_TTL = Duration.seconds(1);
+const LOCAL_STATUS_GIT_READS_HANDOFF_TTL = Duration.seconds(5);
 const STATUS_RESULT_CACHE_CAPACITY = 2_048;
 const PR_LOOKUP_CACHE_TTL = Duration.seconds(60);
 const PR_LOOKUP_NO_OPEN_PR_CACHE_TTL = Duration.minutes(5);
 const PR_LOOKUP_FAILURE_BASE_TTL = Duration.seconds(20);
 const PR_LOOKUP_FAILURE_MAX_TTL = Duration.minutes(15);
 const PR_LOOKUP_CACHE_CAPACITY = 2_048;
-const PR_LOOKUP_GIT_STATE_TTL = Duration.minutes(5);
-// Turn end looks up the PR ~0.5 s after local status; older reads are read again.
-const LOCAL_STATUS_GIT_READS_HANDOFF_TTL = Duration.seconds(5);
 const SETTLED_PR_LOOKUP_RECHECK_INTERVAL = Duration.minutes(15);
 // Shared by every background caller (backfill, settlement, cleanup), so startup discovery
 // cannot fill the git and forge process slots that foreground work also needs.
@@ -1590,29 +1588,24 @@ export const make = Effect.gen(function* () {
         localBranchExists: branchExists !== "0",
         ...(remoteName.length > 0 ? { remoteName } : {}),
       };
-      return withActivePrLookupGitReads(
-        cwd,
-        Effect.gen(function* () {
-          const { headContext, lookup } = yield* resolveLookupHeadContext(cwd, details);
-          if (!lookup) {
-            return { latest: null, headContext };
-          }
-          if (
-            details.localBranchExists &&
-            (details.upstreamRef === null || headContext.remoteName === null) &&
-            (yield* isUnpublishedBranch(cwd, headContext))
-          ) {
-            return { latest: null, headContext };
-          }
-          const shared = yield* prLookupGitReads;
-          if (isActivePrLookupGitReads(shared, cwd)) {
-            shared.queriedProvider = true;
-          }
-          const latest = yield* findLatestPrForHeadContext(cwd, headContext, details.defaultBranch);
-          if (latest !== null) yield* noteLookupState(latest);
-          return { latest, headContext };
-        }),
-      );
+      return Effect.gen(function* () {
+        const { headContext, lookup } = yield* resolveLookupHeadContext(cwd, details, (cwd, key) =>
+          readPrLookupConfig(cwd, key).pipe(Effect.orElseSucceed(() => null)),
+        );
+        if (!lookup) {
+          return { latest: null, headContext };
+        }
+        if (
+          details.localBranchExists &&
+          (details.upstreamRef === null || headContext.remoteName === null) &&
+          (yield* isUnpublishedBranch(cwd, headContext, readPrLookupConfig))
+        ) {
+          return { latest: null, headContext };
+        }
+        const latest = yield* findLatestPrForHeadContext(cwd, headContext, details.defaultBranch);
+        if (latest !== null) yield* noteLookupState(latest);
+        return { latest, headContext };
+      });
     },
     {
       capacity: PR_LOOKUP_CACHE_CAPACITY,
@@ -2298,8 +2291,8 @@ export const make = Effect.gen(function* () {
     return yield* Effect.gen(function* () {
       const [configuredRemote, configuredMerge] = yield* Effect.all(
         [
-          readLookupConfigValue(cwd, `branch.${headContext.localBranch}.remote`),
-          gitCore.readConfigValue(cwd, `branch.${headContext.localBranch}.merge`),
+          readConfig(cwd, `branch.${headContext.localBranch}.remote`),
+          readConfig(cwd, `branch.${headContext.localBranch}.merge`),
         ],
         { concurrency: "unbounded" },
       );
@@ -3301,9 +3294,11 @@ export const make = Effect.gen(function* () {
     });
     return mergeGitStatusParts(local, remote);
   });
-  // Closed PR results can settle threads or remove worktrees; confirm fresh git state before
-  // persisting, and before acting when a caller skipped confirmation (`confirmTerminal: false`).
-  const prLookupGitStateByKey = new Map<string, RememberedPrLookupValue>();
+  // A merged or closed answer can settle a thread or remove its worktree.
+  // Discovery defers this check, then requests freshGitState before persisting.
+  // invalidateStatus bumps the epoch; the cache also orders reads so an older
+  // in-flight result cannot replace state read after a T3 git action or newer read.
+  const prLookupGitState = makePrLookupGitStateCache(prLookupEpoch);
   const rememberPrLookupGitState = Effect.fn("GitManager.rememberPrLookupGitState")(function* <E>(
     cwd: string,
     key: string,
@@ -3311,35 +3306,7 @@ export const make = Effect.gen(function* () {
     read: Effect.Effect<string | null, E>,
     memoized?: RememberedPrLookupValue,
   ) {
-    const entryKey = `${cwd}\u0000${key}`;
-    const now = yield* Clock.currentTimeMillis;
-    const remembered = prLookupGitStateByKey.get(entryKey);
-    if (
-      !fresh &&
-      remembered !== undefined &&
-      now - remembered.readAtMs < Duration.toMillis(PR_LOOKUP_GIT_STATE_TTL)
-    ) {
-      return remembered.value;
-    }
-    // invalidateStatus bumps the epoch. A read that started before a T3 git
-    // action, or before a newer read finished, must not replace their state.
-    const epoch = prLookupEpoch(cwd);
-    const useMemoized =
-      memoized !== undefined &&
-      (remembered === undefined || remembered.readAtMs <= memoized.readAtMs);
-    const readAtMs = useMemoized ? memoized.readAtMs : now;
-    const value = useMemoized ? memoized.value : yield* read;
-    const latest = prLookupGitStateByKey.get(entryKey);
-    if (prLookupEpoch(cwd) !== epoch || (latest !== undefined && latest.readAtMs > readAtMs)) {
-      return value;
-    }
-    prLookupGitStateByKey.delete(entryKey);
-    if (prLookupGitStateByKey.size >= PR_LOOKUP_CACHE_CAPACITY) {
-      const oldestKey = prLookupGitStateByKey.keys().next().value;
-      if (oldestKey !== undefined) prLookupGitStateByKey.delete(oldestKey);
-    }
-    prLookupGitStateByKey.set(entryKey, { readAtMs, value });
-    return value;
+    return yield* prLookupGitState.remember(cwd, key, fresh, read);
   });
   const branchPrLookups = yield* Semaphore.make(BRANCH_PR_LOOKUP_CONCURRENCY);
   const settledPrLookupByBranchKey = new Map<
@@ -3363,15 +3330,7 @@ export const make = Effect.gen(function* () {
       ): shared is SharedPrLookupGitReads =>
         isActivePrLookupGitReads(shared, cwd) && !shared.queriedProvider;
       const readConfig = (key: string) =>
-        Effect.flatMap(prLookupGitReads, (shared) =>
-          rememberPrLookupGitState(
-            cwd,
-            `config\u0000${key}`,
-            fresh,
-            gitCore.readConfigValue(cwd, key),
-            canReuseMemo(shared) ? shared.configValues.get(key) : undefined,
-          ),
-        ).pipe(Effect.orElseSucceed(() => null));
+        readPrLookupConfig(cwd, key, fresh).pipe(Effect.orElseSucceed(() => null));
       const readRemoteUrlKey = (remoteName: string | null) =>
         remoteName === null
           ? Effect.succeed(null)

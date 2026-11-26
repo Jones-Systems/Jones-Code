@@ -307,7 +307,7 @@ interface CaptureIndexChange {
     contents: string,
   ) => Effect.Effect<
     void,
-    Effect.Error<ReturnType<UntrackedBlobChange["git"]>> | PlatformError.PlatformError
+    Effect.Error<ReturnType<CaptureIndexChange["git"]>> | PlatformError.PlatformError
   >;
   readonly write: (
     relativePath: string,
@@ -1292,9 +1292,9 @@ it.effect.each([
   {
     name: "a clean filter now applies through info/attributes",
     reuses: false,
-    change: ({ git, write }: CaptureIndexChange) =>
-      write(".git/info/attributes", "*.txt filter=upper\n").pipe(
-        Effect.andThen(git(["config", "filter.upper.clean", "tr a-z A-Z"])),
+    change: ({ git, writeGitPath }: CaptureIndexChange) =>
+      writeGitPath("info/attributes", "*.txt filter=unspecified\n").pipe(
+        Effect.andThen(git(["config", "filter.unspecified.clean", "tr a-z A-Z"])),
       ),
   },
   {
@@ -1398,9 +1398,30 @@ it.effect.each([
         }),
       );
       const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-capture-index-" });
-      const { git, checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
+      const git = (args: ReadonlyArray<string>) =>
+        driver.execute({ operation: "checkpoint-test", cwd, args });
+      yield* git(["init"]);
+      yield* git(["config", "user.name", "Test"]);
+      yield* git(["config", "user.email", "test@test.com"]);
+      yield* fs.writeFileString(path.join(cwd, "file.txt"), "initial\n");
+      yield* git(["add", "."]);
+      yield* git(["commit", "-m", "initial"]);
+      const checkpointRef = CheckpointRef.make("refs/t3/checkpoints/test");
+      yield* fs.writeFileString(path.join(cwd, "file.txt"), "staged\n");
+      yield* git(["add", "."]);
+      yield* fs.writeFileString(path.join(cwd, "file.txt"), "unstaged\n");
       const write = (relativePath: string, contents: string) =>
         fs.writeFileString(path.join(cwd, relativePath), contents);
+      const writeGitPath = Effect.fn(function* (gitPath: string, contents: string) {
+        const resolved = (yield* git([
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-path",
+          gitPath,
+        ])).stdout.slice(0, -1);
+        yield* fs.makeDirectory(path.dirname(resolved), { recursive: true });
+        yield* fs.writeFileString(resolved, contents);
+      });
       const gitWithIndex = (indexFile: string, args: ReadonlyArray<string>) =>
         driver.execute({
           operation: "checkpoint-test",
@@ -1411,6 +1432,7 @@ it.effect.each([
       const context: CaptureIndexChange = {
         git,
         gitWithIndex,
+        writeGitPath,
         write,
         checkpointRef,
         fs,

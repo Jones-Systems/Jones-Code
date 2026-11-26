@@ -1604,12 +1604,6 @@ function claudeTranscriptHasUnseenMessages(
   return anchored ? claudeMessagesBeforeTrailingAborts(unseen) > 0 : undefined;
 }
 
-const claudeConfigDirOf = (
-  path: Path.Path,
-  environment: NodeJS.ProcessEnv,
-  homeDirectory: string,
-) => path.resolve(environment.CLAUDE_CONFIG_DIR ?? path.join(homeDirectory, ".claude"));
-
 // The SDK reads CLAUDE_CONFIG_DIR from process.env. Isolate custom homes in a
 // worker so concurrent providers keep the server's environment.
 const runClaudeWorker = Effect.fn("runClaudeWorker")(function* (input: {
@@ -2801,6 +2795,7 @@ export function makeClaudeQueryOptions(input: {
       preset: "claude_code" as const,
       append: [
         buildRuntimeInstructions({
+          appIdentity: APP_IDENTITY,
           harness: "Claude Code",
           agentFeedback,
           runtimePolicy: { cwd: input.cwd, workspace: input.workspace },
@@ -5645,6 +5640,7 @@ function formatClaudeUsageLimitWait(waitMs: number): string {
 }
 
 interface ActiveClaudeTurnContext {
+  readonly nativeSessionProof: ClaudeNativeSessionProof | undefined;
   retryBudgetFailure?: OrchestrationV2ProviderFailure;
   // Set when the prompt starts or a request goes out; cleared by the turn's next frame.
   unansweredRequestSince?: DateTime.Utc | undefined;
@@ -13262,7 +13258,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const stopRequested = (yield* Ref.get(interruptedTurns)).has(context.providerTurnId);
             const wasSteered = (yield* Ref.get(steeredTurns)).has(context.providerTurnId);
             absorbHeldResult(context);
-            if (!interrupted && wasSteered && isClaudeActiveSteeringAbortResult(message)) {
+            if (!stopRequested && wasSteered && isClaudeActiveSteeringAbortResult(message)) {
               const cutOffReply = context.assistant.lastReply;
               context.assistant.lastReply = null;
               if (message.terminal_reason === "aborted_streaming") {
@@ -14695,19 +14691,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             hasPersistedProviderTurn;
           const runtimeGeneration = yield* (
             input.runtimeLifecycle?.reserve(turnInput.threadId) ??
-              idAllocator.allocate
-                .event({ threadId: turnInput.threadId, providerSessionId: input.providerSessionId })
-                .pipe(
-                  Effect.map(String),
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderAdapter.ProviderAdapterProtocolError({
-                        driver: CLAUDE_PROVIDER,
-                        detail: "Cannot reserve a Claude process generation.",
-                        cause,
-                      }),
-                  ),
-                )
+            idAllocator.allocate
+              .event({ threadId: turnInput.threadId, providerSessionId: input.providerSessionId })
+              .pipe(
+                Effect.map(String),
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CLAUDE_PROVIDER,
+                      detail: "Cannot reserve a Claude process generation.",
+                      cause,
+                    }),
+                ),
+              )
           );
           for (const bound of boundQueriesByNativeThread.values()) bound.eventProducer.retire();
           const eventProducer = ProviderEventOrigin.makeProviderEventProducer({

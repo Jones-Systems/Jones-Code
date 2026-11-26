@@ -132,9 +132,9 @@ const legacyNativeDenialScopes: Partial<Record<AuthEnvironmentScope, AuthEnviron
 export function authScopeRequiredResponse(requiredPermission: AuthEnvironmentScope) {
   return {
     requiredScope:
-      requiredPermission === AuthRelayConfigureScope
-        ? AuthRelayWriteScope
-        : (legacyParents[requiredPermission] ?? requiredPermission),
+      legacyNativeDenialScopes[requiredPermission] ??
+      legacyParents[requiredPermission] ??
+      requiredPermission,
     requiredPermission,
   };
 }

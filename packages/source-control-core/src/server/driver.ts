@@ -17,8 +17,7 @@ import type * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import type { SourceControlDefinition } from "../shared/definition.ts";
 
 import type { SourceControlProviderDiscoverySpec } from "./discovery.ts";
-import type { IssueTrackerApi } from "./IssueTracker.ts";
-import type { PullRequestProviderApi } from "./PullRequestProvider.ts";
+import type { PullRequestProviderApi, PullRequestProviderError } from "./PullRequestProvider.ts";
 import type * as SourceControlHost from "./SourceControlHost.ts";
 import type * as SourceControlProvider from "./SourceControlProvider.ts";
 import type * as SourceControlRateLimit from "./SourceControlRateLimit.ts";
@@ -77,8 +76,8 @@ export interface SourceControlDriverInstance {
   readonly discovery: SourceControlProviderDiscoverySpec;
   /** Null for a host whose pull requests this build cannot read. */
   readonly pullRequests: PullRequestProviderApi | null;
-  /** Absent for a host whose issues this build cannot read. */
-  readonly issues?: IssueTrackerApi;
+  /** Uses the driver's existing verified credential and shared request budget. */
+  readonly ci?: SourceControlCiReader;
   /**
    * Fetches media the definition's `mediaUrl` claimed, with the credential the host serves it
    * to. Null when the fetch went nowhere a response could come from, such as a redirect loop.

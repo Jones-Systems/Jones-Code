@@ -7,7 +7,6 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
-import { BOOT_SERVICE_UNIT_FILE } from "./bootService.ts";
 import { RESTORE_OOMD_WATCH_SCRIPT } from "./userManagerOom.ts";
 
 const PROTECT_DROP_IN = "90-t3code-protect.conf";

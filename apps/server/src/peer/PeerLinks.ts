@@ -83,6 +83,8 @@ export interface ResolvedPeerLink {
   /** The first address that answered as this peer. */
   readonly url: string;
   readonly token: string;
+  /** The local secret name binds this answer to the credential that was resolved. */
+  readonly generation: string;
   /** What the peer said it can do when it answered. */
   readonly capabilities: ExecutionEnvironmentCapabilities;
 }
@@ -112,6 +114,14 @@ export class PeerLinks extends Context.Service<
     readonly linkUnlessLinked: (
       input: PeerLinkCreateInput,
     ) => Effect.Effect<{ readonly link: PeerLink; readonly alreadyLinked: boolean }, PeerLinkError>;
+    readonly describe: (
+      url: string,
+    ) => Effect.Effect<
+      Option.Option<{ readonly environmentId: EnvironmentId; readonly label: string }>
+    >;
+    readonly currentGeneration: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<Option.Option<string>, PeerLinkError>;
     readonly list: Effect.Effect<ReadonlyArray<PeerLinkSummary>, PeerLinkError>;
     /** The unexpired links' names, from what is stored, without asking any peer. */
     readonly names: Effect.Effect<ReadonlyArray<PeerLinkName>, PeerLinkError>;
@@ -136,6 +146,7 @@ export class PeerLinks extends Context.Service<
     /** Records a later end the peer gives the link's session: using a link renews it there. */
     readonly recordExpiry: (
       environmentId: EnvironmentId,
+      generation: string,
       expiresAt: DateTime.Utc,
     ) => Effect.Effect<void>;
   }
@@ -284,9 +295,8 @@ const make = Effect.gen(function* () {
     cancelWhenUnused: true,
   });
 
-  /** The environment answering at `url`'s origin, or why nothing there answers as T3 Code. */
-  const probe = (url: string) => {
-    const origin = new URL(url).origin;
+  /** The environment answering at a checked origin, or why nothing there answers as T3 Code. */
+  const probe = (origin: string) => {
     const timeout = probeTimeout(origin);
     return descriptorReads.run(
       origin,
@@ -305,13 +315,16 @@ const make = Effect.gen(function* () {
     );
   };
 
-  /** Whether `url` answers as `environmentId`, counting any failure as no. */
+  /** The checked origin and descriptor if that address still answers as the linked peer. */
   const answersAs = Effect.fn("PeerLinks.answersAs")(function* (
     url: string,
     environmentId: EnvironmentId,
   ) {
-    const found = yield* probe(url).pipe(Effect.option);
-    return Option.filter(found, (peer) => peer.environmentId === environmentId);
+    const found = yield* peerOrigin(url).pipe(
+      Effect.flatMap((origin) => Effect.map(probe(origin), (peer) => ({ origin, peer }))),
+      Effect.option,
+    );
+    return Option.filter(found, ({ peer }) => peer.environmentId === environmentId);
   });
 
   const toLink = Effect.fn("PeerLinks.toLink")(function* (row: PeerLinkRow) {
@@ -643,17 +656,26 @@ const make = Effect.gen(function* () {
   const linkUnlessLinked: PeerLinks["Service"]["linkUnlessLinked"] = (input) =>
     linkWith(input, true);
 
-  /** A peer's label follows its machine name, so the link takes the one its own address answers with. */
-  const withLabel = (link: PeerLink, label: string) =>
+  // A descriptor read can finish after the link was replaced.
+  const withLabel = (link: PeerLink, generation: string, label: string) =>
     label === link.label
       ? Effect.succeed(link)
-      : sql`
+      : sql<{ label: string }>`
           UPDATE ${sql(peerEnvironmentLinksTable)} SET label = ${label}
-          WHERE environment_id = ${link.environmentId}
-        `.pipe(Effect.ignoreCause({ log: true }), Effect.as({ ...link, label }));
+          WHERE environment_id = ${link.environmentId} AND secret_name = ${generation}
+          RETURNING label
+        `.pipe(
+          Effect.map((rows) => (rows.length > 0 ? { ...link, label } : link)),
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not save the peer's label", { cause }).pipe(
+              Effect.as({ ...link, label }),
+            ),
+          ),
+        );
 
   const statusOf = Effect.fn("PeerLinks.statusOf")(function* (
     link: PeerLink,
+    generation: string,
     now: DateTime.Utc,
   ): Effect.fn.Return<PeerLinkSummary> {
     if (DateTime.isLessThanOrEqualTo(link.expiresAt, now)) return { ...link, status: "expired" };
@@ -665,15 +687,20 @@ const make = Effect.gen(function* () {
       ),
     ).pipe(Effect.timeoutOption(LIST_PROBE_TIMEOUT), Effect.orElseSucceed(Option.none));
     if (Option.isNone(answered)) return { ...link, status: "unreachable" };
-    return { ...(yield* withLabel(link, answered.value.label)), status: "reachable" };
+    return {
+      ...(yield* withLabel(link, generation, answered.value.peer.label)),
+      status: "reachable",
+    };
   });
 
   const list: PeerLinks["Service"]["list"] = Effect.gen(function* () {
-    const links = yield* Effect.forEach(yield* readRows, toLink);
+    const rows = yield* readRows;
     const now = yield* DateTime.now;
-    return yield* Effect.forEach(links, (link) => statusOf(link, now), {
-      concurrency: "unbounded",
-    });
+    return yield* Effect.forEach(
+      rows,
+      (row) => toLink(row).pipe(Effect.flatMap((link) => statusOf(link, row.secret_name, now))),
+      { concurrency: "unbounded" },
+    );
   });
 
   const names: PeerLinks["Service"]["names"] = Effect.gen(function* () {
@@ -707,11 +734,13 @@ const make = Effect.gen(function* () {
           // An address can change hands after linking; only the linked peer may see the token.
           answersAs(url, environmentId).pipe(
             Effect.flatMap(Effect.fromOption),
-            Effect.andThen(clientFor(url)),
-            Effect.flatMap((client) =>
-              client.mcpOAuth
-                .revoke({ payload: { token: Redacted.make(token) } })
-                .pipe(Effect.timeout(probeTimeout(url))),
+            Effect.flatMap(({ origin }) =>
+              clientFor(origin).pipe(
+                Effect.flatMap((client) =>
+                  client.mcpOAuth.revoke({ payload: { token: Redacted.make(token) } }),
+                ),
+                Effect.timeout(probeTimeout(origin)),
+              ),
             ),
           ),
         ),
@@ -727,12 +756,13 @@ const make = Effect.gen(function* () {
 
   const unlink: PeerLinks["Service"]["unlink"] = Effect.fn("PeerLinks.unlink")(
     function* (environmentId) {
-      const deleted = yield* sql<{ secret_name: string; urls_json: string }>`
-        DELETE FROM peer_environment_links WHERE environment_id = ${environmentId}
-        RETURNING secret_name, urls_json
-      `.pipe(Effect.catch(failStorage));
-      let endedThere = false;
-      for (const row of deleted) {
+      // Finish removing the captured local credential even if the caller disconnects.
+      const forgotten = yield* Effect.gen(function* () {
+        const [row] = yield* sql<{ secret_name: string; urls_json: string }>`
+          DELETE FROM ${sql(peerEnvironmentLinksTable)} WHERE environment_id = ${environmentId}
+          RETURNING secret_name, urls_json
+        `.pipe(Effect.catch(failStorage));
+        if (row === undefined) return undefined;
         // Unreadable only skips the revocation; the secret is still removed below.
         const token = yield* secrets
           .get(row.secret_name)
@@ -744,15 +774,14 @@ const make = Effect.gen(function* () {
             ),
           );
         yield* secrets.remove(row.secret_name).pipe(Effect.catch(failStorage));
-        if (Option.isSome(token)) {
-          endedThere = yield* revokeAtPeer(
-            environmentId,
-            row.urls_json,
-            new TextDecoder().decode(token.value),
-          );
-        }
-      }
-      return { removed: deleted.length > 0, endedThere };
+        return { row, token };
+      }).pipe(Effect.uninterruptible);
+      if (forgotten === undefined) return { removed: false, endedThere: false };
+      const { row, token } = forgotten;
+      const endedThere =
+        Option.isSome(token) &&
+        (yield* revokeAtPeer(environmentId, row.urls_json, new TextDecoder().decode(token.value)));
+      return { removed: true, endedThere };
     },
   );
 
@@ -764,17 +793,31 @@ const make = Effect.gen(function* () {
       });
       const row = yield* readRow(environmentId);
       if (Option.isNone(row)) return yield* notLinked;
+      const generation = row.value.secret_name;
       const link = yield* toLink(row.value);
+      const requireCurrent = currentGeneration(environmentId).pipe(
+        Effect.flatMap((current) => {
+          if (Option.isNone(current)) return Effect.fail(notLinked);
+          return current.value === generation
+            ? Effect.void
+            : Effect.fail(
+                new PeerLinkError({
+                  reason: "unknown_link",
+                  message: `The link to ${link.label} changed while it was being resolved. Try again.`,
+                }),
+              );
+        }),
+      );
       if (DateTime.isLessThanOrEqualTo(link.expiresAt, yield* DateTime.now)) {
         return yield* new PeerLinkError({
           reason: "expired",
           message: `The link to ${link.label} expired. Link it again with a new pairing code from ${link.label}.`,
         });
       }
-      const stored = yield* secrets.get(row.value.secret_name).pipe(Effect.catch(failStorage));
+      const stored = yield* secrets.get(generation).pipe(Effect.catch(failStorage));
       if (Option.isNone(stored)) {
-        // An unlink between the two reads removes the row before its secret.
-        if (Option.isNone(yield* readRow(environmentId))) return yield* notLinked;
+        // Unlinking or replacing the link can remove its secret between these reads.
+        yield* requireCurrent;
         return yield* new PeerLinkError({
           reason: "unknown_link",
           message: `The link to ${link.label} lost its credential. Link it again.`,
@@ -788,10 +831,7 @@ const make = Effect.gen(function* () {
           ? Option.none()
           : yield* Effect.raceAll(
               link.urls.map((url) =>
-                answersAs(url, environmentId).pipe(
-                  Effect.flatMap(Effect.fromOption),
-                  Effect.map((peer) => ({ url, peer })),
-                ),
+                answersAs(url, environmentId).pipe(Effect.flatMap(Effect.fromOption)),
               ),
             ).pipe(Effect.option);
       if (Option.isNone(answered)) {
@@ -800,7 +840,7 @@ const make = Effect.gen(function* () {
           message: `${link.label} did not answer at ${link.urls.join(", ")}.`,
         });
       }
-      const { url, peer } = answered.value;
+      const { origin, peer } = answered.value;
       // A link made before the peer had to fence linked work, or a peer moved
       // back to such a version, would carry work past those limits.
       if (!linkLimitsHold(peer)) {
@@ -809,10 +849,13 @@ const make = Effect.gen(function* () {
           message: `${link.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
         });
       }
+      const labeled = yield* withLabel(link, generation, peer.label);
+      yield* requireCurrent;
       return {
-        link: yield* withLabel(link, peer.label),
-        url,
+        link: labeled,
+        url: origin,
         token: new TextDecoder().decode(stored.value),
+        generation,
         capabilities: peer.capabilities,
       };
     },
@@ -840,11 +883,18 @@ const make = Effect.gen(function* () {
       Effect.ignoreCause({ log: true }),
     );
 
-  const recordExpiry: PeerLinks["Service"]["recordExpiry"] = (environmentId, expiresAt) =>
-    sql`
-      UPDATE peer_environment_links SET expires_at = ${DateTime.formatIso(expiresAt)}
-      WHERE environment_id = ${environmentId} AND expires_at < ${DateTime.formatIso(expiresAt)}
+  const recordExpiry: PeerLinks["Service"]["recordExpiry"] = (
+    environmentId,
+    generation,
+    expiresAt,
+  ) => {
+    const expiry = DateTime.formatIso(expiresAt);
+    return sql`
+      UPDATE ${sql(peerEnvironmentLinksTable)} SET expires_at = ${expiry}
+      WHERE environment_id = ${environmentId} AND secret_name = ${generation}
+        AND fenced = 1 AND expires_at < ${expiry}
     `.pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+  };
 
   return PeerLinks.of({
     enabled,

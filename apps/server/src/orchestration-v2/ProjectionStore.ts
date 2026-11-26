@@ -8,7 +8,9 @@ import { makeMemoryLayer } from "../jones/orchestration/MemoryProjectionStore.ts
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import * as DeletionWriterFence from "../jones/cleanup/DeletionWriterFence.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
+import { makeRuntimeStopMethods } from "../jones/runtime/RuntimeStopSqlite.ts";
 import { byThread as dependencyRosterByThread } from "../jones/threadResultDependencies/Projection.ts";
+import { runtimeBinding } from "@t3tools/provider-core/server/ProviderAdapter";
 import type { ProjectThreadAwarenessV2Input } from "@t3tools/shared/agentAwareness";
 import { applyOrchestrationV2ThreadVisit, pendingGuestMessageCount } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
@@ -1163,17 +1165,20 @@ export function applyToProjection(
         thread: applyOrchestrationV2ThreadVisit(projection.thread, event.payload),
       };
     case "run.created":
-    case "run.updated":
-      return withLocalVisibleTurnItems({
-        ...base,
-        runs: upsertById(
-          base.runs,
-          preserveRunRecordedFields(
-            base.runs.find((run) => run.id === event.payload.id),
-            event.payload,
-          ),
-        ),
-      });
+    case "run.updated": {
+      const known = base.runs.find((run) => run.id === event.payload.id);
+      const run = preserveRunRecordedFields(known, event.payload);
+      const next = { ...base, runs: upsertById(base.runs, run) };
+      if (
+        next.capturedRuntimeStopRunId === run.id &&
+        (!isCapturedRuntimeStopRun(run) ||
+          run.providerInstanceId !== known?.providerInstanceId ||
+          run.providerThreadId !== known?.providerThreadId)
+      ) {
+        delete next.capturedRuntimeStopRunId;
+      }
+      return withLocalVisibleTurnItems(next);
+    }
     case "run.background-work-cancelled":
       return {
         ...base,
@@ -1221,8 +1226,19 @@ export function applyToProjection(
         ...base,
         providerSessions: upsertById(base.providerSessions, event.payload),
       };
-    case "provider-session.detach-requested":
-      return projection;
+    case "provider-session.detach-requested": {
+      const { runId } = event;
+      if (runId === undefined || runId === projection.capturedRuntimeStopRunId) {
+        return projection;
+      }
+      const run = projection.runs.find(
+        (candidate) => candidate.id === runId && candidate.threadId === event.threadId,
+      );
+      if (run === undefined || !isCapturedRuntimeStopRun(run)) {
+        return projection;
+      }
+      return { ...projection, capturedRuntimeStopRunId: runId };
+    }
     case "provider-session.detached":
       return {
         ...base,
@@ -2052,9 +2068,8 @@ export function threadShellFromProjection(
     ...(projection.thread.delegatedFrom === undefined
       ? {}
       : { delegatedFrom: projection.thread.delegatedFrom }),
-    ...(projection.thread.workflowRun === undefined
-      ? {}
-      : { workflowRun: projection.thread.workflowRun }),
+    ...(runtimeIdentity === undefined ? {} : { runtimeIdentity }),
+    ...(latestRunProviderSettlement === undefined ? {} : { latestRunProviderSettlement }),
     latestRunId: latestRun?.id ?? null,
     latestRunRequestedAt: latestRun?.requestedAt ?? null,
     latestRunStartedAt: latestRun?.startedAt ?? null,
@@ -2196,6 +2211,14 @@ function isActivityRunForShell(
   readonly status: ShellActivityRunStatus;
 } {
   return isInterruptibleRunForShell(run) || run.status === "waiting";
+}
+
+function isCapturedRuntimeStopRun(run: OrchestrationV2Run): boolean {
+  return (
+    run.completedAt === null &&
+    run.activeAttemptId !== null &&
+    (run.status === "starting" || run.status === "running" || run.status === "waiting")
+  );
 }
 
 function runtimeIdentityForShell(
@@ -2391,9 +2414,9 @@ function shellFromState(input: {
     ...(input.state.thread.delegatedFrom === undefined
       ? {}
       : { delegatedFrom: input.state.thread.delegatedFrom }),
-    ...(input.state.thread.workflowRun === undefined
+    ...(input.state.latestRunProviderSettlement === undefined
       ? {}
-      : { workflowRun: input.state.thread.workflowRun }),
+      : { latestRunProviderSettlement: input.state.latestRunProviderSettlement }),
     latestRunId: input.state.latestRunId,
     latestRunRequestedAt: input.state.latestRunRequestedAt,
     latestRunStartedAt: input.state.latestRunStartedAt,
@@ -2474,7 +2497,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     const sql = yield* SqlClient.SqlClient;
     const legacyStorage = LegacyStorage.make(sql);
     const deletionWriterFence = yield* DeletionWriterFence.make;
-    const resultDependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
+    const jonesTables = makeJonesTablePresence(sql);
+    const resultDependencies = makeDependencyStore(sql, jonesTables);
+    const runtimeStops = makeRuntimeStopMethods(sql, jonesTables);
 
     // SQLite uses the partial conversation index of migration 082 only for this exact predicate.
     const CONVERSATION_INDEX_EXCLUDED_TYPES = sql.literal(
@@ -2775,7 +2800,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 status = excluded.status,
                 requested_at = excluded.requested_at,
                 completed_at = excluded.completed_at,
-                payload_json = ${keepRecordedRunOutput(
+                payload_json = ${keepRecordedQueueEligibility(
                   keepRecordedRunField(
                     keepRecordedRunField(
                       keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
@@ -4954,6 +4979,37 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         ),
     );
 
+    const readCapturedRuntimeStopRunId = Effect.fnUntraced(function* (
+      projection: OrchestrationV2ThreadProjection,
+    ) {
+      const provider = projection.providerThreads.find(
+        (thread) =>
+          thread.id === projection.thread.activeProviderThreadId &&
+          thread.appThreadId === projection.thread.id,
+      );
+      const generation = provider?.runtimeIdentity?.runtimeGeneration;
+      if (
+        provider === undefined ||
+        generation === undefined ||
+        provider.nativeThreadRef?.driver !== provider.driver
+      ) {
+        return undefined;
+      }
+      const run = projection.runs.findLast(
+        (run) =>
+          run.providerThreadId === provider.id &&
+          run.providerInstanceId === provider.providerInstanceId &&
+          isCapturedRuntimeStopRun(run),
+      );
+      if (run === undefined) return undefined;
+      const binding = runtimeBinding(provider, generation);
+      // The intent retains the run and its physical binding even when the detach event is pruned.
+      return binding !== undefined &&
+        (yield* runtimeStops.hasAttributedRunStop(projection.thread.id, run.id, binding))
+        ? run.id
+        : undefined;
+    });
+
     const readProjection: (
       threadId: ThreadId,
       seenThreadIds: ReadonlySet<ThreadId>,
@@ -4971,13 +5027,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           (window?.historyAnchor !== undefined && window.historyAnchor.threadId !== threadId)
             ? { ...window, rowLimit: 0, anchorItemId: undefined }
             : window;
-        const projection = yield* readCanonicalProjection(
+        const localProjection = yield* readCanonicalProjection(
           threadId,
           localWindow,
           window !== undefined && seenThreadIds.size > 0
             ? ["runs", "attempts", "turnItems"]
             : undefined,
         );
+        const capturedRuntimeStopRunId =
+          seenThreadIds.size === 0
+            ? yield* readCapturedRuntimeStopRunId(localProjection)
+            : undefined;
+        const projection =
+          capturedRuntimeStopRunId === undefined
+            ? localProjection
+            : { ...localProjection, capturedRuntimeStopRunId };
         const forkedFrom = inheritedRunFork(projection.thread);
         if (forkedFrom === null || seenThreadIds.has(forkedFrom.threadId)) {
           return withLocalVisibleTurnItems(projection);
@@ -10021,12 +10085,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT link_request.thread_id FROM orchestration_v2_projection_turn_items link_request
               WHERE link_request.type = 'link_request' AND link_request.status = 'waiting'
             )
-            OR t.thread_id IN (
-              SELECT provider_thread.thread_id
-              FROM orchestration_v2_projection_provider_threads provider_thread
-              WHERE CASE WHEN json_valid(provider_thread.payload_json)
-                THEN json_array_length(provider_thread.payload_json, '$.pendingBackgroundTasks') > 0
-                ELSE 0 END
+            OR EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_provider_threads provider_thread
+              WHERE provider_thread.thread_id = t.thread_id
+                AND json_array_length(provider_thread.payload_json, '$.pendingBackgroundTasks') > 0
+            )
+            OR ${pendingResultDependency}
+            OR EXISTS (
+              SELECT 1 FROM json_each(t.payload_json, '$.pullRequests') link
+              WHERE json_type(link.value, '$.watch') IS NOT NULL
             )
             -- Only a thread with a pull request link reads its payload. CASE, not AND: SQLite
             -- 3.50 evaluates both AND operands here.

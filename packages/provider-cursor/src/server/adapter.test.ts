@@ -42,7 +42,12 @@ import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { findProviderControlOutcomeUnknown } from "@t3tools/provider-core/server/jones/providerControlOutcome";
+import {
+  T3_CODE_DEVICE_TOOL_INSTRUCTIONS,
+  T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+  T3_CODE_ORCHESTRATION_SECTIONS,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
   cursorMcpServers,
@@ -55,6 +60,7 @@ import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import * as CursorSdk from "./CursorSdk.ts";
 import { loadCursorSdk } from "./sdk.ts";
 import { cursorWorkspaceMcpServers } from "./workspaceMcpServers.ts";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 
 // The SDK reads CURSOR_BACKEND_URL once when it loads, before any test body runs.
 const cursorBackendUrl = await vi.hoisted(async () => {
@@ -1395,21 +1401,13 @@ describe("CursorAdapterV2", () => {
                   return {
                     agentId,
                     runId,
-                    wait: Effect.gen(function* () {
-                      if (summaryCompleted !== undefined) {
-                        yield* input.onDelta!({
-                          type: "summary-completed",
-                          ...summaryCompleted,
-                        }).pipe(Effect.orDie);
-                      }
-                      return {
-                        id: runId,
-                        requestId: `native-request-${sentMessages.length}`,
-                        status,
-                        ...(status === "error" ? { error: { message: "transient failure" } } : {}),
-                        model: { id: input.options?.model?.id ?? "composer-2.5" },
-                        durationMs: 1,
-                      };
+                    nativeWait: fixtureNativeExit(runId),
+                    wait: Effect.succeed({
+                      id: runId,
+                      requestId: `native-request-${sentMessages.length}`,
+                      status: "finished" as const,
+                      model: { id: "composer-2.5" },
+                      durationMs: 1,
                     }),
                     cancel: Effect.void,
                   };
@@ -1505,9 +1503,8 @@ describe("CursorAdapterV2", () => {
           assert.equal(sent.includes(section.trim()), orchestration, "all orchestration sections");
         }
         return {
-          orchestration: sent.includes("## T3 Code orchestration"),
-          devices: sent.includes("## T3 Code devices"),
-          runtime: sent.includes("<runtime_info>"),
+          orchestration,
+          devices: sent.includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS),
         };
       });
       const told = (orchestration: boolean, devices: boolean, runtime: boolean) => ({
@@ -1695,7 +1692,15 @@ describe("CursorAdapterV2", () => {
                   const runId = `native-cursor-run-${sentMessages.length}`;
                   const ended = yield* Deferred.make<"finished" | "cancelled">();
                   runEnds.push(ended);
-                  runDeltas.push((update) => input.onDelta!(update).pipe(Effect.orDie));
+                  const nativeResult = Deferred.await(ended).pipe(
+                    Effect.map((status) => ({
+                      id: runId,
+                      requestId: `native-request-${sentMessages.length}`,
+                      status,
+                      model: { id: "composer-2.5" },
+                      durationMs: 1,
+                    })),
+                  );
                   return {
                     agentId: "native-cursor-steer",
                     runId,
@@ -1887,38 +1892,19 @@ describe("CursorAdapterV2", () => {
       yield* runtime.resumeTurn!(resumeInput(9));
       assert.deepEqual(resumedRuns, [5, 6, 8, 9]);
 
-      // Compaction before a checkpointed stop invalidates the interrupted run's runtime instructions,
-      // so a subsequent native resume completion must not suppress them on the follow-up turn.
-      yield* Deferred.succeed(runEnds[8]!, "finished");
-      yield* runtime.events.pipe(
-        Stream.filter((event) => event.type === "turn.terminal" && event.status === "completed"),
-        Stream.runHead,
+      // Scope shutdown must keep the projected waiter alive until native close settles this run.
+      assert.isFalse(yield* Deferred.isDone(runEnds[8]!));
+      yield* Scope.close(runtimeScope, Exit.void);
+      assert.isTrue(yield* Deferred.isDone(runEnds[8]!));
+      const closedTurn = Option.getOrThrow(
+        yield* runtime.events.pipe(
+          Stream.filter((event) => event.type === "turn.terminal" && event.runOrdinal === 9),
+          Stream.runHead,
+        ),
       );
-      const neonSelection = { instanceId, model: "gemini-4-neon" };
-      yield* runtime.startTurn({
-        ...turnInput(10, "Switch model."),
-        modelSelection: neonSelection,
-      });
-      assert.include(sentMessages[9]!, "as gemini-4-neon");
-      yield* runDeltas[9]!({ type: "summary-completed" });
-      checkpointedRuns.add("native-cursor-run-10");
-      yield* interruptRunning;
-      yield* runtime.resumeTurn!({ ...resumeInput(11), modelSelection: neonSelection });
-      assert.strictEqual(sentMessages[10], "");
-      yield* Deferred.succeed(runEnds[10]!, "finished");
-      yield* runtime.events.pipe(
-        Stream.filter((event) => event.type === "turn.terminal" && event.status === "completed"),
-        Stream.runHead,
-      );
-      yield* runtime.startTurn({
-        ...turnInput(12, "After resume."),
-        modelSelection: neonSelection,
-      });
-      assert.include(
-        sentMessages[11]!,
-        "as gemini-4-neon",
-        "native resume after compaction must not mark invalidated runtime instructions delivered",
-      );
+      assert(closedTurn.type === "turn.terminal");
+      assert.equal(closedTurn.status, "cancelled");
+      assert.equal(closedTurn.evidenceKind, "provider_result");
     }).pipe(
       Effect.scoped,
       Effect.provide(

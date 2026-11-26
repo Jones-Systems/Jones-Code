@@ -127,39 +127,44 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         },
         { discard: true },
       );
-    if (input.inject !== undefined && nativeThreadId !== undefined) {
-      if (
-        pending.some(
-          (handoff) =>
-            handoff.delivery?.nativeThreadId === nativeThreadId &&
-            handoff.delivery.status === "pending",
-        )
-      ) {
-        return yield* new ContextHandoffDeliveryUncertainError();
-      }
-      yield* persist("pending");
-      const injected = yield* input.inject({
-        messages: selected.messages,
-        context: selected.context,
-      });
-      if (injected) {
-        yield* persist("injected");
-        return { context: "", delivered: Effect.void, unsent: Effect.void, inlineHandoffs: [] };
-      }
-    } else {
-      yield* persist("pending");
-    }
-    if (input.deferInline) {
-      // Compaction cannot carry inline transcripts; retain for the next turn if native injection is unsupported.
-      yield* Effect.forEach(pending, input.persist, { discard: true });
-      return { context: "", delivered: Effect.void, unsent: Effect.void, inlineHandoffs: [] };
-    }
-    return {
-      context: renderHistory(selected.messages, selected.context),
-      delivered: persist("inline"),
-      unsent: Effect.forEach(pending, input.persist, { discard: true }),
-      inlineHandoffs: pending,
-    };
+    return yield* outcome.protect(
+      Effect.gen(function* () {
+        if (input.inject !== undefined && nativeThreadId !== undefined) {
+          if (
+            pending.some(
+              (handoff) =>
+                handoff.delivery?.nativeThreadId === nativeThreadId &&
+                handoff.delivery.status === "pending",
+            )
+          ) {
+            return yield* new ContextHandoffDeliveryUncertainError();
+          }
+          yield* persist("pending");
+          const injected = yield* outcome.inject(
+            input.inject({
+              messages: selected.messages,
+              context: selected.context,
+            }),
+          );
+          if (injected) {
+            yield* persist("injected");
+            return { context: "", delivered: Effect.void, unsent: Effect.void };
+          }
+        } else {
+          yield* persist("pending");
+        }
+        if (input.deferInline) {
+          // Compaction cannot carry inline transcripts; retain for the next turn if native injection is unsupported.
+          yield* outcome.unsent;
+          return { context: "", delivered: Effect.void, unsent: Effect.void };
+        }
+        return {
+          context: renderHistory(selected.messages, selected.context),
+          delivered: persist("inline"),
+          unsent: outcome.unsent,
+        };
+      }),
+    );
   },
 );
 

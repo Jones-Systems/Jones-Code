@@ -799,6 +799,8 @@ export interface ProviderAdapterV2EnsureThreadInput {
 
 export interface ProviderAdapterV2TurnInput {
   readonly agentFeedback?: AgentFeedbackMode;
+  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
+  readonly revalidateStartAdmission?: Effect.Effect<void, ProviderAdapterV2Error>;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -817,12 +819,9 @@ export interface ProviderAdapterV2TurnInput {
   /** Dispatch-only default; never changes durable requested model options. */
   readonly configuredReasoningEffort?: string;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
-  readonly appContext?: ReadonlyArray<{
-    readonly key: string;
-    readonly text: string;
-    /** ISO time the note was last set, so a resent note reads as earlier state, not news. */
-    readonly updatedAt?: string;
-  }>;
+  readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  /** Jones-owned recovery callbacks; user checkpoint data remains untrusted context. */
+  readonly goalContinuityContext?: GoalContinuityContext;
 }
 
 export type ProviderAdapterV2ResumeTurnInput = Omit<
@@ -851,8 +850,8 @@ export interface ProviderAdapterV2SteerInput {
   readonly message: ProviderAdapterV2TurnMessage;
   /** The selection sent with the message when it differs from the running turn's. */
   readonly modelSelection?: ModelSelection;
-  /** The thread's MCP app notes; the adapter sends those the agent has not seen yet. */
-  readonly appContext?: ProviderAdapterV2TurnInput["appContext"];
+  /** Rechecks this steer’s control authority after asynchronous preparation. */
+  readonly revalidateSteerAdmission?: Effect.Effect<void, ProviderAdapterV2Error>;
 }
 
 export interface ProviderAdapterV2InterruptInput {

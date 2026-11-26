@@ -198,8 +198,17 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
     if (worktreePath === null) return;
     if (branch === null) return yield* recreateScratchFolder(thread, worktreePath);
     // A task folder can miss one repository's worktree while the thread's own folder is there.
-    const taskFolder = yield* taskFolders.find(worktreePath).pipe(Effect.orElseSucceed(() => null));
+    const taskFolder = yield* taskFolders
+      .find(worktreePath)
+      .pipe(Effect.mapError((cause) => new WorktreeRecreateError({ worktreePath, branch, cause })));
     if (taskFolder !== null) {
+      if (taskFolder.projectId !== thread.projectId) {
+        return yield* new WorktreeRecreateError({
+          worktreePath,
+          branch,
+          cause: "The task folder belongs to a different project.",
+        });
+      }
       return yield* taskFolders
         .restore({
           taskFolder,

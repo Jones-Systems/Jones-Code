@@ -10,8 +10,10 @@ import {
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -28,6 +30,7 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import type * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
@@ -35,6 +38,11 @@ import * as ProjectService from "../project/ProjectService.ts";
 import { projectMutationOperation } from "../project/ProjectMutation.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ServerOwnership from "../serverOwnership.ts";
+import {
+  clearPersistedServerRuntimeState,
+  readLiveServerRuntimeState,
+} from "../serverRuntimeState.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { discoverFolders, mergeProjectFolders } from "../workspace/WorkspaceFolders.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
@@ -167,7 +175,7 @@ export const ProjectCommandError = Schema.Union([
 ]);
 export type ProjectCommandError = typeof ProjectCommandError.Type;
 
-/** Names a server's error answer; unanswered requests pass through for `changeState`. */
+/** Names a server's error answer. Transport failures are handled by the caller. */
 function projectCommandErrorFromServerAnswer<E>(cause: E) {
   if (isEnvironmentHttpCommonError(cause)) {
     return new ProjectLiveServerDeclaredResponseError({
@@ -186,6 +194,12 @@ function projectCommandErrorFromServerAnswer<E>(cause: E) {
   }
   return cause;
 }
+
+const PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT = Duration.seconds(1);
+const PROJECT_CLI_LIVE_SERVER_REQUEST_TIMEOUT = Duration.seconds(10);
+const isLiveServerUnanswered = (cause: unknown) =>
+  Cause.isTimeoutError(cause) ||
+  (HttpClientError.isHttpClientError(cause) && cause.response === undefined);
 
 const projectCommandUuid = SecureRandom.SecureRandom.pipe(
   Effect.flatMap((random) => random.uuidV4()),
@@ -323,43 +337,73 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
   const minimumLogLevel = config.logLevel;
 
   return yield* Effect.gen(function* () {
-    const output = yield* RunningServer.changeState({
-      scopes: AuthStandardClientScopes,
-      viaServer: Effect.fn("project.viaServer")(function* (client) {
-        return yield* run({
-          snapshot: yield* client.projects.snapshot({ headers: {} }),
+    const runtimeState = yield* readLiveServerRuntimeState(config.serverRuntimeStatePath);
+    let unreachable: RunningServer.RunningServerUnreachableError | undefined;
+    if (Option.isSome(runtimeState)) {
+      const { origin } = runtimeState.value;
+      // Auth storage can hold the ownership lock while applying pending migrations.
+      // This layer's scope ends before the offline path attempts to acquire ownership.
+      const live = yield* Effect.gen(function* () {
+        const client = yield* RunningServer.serverClient(origin, AuthStandardClientScopes);
+        const snapshot = yield* client.projects
+          .snapshot({ headers: {} })
+          .pipe(Effect.timeout(PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT), Effect.result);
+        if (snapshot._tag === "Failure") {
+          if (!isLiveServerUnanswered(snapshot.failure)) {
+            return yield* Effect.fail(projectCommandErrorFromServerAnswer(snapshot.failure));
+          }
+          return {
+            error: new RunningServer.RunningServerUnreachableError({
+              origin,
+              cause: snapshot.failure,
+            }),
+          } as const;
+        }
+        const output = yield* run({
+          snapshot: snapshot.success,
           dispatch: (command) =>
-            client.projects.mutate({ headers: {}, payload: command } as Parameters<
-              typeof client.projects.mutate
-            >[0]),
-        });
-      }, Effect.mapError(projectCommandErrorFromServerAnswer)),
-      locally: Effect.promise(() => import("../orchestration-v2/runtimeLayer.ts")).pipe(
-        Effect.flatMap(({ layerProjectService }) =>
-          Effect.gen(function* () {
-            const projects = yield* ProjectService.ProjectService;
-            return yield* run({
-              snapshot: yield* projects.snapshot,
-              dispatch: (command) =>
-                projectMutationOperation(projects, command).pipe(Effect.asVoid),
-            });
-          }).pipe(
-            Effect.provide(
-              makeProjectCliRuntimeLayer(layerProjectService).pipe(
-                Layer.provide(ServerConfig.layer(config)),
-                Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
+            client.projects
+              .mutate({ headers: {}, payload: command } as Parameters<
+                typeof client.projects.mutate
+              >[0])
+              .pipe(
+                Effect.timeout(PROJECT_CLI_LIVE_SERVER_REQUEST_TIMEOUT),
+                Effect.mapError((cause) =>
+                  isLiveServerUnanswered(cause)
+                    ? new RunningServer.RunningServerNoReplyError({ origin, cause })
+                    : projectCommandErrorFromServerAnswer(cause),
+                ),
+                Effect.asVoid,
               ),
-            ),
-          ),
-        ),
-      ),
-    });
+        });
+        return { output } as const;
+      }).pipe(Effect.provide(EnvironmentAuth.layerRuntime), Effect.scoped);
+      if (live.error === undefined) return yield* Console.log(live.output);
+      unreachable = live.error;
+    }
+
+    // Before ownership and clearing, so a failed import leaves server state alone.
+    const { layerProjectService } = yield* Effect.promise(
+      () => import("../orchestration-v2/runtimeLayer.ts"),
+    );
+    // An unreachable server may still be running; never write behind it.
+    yield* ServerOwnership.acquireServerOwnership(config.serverRuntimeStatePath).pipe(
+      Effect.provide(ProcessRunner.layer),
+      Effect.catchTags({ ServerAlreadyRunningError: (cause) => Effect.fail(unreachable ?? cause) }),
+    );
+    const output = yield* Effect.gen(function* () {
+      const projects = yield* ProjectService.ProjectService;
+      return yield* run({
+        snapshot: yield* projects.snapshot,
+        dispatch: (command) => projectMutationOperation(projects, command).pipe(Effect.asVoid),
+      });
+    }).pipe(Effect.provide(makeProjectCliRuntimeLayer(layerProjectService)));
+    yield* clearPersistedServerRuntimeState(config.serverRuntimeStatePath);
     yield* Console.log(output);
   }).pipe(
     Effect.scoped,
     Effect.provide(
-      Layer.mergeAll(EnvironmentAuth.layerRuntime, WorkspacePaths.layer).pipe(
-        Layer.provideMerge(FetchHttpClient.layer),
+      Layer.merge(WorkspacePaths.layer, FetchHttpClient.layer).pipe(
         Layer.provideMerge(ServerConfig.layer(config)),
         Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
       ),

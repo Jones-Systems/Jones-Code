@@ -1282,23 +1282,47 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
-/**
- * What a linking environment asks of this one over its link, outside `/mcp`. The handler accepts
- * only a peer link's own session, so no agent's tool list ever carries it.
- */
-class EnvironmentPeerLinkHttpApi extends HttpApiGroup.make("peerLink").add(
-  HttpApiEndpoint.post("clientPairing", "/api/peer-link/client-pairing", {
+export class EnvironmentQueueDispatchHttpApi extends HttpApiGroup.make("queueDispatch").add(
+  HttpApiEndpoint.post("dispatch", "/api/orchestration/dispatch", {
     headers: OptionalBearerHeaders,
-    payload: PeerLinkClientPairingRequest,
-    success: PeerLinkClientPairingCredential,
-    error: [
-      EnvironmentHttpUnauthorizedError,
-      EnvironmentHttpForbiddenError,
-      EnvironmentHttpInternalServerError,
-    ],
-  }),
+    payload: Schema.Unknown,
+    success: Schema.Struct({
+      sequence: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+    }),
+    error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
+  }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
+export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
+  .add(
+    HttpApiEndpoint.get("inventory", "/api/provider-queue/inventory", {
+      headers: OptionalBearerHeaders,
+      success: ProviderQueueInventory,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("usage", "/api/provider-queue/instances/:instanceId/usage", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ instanceId: ProviderInstanceId }),
+      success: ProviderQueueRefreshResult,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("refresh", "/api/provider-queue/instances/:instanceId/refresh", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ instanceId: ProviderInstanceId }),
+      success: ProviderQueueRefreshResult,
+      error: [EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+export class EnvironmentConversationLibraryHttpApi extends ConversationLibraryHttpApi {}
+
+export class EnvironmentWorkQueueMetadataHttpApi extends WorkQueueMetadataHttpApi {}
+export class EnvironmentSettlementOriginsHttpApi extends SettlementOriginsHttpApi {}
+class EnvironmentSettlementRestoreHttpApi extends SettlementRestoreHttpApi {}
 // Path tokens and optional body signatures authenticate webhooks; read raw bytes to verify signatures.
 const WebhookParams = Schema.Struct({
   hookId: TrimmedNonEmptyString,
@@ -1337,5 +1361,13 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentConnectHttpApi)
-  .add(EnvironmentWebhooksHttpApi)
-  .add(EnvironmentPeerLinkHttpApi) {}
+  .add(EnvironmentConversationLibraryHttpApi)
+  .add(EnvironmentJonesUpdatesHttpApi)
+  .add(EnvironmentFleetUpdatesHttpApi)
+  .add(EnvironmentRemoteAdmissionHttpApi)
+  .add(EnvironmentRemoteAdmissionReviewHttpApi)
+  .add(EnvironmentRequestManagementHttpApi)
+  .add(EnvironmentPersonalWorkstreamsHttpApi)
+  .add(EnvironmentImportedHistoryHttpApi)
+  .add(EnvironmentPreviewCompanionHttpApi)
+  .add(EnvironmentWebhooksHttpApi) {}

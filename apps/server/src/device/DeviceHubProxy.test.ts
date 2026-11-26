@@ -10,7 +10,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
-import { SessionStore } from "../auth/SessionStore.ts";
 import {
   DEVICE_HUB_POLICY,
   deviceHubRoutePolicy,
@@ -36,7 +35,7 @@ const fixture = (
   scopes: ReadonlyArray<AuthEnvironmentScope>,
   fail = false,
   authError?: EnvironmentAuth.ServerAuthCredentialError | EnvironmentAuth.ServerAuthInternalError,
-  upstream?: DeviceHost.DeviceHostReady["upstream"],
+  upstreamOrDirect?: DeviceHost.DeviceHostReady["upstream"] | boolean,
   stream?: ReadableStream<Uint8Array>,
   invalidated?: Promise<void>,
 ) => {
@@ -150,7 +149,10 @@ const fixture = (
         }),
       ),
       Layer.provideMerge(
-        Layer.succeed(SessionStore, {
+        Layer.mock(SessionStore.SessionStore, {
+          cookieName: "test",
+          legacyCookieName: undefined,
+          awaitInvalidation: () => (invalidated ? Effect.promise(() => invalidated) : Effect.never),
           issueWebSocketToken: () =>
             DateTime.now.pipe(
               Effect.map((now) => ({
@@ -158,20 +160,20 @@ const fixture = (
                 expiresAt: DateTime.makeUnsafe(now.epochMilliseconds + 300000),
               })),
             ),
-          verifyWebSocketToken: (token: string) =>
+          verifyWebSocketToken: (token) =>
             token !== "private-vps-token" || revoked
-              ? Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError({}))
-              : Effect.succeed({ scopes: tokenScopes }),
-        } as unknown as SessionStore["Service"]),
-      ),
-      Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, client)),
-      Layer.provideMerge(
-        Layer.mock(SessionStore.SessionStore, {
-          cookieName: "test",
-          legacyCookieName: undefined,
-          awaitInvalidation: () => (invalidated ? Effect.promise(() => invalidated) : Effect.never),
+              ? Effect.fail(new SessionStore.InvalidWebSocketTokenSignatureError({}))
+              : Effect.succeed({
+                  sessionId: AuthSessionId.make("test"),
+                  token,
+                  method: "bearer-access-token",
+                  client: { deviceType: "bot" },
+                  subject: "test",
+                  scopes: tokenScopes,
+                }),
         }),
       ),
+      Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, client)),
     ),
     { disableLogger: true },
   );

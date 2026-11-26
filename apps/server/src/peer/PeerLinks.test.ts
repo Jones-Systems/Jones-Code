@@ -595,8 +595,13 @@ it.effect("reads one stored link without asking the peer", () =>
       // An older answer that lands after a newer one never moves the expiry back.
       const expiresAt = Option.getOrThrow(stored).expiresAt;
       const later = DateTime.add(expiresAt, { days: 20 });
-      yield* a.links.recordExpiry(box.environmentId, later);
-      yield* a.links.recordExpiry(box.environmentId, DateTime.add(expiresAt, { days: 10 }));
+      const { generation } = yield* a.links.resolve(box.environmentId);
+      yield* a.links.recordExpiry(box.environmentId, generation, later);
+      yield* a.links.recordExpiry(
+        box.environmentId,
+        generation,
+        DateTime.add(expiresAt, { days: 10 }),
+      );
       expect(
         Option.map(yield* a.links.get(box.environmentId), (link) =>
           DateTime.formatIso(link.expiresAt),

@@ -491,8 +491,9 @@ setInterval(() => {}, 1_000);
       recovered = true;
       yield* Effect.promise(() => vi.advanceTimersByTimeAsync(30_000));
       yield* Effect.promise(() => Promise.race([ready.promise, running]));
-      // Stopping drains the queue, including the backup drop that follows the "committed" reply.
+      // The committed reply can reach the child before terminal backup cleanup finishes.
       yield* Effect.promise(() => launcher.stop("SIGTERM"));
+      yield* Effect.promise(() => running);
       const state = yield* Effect.promise(() => readServiceState(statePath));
       assert.equal(
         state.activeVersion,

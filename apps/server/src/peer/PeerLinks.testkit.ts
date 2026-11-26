@@ -18,12 +18,12 @@ import * as HttpServer from "effect/http/HttpServer";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import type * as SqlClient from "effect/sql/SqlClient";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as AuthHttp from "../auth/http.ts";
 import * as McpOAuth from "../auth/McpOAuth.ts";
 import * as McpOAuthHttp from "../auth/mcpOAuthHttp.ts";
-import type * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CloudLink from "../cloud/CloudLink.ts";
 import * as ServerConfig from "../config.ts";
@@ -62,11 +62,17 @@ export const descriptorOf = (
 });
 
 /** An environment's own sessions and pairing links, on a database and secret store of its own. */
-export const layerEnvironmentAuth = (prefix: string) =>
+export const layerEnvironmentAuth = (
+  prefix: string,
+  databaseLayer: Layer.Layer<
+    SqlClient.SqlClient,
+    Layer.Error<typeof Sqlite.layerMemory>
+  > = Sqlite.layerMemory,
+) =>
   EnvironmentAuth.layer.pipe(
     Layer.provide(ManagedPolicy.layerTest()),
     Layer.provideMerge(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
-    Layer.provide(Sqlite.layerMemory),
+    Layer.provide(databaseLayer),
     Layer.provideMerge(ServerSecretStore.layer),
     Layer.provideMerge(ServerEnvironment.layerIdentity),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix })),
@@ -85,6 +91,7 @@ export const servePeer = <E, R, E2 = never, R2 = never>(
   tools: Layer.Layer<never, E, R>,
   /** More of its HTTP routes, whose handlers get the same auth and settings. */
   routes: Layer.Layer<never, E2, R2> = Layer.empty,
+  databaseLayer?: Parameters<typeof layerEnvironmentAuth>[1],
 ) =>
   Effect.gen(function* () {
     const descriptor = yield* Ref.make(initial);
@@ -99,7 +106,9 @@ export const servePeer = <E, R, E2 = never, R2 = never>(
       getEnvironmentId: Ref.get(descriptor).pipe(Effect.map((current) => current.environmentId)),
       getDescriptor: Ref.get(descriptor),
     });
-    const authContext = yield* Layer.build(layerEnvironmentAuth("t3-peer-link-peer-"));
+    const authContext = yield* Layer.build(
+      layerEnvironmentAuth("t3-peer-link-peer-", databaseLayer),
+    );
     const layerRecordBearers = HttpRouter.middleware(
       (httpEffect) =>
         Effect.gen(function* () {

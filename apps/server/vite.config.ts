@@ -127,10 +127,18 @@ export default mergeConfig(
       // SEA embeds one entry; expose the workers as hidden subcommands.
       entry: packBootstrap
         ? ["src/bin.ts"]
-        : packExecutable
-          ? ["src/binMain.ts"]
-          : ["src/bin.ts", "src/claude-history-worker.ts", "src/process-launcher.ts"],
-      outDir: packBootstrap ? "dist-exe" : packExecutable ? cliAssetDir : "dist",
+        : packCompute
+          ? { serverComputeWorker: "src/jones/serverCompute/worker.ts" }
+          : packExecutable
+            ? ["src/binMain.ts"]
+            : ["src/bin.ts", "src/claude-history-worker.ts", "src/process-launcher.ts"],
+      outDir: packBootstrap
+        ? "dist-exe"
+        : packCompute
+          ? NodePath.join(cliAssetDir, "compute")
+          : packExecutable
+            ? cliAssetDir
+            : serverBundlePackProfile.outDir,
       sourcemap: !packExecutable,
       clean: serverBundlePackProfile.clean,
       // SEA can only resolve built-ins; keep dynamic imports inside each emitted module.

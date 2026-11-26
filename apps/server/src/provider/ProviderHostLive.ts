@@ -40,9 +40,7 @@ export const layer = Layer.effect(
       onSome: (service) => service.current,
     });
     return ProviderHost.ProviderHost.of({
-      compatibility: Effect.fn("ProviderHost.compatibility")(function* (driver, version) {
-        return ModelManifest.providerCompatibility(yield* currentManifest, driver, version);
-      }),
+      appIdentity: APP_IDENTITY,
       paths: {
         cwd: config.cwd,
         baseDir: config.baseDir,

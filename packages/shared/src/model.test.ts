@@ -8,7 +8,7 @@ import {
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
   createModelSelection,
-  DEFAULT_VARIANT_CHOICE_ID,
+  getConfiguredReasoningEffort,
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
@@ -17,6 +17,7 @@ import {
   pickModelSelection,
   withImplicitFastModeDefault,
 } from "./model.ts";
+import { DEFAULT_VARIANT_CHOICE_ID } from "./model.ts";
 
 const codexCaps: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [

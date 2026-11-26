@@ -40,13 +40,29 @@ function runGit(
 > {
   return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const env = unsetInheritedGitRepositoryEnv(process.env, yield* HostProcess.Platform);
-    const exitCode = yield* spawner.exitCode(
-      ChildProcess.make("git", [...NO_BACKGROUND_MAINTENANCE, ...args], {
+    const child = yield* spawner.spawn(
+      ChildProcess.make("git", args, {
         cwd,
-        env,
-        extendEnv: true,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "pipe",
       }),
+    );
+    let stderr = "";
+    const [exitCode] = yield* Effect.all(
+      [
+        child.exitCode,
+        child.stderr.pipe(
+          Stream.decodeText(),
+          Stream.runForEach((chunk) =>
+            Effect.sync(() => {
+              stderr = (stderr + chunk).slice(-8192);
+            }),
+          ),
+          Effect.ignore,
+        ),
+      ],
+      { concurrency: "unbounded" },
     );
     if (Number(exitCode) !== 0) {
       return yield* new ReplayFixtureGitCommandError({

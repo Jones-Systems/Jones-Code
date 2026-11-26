@@ -24,8 +24,7 @@ const ALL_MCP_CAPABILITIES = [
   "worktree",
   "device",
   "pull-requests",
-  "issues",
-  "background-wait",
+  "decision-snapshot",
 ] as const;
 export type McpCapability = (typeof ALL_MCP_CAPABILITIES)[number];
 
@@ -46,8 +45,7 @@ export interface McpClientCaller {
    * session as `linkOrigin`, and it changes only that work (`linkOrigin.ts`).
    */
   readonly linked?: boolean | undefined;
-  /** When a peer link's session ends unless it is used again, answered as `T3-Link-Expires-At`. */
-  readonly linkExpiresAt?: DateTime.Utc | undefined;
+  readonly remoteOrigin?: BoundLinkedMessageOrigin | undefined;
   /**
    * Narrower modes the client asked for on this request (`T3-Mode-Limit`):
    * another environment passing on the limits of the agent it calls for.

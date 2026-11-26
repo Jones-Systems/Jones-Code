@@ -218,9 +218,15 @@ const make = Effect.gen(function* () {
           environmentId,
           params as OrchestratorMcpThreadWaitInput,
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : newest === undefined
-        ? forwardTool(params)
-        : readNewestOrRetry(forwardTool, newest, params);
+      : forward(
+          scope,
+          tool.name,
+          tool.parametersSchema,
+          tool.successSchema,
+          environmentId,
+          params,
+          Context.get(tool.annotations, Tool.Readonly),
+        );
     return Effect.andThen(requireEnabled, forwarded);
   };
 

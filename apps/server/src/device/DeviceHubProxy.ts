@@ -5,7 +5,8 @@ import { AuthOrchestrationReadScope, AuthOrchestrationOperateScope } from "@t3to
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Stream from "effect/Stream";
+
+import { directAccess } from "../jones/device/directAccess.ts";
 import {
   HttpClient,
   HttpClientRequest,
@@ -22,6 +23,7 @@ import { authenticateMediaRequest, failEnvironmentInternal } from "../auth/http.
 import * as SessionStore from "../auth/SessionStore.ts";
 import * as DeviceService from "./DeviceService.ts";
 import { repeatStillFrame } from "./mjpegStillFrame.ts";
+import * as Stream from "effect/Stream";
 
 const ALLOWED_PATHS: ReadonlyArray<RegExp> = [
   /^\/api\/devices$/,
@@ -188,7 +190,7 @@ const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
       name === "transfer-encoding" ||
       name === "connection" ||
       name === "set-cookie" ||
-      name === "clear-site-data"
+      name === "location"
     ) {
       continue;
     }

@@ -540,7 +540,13 @@ export const layer: Layer.Layer<
 
             case "app_thread.created": {
               const offered = input.event.appThread;
-              const existing = yield* projections.findThread(offered.id);
+              const existing = yield* retryAdmissionUnavailable(
+                projections.getThread(offered.id),
+              ).pipe(
+                Effect.catchTags({
+                  ProjectionStoreThreadNotFoundError: () => Effect.succeed(null),
+                }),
+              );
               if (
                 existing !== null &&
                 (input.event.createOnly === true ||
@@ -1134,41 +1140,7 @@ export const layer: Layer.Layer<
                           cause,
                         }),
                     ),
-              ),
-              Effect.tap((storedEvents) =>
-                Effect.gen(function* () {
-                  if (storedEvents.length === 0 || input.event.type !== "provider_turn.updated")
-                    return;
-                  const providerTurn = input.event.providerTurn;
-                  if (
-                    providerTurn.status !== "completed" &&
-                    providerTurn.status !== "failed" &&
-                    providerTurn.status !== "interrupted" &&
-                    providerTurn.status !== "cancelled"
-                  )
-                    return;
-                  const key = `${input.providerInstanceId}:${providerTurn.id}`;
-                  if (completedTurnAnalytics.has(key)) return;
-                  completedTurnAnalytics.add(key);
-                  if (completedTurnAnalytics.size > 4096) {
-                    const oldest = completedTurnAnalytics.values().next().value;
-                    if (oldest !== undefined) completedTurnAnalytics.delete(oldest);
-                  }
-                  yield* analytics.turnCompleted({
-                    driver: input.event.driver,
-                    providerTurn,
-                    ...(input.analyticsContext === undefined
-                      ? {}
-                      : { context: input.analyticsContext }),
-                  });
-                }),
-              ),
-              (effect) =>
-                input.event.type === "app_thread.created"
-                  ? threadCommands.withLock(input.event.appThread.id, effect)
-                  : input.event.type === "thread_model_selection.updated"
-                    ? threadCommands.withLock(input.event.threadId, effect)
-                    : effect,
+                  ),
             ),
             Effect.tap((storedEvents) =>
               Effect.gen(function* () {

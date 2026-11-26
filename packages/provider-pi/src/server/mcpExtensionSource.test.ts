@@ -86,7 +86,7 @@ describe("Pi orchestration prompt section", () => {
       assert.isDefined(result);
       assert.isTrue(result!.systemPrompt.startsWith(`${event.systemPrompt}\n\n`));
       assert.include(result!.systemPrompt, "orchestrator_capabilities");
-      assert.include(result!.systemPrompt, PULL_REQUEST_LINKING_INSTRUCTIONS);
+      assert.include(result!.systemPrompt, "App identity and build source are unavailable");
     }
   });
 

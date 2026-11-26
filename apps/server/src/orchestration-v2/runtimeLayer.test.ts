@@ -2350,9 +2350,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
 
       yield* busy.ask;
       yield* idle.ask;
-      // The wake reads the workspace from disk; behind the busy lock it would never arrive here.
       yield* Fiber.join(idleWoken);
-      yield* TestClock.adjust("1 minute");
+      yield* Deferred.succeed(releaseBusy, undefined);
       yield* Fiber.join(busyLock);
 
       assert.deepEqual(order, ["idle coordinator woken", "busy coordinator's lock released"]);
@@ -11946,13 +11945,32 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       yield* send(3, "Background task completed.", "provider");
       yield* send(4, "Continue after the command completed.", "server");
       const queued = yield* orchestrator.getThreadProjection(threadId);
-      const [held, active, wake] = [queued.runs[1]!, queued.runs[2]!, queued.runs[3]!];
+      const byMessage = (index: number) =>
+        queued.runs.find(
+          (run) => run.userMessageId === MessageId.make(`${threadId}:message:${index}`),
+        )!;
+      const [held, active, wake] = [byMessage(1), byMessage(2), byMessage(3)];
+      assert.isBelow(held.ordinal, active.ordinal);
+      assert.isAbove(wake.ordinal, active.ordinal);
       assert.equal(active.status, "starting");
       assert.isTrue(held.queueHeld);
       assert.equal(wake.status, "queued");
       assert.notEqual(wake.queueHeld, true);
-      const textContinuation = queued.runs[4]!;
-      assert.isTrue(textContinuation.queueHeld);
+      const textContinuation = byMessage(4);
+      assert.isAbove(textContinuation.ordinal, active.ordinal);
+      assert.equal(textContinuation.status, "queued");
+      assert.isUndefined(textContinuation.queueHeld);
+      assert.isBelow(wake.queuePosition!, textContinuation.queuePosition!);
+      const afterAdmission = yield* events.latestSequence();
+      const started = yield* Queue.unbounded<RunId>();
+      yield* events.stream({ threadId, afterSequence: afterAdmission }).pipe(
+        Stream.runForEach((stored) =>
+          stored.event.type === "run.updated" && stored.event.payload.status === "starting"
+            ? Queue.offer(started, stored.event.payload.id)
+            : Effect.void,
+        ),
+        Effect.forkScoped,
+      );
       const now = yield* DateTime.now;
       yield* events.write({
         events: [
@@ -11966,17 +11984,85 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           },
         ],
       });
-      yield* orchestrator.resumeQueuedRuns;
+      assert.equal(yield* Queue.take(started), wake.id);
       const after = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(after.runs.find((run) => run.id === wake.id)?.status, "starting");
       assert.deepEqual(
         after.runs.find((run) => run.id === held.id),
         held,
       );
-      // Nobody will resume a server message, so the completed run released it behind the wake.
+      // This new-cohort row was admitted unheld; completion has no hold to release.
       assert.deepEqual(
         after.runs.find((run) => run.id === textContinuation.id),
-        { ...textContinuation, queueHeld: false },
+        textContinuation,
+      );
+      const recorded = yield* EventStore.EventStoreV2;
+      const history = yield* recorded
+        .read({
+          threadId,
+          afterSequence: afterAdmission,
+          throughSequence: yield* events.latestSequence(),
+        })
+        .pipe(Stream.runCollect);
+      assert.isFalse(
+        history.some(
+          (stored) =>
+            stored.event.type === "run.updated" &&
+            stored.event.payload.id === textContinuation.id &&
+            stored.event.payload.queueHeld === false,
+        ),
+      );
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const beforeWakeCompletion = yield* outbox.listByThreadId(threadId);
+      assert.lengthOf(
+        beforeWakeCompletion.filter(
+          (effect) =>
+            effect.request.type === "provider-turn.start" && effect.request.runId === wake.id,
+        ),
+        1,
+      );
+      assert.lengthOf(
+        beforeWakeCompletion.filter(
+          (effect) =>
+            effect.request.type === "provider-turn.start" &&
+            effect.request.runId === textContinuation.id,
+        ),
+        0,
+      );
+      const currentWake = after.runs.find((run) => run.id === wake.id)!;
+      yield* events.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:wake-done`),
+            type: "run.updated",
+            threadId,
+            runId: wake.id,
+            occurredAt: now,
+            payload: { ...currentWake, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      assert.equal(yield* Queue.take(started), textContinuation.id);
+      const delivered = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        delivered.runs.find((run) => run.id === held.id),
+        held,
+      );
+      const finalEffects = yield* outbox.listByThreadId(threadId);
+      assert.lengthOf(
+        finalEffects.filter(
+          (effect) =>
+            effect.request.type === "provider-turn.start" && effect.request.runId === wake.id,
+        ),
+        1,
+      );
+      assert.lengthOf(
+        finalEffects.filter(
+          (effect) =>
+            effect.request.type === "provider-turn.start" &&
+            effect.request.runId === textContinuation.id,
+        ),
+        1,
       );
     }),
   );
@@ -12192,7 +12278,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           },
         ],
       });
-      assert.equal(yield* Queue.take(started), wake.id);
+      yield* orchestrator.resumeQueuedRuns;
       const after = yield* orchestrator.getThreadProjection(threadId);
       const started = after.runs.find((run) => run.id === queued!.id)!;
       const instanceOf = (providerThreadId: string | null | undefined) =>

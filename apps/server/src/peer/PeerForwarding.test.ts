@@ -27,7 +27,11 @@ import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, McpServer, Tool } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
-import type { ProjectionTimelinePageOptions } from "../orchestration-v2/ProjectionStore.ts";
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
+import { acceptingSendReceipts } from "../jones/remoteDelegation/RemoteDelegation.testkit.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
@@ -53,6 +57,7 @@ import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
+import type { ProjectionTimelinePageOptions } from "../orchestration-v2/ProjectionStore.ts";
 
 const laptop = descriptorOf("environment-laptop", "Laptop");
 const box = descriptorOf("environment-box", "Box");
@@ -106,23 +111,31 @@ const boxThreadsWith = (
     Effect.map((sessionId) => ({ ...base, linkOrigin: { sessionId, label: "T3 Code · Laptop" } })),
   );
   const users = { ...liveThreadShell(usersThread, { runtimeMode: "auto" }), projectId: boxProject };
-  const run = (status: OrchestrationV2Run["status"]) =>
-    ({
-      id: boxRun,
-      ordinal: 1,
-      status,
-      modelSelection: base.modelSelection,
-      requestedAt: base.createdAt,
-      startedAt: null,
-      completedAt: null,
-    }) as unknown as OrchestrationV2Run;
+  const run = (status: OrchestrationV2Run["status"]): OrchestrationV2Run => ({
+    id: boxRun,
+    threadId: boxThread,
+    ordinal: 1,
+    providerInstanceId: base.providerInstanceId,
+    modelSelection: base.modelSelection,
+    providerThreadId: null,
+    userMessageId: MessageId.make("message:box-auto"),
+    rootNodeId: null,
+    activeAttemptId: null,
+    status,
+    requestedAt: base.createdAt,
+    startedAt: base.createdAt,
+    completedAt: status === "completed" ? base.updatedAt : null,
+    checkpointId: null,
+    contextHandoffId: null,
+  });
   const shellOf = (threadId: ThreadId): Effect.Effect<OrchestrationV2ThreadShell | null> =>
     threadId === boxThread ? linked : Effect.succeed(threadId === usersThread ? users : null);
   const projectionOf = (threadId: ThreadId) =>
     shellOf(threadId).pipe(
-      Effect.map(
-        (thread) =>
-          ({ thread, runs: [run("running")], runtimeRequests: [], providerTurns: [] }) as never,
+      Effect.flatMap((shell) =>
+        shell === null
+          ? Effect.die(`Unexpected fixture thread ${threadId}`)
+          : Effect.succeed({ ...idleThreadProjection(shell), runs: [run("running")] }),
       ),
     );
   return Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -130,11 +143,8 @@ const boxThreadsWith = (
     getThreadShell: shellOf,
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
-    getRunCount: () => Effect.succeed(1),
-    getTimelinePage: (_threadId, options) =>
-      Ref.update(seen, (current) => ({ ...current, reads: [...current.reads, options] })).pipe(
-        Effect.as({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
-      ),
+    getTimelinePage: () =>
+      Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
     getShellSnapshot: () => linked.pipe(Effect.map((shell) => ({ threads: [shell] }) as never)),
     sendToThread: (input) =>

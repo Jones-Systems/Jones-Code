@@ -72,7 +72,6 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
-import * as Fiber from "effect/Fiber";
 import { EventId } from "@t3tools/contracts";
 import { legacyBootstrapCreateCommandId } from "./LegacyBootstrap.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -300,15 +299,24 @@ function makeHarness(options: HarnessOptions = {}) {
             });
           }),
         ).pipe(Layer.provide(layerThreadManagement));
-  const layerLaunch = ThreadLaunch.layer.pipe(
+  const layerLaunch = ThreadLaunch.layerRawForTests.pipe(
+    Layer.provide(options.conversationLayer ?? Layer.empty),
+    Layer.provide(
+      Layer.mock(ProviderInstances.ProviderInstanceRegistry)({
+        getCatalogSource: () => undefined,
+        getInstance: () =>
+          Effect.succeed({ driverKind: options.conversationDriver ?? "codex" } as never),
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         layerExternalServices,
         layerLaunchThreads,
         layerReceipts,
         layerOrchestrator,
-        ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
-        NodeServices.layer,
+        layerDatabase,
+        layerOutbox,
+        EventStore.layer.pipe(Layer.provide(layerDatabase)),
         IdAllocator.layer,
         options.getLaunchSettings === undefined
           ? Layer.empty
