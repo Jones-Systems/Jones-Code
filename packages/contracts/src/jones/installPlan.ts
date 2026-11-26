@@ -299,6 +299,7 @@ export const JonesInstallPlan = Schema.Struct({
   revision: Schema.Number,
   createdAt: Schema.String,
   origin: JonesInstallPlanOrigin,
+  hostOnly: Schema.optionalKey(Schema.Literal(true)),
   target: JonesInstallPlanTarget,
   from: Schema.Struct({
     version: TrimmedNonEmptyString,
@@ -461,6 +462,7 @@ export const JonesInstallPlanRequest = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("publication"),
     acceptOrdinaryRecovery: Schema.optionalKey(Schema.Literal(1)),
+    acceptHostOnlyHolds: Schema.optionalKey(Schema.Literal(1)),
   }),
   Schema.Struct({ type: Schema.Literal("recovery-preflight"), input: JonesRecoveryPreflightInput }),
   Schema.Struct({
@@ -596,6 +598,10 @@ export const JonesInstallPlanRefusal = Schema.Literals([
 ]);
 export type JonesInstallPlanRefusal = typeof JonesInstallPlanRefusal.Type;
 
+const PublicationHolds = Schema.optionalKey(
+  Schema.Array(EnvironmentId).check(Schema.isMaxLength(JONES_INSTALL_PLAN_HISTORY_LIMIT * 16)),
+);
+
 export const JonesInstallPlanResult = Schema.Struct({
   state: JonesInstallPlanState,
   historyPlan: Schema.optionalKey(JonesInstallPlan),
@@ -620,6 +626,7 @@ export const JonesInstallPlanResult = Schema.Struct({
     Schema.Union([
       Schema.Struct({
         kind: Schema.Literal("committed"),
+        heldEnvironments: PublicationHolds,
         source: Schema.Struct({
           repository: Schema.Literal("Jones-Systems/Jones-Code"),
           sha: JonesSourceSha,
@@ -628,6 +635,7 @@ export const JonesInstallPlanResult = Schema.Struct({
       }),
       Schema.Struct({
         kind: Schema.Literal("ordinary-verified"),
+        heldEnvironments: PublicationHolds,
         source: Schema.Struct({
           repository: Schema.Literal("Jones-Systems/Jones-Code"),
           sha: JonesSourceSha,
@@ -636,6 +644,7 @@ export const JonesInstallPlanResult = Schema.Struct({
       }),
       Schema.Struct({
         kind: Schema.Literal("withheld"),
+        heldEnvironments: PublicationHolds,
         code: Schema.Literals(["plan-managed", "unproved", "blocked", "unavailable"]),
         message: Bounded(512),
       }),

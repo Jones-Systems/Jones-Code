@@ -25,6 +25,7 @@ describe("native fleet publication grant", () => {
       expect(installPlan).toHaveBeenCalledWith({
         type: "publication",
         acceptOrdinaryRecovery: 1,
+        acceptHostOnlyHolds: 1,
       });
       expect(getUpdateState).not.toHaveBeenCalled();
     },

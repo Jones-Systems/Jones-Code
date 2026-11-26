@@ -27,6 +27,7 @@ import {
   validateDirectiveEvidence,
   validateDirectiveFenceEvidence,
   hasUnconfirmedLauncherOutcome,
+  deviceHasRecoveryDuty,
   planHasLaptopRecoveryDuty,
   deviceActiveOperations,
   deviceStagedReceipt,
@@ -1147,6 +1148,8 @@ export function createInstallPlanCoordinator(options: {
           stopOperationId?: string,
         ) => {
           const current = plan!;
+          if (current.hostOnly === true)
+            return refuse("not-selectable", "This plan only updates the selected servers.");
           if (action !== "stop" && current.laptop.gatePause === true)
             return refuse("gate-closed", PAUSED_GATE_MESSAGE);
           if (
@@ -1373,6 +1376,25 @@ export function createInstallPlanCoordinator(options: {
         } else if (req.type === "publication") {
           const environmentId = options.localEnvironmentId();
           const running = verifiedRunningLaptop(evidence, environmentId, options.now());
+          const heldEnvironments = [
+            ...new Set(
+              retainedPlans(document)
+                .filter((entry) => entry.hostOnly === true)
+                .flatMap((entry) =>
+                  entry.devices
+                    .filter(
+                      (device) =>
+                        (entry === document.current && device.membership === "selected") ||
+                        deviceHasRecoveryDuty(device),
+                    )
+                    .map((device) => device.environmentId),
+                ),
+            ),
+          ];
+          const holds =
+            heldEnvironments.length > 0 && req.acceptHostOnlyHolds === 1
+              ? { heldEnvironments }
+              : {};
           const code = verificationBlocked(evidence)
             ? "blocked"
             : evidence.activeSource === undefined ||
@@ -1380,7 +1402,10 @@ export function createInstallPlanCoordinator(options: {
                 evidence.environmentId === undefined ||
                 evidence.environmentId !== environmentId
               ? "unavailable"
-              : dispositions.targets.some((target) => target.targetSource === evidence.activeSource)
+              : dispositions.targets.some(
+                    (target) => target.targetSource === evidence.activeSource,
+                  ) ||
+                  (heldEnvironments.length > 0 && req.acceptHostOnlyHolds !== 1)
                 ? "plan-managed"
                 : running === undefined ||
                     (running.ordinaryRecovery !== undefined && req.acceptOrdinaryRecovery !== 1)
@@ -1397,12 +1422,14 @@ export function createInstallPlanCoordinator(options: {
                       sha: running!.target.sourceSha,
                       tree: running!.target.sourceTree,
                     },
+                    ...holds,
                   }
                 : {
                     kind: "withheld",
                     code,
                     message:
                       "Follower publication requires an unmanaged, natively verified active build.",
+                    ...holds,
                   },
           };
         } else if (req.type === "start") {
@@ -1485,12 +1512,13 @@ export function createInstallPlanCoordinator(options: {
             if (disposition !== undefined && disposition.targetTree !== req.target.sourceTree)
               refuse("invalid-evidence", "The retained target tree differs from this plan.");
             else if (
+              expectedGeneration === undefined &&
               disposition === undefined &&
               dispositions.targets.length >= MAX_PLAN_DISPOSITIONS
             )
               refuse("bounds", "The retained target disposition history is full.");
             if (extras.refused === undefined) {
-              if (disposition === undefined)
+              if (expectedGeneration === undefined && disposition === undefined)
                 dispositions = {
                   ...dispositions,
                   targets: [
@@ -1504,7 +1532,13 @@ export function createInstallPlanCoordinator(options: {
                   ],
                 };
               if (plan !== null) close({ ...plan, supersededAt: now() });
-              document = { ...document, current: gate(next, evidence) };
+              document = {
+                ...document,
+                current: gate(
+                  expectedGeneration === undefined ? next : { ...next, hostOnly: true },
+                  evidence,
+                ),
+              };
               plan = document.current;
               if (req.laptop !== undefined)
                 await recordLaptop(req.laptop.action, req.laptop.review);

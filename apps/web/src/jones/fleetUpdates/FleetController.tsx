@@ -122,7 +122,11 @@ export async function readFleetPublication(
       message: "Native publication proof is unavailable.",
     };
   try {
-    const result = await bridge.installPlan({ type: "publication", acceptOrdinaryRecovery: 1 });
+    const result = await bridge.installPlan({
+      type: "publication",
+      acceptOrdinaryRecovery: 1,
+      acceptHostOnlyHolds: 1,
+    });
     if (result.refused !== undefined || result.state?.readOnly !== undefined)
       return {
         kind: "withheld",

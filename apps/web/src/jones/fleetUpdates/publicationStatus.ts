@@ -133,6 +133,7 @@ export function describePublicationReceipt(
       : {
           following: "publication acknowledged",
           "directive-held": "manual review directive retained",
+          "plan-held": "publication waits for this host's plan",
           legacy: "host uses laptop campaigns",
           observed: "host status observed",
         }[receipt.outcome];

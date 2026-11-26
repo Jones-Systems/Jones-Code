@@ -1037,6 +1037,7 @@ describe("ordinary recovery proof", () => {
     });
     expect(result.refused).toBeUndefined();
     expect(result.state.current).toMatchObject({
+      hostOnly: true,
       target,
       devices: [{ environmentId: remote }],
       laptop: {
@@ -1046,6 +1047,19 @@ describe("ordinary recovery proof", () => {
     });
     expect(f.controller.download).not.toHaveBeenCalled();
     expect(f.controller.install).not.toHaveBeenCalled();
+    expect(f.snapshot().dispositions.targets).toEqual([]);
+    const request = { type: "publication", acceptOrdinaryRecovery: 1 } as const;
+    expect((await f.coordinator.request(request)).publication).toMatchObject({
+      kind: "withheld",
+      code: "plan-managed",
+    });
+    expect(
+      (await f.coordinator.request({ ...request, acceptHostOnlyHolds: 1 })).publication,
+    ).toEqual({
+      kind: "ordinary-verified",
+      source: { repository: target.repository, sha: source, tree },
+      heldEnvironments: [remote],
+    });
   });
 
   it.each(["stale", "changed-generation", "missing-proof", "activation-blocked"] as const)(

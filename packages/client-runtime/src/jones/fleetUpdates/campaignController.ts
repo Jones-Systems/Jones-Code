@@ -34,7 +34,13 @@ export interface FleetCampaignDriver {
 export type FleetPublication = NonNullable<JonesInstallPlanResult["publication"]>;
 export interface FleetPublicationReceipt {
   readonly enrollment: FleetEnrollment;
-  readonly outcome: "following" | "directive-held" | "unknown" | "legacy" | "observed";
+  readonly outcome:
+    | "following"
+    | "directive-held"
+    | "plan-held"
+    | "unknown"
+    | "legacy"
+    | "observed";
   readonly observedAt: string;
   readonly follower?: FleetFollowerStatus;
   /** A host can acknowledge a report while retaining its manual-review directive. */
@@ -390,12 +396,17 @@ function publicationSource(publication: FleetPublication) {
     : undefined;
 }
 
+function publicationHeld(publication: FleetPublication, environmentId: EnvironmentId) {
+  return publication.heldEnvironments?.includes(environmentId) === true;
+}
+
 async function observePublicationReceipt(
   driver: FleetCampaignDriver,
   enrollment: FleetEnrollment,
-  committed: ReturnType<typeof publicationSource>,
+  publication: FleetPublication,
 ): Promise<FleetPublicationReceipt> {
   const { environmentId } = enrollment;
+  const committed = publicationSource(publication);
   let follower: FleetFollowerStatus | undefined;
   let outcome: FleetPublicationReceipt["outcome"] = "unknown";
   let failure: NonNullable<FleetPublicationReceipt["failure"]> = "unconfirmed";
@@ -414,6 +425,11 @@ async function observePublicationReceipt(
     let status = await driver.host(environmentId, { action: "status" });
     failure = "unconfirmed";
     if (driver.cancelled() || !boundStatus(status, enrollment)) return receipt();
+    if (publicationHeld(publication, environmentId)) {
+      if (status.follower?.protocol === 1) follower = status.follower;
+      outcome = "plan-held";
+      return receipt();
+    }
     if (status.follower === undefined) {
       outcome = "legacy";
       return receipt();
@@ -439,9 +455,11 @@ async function observePublicationReceipt(
         !current.enrollments.some((entry) => sameEnrollment(enrollment, entry))
       )
         return receipt();
-      const latestSource = publicationSource(await readPublication(driver));
+      const latest = await readPublication(driver);
+      const latestSource = publicationSource(latest);
       if (
         driver.cancelled() ||
+        publicationHeld(latest, environmentId) ||
         latestSource?.sha !== committed.sha ||
         latestSource?.tree !== committed.tree
       )
@@ -491,7 +509,7 @@ async function publishCommittedSource(
         (entry) =>
           entry.enabled && (environmentId === undefined || entry.environmentId === environmentId),
       )
-      .map((enrollment) => observePublicationReceipt(driver, enrollment, committed)),
+      .map((enrollment) => observePublicationReceipt(driver, enrollment, publication)),
   );
   if (driver.cancelled()) return { state, followers, held };
   const current = await driver.desktop({ action: "read" });
@@ -509,7 +527,9 @@ async function publishCommittedSource(
     if (
       !stillEnrolled ||
       sourceChanged ||
+      publicationHeld(latestPublication, host.enrollment.environmentId) ||
       host.outcome === "unknown" ||
+      host.outcome === "plan-held" ||
       host.outcome === "directive-held"
     )
       held.add(host.enrollment.environmentId);

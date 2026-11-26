@@ -515,7 +515,7 @@ describe("hosts that follow the laptop themselves", () => {
 
 describe("publication acknowledgement boundaries", () => {
   const laptop = {
-    repository: "Jones-Systems/Jones-Code",
+    repository: "Jones-Systems/Jones-Code" as const,
     sha: "d".repeat(40),
     tree: "e".repeat(40),
   };
@@ -693,6 +693,40 @@ describe("publication acknowledgement boundaries", () => {
     await advanceFleetCampaigns(driver);
     expect(actions(f).filter((action) => action === "leader")).toHaveLength(1);
   });
+
+  it.each(["selected", "unrelated", "selected-during-read"] as const)(
+    "honors host-only plan holds on publication and campaign dispatch (%s)",
+    async (scenario) => {
+      const f = followingFixture();
+      let reads = 0;
+      const report = vi.fn<(value: FleetPublicationReport) => void>();
+      await advanceFleetCampaigns({
+        ...f.driver,
+        publication: async () => {
+          reads += 1;
+          return {
+            kind: "ordinary-verified",
+            source: laptop,
+            heldEnvironments: [
+              scenario === "selected" || (scenario === "selected-during-read" && reads > 1)
+                ? environmentId
+                : EnvironmentId.make("another-host"),
+            ],
+          };
+        },
+        onPublication: report,
+      });
+      expect(actions(f).filter((action) => action !== "status")).toEqual(
+        scenario === "unrelated" ? ["leader"] : [],
+      );
+      expect(report.mock.calls[0]?.[0].hosts[0]?.outcome).toBe(
+        scenario === "unrelated" ? "following" : scenario === "selected" ? "plan-held" : "unknown",
+      );
+      expect(f.state().campaigns[0]!.members[0]!.phase).toBe(
+        scenario === "unrelated" ? "superseded" : "waiting",
+      );
+    },
+  );
 
   it.each(["directive-target", "unproved"] as const)(
     "holds ordinary publication for %s",
