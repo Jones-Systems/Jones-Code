@@ -1905,7 +1905,8 @@ export async function waitProviderReady(rpc, instanceId) {
   }
 }
 
-export async function waitInactive(rpc, threadId) {
+export async function waitInactive(rpc, threadId, { signal, failedRunId } = {}) {
+  signal?.throwIfAborted();
   let resolveInactive, rejectInactive;
   const inactive = new Promise((resolve, reject) => {
     resolveInactive = resolve;
@@ -1924,7 +1925,12 @@ export async function waitInactive(rpc, threadId) {
       rejectInactive(new Error("Native thread shell is missing a valid activeRunId"));
       return;
     }
-    if (thread.activeRunId === null) resolveInactive({ thread });
+    if (
+      thread.activeRunId === null &&
+      (failedRunId === undefined ||
+        (thread.latestRunId === failedRunId && thread.status === "failed"))
+    )
+      resolveInactive({ thread });
   };
   const subscription = rpc.call("orchestration.subscribeShell", {}, (item) => {
     if (finished) return;
@@ -1944,6 +1950,9 @@ export async function waitInactive(rpc, threadId) {
       return { error };
     },
   );
+  const abort = () => rejectInactive(signal.reason);
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
   let failure;
   try {
     return await inactive;
@@ -1952,6 +1961,7 @@ export async function waitInactive(rpc, threadId) {
     throw error;
   } finally {
     finished = true;
+    signal?.removeEventListener("abort", abort);
     try {
       subscription.interrupt();
       // Do not leave a pending RPC/timer behind or accept a failed native finalizer.
@@ -1971,12 +1981,53 @@ export async function waitInactive(rpc, threadId) {
 
 const verifierFailureStages = new Map([
   ["Provider start admission refused", "admission"],
+  ["Provider work is held", "control-held"],
+  ["Provider restart is held", "restart-held"],
+  ["Continuity check unavailable", "continuity-unavailable"],
+  ["Goal continuity requires attention", "continuity-held"],
+  ["Provider start could not verify its run state", "run-state-unavailable"],
+  ["Provider selection changed before opening", "selection-changed"],
+  ["Message is too long", "message-size"],
+  ["Workspace preparation failed", "workspace-preparation"],
+  ["Checkout unavailable", "checkout-unavailable"],
+  ["Couldn't recreate thread workspace", "workspace-recovery"],
+  ["Couldn't set up restored workspace", "restored-workspace-setup"],
+  ["Previous provider writer could not retire", "writer-retirement"],
+  ["Previous provider is still releasing this conversation", "writer-retirement-held"],
+  ["Thread mode is above the policy limit", "runtime-policy"],
+  ["Queued provider could not start", "queued-start"],
   ["Provider session failed to open", "session-open"],
   ["Provider turn failed to start", "turn-start"],
   ["Turn failed to start", "start-retry-exhausted"],
 ]);
 
-function verifierRunEvidence(projection, runId) {
+export async function waitForVerifierReport({ rpc, threadId, runId, channel, signal }) {
+  if (runId === undefined) return channel.wait(["report", "final"], signal);
+  const cancel = new AbortController();
+  const waitSignal = AbortSignal.any([signal, cancel.signal]);
+  const report = channel.wait(["report", "final"], waitSignal);
+  const observation = waitInactive(rpc, threadId, { signal: waitSignal, failedRunId: runId });
+  const failure = observation.then(() => {
+    throw new Error("Native Preview verifier run failed before reporting");
+  });
+  let primary;
+  try {
+    return await Promise.race([report, failure]);
+  } catch (error) {
+    primary = error;
+    throw error;
+  } finally {
+    cancel.abort();
+    await observation.catch((error) => {
+      if (error === waitSignal.reason || error === primary) return;
+      if (primary)
+        throw new AggregateError([primary, error], "Native verifier report and cleanup failed");
+      throw error;
+    });
+  }
+}
+
+export function verifierRunEvidence(projection, runId) {
   const run = projection?.runs.find((candidate) => candidate.id === runId);
   return run === undefined
     ? { outcome: "run-missing" }
@@ -2239,7 +2290,13 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
           const accepted = verifierRunEvidence(launch.projection, runId);
           let acknowledged;
           try {
-            acknowledged = await channel.wait(["report", "final"], deadline(signal));
+            acknowledged = await waitForVerifierReport({
+              rpc: primary.rpc,
+              threadId,
+              runId,
+              channel,
+              signal: deadline(signal),
+            });
           } catch (error) {
             const readback = await readVerifierRunEvidence(primary.rpc, threadId, runId);
             evidence.verifierRuns.push({ mode, threadId, accepted, readback });

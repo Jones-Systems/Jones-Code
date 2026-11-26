@@ -38,8 +38,10 @@ import {
   scenarioSteps,
   rendererSteps,
   indexedDbBrowserProof,
+  verifierRunEvidence,
   waitInactive,
   waitProviderReady,
+  waitForVerifierReport,
   openRpc,
   waitForFixtureStartup,
   issueFixturePairing,
@@ -459,6 +461,90 @@ NodeTest.test(
     NodeAssert.equal((await waiting).thread.activeRunId, null);
   },
 );
+
+NodeTest.test("the verifier report wait fails promptly for the exact failed run", async () => {
+  const fixture = shellSubscriptionFixture();
+  let milestoneSignal;
+  const report = waitForVerifierReport({
+    rpc: fixture.rpc,
+    threadId: "owned-thread",
+    runId: "run:verifier",
+    channel: {
+      wait(names, signal) {
+        NodeAssert.deepEqual(names, ["report", "final"]);
+        milestoneSignal = signal;
+        return new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        );
+      },
+    },
+    signal: AbortSignal.timeout(1_000),
+  });
+  const observed = NodeAssert.rejects(report, /verifier run failed before reporting/);
+  const failed = { id: "owned-thread", activeRunId: null, status: "failed" };
+  fixture.snapshot({ ...failed, latestRunId: "run:earlier" });
+  fixture.update({ ...failed, latestRunId: "run:verifier", status: "completed" });
+  fixture.update({ ...failed, latestRunId: "run:verifier", id: "other-thread" });
+  await Promise.resolve();
+  NodeAssert.equal(fixture.interrupts, 0);
+  fixture.update({ ...failed, latestRunId: "run:verifier" });
+  await Promise.resolve();
+  fixture.acknowledgeInterrupt();
+  await observed;
+  NodeAssert.equal(milestoneSignal.aborted, true);
+});
+
+NodeTest.test("an acknowledged verifier report releases the shell subscription", async () => {
+  const fixture = shellSubscriptionFixture();
+  const receipt = { name: "report", sha256: "fixture-digest" };
+  let finished = false;
+  const report = waitForVerifierReport({
+    rpc: fixture.rpc,
+    threadId: "owned-thread",
+    runId: "run:verifier",
+    channel: { wait: async () => receipt },
+    signal: AbortSignal.timeout(1_000),
+  }).then((value) => {
+    finished = true;
+    return value;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  NodeAssert.equal(fixture.interrupts, 1);
+  NodeAssert.equal(finished, false);
+  fixture.acknowledgeInterrupt();
+  NodeAssert.equal(await report, receipt);
+});
+
+NodeTest.test("verifier evidence records fixed stage labels for the exact run", () => {
+  const runId = "run:verifier";
+  const projection = {
+    runs: [
+      { id: runId, status: "failed", activeAttemptId: "attempt", startedAt: null, completedAt: 1 },
+    ],
+    attempts: [
+      { runId, status: "failed" },
+      { runId: "run:other", status: "running" },
+    ],
+    providerTurns: [{ runAttemptId: "other", status: "completed" }],
+    turnItems: [
+      { runId, type: "error", title: "Provider start could not verify its run state" },
+      { runId, type: "error", title: "synthetic untrusted content" },
+      { runId: "run:other", type: "error", title: "Turn failed to start" },
+    ],
+  };
+  NodeAssert.deepEqual(verifierRunEvidence(projection, runId), {
+    outcome: "observed",
+    runId,
+    status: "failed",
+    started: false,
+    completed: true,
+    attemptStates: ["failed"],
+    nativeTurnStates: [],
+    failureStages: ["run-state-unavailable", "other"],
+  });
+});
 
 NodeTest.test(
   "missing, inherited and invalid activeRunId never count as native inactivity",
