@@ -2,6 +2,7 @@ import { act, render as renderTest } from "../../../test/render";
 import { createRef } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  QUEUED_STEER_BATCH_CAPABILITY,
   QUEUED_STEER_BATCH_LIMITS,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
@@ -269,6 +270,7 @@ describe("queue header batch action", () => {
 
   it("sends all 19 messages into the running turn after saving a new speed", async () => {
     setupTest();
+    state.capability = QUEUED_STEER_BATCH_CAPABILITY;
     const projection = queueProjection(19);
     state.projection = {
       ...projection,

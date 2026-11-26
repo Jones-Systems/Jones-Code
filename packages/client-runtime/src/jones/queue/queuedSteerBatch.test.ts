@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   CommandId,
+  QUEUED_STEER_BATCH_CAPABILITY,
   QUEUED_STEER_BATCH_LIMITS,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
@@ -67,7 +68,7 @@ function projection(count = 22): OrchestrationV2ThreadProjection {
 
 const input = () => ({
   projection: projection(),
-  capability: QUEUED_STEER_BATCH_LIMITS,
+  capability: QUEUED_STEER_BATCH_CAPABILITY,
   editing: false,
   hasUnsavedMessages: false,
   busy: false,
@@ -209,7 +210,7 @@ describe("queued batch client state", () => {
       ...base.thread.modelSelection,
       options: [{ id: "serviceTier", value: "ultrafast" }],
     };
-    const view = deriveQueuedSteerBatch({
+    const changed = {
       ...state,
       projection: {
         ...base,
@@ -219,11 +220,15 @@ describe("queued batch client state", () => {
           modelSelection: run.status === "running" ? runningSelection : savedSelection,
         })),
       },
-    });
+    };
+    const view = deriveQueuedSteerBatch(changed);
     expect(view?.reason).toBeNull();
     expect(view?.label).toBe("Steer all (19)");
     expect(view?.targetRunId).toBe("active");
     expect(view?.items).toHaveLength(19);
+    expect(
+      deriveQueuedSteerBatch({ ...changed, capability: QUEUED_STEER_BATCH_LIMITS })?.reason,
+    ).toContain("saved model settings");
   });
 
   it("stops before special commands and leaves automatic completions queued", () => {
@@ -255,7 +260,7 @@ describe("queued batch client state", () => {
   ])("checks a running turn that began with %s", (text, allowsSteering) => {
     const state = input();
     const base = state.projection;
-    const view = deriveQueuedSteerBatch({
+    const withActiveCommand = {
       ...state,
       projection: {
         ...base,
@@ -264,8 +269,13 @@ describe("queued batch client state", () => {
           { ...base.messages[0]!, id: base.runs[0]!.userMessageId, text },
         ],
       },
-    });
+    };
+    const view = deriveQueuedSteerBatch(withActiveCommand);
     expect(view?.reason === null).toBe(allowsSteering);
+    expect(
+      deriveQueuedSteerBatch({ ...withActiveCommand, capability: QUEUED_STEER_BATCH_LIMITS })
+        ?.reason,
+    ).toContain("current command");
   });
 });
 
