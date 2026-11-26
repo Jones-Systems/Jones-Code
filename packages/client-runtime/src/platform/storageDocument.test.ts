@@ -48,6 +48,21 @@ const decodeConnectionCatalogDocument = Schema.decodeUnknownEffect(ConnectionCat
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
 const decodeCatalogDocument = Schema.decodeUnknownSync(ConnectionCatalogDocument);
+const currentCatalogJson = Schema.fromJsonString(ConnectionCatalogDocument);
+const { directDpopCredentials: _extension, ...legacyFields } = ConnectionCatalogDocument.fields;
+// The receiving v1 decoder rejects unknown tags inside credentials and ignores new fields.
+const legacyCatalogJson = Schema.fromJsonString(
+  Schema.Struct({
+    ...legacyFields,
+    credentials: Schema.Array(
+      Schema.Struct({ connectionId: Schema.String, credential: BearerConnectionCredential }),
+    ),
+  }),
+);
+const encodeCurrentCatalog = Schema.encodeSync(currentCatalogJson);
+const decodeCurrentCatalog = Schema.decodeSync(currentCatalogJson);
+const encodeLegacyCatalog = Schema.encodeSync(legacyCatalogJson);
+const decodeLegacyCatalog = Schema.decodeSync(legacyCatalogJson);
 
 const RELAY_TARGET = new RelayConnectionTarget({
   environmentId: ENVIRONMENT_ID,
@@ -115,30 +130,17 @@ describe("ConnectionCatalogDocument", () => {
         credential: keyBound,
       }),
     );
-    const currentJson = Schema.fromJsonString(ConnectionCatalogDocument);
-    const { directDpopCredentials: _extension, ...legacyFields } = ConnectionCatalogDocument.fields;
-    // The receiving v1 decoder rejects unknown tags inside credentials and ignores new fields.
-    const legacyJson = Schema.fromJsonString(
-      Schema.Struct({
-        ...legacyFields,
-        credentials: Schema.Array(
-          Schema.Struct({ connectionId: Schema.String, credential: BearerConnectionCredential }),
-        ),
-      }),
-    );
-    const encoded = Schema.encodeSync(currentJson)(paired);
-    const restored = Schema.decodeUnknownSync(legacyJson)(encoded);
+    const encoded = encodeCurrentCatalog(paired);
+    const restored = decodeLegacyCatalog(encoded);
     expect(restored.targets).toEqual([BEARER_TARGET, directTarget]);
     expect(restored.credentials).toEqual(first.credentials);
     expect(restored.profiles[0]).toEqual(BEARER_PROFILE);
-    const rewritten = Schema.decodeUnknownSync(currentJson)(
-      Schema.encodeSync(legacyJson)(restored),
-    );
+    const rewritten = decodeCurrentCatalog(encodeLegacyCatalog(restored));
     expect(connectionCredentialFromCatalog(rewritten, BEARER_TARGET.connectionId)).toEqual(
       Option.some(BEARER_CREDENTIAL),
     );
 
-    const upgraded = Schema.decodeUnknownSync(currentJson)(encoded);
+    const upgraded = decodeCurrentCatalog(encoded);
     expect(connectionCredentialFromCatalog(upgraded, directTarget.connectionId)).toEqual(
       Option.some(keyBound),
     );

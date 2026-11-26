@@ -236,7 +236,7 @@ export function removeConnectionProfileFromCatalog(
   };
 }
 
-export function replaceCatalogValue<A>(
+function replaceCatalogValue<A>(
   values: ReadonlyArray<A>,
   key: (value: A) => string,
   next: A,
