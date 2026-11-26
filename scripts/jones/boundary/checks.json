@@ -2831,6 +2831,7 @@
         "packages/client-runtime/src/jones/queue/commands.test.ts",
         "packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts",
         "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts",
+        "apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts",
         "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
         "apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx",
         "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx",
@@ -2846,7 +2847,7 @@
       ],
       "commands": [
         "vp test run --root apps/server --config vite.config.ts src/jones/orchestration/TransientSteer.test.ts src/jones/orchestration/runtimeLayer.jones.test.ts src/orchestration-v2/CommandPolicy.test.ts src/orchestration-v2/ThreadStop.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/contracts/src/jones/queuedSteerBatch.test.ts packages/shared/src/jones/queuedSteerBatch.test.ts packages/client-runtime/src/jones/queue/commands.test.ts packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/contracts/src/jones/queuedSteerBatch.test.ts packages/shared/src/jones/queuedSteerBatch.test.ts packages/client-runtime/src/jones/queue/commands.test.ts packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web test --project browser src/jones/queue/QueuedSteerBatch.browser.test.tsx src/components/chat/QueuedRunsControl.browser.test.tsx",
