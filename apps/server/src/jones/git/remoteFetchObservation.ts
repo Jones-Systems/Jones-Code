@@ -210,13 +210,31 @@ export function makeRemoteFetchBinding(input: {
         identity,
         configuredIdentity,
         refspecs,
-        run: (command: Omit<Parameters<typeof execute>[0], "cwd" | "env">) =>
+        assertDirectories,
+        run: (
+          command: Omit<Parameters<typeof execute>[0], "cwd" | "env">,
+          objects?: {
+            readonly GIT_OBJECT_DIRECTORY: string;
+            readonly GIT_ALTERNATE_OBJECT_DIRECTORIES: string;
+          },
+        ) =>
           assertDirectories.pipe(
             Effect.andThen(
               execute({
                 ...command,
                 cwd: physicalCwd,
-                env: { ...remoteEnv, LC_ALL: "C", ...selectors, ...overlay },
+                env: {
+                  ...remoteEnv,
+                  LC_ALL: "C",
+                  ...selectors,
+                  ...overlay,
+                  ...(objects === undefined
+                    ? {}
+                    : {
+                        GIT_OBJECT_DIRECTORY: objects.GIT_OBJECT_DIRECTORY,
+                        GIT_ALTERNATE_OBJECT_DIRECTORIES: objects.GIT_ALTERNATE_OBJECT_DIRECTORIES,
+                      }),
+                },
               }),
             ),
             Effect.tap(() => assertDirectories),

@@ -6721,6 +6721,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           { transfer: "complete as a pack", unpackLimit: "1", behindCount: 1 },
           { transfer: "complete as loose objects", unpackLimit: "100", behindCount: 1 },
           { transfer: "followed by a push", unpackLimit: "100", behindCount: 0 },
+          { transfer: "followed by a refspec change", unpackLimit: "100", behindCount: 0 },
         ] as const)(
           "leaves only finished objects after a background upstream fetch that is $transfer",
           ({ transfer, unpackLimit, behindCount }) =>
@@ -6745,6 +6746,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
               NodeFS.writeFileSync(path.join(updater, "remote.bin"), incompressible);
               yield* git(updater, ["add", "remote.bin"]);
               yield* git(updater, ["commit", "-m", "remote commit"]);
+              const downloadedHead = yield* git(updater, ["rev-parse", "HEAD"]);
               yield* git(updater, ["push", "origin", initialBranch]);
               NodeFS.writeFileSync(path.join(updater, "pushed.bin"), incompressible.reverse());
               yield* git(updater, ["add", "pushed.bin"]);
@@ -6756,24 +6758,66 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
               // point a ref at the push: nothing has put those objects in the repository.
               const served = path.join(remote, "served");
               if (transfer === "cut short") NodeFS.writeFileSync(served, "");
-              const push =
-                transfer === "followed by a push"
-                  ? `git --git-dir='${remote}' update-ref refs/heads/${initialBranch} refs/pending/push;`
-                  : "";
-              const later =
-                transfer === "followed by a push" ? "" : "| dd bs=1 count=50000 2>/dev/null";
+              const afterDownload = (() => {
+                if (transfer === "followed by a push") {
+                  return `git --git-dir='${remote}' update-ref refs/heads/${initialBranch} refs/pending/push;`;
+                }
+                if (transfer === "followed by a refspec change") {
+                  return `git --git-dir='${path.join(cwd, ".git")}' config --add remote.origin.fetch '^refs/heads/hidden';`;
+                }
+                return "";
+              })();
+              const later = afterDownload === "" ? "| dd bs=1 count=50000 2>/dev/null" : "";
               yield* git(cwd, [
                 "config",
                 "remote.origin.uploadpack",
-                `f() { if [ -e '${served}' ]; then git upload-pack "$@" ${later}; else : > '${served}'; git upload-pack "$@"; ${push} fi; }; f`,
+                `f() { if [ -e '${served}' ]; then git upload-pack "$@" ${later}; else : > '${served}'; git upload-pack "$@"; ${afterDownload} fi; }; f`,
               ]);
               yield* git(cwd, ["config", "fetch.unpackLimit", unpackLimit]);
               const objects = path.join(cwd, ".git", "objects");
               NodeFS.writeFileSync(path.join(objects, "pack", "tmp_pack_other"), "another fetch");
 
-              const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetailsRemote(cwd);
+              const driver = yield* GitVcsDriver.GitVcsDriver;
+              const coverage = { kind: "configured-refspecs" } as const;
+              const readObservation = yield* driver.bindRemoteFetchObservations(cwd, "origin");
+              const status = yield* driver.statusDetailsRemote(cwd);
 
               assert.equal(status.behindCount, behindCount);
+              const observation = readObservation(coverage);
+              assert.equal(
+                observation.latestOutcome?.status,
+                behindCount === 1 ? "succeeded" : "failed",
+              );
+              assert.equal(observation.latestVerifiedAtMs !== null, behindCount === 1);
+              const downloaded = yield* driver.execute({
+                operation: "GitVcsDriver.test.downloadedObject",
+                cwd,
+                args: ["cat-file", "-e", `${downloadedHead}^{commit}`],
+                allowNonZeroExit: true,
+              });
+              assert.equal(
+                downloaded.exitCode === 0,
+                transfer !== "cut short" && transfer !== "followed by a refspec change",
+              );
+              if (transfer === "followed by a push") {
+                const pushedHead = yield* git(updater, ["rev-parse", "HEAD"]);
+                const pushed = yield* driver.execute({
+                  operation: "GitVcsDriver.test.pushedObject",
+                  cwd,
+                  args: ["cat-file", "-e", `${pushedHead}^{commit}`],
+                  allowNonZeroExit: true,
+                });
+                assert.notEqual(pushed.exitCode, 0);
+              }
+              if (transfer === "followed by a refspec change") {
+                assert.isNull(
+                  (yield* driver.readRemoteFetchObservation({
+                    cwd,
+                    remoteName: "origin",
+                    coverage,
+                  })).latestOutcome,
+                );
+              }
               assert.deepEqual(
                 [...NodeFS.readdirSync(objects), ...NodeFS.readdirSync(path.join(objects, "pack"))]
                   .filter((name) => name.startsWith("tmp_"))

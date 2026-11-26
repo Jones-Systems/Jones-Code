@@ -1918,27 +1918,201 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     } satisfies NodeJS.ProcessEnv;
   };
 
+  const readStatusFetchDirectoryIdentity = (directory: string) =>
+    fileSystem.lstat(directory).pipe(
+      Effect.map((info) =>
+        info.type === "Directory" && Option.isSome(info.ino)
+          ? `${info.dev}/${info.ino.value}`
+          : null,
+      ),
+      Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(null)),
+    );
+
+  const adoptStatusFetchObjects = Effect.fn("GitVcsDriver.fetchRemoteForStatus.adoptObjects")(
+    function* (privateObjects: string, repositoryObjects: string) {
+      for (const directory of yield* fileSystem.readDirectory(privateObjects)) {
+        if (directory !== "pack" && !/^[0-9a-f]{2}$/.test(directory)) continue;
+        const source = path.join(privateObjects, directory);
+        const destination = path.join(repositoryObjects, directory);
+        const names = new Set(yield* fileSystem.readDirectory(source));
+        yield* fileSystem.makeDirectory(destination, { recursive: true });
+        // Like Git, publish immutable objects without replacing a concurrent writer's copy.
+        const publish = (name: string) => {
+          const from = path.join(source, name);
+          const to = path.join(destination, name);
+          return fileSystem
+            .link(from, to)
+            .pipe(Effect.catchReason("PlatformError", "AlreadyExists", () => Effect.void));
+        };
+        if (directory !== "pack") {
+          for (const name of names) {
+            if (/^(?:[0-9a-f]{38}|[0-9a-f]{62})$/.test(name)) yield* publish(name);
+          }
+          continue;
+        }
+        for (const name of names) {
+          if (!/^pack-(?:[0-9a-f]{40}|[0-9a-f]{64})\.pack$/.test(name)) continue;
+          const base = name.slice(0, -5);
+          if (!names.has(`${base}.idx`)) continue;
+          // Publish the pack body last so a metadata error cannot strand an unindexed pack.
+          yield* Effect.forEach(
+            [".promisor", ".rev", ".idx", ".pack"].map((ext) => `${base}${ext}`),
+            (file) => (names.has(file) ? publish(file) : Effect.void),
+            { discard: true },
+          ).pipe(Effect.uninterruptible);
+        }
+      }
+    },
+  );
+
+  type BoundRemoteFetch = NonNullable<Effect.Success<ReturnType<typeof bindRemoteFetch>>>;
+  const fetchStatusInPrivateObjects = Effect.fn("GitVcsDriver.fetchRemoteForStatus.objects")(
+    function* (bound: BoundRemoteFetch) {
+      const { cwd, gitCommonDir, remoteName, refspecs } = bound;
+      const operation = "GitVcsDriver.fetchRemoteForStatus";
+      const fetchArgs = (mode: "--dry-run" | "--quiet") => [
+        "fetch",
+        mode,
+        "--no-auto-gc",
+        "--no-tags",
+        // FETCH_HEAD is written without a lock and belongs to the user's pull.
+        "--no-write-fetch-head",
+        "--refmap=",
+        "--",
+        remoteName,
+        ...(refspecs.length > 0 ? refspecs : ["HEAD"]),
+      ];
+      const timeoutMs = Duration.toMillis(STATUS_UPSTREAM_FETCH_TIMEOUT);
+      const assertRemoteStillBound = Effect.gen(function* () {
+        const current = yield* bindRemoteFetch(cwd, remoteName, gitCommonDir);
+        if (
+          current?.configuredIdentity !== bound.configuredIdentity ||
+          current.gitDir !== bound.gitDir
+        ) {
+          return yield* invalidRemoteFetch(cwd);
+        }
+      });
+      const objectPath = path.join(gitCommonDir, "objects");
+      yield* bound.assertDirectories;
+      const objects = yield* fileSystem.realPath(objectPath);
+      const objectsIdentity = yield* readStatusFetchDirectoryIdentity(objects);
+      if (objectsIdentity === null) return yield* invalidRemoteFetch(cwd);
+      const assertObjectStore = Effect.gen(function* () {
+        yield* bound.assertDirectories;
+        if (
+          (yield* fileSystem.realPath(objectPath)) !== objects ||
+          (yield* readStatusFetchDirectoryIdentity(objects)) !== objectsIdentity
+        ) {
+          return yield* invalidRemoteFetch(cwd);
+        }
+      });
+
+      return yield* Effect.acquireUseRelease(
+        Effect.gen(function* () {
+          const directory = yield* fileSystem.makeTempDirectory({
+            directory: objects,
+            prefix: "tmp_objdir-t3code-",
+          });
+          const identity = yield* readStatusFetchDirectoryIdentity(directory);
+          if (identity === null) return yield* invalidRemoteFetch(cwd);
+          return { directory, identity };
+        }),
+        Effect.fnUntraced(function* ({ directory, identity }) {
+          const assertPrivateDirectory = Effect.gen(function* () {
+            if ((yield* readStatusFetchDirectoryIdentity(directory)) !== identity) {
+              return yield* invalidRemoteFetch(cwd);
+            }
+          });
+          const alternates = yield* bound.read({
+            operation: `${operation}.alternates`,
+            args: ["count-objects", "-v"],
+          });
+          if (alternates.stdoutTruncated) {
+            return yield* new GitCommandError({
+              ...gitCommandContext({ operation, cwd, args: fetchArgs("--dry-run") }),
+              detail: "Background Git fetch could not enumerate its object alternates.",
+            });
+          }
+          const objectEnv = (writableObjects: string) =>
+            privateObjectDirectoryEnv(writableObjects, objects, alternates.stdout);
+          // Download into an attempt-owned store. A dry run leaves refs pointing at shared objects.
+          yield* assertObjectStore;
+          yield* assertPrivateDirectory;
+          const { stderr } = yield* bound.run(
+            { operation: `${operation}.download`, args: fetchArgs("--dry-run"), timeoutMs },
+            objectEnv(directory),
+          );
+          yield* assertRemoteStillBound;
+          yield* assertObjectStore;
+          yield* assertPrivateDirectory;
+          yield* adoptStatusFetchObjects(directory, objects);
+          if (stderr.trim() === "") return;
+
+          // If the remote advanced after the download, force any new transfer through index-pack.
+          // A file in place of its pack directory makes that transfer fail before refs can move.
+          yield* assertObjectStore;
+          yield* assertPrivateDirectory;
+          const sealedObjects = path.join(directory, "sealed");
+          yield* fileSystem.makeDirectory(sealedObjects);
+          yield* fileSystem.writeFileString(path.join(sealedObjects, "pack"), "");
+          yield* bound
+            .run(
+              {
+                operation,
+                args: ["-c", "fetch.unpackLimit=1", ...fetchArgs("--quiet")],
+                timeoutMs,
+              },
+              objectEnv(sealedObjects),
+            )
+            .pipe(
+              // Git can update some refs before reporting an error.
+              Effect.ensuring(
+                Effect.suspend(() =>
+                  invalidateListRefsSnapshots(
+                    gitCommonDir,
+                    currentListRefsGeneration(gitCommonDir),
+                  ),
+                ),
+              ),
+            );
+          yield* assertObjectStore;
+          yield* assertRemoteStillBound;
+        }),
+        ({ directory, identity }) =>
+          readStatusFetchDirectoryIdentity(directory).pipe(
+            Effect.flatMap((current) =>
+              current === identity
+                ? fileSystem.remove(directory, { recursive: true, force: true })
+                : Effect.void,
+            ),
+            Effect.catchCause(() =>
+              Effect.logWarning("Could not remove a background Git fetch's object directory"),
+            ),
+          ),
+      );
+    },
+    (effect, bound) =>
+      effect.pipe(
+        Effect.mapError((cause) =>
+          cause._tag === "GitCommandError"
+            ? cause
+            : new GitCommandError({
+                operation: "GitVcsDriver.fetchRemoteForStatus",
+                command: "git fetch",
+                cwd: bound.cwd,
+                detail: "Background Git fetch could not use its object directory.",
+                cause,
+              }),
+        ),
+      ),
+  );
+
   const fetchRemoteForStatus = Effect.fn("GitVcsDriver.fetchRemoteForStatus.wait")(function* (
     gitCommonDir: string,
     remoteName: string,
   ) {
     const fetchCwd =
       path.basename(gitCommonDir) === ".git" ? path.dirname(gitCommonDir) : gitCommonDir;
-    // `--no-auto-gc` (a synonym of `--no-auto-maintenance` that older Git also knows) keeps
-    // this poll from starting `git gc --auto`. When that gc fails, for example on a repository
-    // with missing objects, Git retries it on every fetch and leaves a full-size `tmp_pack_*`
-    // behind each time, so a background poll could fill the disk.
-    const fetchArgs = [
-      "fetch",
-      "--quiet",
-      "--no-auto-gc",
-      "--no-tags",
-      // FETCH_HEAD is written without a lock; overlapping a user's `git pull` makes that pull fail.
-      "--no-write-fetch-head",
-      "--refmap=",
-      "--",
-      remoteName,
-    ];
     const key = remoteFetchWriterKey(gitCommonDir, remoteName);
     const failure = statusRemoteRefreshFailures.get(key);
     if (failure && (yield* Clock.currentTimeMillis) < failure.retryAt) return;
@@ -1954,15 +2128,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         // occupying its worker slot indefinitely.
         const fetch = Effect.gen(function* () {
           const bound = yield* bindRemoteFetch(fetchCwd, remoteName, gitCommonDir);
-          if (bound === null) return yield* invalidRemoteFetch(fetchCwd);
+          if (bound === null || bound.gitCommonDir !== gitCommonDir) {
+            return yield* invalidRemoteFetch(fetchCwd);
+          }
           yield* remoteFetchObservation.observe(
             bound.configuredIdentity,
             { remoteName, coverage: { kind: "configured-refspecs" } },
-            bound.run({
-              operation: "GitVcsDriver.fetchRemoteForStatus",
-              args: [...fetchArgs, ...(bound.refspecs.length > 0 ? bound.refspecs : ["HEAD"])],
-              timeoutMs: Duration.toMillis(STATUS_UPSTREAM_FETCH_TIMEOUT),
-            }),
+            fetchStatusInPrivateObjects(bound),
             () => ({ status: "succeeded" }),
           );
         }).pipe(
@@ -6360,6 +6532,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             new GitRefsSnapshotCacheKey({ gitCommonDir: cacheKey.gitCommonDir, epoch }),
           ),
         ),
+        Effect.map((snapshot) => ({ snapshot, loadedBy: cacheKey })),
       ),
     {
       capacity: LIST_REFS_SNAPSHOT_CACHE_CAPACITY,
@@ -6384,17 +6557,29 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     while (true) {
       const generation = currentListRefsGeneration(gitCommonDir);
       const currentEpoch = listRefsEpochByCommonDir.get(gitCommonDir);
-      const snapshot =
-        refresh || currentEpoch === undefined
-          ? // Cache the entire snapshot read so slow scans stay single-flight beyond the coalescing TTL.
-            yield* getObservedListRefsSnapshot(
-              listRefsRefreshSnapshotCache,
-              new GitRefsRefreshCacheKey({ gitCommonDir, generation }),
-            )
-          : yield* getObservedListRefsSnapshot(
-              listRefsSnapshotCache,
-              new GitRefsSnapshotCacheKey({ gitCommonDir, epoch: currentEpoch }),
-            );
+      if (refresh || currentEpoch === undefined) {
+        const key = new GitRefsRefreshCacheKey({ gitCommonDir, generation });
+        // Cache the entire snapshot read so slow scans stay single-flight beyond the coalescing TTL.
+        const { snapshot, loadedBy } = yield* getObservedListRefsSnapshot(
+          listRefsRefreshSnapshotCache,
+          key,
+        );
+        // An equal key from another caller may have read occupancy before this refresh.
+        const worktrees =
+          loadedBy !== key
+            ? yield* Cache.get(worktreeBranchPathsCache, gitCommonDir).pipe(
+                Effect.orElseSucceed(() => null),
+              )
+            : null;
+        if (currentListRefsGeneration(gitCommonDir) !== generation) continue;
+        if (worktrees === null || snapshot.worktreeStamp === worktrees.stamp) return snapshot;
+        yield* invalidateListRefsSnapshots(gitCommonDir, generation);
+        continue;
+      }
+      const snapshot = yield* getObservedListRefsSnapshot(
+        listRefsSnapshotCache,
+        new GitRefsSnapshotCacheKey({ gitCommonDir, epoch: currentEpoch }),
+      );
       if (currentListRefsGeneration(gitCommonDir) === generation) {
         return snapshot;
       }
