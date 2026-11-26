@@ -538,6 +538,24 @@ describe("caller-bound exact-source replacement", () => {
     expect(f.effects).toEqual(["stage", "stage"]);
   });
 
+  it("reports a downgrade without retiring the previous selection", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    f.setCheckResult({ state: "blocked", reason: "target-older-than-installed", retryAfterMs: 0 });
+    expect(await f.updater.stageExact(target, replace)).toMatchObject({
+      phase: "blocked",
+      message: expect.stringContaining("older than the build running on this host"),
+      lastCheck: { outcome: "failed", reason: "target-older-than-installed" },
+    });
+    expect(f.updater.snapshot()).toMatchObject({
+      phase: "staged",
+      stagedHandle: replace.stagedHandle,
+      provenance: { sourceSha: candidate.source },
+    });
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.effects).toEqual(["stage"]);
+  });
+
   it("invalidates offers on failed or inapplicable discovery, policy and installed-source changes", async () => {
     let installed = "a".repeat(40);
     let fail = false;
@@ -1484,7 +1502,7 @@ describe("follower policy on the host updater", () => {
     expect(signals[0]?.aborted).toBe(true);
     expect(await superseded).toMatchObject({
       phase: "no-new",
-      message: "The laptop's installed build changed. Checking for it…",
+      message: "The laptop reported a different source. Checking for it…",
     });
     expect(f.updater.snapshot().provenance).toBeUndefined();
     expect(await f.updater.stageExact(other)).toMatchObject({

@@ -36,21 +36,41 @@ describe("fleet publication copy", () => {
     ["unproved", "native proof missing"],
     ["blocked", "native verification blocked"],
     ["unavailable", "native proof unavailable"],
-  ] as const)("explains %s without promoting installed-source evidence", (code, reason) => {
-    expect(describePublication({ kind: "withheld", code, message: "Native detail." }, source)).toBe(
-      `Automatic publication withheld (${reason}). Laptop last observed installed build: aaaaaaa.`,
+  ] as const)("shows the %s publication hold separately from native identity", (code, reason) => {
+    expect(
+      describePublication({ kind: "withheld", code, message: "Native detail." }, source.sha),
+    ).toContain(
+      `Automatic publication withheld (${reason}). Verified running laptop build aaaaaaa.`,
     );
   });
 
   it("distinguishes native authorization from the host's older receipt", () => {
     expect(
+      describePublication(
+        {
+          kind: "ordinary-verified",
+          source: { ...source, repository: "Jones-Systems/Jones-Code" },
+        },
+        source.sha,
+      ),
+    ).toBe("Verified running laptop build aaaaaaa. Publication authorized for aaaaaaa.");
+    expect(describePublicationReceipt("VPS", receipt, source.sha)).toBe(
+      "VPS: last reported laptop build ccccccc, published Oct 20, 2026, 7:00 AM EDT · report is stale · host status observed.",
+    );
+    expect(describePublicationReceipt("VPS", receipt)).not.toContain("report is stale");
+  });
+
+  it("gives an unproved laptop a verification path and keeps older grants historical", () => {
+    expect(
+      describePublication({ kind: "withheld", code: "unproved", message: "Native detail." }),
+    ).toContain("Open Install status to check laptop verification.");
+    expect(
       describePublication({
-        kind: "ordinary-verified",
+        kind: "committed",
         source: { ...source, repository: "Jones-Systems/Jones-Code" },
       }),
-    ).toBe("Laptop publication authorized for aaaaaaa.");
-    expect(describePublicationReceipt("VPS", receipt)).toBe(
-      "VPS: last reported laptop build ccccccc at Oct 20, 2026, 7:00 AM EDT · host status observed.",
+    ).toBe(
+      "Laptop running build verification is unavailable. Publication was last authorized for aaaaaaa.",
     );
   });
 
@@ -59,23 +79,34 @@ describe("fleet publication copy", () => {
       "VPS: host report unknown; not reached yet.",
     );
     expect(describePublicationReceipt("VPS", { ...receipt, outcome: "unknown" })).toContain(
-      "latest acknowledgement unknown; host not reached or response not confirmed",
+      "latest host acknowledgement could not be confirmed",
     );
+    const unreachable = describePublicationReceipt(
+      "VPS",
+      { ...receipt, outcome: "unknown", failure: "unreachable" },
+      source.sha,
+    );
+    expect(unreachable).toContain("host status could not be read");
+    expect(unreachable).not.toContain("report is stale");
     expect(
       describePublicationReceipt("VPS", {
         ...receipt,
         follower: { protocol: 1, leaderSource: source.sha, state: "current" },
       }),
-    ).toContain("aaaaaaa at time unknown");
+    ).toContain("aaaaaaa, published time unknown");
     expect(
       describePublicationReceipt("VPS", {
         ...receipt,
         follower: { protocol: 1, leaderSource: null, state: "waiting-for-leader" },
       }),
     ).toContain("last reported laptop build unknown");
-    expect(describePublicationReceipt("VPS", { ...receipt, outcome: "directive-held" })).toContain(
-      "update plan holds automatic following",
-    );
+    expect(
+      describePublicationReceipt("VPS", {
+        ...receipt,
+        outcome: "directive-held",
+        publicationAcknowledged: true,
+      }),
+    ).toContain("publication acknowledged · manual review directive retained");
   });
 
   it("uses Eastern time with the correct seasonal abbreviation", () => {

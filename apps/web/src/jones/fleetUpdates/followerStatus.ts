@@ -15,8 +15,10 @@ export function describeFollower(
     case "unavailable":
       return `Unavailable${reason}`;
     case "waiting-for-leader":
-      return "Waiting for the laptop to report a build";
+      return follower.reason ?? "Waiting for the laptop to report a build";
     case "current":
+      if (follower.planDirective !== undefined && follower.reason !== undefined)
+        return follower.reason;
       return `On the last build the laptop reported${build}`;
     case "preparing":
       return `Preparing the last build the laptop reported${build}`;

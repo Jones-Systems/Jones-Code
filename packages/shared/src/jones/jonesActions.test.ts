@@ -363,7 +363,7 @@ describe("Jones Actions qualification", () => {
     expect(calls.some((call) => call.includes(`head_sha=${CURRENT}`))).toBe(true);
     expect(calls.every((call) => call.startsWith(`${ROOT}/`))).toBe(true);
   });
-  it("pins a requested source even after canonical main advances", async () => {
+  it("finds the requested Linux source after main advances without a Mac package", async () => {
     const f = fixture();
     const next = "d".repeat(40);
     const client = new JonesActionsClient({
@@ -386,8 +386,58 @@ describe("Jones Actions qualification", () => {
       platform: "linux",
       architecture: "x64",
     });
-    expect(result).toMatchObject({ state: "available", candidate: { source: CURRENT } });
+    expect(result).toMatchObject({
+      state: "available",
+      candidate: { source: CURRENT, tree: TREE, platform: "linux", version: f.receipt.version },
+    });
     expect(f.calls.some((call) => call.includes(`head_sha=${CURRENT}&per_page=50`))).toBe(true);
+    expect(f.calls).not.toContainEqual(expect.stringContaining("artifact-desktop-mac"));
+    expect(f.calls).not.toContainEqual(expect.stringContaining("jones-desktop-signing"));
+  });
+  it.each([
+    ["a bound older source", {}, "target-older-than-installed"],
+    ["a different base", { base_commit: { sha: OLD } }, "unqualified"],
+    ["a different merge base", { merge_base_commit: { sha: TREE } }, "unqualified"],
+    ["an inconsistent count", { ahead_by: 1 }, "unqualified"],
+    [
+      "a diverged source",
+      { status: "diverged", merge_base_commit: { sha: TREE }, ahead_by: 1 },
+      "unqualified",
+    ],
+  ] as const)("refuses %s without searching for an artifact", async (_label, diff, reason) => {
+    const endpoints: string[] = [];
+    const client = new JonesActionsClient({
+      now: () => NOW,
+      transport: {
+        async api(endpoint) {
+          endpoints.push(endpoint);
+          if (endpoint === `${ROOT}/commits/main`) return { sha: CURRENT };
+          return {
+            status: "behind",
+            base_commit: { sha: CURRENT },
+            merge_base_commit: { sha: OLD },
+            ahead_by: 0,
+            behind_by: 2,
+            ...diff,
+          };
+        },
+        async download() {
+          throw new Error("A refused source cannot be downloaded.");
+        },
+      },
+    });
+    expect(
+      await client.check({
+        installedSource: CURRENT,
+        targetSource: OLD,
+        platform: "linux",
+        architecture: "x64",
+      }),
+    ).toMatchObject({ state: "blocked", reason, classification: { kind: "failure" } });
+    expect(endpoints).toEqual([
+      `${ROOT}/commits/main`,
+      `${ROOT}/compare/${CURRENT}...${OLD}?per_page=1`,
+    ]);
   });
   it("never substitutes a different successful source for the requested source", async () => {
     const f = fixture({ run: { head_sha: OLD } });

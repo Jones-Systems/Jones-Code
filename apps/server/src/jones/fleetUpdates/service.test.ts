@@ -908,7 +908,7 @@ describe("following host", () => {
       ]);
       expect((yield* f.service.status()).follower).toMatchObject({
         state: "waiting-for-leader",
-        reason: expect.stringContaining("does not go back"),
+        reason: expect.stringContaining("newer build than the last one the laptop reported"),
       });
       expect(stageExact).not.toHaveBeenCalled();
       expect(f.install).not.toHaveBeenCalled();

@@ -2,12 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
+import {
+  VERIFIED_LAPTOP_MAX_AGE_MS,
+  verifiedRunningLaptop,
+} from "@t3tools/contracts/jones/installPlan";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import { useNowAfter } from "../../hooks/useDeadline";
 import { runtime } from "../../lib/runtime";
 import { FleetEnrollmentStatus, type FleetHostReadiness } from "./FleetEnrollmentStatus";
 import { describeFollower } from "./followerStatus";
-import { fleetInstalledSource, fleetPublication } from "./publicationState";
+import { fleetPublication } from "./publicationState";
+import { refreshFleetFollower } from "./FleetController";
 import {
   describePublication,
   describePublicationReceipt,
@@ -33,7 +39,15 @@ function FleetEnrollmentControlsForHost({ environmentId, label }: FleetEnrollmen
   const state = useAtomValue(fleetDesktopState);
   const storageError = useAtomValue(fleetStatusError);
   const publication = useAtomValue(fleetPublication);
-  const installedSource = useAtomValue(fleetInstalledSource);
+  const laptop = publication?.laptop;
+  const observedAt = Date.parse(laptop?.observedAt ?? "");
+  const now = useNowAfter(
+    Number.isFinite(observedAt) ? observedAt + VERIFIED_LAPTOP_MAX_AGE_MS : null,
+  );
+  const runningSource =
+    laptop === undefined
+      ? undefined
+      : verifiedRunningLaptop(laptop, laptop.environmentId, now)?.target.sourceSha;
   const enrollment = state?.enrollments.find((entry) => entry.environmentId === environmentId);
   const [status, setStatus] = useState<FleetHostStatus | null>(null);
   const [statusObservedAt, setStatusObservedAt] = useState<string>();
@@ -142,23 +156,27 @@ function FleetEnrollmentControlsForHost({ environmentId, label }: FleetEnrollmen
         if (request === statusRequest.current) setBusy(false);
       });
   };
-  const readiness: FleetHostReadiness = statusUnavailable
+  const latestReceipt = selectPublicationReceipt(enrollment, publication?.hosts, {
+    status,
+    observedAt: statusObservedAt,
+    unavailable: statusUnavailable,
+  });
+  const hostUnavailable =
+    latestReceipt === undefined
+      ? statusUnavailable
+      : latestReceipt.outcome === "unknown" && latestReceipt.failure === "unreachable";
+  const readiness: FleetHostReadiness = hostUnavailable
     ? "unavailable"
     : status === null
       ? "loading"
       : qualified
         ? "qualified"
         : "setup-required";
-  const latestReceipt = selectPublicationReceipt(enrollment, publication?.hosts, {
-    status,
-    observedAt: statusObservedAt,
-    unavailable: statusUnavailable,
-  });
   const follower = latestReceipt?.outcome === "unknown" ? undefined : latestReceipt?.follower;
   const publicationNotice = enrollment?.enabled
     ? [
-        describePublication(publication?.publication, installedSource),
-        describePublicationReceipt(label, latestReceipt),
+        describePublication(publication?.publication, runningSource),
+        describePublicationReceipt(label, latestReceipt, runningSource),
       ].join(" ")
     : undefined;
   return (
@@ -188,11 +206,12 @@ function FleetEnrollmentControlsForHost({ environmentId, label }: FleetEnrollmen
       onRefresh={() => {
         const request = ++statusRequest.current;
         setBusy(true);
-        void Promise.all([
-          refreshFleetDesktopState(),
-          fleetHost(environmentId, { action: "status" }),
-        ])
-          .then(([, next]) => {
+        void (async () => {
+          if (enrollment?.enabled) await refreshFleetFollower(enrollment);
+          else await refreshFleetDesktopState();
+          return fleetHost(environmentId, { action: "status" });
+        })()
+          .then((next) => {
             if (request !== statusRequest.current) return;
             setStatus(next);
             setStatusObservedAt(new Date().toISOString());

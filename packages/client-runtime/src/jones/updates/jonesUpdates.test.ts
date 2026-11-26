@@ -909,7 +909,7 @@ describe("exact-source action resolution", () => {
   const unavailable = (decision: ReturnType<typeof resolve>) =>
     decision.status === "unavailable" ? decision.reason : decision.step.kind;
 
-  it("lets a host that follows its laptop take only the laptop's installed source", () => {
+  it("lets a host that follows its laptop take only the last reported laptop source", () => {
     const leader = { role: "follower" as const, leaderSource: target };
     expect(resolve(hostState({ policy: leader }))).toMatchObject({ status: "ready" });
     const other = resolve(
@@ -930,7 +930,7 @@ describe("exact-source action resolution", () => {
     expect(jonesFollowerHold({ ...staged, provenance: targetBuild })).toBeUndefined();
     const { policy: _policy, ...standalone } = staged;
     expect(jonesFollowerHold(standalone)).toBeUndefined();
-    expect(jonesFollowerSummary(staged)).toBe("Follows its laptop · takes only source aaaaaaa");
+    expect(jonesFollowerSummary(staged)).toBe("Follows its laptop · last reported source aaaaaaa");
   });
 
   it("downloads the target by source when the host advertises exact selection, whatever it offers", () => {
