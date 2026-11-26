@@ -1550,6 +1550,8 @@
     "apps/web/src/components/ThreadContextChip.tsx": "accepted-shared",
     "apps/web/src/components/chat/MarkdownThreadLink.tsx": "accepted-shared",
     "apps/web/src/components/chat/MarkdownThreadLink.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/ConfirmDialogHost.tsx": "accepted-shared",
+    "apps/web/src/lib/terminalCloseConfirm.ts": "accepted-shared",
     "apps/web/src/localApi.ts": "accepted-shared",
     "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx": "upstream-deleted",

@@ -44,7 +44,7 @@ export async function confirmTerminalClose(
               }),
             ),
           ].join("\n"),
-      { variant: "destructive" },
+      { variant: "destructive", initialFocus: "confirm-destructive" },
     );
   } catch {
     return false;

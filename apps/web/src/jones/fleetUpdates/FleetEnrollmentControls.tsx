@@ -140,7 +140,7 @@ function FleetEnrollmentControlsForHost({ environmentId, label }: FleetEnrollmen
         setStatusObservedAt(new Date().toISOString());
         setStatusUnavailable(false);
         setMessage(
-          "Automatic updates on. This host follows this laptop’s exact source after each committed laptop update.",
+          "Automatic updates on. This host follows verified builds reported by this laptop. Builds installed through Install status use that plan’s host selection and review.",
         );
       }
     })()
