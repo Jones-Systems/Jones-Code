@@ -899,6 +899,7 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
                 ? (projection.thread as unknown as OrchestrationV2ThreadShell)
                 : null,
             ),
+          getRunCount: () => Effect.succeed(projection.runs.length),
           getProjectThreadRecords: (input) =>
             input.threadId === parentThreadId
               ? Effect.succeed(projection)
@@ -1332,6 +1333,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
                 ? (projection.thread as unknown as OrchestrationV2ThreadShell)
                 : null,
             ),
+          getRunCount: () => Effect.succeed(projection.runs.length),
           getProjectThreadRecords: (input) =>
             input.threadId === parentThreadId
               ? Effect.succeed(projection)

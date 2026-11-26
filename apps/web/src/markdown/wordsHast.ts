@@ -64,6 +64,9 @@ const VOID = new Set("area base br col embed hr img input link meta source track
 
 const TAG =
   /<(\/?)([a-zA-Z][\w:-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>|<!--(?:-?>|[\s\S]*?-->)|<![^>]*>|<\?[\s\S]*?\?>/g;
+// Words' tag filter escapes only the opening delimiter on raw script and style tags.
+// Ordinary rendered text, including code and escaped Markdown, escapes both delimiters.
+const FILTERED_RAW_TEXT_TAG = /&lt;(script|style)(?=[\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>/i;
 const ATTRIBUTE = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
 // Start tags an HTML parser closes an open `<p>` for, and the elements that scope that search.
@@ -145,7 +148,11 @@ interface Tokenized {
  * Hast for Words' HTML. Its own markup is well formed; raw HTML closes where its end tags say,
  * and is sanitized afterwards, so a misnested tag can only change structure, never safety.
  */
-function tokenize(html: string, offsetOf: (byte: number) => number): Tokenized {
+function tokenize(
+  html: string,
+  offsetOf: (byte: number) => number,
+  tagFilteredRawText: boolean,
+): Tokenized {
   const root: Root = { type: "root", children: [] };
   const positioned: Element[] = [];
   const stack: Array<Root | Element> = [root];
@@ -161,9 +168,23 @@ function tokenize(html: string, offsetOf: (byte: number) => number): Tokenized {
     if (previous?.type === "text") previous.value += value;
     else parent.children.push({ type: "text", value } as Text);
   };
-  const tags = new RegExp(TAG);
+  const tags = tagFilteredRawText
+    ? new RegExp(`${TAG.source}|${FILTERED_RAW_TEXT_TAG.source}`, "gi")
+    : new RegExp(TAG);
   let match: ReturnType<RegExp["exec"]>;
   while ((match = tags.exec(html)) !== null) {
+    const filteredTag = match[5]?.toLowerCase();
+    if (filteredTag) {
+      if (svgDepth > 0) continue;
+      const close = filteredTag === "script" ? /&lt;\/script\s*>/gi : /&lt;\/style\s*>/gi;
+      close.lastIndex = tags.lastIndex;
+      if (close.exec(html)) {
+        text(match.index);
+        last = close.lastIndex;
+        tags.lastIndex = last;
+      }
+      continue;
+    }
     text(match.index);
     last = match.index + match[0].length;
     const tagName = match[2]?.toLowerCase();
@@ -278,6 +299,10 @@ function parse(markdown: string, options: RenderOptions): Root {
         }),
       ),
       offsetOf,
+      !escapeHtml &&
+        !options.escapeHtml &&
+        !options.skipHtml &&
+        /<(?:script|style)(?=[\s/>])/i.test(markdown),
     );
   const { root, positioned } = render();
   if (options.escapeHtml || options.skipHtml || !/data-sourcepos/i.test(markdown)) return root;

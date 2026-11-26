@@ -38,6 +38,7 @@ import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { layerNoTaskFolders } from "../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as Registry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Launch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
@@ -485,6 +486,7 @@ const fixture = (runEffectWorker: boolean) =>
       deletedAt: null,
     };
     const external = Layer.mergeAll(
+      layerNoTaskFolders,
       NodeServices.layer,
       Layer.succeed(ServerConfig.ServerConfig, config),
       settings,

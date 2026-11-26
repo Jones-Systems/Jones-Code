@@ -1465,7 +1465,10 @@ describe("ssh tunnel scripts", () => {
         NodeCrypto.layer,
         Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Layer.succeed(HttpClient.HttpClient, httpClient),
-        Layer.succeed(NetService.NetService, testNetService),
+        Layer.succeed(NetService.NetService, {
+          ...testNetService,
+          hasListenerOnHost: () => Effect.succeed(!stale),
+        }),
         SshAuth.SshPasswordPrompt.disabledLayer,
         SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
       );

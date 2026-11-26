@@ -1210,6 +1210,7 @@ export function toUnfinishedWorkflowRuns(
   return runs
     .filter((run) => UNFINISHED_WORKFLOW_RUN_STATUSES.has(run.status ?? ""))
     .map((run) => ({
+      pullRequestNumbers: run.pull_requests?.map((pr) => pr.number) ?? [],
       id: run.id,
       name: trimmed(run.name) ?? `Workflow run ${run.id}`,
       url: trimmed(run.html_url),

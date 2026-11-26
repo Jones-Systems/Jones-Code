@@ -142,8 +142,10 @@ const isProviderAdapterEventStreamError = Schema.is(
 );
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const isCodexAppServerRequestError = Schema.is(CodexError.CodexAppServerRequestError);
-const decodeSyntheticMethod = Schema.decodeEffect(
-  Schema.fromJsonString(Schema.Struct({ method: Schema.String })),
+const decodeSyntheticRequest = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({ id: Schema.optionalKey(Schema.Number), method: Schema.String }),
+  ),
 );
 const layerNodeServicesWithCrypto = Layer.mergeAll(
   NodeServices.layer,
@@ -330,12 +332,14 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
       assert.deepEqual((yield* build("approval-required")).sandboxPolicy, { type: "readOnly" });
       assert.deepEqual((yield* build("full-access")).sandboxPolicy, { type: "dangerFullAccess" });
-      // The folder list reaches the model without T3 Code's MCP tools.
-      assert.deepEqual(Object.keys(autoAcceptEdits.additionalContext ?? {}), ["t3_code_workspace"]);
-      assert.include(
-        autoAcceptEdits.additionalContext?.["t3_code_workspace"]?.value,
-        "- api (Git repository): /work/api",
-      );
+      const context = autoAcceptEdits.additionalContext;
+      assert.sameMembers(Object.keys(context ?? {}), ["jones_code_identity", "t3_code_workspace"]);
+      assert.deepEqual(context?.jones_code_identity, {
+        kind: "application",
+        value: buildAppIdentityInstructions(),
+      });
+      assert.equal(context?.t3_code_workspace?.kind, "application");
+      assert.include(context?.t3_code_workspace?.value, "- api (Git repository): /work/api");
     }),
   );
 
@@ -1403,6 +1407,7 @@ const CODEX_TEST_RUNTIME_POLICY = ProviderAdapter.ProviderAdapterV2RuntimePolicy
   interactionMode: "default",
   cwd: "/workspace",
 });
+const CODEX_TEST_THREAD_TITLE = "Codex continuation test";
 const T3_THREAD_ENV_KEY = "shell_environment_policy.set.T3CODE_THREAD_ID";
 const threadEnvOf = (params: unknown) =>
   Predicate.hasProperty(params, "config") && Predicate.hasProperty(params.config, T3_THREAD_ENV_KEY)
@@ -1419,7 +1424,7 @@ function makeCodexTestAppThread(input: {
     creationSource: "web",
     id: input.threadId,
     projectId: ProjectId.make(`project-${input.threadId}`),
-    title: "Codex continuation test",
+    title: CODEX_TEST_THREAD_TITLE,
     providerInstanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
     modelSelection: CODEX_TEST_MODEL_SELECTION,
     runtimeMode: "full-access",
@@ -1631,18 +1636,19 @@ function codexReplayPreamble(input: {
   ];
 }
 
-/**
- * Every logical turn/start follows a config/read; inserts that exchange and shifts later
- * client ids. A capacity retry resends its logical turn's built parameters promptlessly
- * (an empty input on a thread this process already started), so it reads no config.
- */
-function withConfigReadBeforeTurnStart(
+const REPLAY_NATIVE_OPEN_RETRY = "retry native conversation open";
+
+/** Add the setup exchanges for logical thread opens and turn starts, keeping request IDs paired. */
+function withCodexSetupExchanges(
   entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>,
+  threadName = CODEX_TEST_THREAD_TITLE,
 ): Array<CodexReplay.CodexAppServerReplayEntry> {
   const result: Array<CodexReplay.CodexAppServerReplayEntry> = [];
   let offset = 0;
   let clientIds = new Map<number, number>();
   let startedThreads = new Set<unknown>();
+  let namedThreads = new Set<unknown>();
+  let previousMethod: string | undefined;
   for (const entry of entries) {
     const frame = entry.type === "runtime_exit" ? undefined : entry.frame;
     if (!Predicate.isObject(frame) || typeof frame.id !== "number") {
@@ -1654,30 +1660,47 @@ function withConfigReadBeforeTurnStart(
         offset = 0;
         clientIds = new Map();
         startedThreads = new Set();
+        namedThreads = new Set();
       }
       const params = Predicate.isObject(frame.params) ? frame.params : {};
+      if (frame.method === "thread/name/set") namedThreads.add(params.threadId);
+      // Metadata-only resumes and a native retry with the same parameters reuse existing config.
+      const threadOpen =
+        (frame.method === "thread/start" ||
+          frame.method === "thread/resume" ||
+          frame.method === "thread/fork") &&
+        "config" in params &&
+        previousMethod !== "config/read" &&
+        entry.label !== REPLAY_NATIVE_OPEN_RETRY;
+      // Capacity retries reuse the original turn parameters and omit its input.
       const capacityRetry =
         frame.method === "turn/start" &&
         Array.isArray(params.input) &&
         params.input.length === 0 &&
         startedThreads.has(params.threadId);
       if (frame.method === "turn/start") startedThreads.add(params.threadId);
-      if (frame.method === "turn/start" && !capacityRetry) {
+      const turnStart = frame.method === "turn/start" && !capacityRetry;
+      const exchanges: Array<readonly [string, unknown, unknown]> = [];
+      if (turnStart && !namedThreads.has(params.threadId)) {
+        namedThreads.add(params.threadId);
+        exchanges.push(["thread/name/set", { threadId: params.threadId, name: threadName }, {}]);
+      }
+      if (threadOpen || turnStart) {
+        exchanges.push([
+          "config/read",
+          { ...(params.cwd === undefined ? {} : { cwd: params.cwd }), includeLayers: false },
+          { config: {}, origins: {} },
+        ]);
+      }
+      for (const [method, params, response] of exchanges) {
         const id = frame.id + offset;
         result.push(
-          {
-            type: "expect_outbound",
-            label: "config/read",
-            frame: { id, method: "config/read", params: { cwd: params.cwd, includeLayers: false } },
-          },
-          {
-            type: "emit_inbound",
-            label: "config/read",
-            frame: { id, result: { config: {}, origins: {} } },
-          },
+          { type: "expect_outbound", label: method, frame: { id, method, params } },
+          { type: "emit_inbound", label: method, frame: { id, result: response } },
         );
         offset += 1;
       }
+      previousMethod = frame.method;
       clientIds.set(frame.id, frame.id + offset);
       result.push(withReplayRequestId(entry, frame.id + offset));
       continue;
@@ -1692,10 +1715,27 @@ function withConfigReadBeforeTurnStart(
   return result;
 }
 
-function withConfigReads(
+function withCodexSetup(
   transcript: CodexReplay.CodexAppServerReplayTranscript,
+  threadName?: string,
 ): CodexReplay.CodexAppServerReplayTranscript {
-  return { ...transcript, entries: withConfigReadBeforeTurnStart(transcript.entries) };
+  return { ...transcript, entries: withCodexSetupExchanges(transcript.entries, threadName) };
+}
+
+function syntheticCodexReply(
+  entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>,
+  request: { readonly id: number; readonly method: string },
+): unknown {
+  const reply = entries.find(
+    (entry) =>
+      entry.type === "emit_inbound" &&
+      entry.label === request.method &&
+      Predicate.isObject(entry.frame) &&
+      entry.frame.id === request.id,
+  );
+  return reply?.type === "emit_inbound"
+    ? reply.frame
+    : { id: request.id, error: { code: -32601, message: "Unexpected synthetic request" } };
 }
 
 const decodeMaterializedTranscript = Schema.decodeUnknownSync(
@@ -1743,10 +1783,12 @@ describe("CodexAdapterV2 process exit", () => {
       const emit = (frame: unknown) =>
         Queue.offer(input, new TextEncoder().encode(JSON.stringify(frame) + "\n"));
       const outputEnded = yield* Deferred.make<void>();
+      const scopeClosed = yield* Deferred.make<void>();
+      const physicalExit = yield* Deferred.make<void>();
       const turnStarted = yield* Deferred.make<void>();
       const turnCompleted = yield* Deferred.make<void>();
       const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
-      const preamble = withConfigReadBeforeTurnStart(
+      const preamble = withCodexSetupExchanges(
         codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "work" }),
       );
       const terminationError =
@@ -1769,19 +1811,10 @@ describe("CodexAdapterV2 process exit", () => {
           stdout: () =>
             Sink.forEach((chunk: string | Uint8Array) =>
               Effect.gen(function* () {
-                const frame = JSON.parse(
+                const { id, method } = yield* decodeSyntheticRequest(
                   typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
-                ) as { readonly id?: number; readonly method: string };
-                const response = preamble.find(
-                  (entry) =>
-                    entry.type === "emit_inbound" &&
-                    entry.label === frame.method &&
-                    Predicate.isObject(entry.frame) &&
-                    "id" in entry.frame,
-                );
-                if (response?.type === "emit_inbound") {
-                  yield* emit(response.frame);
-                }
+                ).pipe(Effect.orDie);
+                if (id !== undefined) yield* emit(syntheticCodexReply(preamble, { id, method }));
               }),
             ).pipe(Sink.ensuring(Deferred.succeed(outputEnded, undefined))),
           stderr: () => Sink.drain,
@@ -1793,7 +1826,14 @@ describe("CodexAdapterV2 process exit", () => {
         instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
         settings: DEFAULT_CODEX_SETTINGS,
         environment: {},
-        clientFactory: { open: () => Effect.succeed(client) },
+        clientFactory: {
+          open: (input) => {
+            input.captureProcessExit?.(Deferred.await(physicalExit));
+            return Effect.addFinalizer(() => Deferred.succeed(scopeClosed, undefined)).pipe(
+              Effect.as(client),
+            );
+          },
+        },
         digest: yield* Digest.Digest,
         fileSystem: yield* FileSystem.FileSystem,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
@@ -1808,6 +1848,7 @@ describe("CodexAdapterV2 process exit", () => {
         modelSelection: CODEX_TEST_MODEL_SELECTION,
         runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
       });
+      yield* Effect.addFinalizer(() => Deferred.succeed(physicalExit, undefined));
       const eventReader = yield* runtime.events.pipe(
         Stream.runForEach((event) =>
           Effect.sync(() => events.push(event)).pipe(
@@ -1863,13 +1904,22 @@ describe("CodexAdapterV2 process exit", () => {
       yield* Deferred.await(outputEnded);
       const rpcError = yield* client.request("thread/list", {}).pipe(Effect.flip);
       assert.strictEqual(rpcError, terminationError);
-      // Without the fix the stream never ends, so this waits until the project timeout.
+      yield* Deferred.await(scopeClosed);
+      assert.isUndefined(
+        eventReader.pollUnsafe(),
+        "transport loss must await captured process exit",
+      );
+      yield* Deferred.succeed(physicalExit, undefined);
       const readerExit = yield* Fiber.await(eventReader);
-      // A failure, not a clean end, carries the Codex error into the session's lastError.
-      assert.isTrue(
-        Exit.isFailure(readerExit) &&
-          isProviderAdapterEventStreamError(Cause.squash(readerExit.cause)),
-        "the session manager must receive process death so it can retire the shared process",
+      if (Exit.isSuccess(readerExit))
+        return assert.fail("The session stream ended without an error");
+      const error = Cause.squash(readerExit.cause);
+      assert.isTrue(isProviderAdapterEventStreamError(error));
+      if (isProviderAdapterEventStreamError(error))
+        assert.strictEqual(error.cause, terminationError);
+      assert.deepEqual(
+        events.flatMap((event) => (event.type === "turn.terminal" ? [event.status] : [])),
+        [active ? "failed" : "completed"],
       );
     }).pipe(
       Effect.scoped,
@@ -1955,7 +2005,7 @@ describe("CodexAdapterV2 session initialize", () => {
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
-        withConfigReads(transcript),
+        withCodexSetup(transcript),
         beforeEmitInbound === undefined ? {} : { beforeEmitInbound },
       );
       let initializeRequests = 0;
@@ -2037,7 +2087,7 @@ describe("CodexAdapterV2 session initialize", () => {
       const compatibility =
         typeof optionsOrCompatibility === "function" ? optionsOrCompatibility : undefined;
       const driver = yield* CodexReplay.makeReplayDriver(
-        withConfigReads(transcript),
+        withCodexSetup(transcript),
         beforeEmitInbound === undefined ? {} : { beforeEmitInbound },
       );
       let initializeRequests = 0;
@@ -2143,13 +2193,14 @@ describe("CodexAdapterV2 session initialize", () => {
         runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
       });
       const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
-      yield* runtime.events.pipe(
+      const eventPump = yield* runtime.events.pipe(
         Stream.runForEach((event) => Queue.offer(events, event)),
         Effect.forkScoped,
       );
       return {
         runtime,
         events,
+        eventPump,
         requests,
         outboundNotifications,
         notify: (method: string, payload: unknown) =>
@@ -2498,7 +2549,98 @@ describe("CodexAdapterV2 session initialize", () => {
       const thread = yield* session.ensureThread("thread-already-initialized");
       assert.equal(thread.nativeThreadRef?.nativeId, "initialize-already-initialized");
       assert.equal(session.initializeRequests(), 1);
-      assert.deepEqual(session.requests, ["initialize", "thread/start"]);
+      assert.deepEqual(session.requests, ["initialize", "config/read", "thread/start"]);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, layerNodeServicesWithCrypto),
+      ),
+    ),
+  );
+
+  it.effect("retires a producer after a silent pre-turn config read", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "silent-turn-config";
+      const threadId = ThreadId.make(`thread-${nativeThreadId}`);
+      const requestWritten = yield* Deferred.make<void>();
+      const scopeClosed = yield* Deferred.make<void>();
+      const physicalExit = yield* Deferred.make<void>();
+      const session = yield* openJonesReplaySession(
+        makeCodexReplayTranscript({
+          scenario: nativeThreadId,
+          entries: [
+            ...replayPreamble(nativeThreadId).slice(0, 5),
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 3,
+                method: "thread/name/set",
+                params: { threadId: nativeThreadId, name: CODEX_TEST_THREAD_TITLE },
+              },
+            },
+            { type: "emit_inbound", frame: { id: 3, result: {} } },
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 4,
+                method: "config/read",
+                params: { cwd: "/workspace", includeLayers: false },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "config request written",
+              frame: { method: "t3/test/configRequestWritten", params: {} },
+            },
+          ],
+        }),
+        (entry) =>
+          entry.label === "config request written"
+            ? Deferred.succeed(requestWritten, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        {
+          processExit: Deferred.await(physicalExit),
+          onClose: Deferred.succeed(scopeClosed, undefined).pipe(Effect.asVoid),
+        },
+      );
+      yield* Effect.addFinalizer(() => Deferred.succeed(physicalExit, undefined));
+      const providerThread = yield* session.ensureThread(threadId);
+      const start = yield* session.runtime
+        .startTurn(
+          makeCodexTestTurnInput({
+            threadId,
+            providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("silent-turn-config-attempt"),
+            text: "Work",
+          }),
+        )
+        .pipe(Effect.flip, Effect.forkChild);
+      yield* Deferred.await(requestWritten);
+      yield* TestClock.adjust("2 minutes");
+      const error = yield* Fiber.join(start);
+      assert.nestedPropertyVal(error, "cause._tag", "PromptNotApplied");
+      assert.nestedPropertyVal(error, "cause.cause._tag", "CodexAppServerUnresponsiveError");
+      assert.nestedPropertyVal(error, "cause.cause.method", "config/read");
+      yield* Deferred.await(scopeClosed);
+      assert.isUndefined(session.eventPump.pollUnsafe(), "retirement waits for captured exit");
+      yield* Deferred.succeed(physicalExit, undefined);
+      const exit = yield* Fiber.await(session.eventPump);
+      if (Exit.isSuccess(exit)) return assert.fail("The unresponsive session must fail its stream");
+      const failure = Cause.squash(exit.cause);
+      assert.isTrue(isProviderAdapterEventStreamError(failure));
+      assert.nestedPropertyVal(failure, "cause._tag", "CodexAppServerUnresponsiveError");
+      const refused = yield* session
+        .ensureThread("thread-after-unresponsive-config")
+        .pipe(Effect.flip);
+      assert.nestedPropertyVal(refused, "cause._tag", "CodexAppServerRetiredError");
+      assert.deepEqual(session.requests, [
+        "initialize",
+        "config/read",
+        "thread/start",
+        "thread/name/set",
+        "config/read",
+      ]);
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -2805,7 +2947,13 @@ describe("CodexAdapterV2 session initialize", () => {
       assert.equal(event.type, "runtime_identity.observed");
       if (event.type === "runtime_identity.observed")
         assert.equal(event.binding.providerThreadId, existing.id);
-      assert.deepEqual(session.requests, ["initialize", "thread/start", "thread/start"]);
+      assert.deepEqual(session.requests, [
+        "initialize",
+        "config/read",
+        "thread/start",
+        "config/read",
+        "thread/start",
+      ]);
       assert.equal(closes, 0);
       assert.isFalse(yield* Deferred.isDone(physicalExit));
       yield* Deferred.succeed(physicalExit, undefined);
@@ -2949,7 +3097,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         [];
       const commandStopWatchers: Array<PortScanner.AgentCommandStopWatcher> = [];
       const driver = yield* CodexReplay.makeReplayDriver(
-        withConfigReads(transcript),
+        withCodexSetup(transcript),
         beforeEmitInbound === undefined ? {} : { beforeEmitInbound },
       );
       const clientFactory: CodexAdapterV2.CodexAppServerClientFactoryShape = {
@@ -4774,7 +4922,105 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
   );
 
-  it.effect("adds the session MCP server without replacing launch-argument servers", () =>
+  it.effect("names the native thread after the app title and retries a failed rename", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "thread-name-thread";
+      const nameSet = (
+        id: number,
+        name: string,
+        response: "result" | "error",
+      ): Array<CodexReplay.CodexAppServerReplayEntry> => [
+        {
+          type: "expect_outbound",
+          frame: { id, method: "thread/name/set", params: { threadId: nativeThreadId, name } },
+        },
+        {
+          type: "emit_inbound",
+          frame:
+            response === "result"
+              ? { id, result: {} }
+              : { id, error: { code: -32601, message: "Method not found" } },
+        },
+      ];
+      const turn = (
+        id: number,
+        nativeTurnId: string,
+      ): Array<CodexReplay.CodexAppServerReplayEntry> => [
+        ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "work" })
+          .slice(5, 7)
+          .map((entry) => withReplayRequestId(entry, id)),
+        {
+          type: "emit_inbound",
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+            },
+          },
+        },
+      ];
+      const names: Array<unknown> = [];
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: "codex-thread-name",
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "unused",
+              prompt: "work",
+            }).slice(0, 5),
+            ...nameSet(3, CODEX_TEST_THREAD_TITLE, "error"),
+            ...turn(4, "thread-name-turn-1"),
+            ...nameSet(5, CODEX_TEST_THREAD_TITLE, "result"),
+            ...turn(6, "thread-name-turn-2"),
+            ...turn(7, "thread-name-turn-3"),
+            ...nameSet(8, "Renamed", "result"),
+          ],
+        }),
+        undefined,
+        (method, params) =>
+          Effect.sync(() => {
+            if (method === "thread/name/set") names.push(params);
+          }),
+      );
+      const now = yield* DateTime.now;
+      for (const ordinal of [1, 2, 3]) {
+        yield* harness.runtime.startTurn({
+          ...makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make(`thread-name-${ordinal}`),
+            text: "work",
+          }),
+          runOrdinal: ordinal,
+          providerTurnOrdinal: ordinal,
+        });
+        yield* harness.awaitTerminal(ordinal);
+      }
+      const applyThreadTitle = harness.runtime.applyThreadTitle;
+      assert.isDefined(applyThreadTitle);
+      for (const title of ["Renamed", "Renamed"]) {
+        yield* applyThreadTitle({ providerThread: harness.providerThread, title });
+      }
+      assert.deepEqual(names, [
+        { threadId: nativeThreadId, name: CODEX_TEST_THREAD_TITLE },
+        { threadId: nativeThreadId, name: CODEX_TEST_THREAD_TITLE },
+        { threadId: nativeThreadId, name: "Renamed" },
+      ]);
+      assert.deepEqual(
+        harness.terminalEvents().map((event) => event.status),
+        ["completed", "completed", "completed"],
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, layerNodeServicesWithCrypto),
+      ),
+    ),
+  );
+
+  it.effect("adds session MCP servers and passes the thread ID to workspace stdio servers", () =>
     Effect.gen(function* () {
       const scenario = "launch-mcp-servers";
       yield* (yield* McpProviderSessions.McpProviderSessions).set({
@@ -4787,14 +5033,42 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         browserToolsAvailable: true,
       });
       const requests: Array<unknown> = [];
+      const preamble = codexReplayPreamble({
+        nativeThreadId: "launch-mcp-thread",
+        nativeTurnId: "unused",
+        prompt: "unused",
+      });
       yield* makeCodexReplayHarness(
         makeCodexReplayTranscript({
           scenario,
-          entries: codexReplayPreamble({
-            nativeThreadId: "launch-mcp-thread",
-            nativeTurnId: "unused",
-            prompt: "unused",
-          }).slice(0, 5),
+          entries: [
+            ...preamble.slice(0, 3),
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 2,
+                method: "config/read",
+                params: { cwd: "/workspace", includeLayers: false },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                id: 2,
+                result: {
+                  config: {
+                    mcp_servers: {
+                      envprobe: { command: "python3", env: { FOO: "bar" } },
+                      remote: { url: "https://example.com/mcp" },
+                      "dotted.name": { command: "node" },
+                    },
+                  },
+                  origins: {},
+                },
+              },
+            },
+            ...preamble.slice(3, 5).map((entry) => withReplayRequestId(entry, 3)),
+          ],
         }),
         () => Effect.void,
         (method, params) =>
@@ -4811,6 +5085,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             mcp_optional_startup_grace_ms: 10_000,
             "features.concurrent_reasoning_summaries": true,
             "shell_environment_policy.set.T3CODE_THREAD_ID": `thread-${scenario}`,
+            "mcp_servers.envprobe.env.T3CODE_THREAD_ID": `thread-${scenario}`,
             "mcp_servers.t3-code": {
               url: "http://127.0.0.1:43123/mcp",
               tool_timeout_sec: 3_900,
@@ -5544,6 +5819,85 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           NodeServices.layer,
           NodeCrypto.layer,
         ),
+      ),
+    ),
+  );
+
+  it.effect("keeps an asynchronous Codex alert and a matching final answer distinct", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "async-alert-thread";
+      const nativeTurnId = "async-alert-turn";
+      const prompt = "Alert me, then finish.";
+      const answer = "The report is ready.";
+      const agentMessage = (id: string, delivery: "async" | null) => ({
+        type: "emit_inbound" as const,
+        frame: {
+          method: "item/completed",
+          params: {
+            threadId: nativeThreadId,
+            turnId: nativeTurnId,
+            item: {
+              type: "agentMessage",
+              id,
+              text: answer,
+              phase: "final_answer",
+              delivery,
+              questions: null,
+              memoryCitation: null,
+            },
+          },
+        },
+      });
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: "async-alert-and-final-answer",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+            agentMessage("call_alert_1", "async"),
+            agentMessage("msg_final", null),
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                },
+              },
+            },
+          ],
+        }),
+      );
+      yield* harness.runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("async-alert-attempt"),
+          text: prompt,
+        }),
+      );
+      yield* harness.firstTerminal;
+      const messages = harness.events.flatMap((event) =>
+        event.type === "turn_item.updated" &&
+        event.turnItem.type === "assistant_message" &&
+        event.turnItem.status === "completed"
+          ? [
+              {
+                id: event.turnItem.nativeItemRef?.nativeId,
+                delivery: event.turnItem.delivery,
+                text: event.turnItem.text,
+              },
+            ]
+          : [],
+      );
+      assert.deepEqual(messages, [
+        { id: "call_alert_1", delivery: "async", text: answer },
+        { id: "msg_final", delivery: undefined, text: answer },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, layerNodeServicesWithCrypto),
       ),
     ),
   );
@@ -6735,7 +7089,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         entries.push(
           {
             type: "expect_outbound",
-            label: "retry identical resume",
+            label: REPLAY_NATIVE_OPEN_RETRY,
             frame: { id: 5, method: "thread/resume", params },
           },
           {
@@ -6774,7 +7128,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           "cause.method",
           failAt === 4 ? "thread/unarchive" : "thread/resume",
         );
-        assert.nestedPropertyVal(error, "cause.requestId", String(failAt));
+        assert.nestedPropertyVal(error, "cause.requestId", String(failAt + 2));
         return;
       }
       const resumed = yield* resume;
@@ -6859,7 +7213,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             ...(closedFirst ? [closed, closingError] : [closingError, closed]),
             {
               type: "expect_outbound",
-              label: "retry identical resume",
+              label: REPLAY_NATIVE_OPEN_RETRY,
               frame: { id: 5, method: "thread/resume", params },
             },
             {
@@ -7253,7 +7607,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             makeCodexReplayTranscript({ scenario, entries }),
           )).replaceAll(yield* encodeStringJson("/workspace"), yield* encodeStringJson(cwd)),
         );
-        const driver = yield* CodexReplay.makeReplayDriver(withConfigReads(localTranscript));
+        const driver = yield* CodexReplay.makeReplayDriver(
+          withCodexSetup(localTranscript, "Capacity retry"),
+        );
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
@@ -8969,7 +9325,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           yield* encodeStringJson(cwd),
         ),
       );
-      const replayDriver = yield* CodexReplay.makeReplayDriver(withConfigReads(localTranscript));
+      const replayDriver = yield* CodexReplay.makeReplayDriver(
+        withCodexSetup(localTranscript, "Background stop"),
+      );
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       assert.equal(
         Number(yield* spawner.exitCode(ChildProcess.make("git", ["init", "--quiet"], { cwd }))),
@@ -9189,7 +9547,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         Effect.provide(
           ProviderReplayHarness.layerWithRegistry(
             { name: "codex-background-stop-untracked", runtimePolicyOverride: { cwd } },
-            CodexAdapterV2Testkit.layer({ transcript: withConfigReads(localTranscript) }),
+            CodexAdapterV2Testkit.layer({
+              transcript: withCodexSetup(localTranscript, "Background stop untracked"),
+            }),
             { runEffectWorker: false },
           ),
         ),
@@ -12838,8 +13198,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         method: string,
         params: unknown,
         reply: { readonly result: unknown } | { readonly error: unknown },
+        label = method,
       ): Array<CodexReplay.CodexAppServerReplayEntry> => [
-        { type: "expect_outbound", label: method, frame: { id, method, params } },
+        { type: "expect_outbound", label, frame: { id, method, params } },
         { type: "emit_inbound", label: method, frame: { id, ...reply } },
       ];
       const transcript = makeCodexReplayTranscript({
@@ -13132,12 +13493,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             { threadId: nativeThreadId },
             { result: codexReplayThreadResult({ nativeThreadId, forkedFromId: null }) },
           ),
-          ...exchange(5, "thread/fork", forkParams, {
-            result: codexReplayThreadResult({
-              nativeThreadId: forkThreadId,
-              forkedFromId: nativeThreadId,
-            }),
-          }),
+          ...exchange(
+            5,
+            "thread/fork",
+            forkParams,
+            {
+              result: codexReplayThreadResult({
+                nativeThreadId: forkThreadId,
+                forkedFromId: nativeThreadId,
+              }),
+            },
+            REPLAY_NATIVE_OPEN_RETRY,
+          ),
         ],
       });
       const harness = yield* makeCodexReplayHarness(transcript);
@@ -14824,7 +15191,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
                 ),
                 Effect.andThen(
                   CodexReplay.makeReplayDriver(
-                    withConfigReads(actualTranscript),
+                    withCodexSetup(actualTranscript),
                     beforeEmitInbound === undefined ? {} : { beforeEmitInbound: beforeEmitInbound },
                   ).pipe(
                     Effect.flatMap((driver) =>
@@ -15064,7 +15431,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             : []),
         ],
       });
-      const driver = yield* CodexReplay.makeReplayDriver(withConfigReads(transcript), {
+      const driver = yield* CodexReplay.makeReplayDriver(withCodexSetup(transcript), {
         beforeEmitInbound: (entry) =>
           entry.label === "unsubscribe-ack"
             ? Deferred.succeed(sent, undefined).pipe(Effect.andThen(Deferred.await(ack)))
@@ -15295,7 +15662,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           const requestError = error as CodexError.CodexAppServerRequestError;
           assert.equal(requestError.code, -32600);
           assert.equal(requestError.method, "thread/resume");
-          assert.equal(requestError.requestId, "4");
+          assert.equal(requestError.requestId, "6");
           assert.equal(requestError.errorMessage, refusal);
         }
         assert.equal(harness.providerThread.nativeThreadRef?.nativeId, nativeThreadId);
@@ -15885,7 +16252,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             },
           ],
         });
-        const effectiveTranscript = withConfigReads(transcript);
+        const effectiveTranscript = withCodexSetup(transcript);
         const driver = yield* CodexReplay.makeReplayDriver(effectiveTranscript);
         const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
           replayClientFactory: makeCodexReplayClientFactory({ transcript, driver }),
@@ -15938,7 +16305,8 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           prompt: "Keep working",
         }),
       });
-      const driver = yield* CodexReplay.makeReplayDriver(withConfigReads(transcript));
+      const effectiveTranscript = withCodexSetup(transcript);
+      const driver = yield* CodexReplay.makeReplayDriver(effectiveTranscript);
       const factory = makeCodexReplayClientFactory({ transcript, driver });
       const clientReady = yield* Deferred.make<CodexClient.CodexAppServerClient["Service"]>();
       yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
@@ -15959,11 +16327,11 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
       assert.equal(state.failure?._tag, "CodexAppServerReplayFrameMismatchError");
       assert.equal(
         state.cursor,
-        transcript.entries.findIndex(
+        effectiveTranscript.entries.findIndex(
           (entry) =>
             entry.type === "expect_outbound" &&
             Predicate.isObject(entry.frame) &&
-            entry.frame.method === "turn/start",
+            entry.frame.method === "thread/name/set",
         ),
       );
     }).pipe(
@@ -17232,7 +17600,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         const transcript = makeCodexReplayTranscript({ scenario: nativeThreadId, entries });
         let sends = 0;
         let threadStarts = 0;
-        const effectiveTranscript = withConfigReads(transcript);
+        const effectiveTranscript = withCodexSetup(transcript);
         const driver = yield* CodexReplay.makeReplayDriver(effectiveTranscript, {
           beforeEmitInbound: (entry) =>
             entry.label === "turn/start"
@@ -17477,7 +17845,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           ],
         });
         const replyScheduled = yield* Deferred.make<void>();
-        const effectiveTranscript = withConfigReads(transcript);
+        const effectiveTranscript = withCodexSetup(transcript);
         const driver = yield* CodexReplay.makeReplayDriver(effectiveTranscript, {
           beforeEmitInbound: (entry) =>
             entry.label === "turn/start"
@@ -19255,7 +19623,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
       const attribution = yield* ProcessAttribution.make();
       let opens = 0;
       let exits = 0;
-      const entries = withConfigReadBeforeTurnStart(
+      const entries = withCodexSetupExchanges(
         codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Work" }),
       );
       const spawner = ChildProcessSpawner.make(() =>
@@ -19271,18 +19639,15 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             unref: Effect.succeed(Effect.void),
             stdin: Sink.forEach((bytes: Uint8Array) =>
               Effect.gen(function* () {
-                const frame = yield* decodeSyntheticMethod(
+                const { id, method } = yield* decodeSyntheticRequest(
                   new TextDecoder().decode(bytes).trim(),
                 ).pipe(Effect.orDie);
-                if (frame.method === "turn/steer") {
+                if (method === "turn/steer") {
                   yield* Deferred.succeed(sent, undefined);
                   return;
                 }
-                const response = entries.find(
-                  (entry) => entry.type === "emit_inbound" && entry.label === frame.method,
-                );
-                if (response?.type !== "emit_inbound") return;
-                let payload = response.frame;
+                if (id === undefined) return;
+                let payload = syntheticCodexReply(entries, { id, method });
                 if (
                   Predicate.isObject(payload) &&
                   Predicate.isObject(payload.result) &&
@@ -19409,7 +19774,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           scenario: `unproved-stop-${proof}`,
           entries: codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Work" }),
         });
-        const replay = makeCodexReplayClientFactory({ transcript: withConfigReads(transcript) });
+        const replay = makeCodexReplayClientFactory({ transcript: withCodexSetup(transcript) });
         let closes = 0;
         const factory: CodexAdapterV2.CodexAppServerClientFactoryShape = {
           open: (input) =>
@@ -21061,7 +21426,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           .pipe(Effect.flip);
         assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(retry));
         assert.deepEqual(rawRequests, ["thread/resume"]);
-        assert.deepEqual(requests, ["initialize", "thread/start"]);
+        assert.deepEqual(requests, ["initialize", "config/read", "thread/start", "config/read"]);
         assert.equal(source.nativeThreadRef?.nativeId, "saved-thread");
       }).pipe(
         Effect.provide(
@@ -21160,8 +21525,8 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         assert.deepEqual(
           requests,
           mode === "managed-null"
-            ? ["initialize", "thread/start"]
-            : ["initialize", "thread/start", "thread/resume"],
+            ? ["initialize", "config/read", "thread/start"]
+            : ["initialize", "config/read", "thread/start", "config/read", "thread/resume"],
         );
         if (mode !== "managed-null") {
           const second = yield* harness.runtime
@@ -21170,7 +21535,13 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           assert.equal(second._tag, "Failure");
           if (second._tag === "Failure")
             assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(second.failure));
-          assert.deepEqual(requests, ["initialize", "thread/start", "thread/resume"]);
+          assert.deepEqual(requests, [
+            "initialize",
+            "config/read",
+            "thread/start",
+            "config/read",
+            "thread/resume",
+          ]);
         }
       }).pipe(
         Effect.scoped,
@@ -21563,7 +21934,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             ),
           );
           const replayDriver = yield* CodexReplay.makeReplayDriver(
-            withConfigReads(localTranscript),
+            withCodexSetup(localTranscript, "Background stop"),
           );
           const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
           assert.equal(
@@ -21706,7 +22077,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
               yield* encodeStringJson(cwd),
             ),
           );
-          const effectiveTranscript = withConfigReads(localTranscript);
+          const effectiveTranscript = withCodexSetup(localTranscript, "Process exit");
           const driver = yield* CodexReplay.makeReplayDriver(effectiveTranscript);
           yield* Effect.gen(function* () {
             const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -23252,8 +23623,10 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         });
         assert.deepEqual(timeline, [
           `admit:${targetB}@${generation}`,
+          "config/read",
           "thread/resume",
           `bind:${targetB}@${generation}`,
+          "config/read",
           `admit:${targetC}@${generation}`,
           "thread/start",
           `bind:${targetC}@${generation}`,
@@ -23400,7 +23773,12 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             timeline,
             phase === "admit"
               ? [`admit:${target}@${generation}`]
-              : [`admit:${target}@${generation}`, "thread/resume", `bind:${target}@${generation}`],
+              : [
+                  `admit:${target}@${generation}`,
+                  "config/read",
+                  "thread/resume",
+                  `bind:${target}@${generation}`,
+                ],
           );
           reject = false;
           const ensure = harness.runtime.ensureThread({
@@ -23413,6 +23791,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             assert.equal(recovered.nativeThreadRef?.nativeId, "native-recovered");
             assert.deepEqual(timeline, [
               `admit:${target}@${generation}`,
+              "config/read",
               `admit:${target}@${generation}`,
               "thread/start",
               `bind:${target}@${generation}`,
@@ -23561,6 +23940,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           assert.deepEqual(timeline, [
             `admit:${target}@${generation}`,
             `admit:${target}@${generation}`,
+            "config/read",
             "thread/resume",
             `bind:${target}@${generation}`,
           ]);
@@ -23686,7 +24066,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         assert.deepEqual(timeline, [
           "thread/read",
           `admit:${target}@${generation}`,
-          ...(!loaded ? ["thread/resume"] : []),
+          ...(!loaded ? ["config/read", "thread/resume"] : []),
           `bind:${target}@${generation}`,
           "thread/turns/list",
           "thread/revert",
@@ -24588,13 +24968,20 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
       assert.equal(expired._tag, "Failure");
       if (expired._tag === "Failure")
         assert.isFalse(ProviderAdapter.hasUnknownRuntimeBinding(expired.failure));
-      assert.deepEqual(requests, ["initialize", "thread/start", "thread/read"]);
+      assert.deepEqual(requests, ["initialize", "config/read", "thread/start", "thread/read"]);
       yield* Deferred.succeed(release, undefined);
       const rollback = yield* Fiber.join(owner);
       assert.equal(rollback._tag, "Failure", "legacy history rejects before native rollback");
       const healthy = yield* harness.runtime.forkThread(input);
       assert.equal(healthy.nativeThreadRef?.nativeId, fixture.forkThreadId);
-      assert.deepEqual(requests, ["initialize", "thread/start", "thread/read", "thread/fork"]);
+      assert.deepEqual(requests, [
+        "initialize",
+        "config/read",
+        "thread/start",
+        "thread/read",
+        "config/read",
+        "thread/fork",
+      ]);
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -24644,7 +25031,15 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
       });
       assert.equal(healthy.nativeThreadRef?.nativeId, "healthy-after-fork-rejection");
-      assert.deepEqual(requests, ["initialize", "thread/start", "thread/fork", "thread/start"]);
+      assert.deepEqual(requests, [
+        "initialize",
+        "config/read",
+        "thread/start",
+        "config/read",
+        "thread/fork",
+        "config/read",
+        "thread/start",
+      ]);
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -24687,6 +25082,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
       const publication = `bind:${targetThreadId}@${generation}`;
       assert.deepEqual(timeline, [
         `admit:${targetThreadId}@${generation}`,
+        "config/read",
         "thread/fork",
         publication,
       ]);
@@ -24972,7 +25368,13 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         assert.equal(resumed.providerSessionId, harness.runtime.providerSessionId);
         assert.deepEqual(resumed.nativeThreadRef, source.nativeThreadRef);
         assert.deepEqual(resumed.nativeConversationHeadRef, source.nativeConversationHeadRef);
-        assert.deepEqual(requests, ["initialize", "thread/start", "thread/resume"]);
+        assert.deepEqual(requests, [
+          "initialize",
+          "config/read",
+          "thread/start",
+          "config/read",
+          "thread/resume",
+        ]);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, layerNodeServicesWithCrypto),
@@ -25030,7 +25432,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             .pipe(Effect.flip);
           assert.equal(error._tag, "ProviderAdapterResumeThreadError");
           assert.nestedPropertyVal(error, "cause._tag", "ProviderAdapterProtocolError");
-          assert.deepEqual(requests, ["initialize", "thread/start"]);
+          assert.deepEqual(requests, ["initialize", "config/read", "thread/start"]);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(

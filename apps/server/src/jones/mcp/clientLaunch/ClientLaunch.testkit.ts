@@ -33,6 +33,7 @@ import * as EventStore from "../../../orchestration-v2/EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
+import { layerNoTaskFolders } from "../../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "../../../orchestration-v2/ThreadTitleRegenerationService.ts";
@@ -161,6 +162,7 @@ export function makeClientLaunchHarness(options: ClientLaunchHarnessOptions = {}
     options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
   );
   const externalServices = Layer.mergeAll(
+    layerNoTaskFolders,
     WorktreeSetupTracker.layer,
     NodeServices.layer,
     options.gitDriver === undefined

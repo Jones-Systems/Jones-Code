@@ -705,8 +705,17 @@ function codexMcpToolOutput(
 
 // A hung MCP resource read must not hold run ingestion open.
 const MCP_APP_CAPTURE_TIMEOUT = "20 seconds";
-// Session setup and turn start requests answer promptly; silence this long means a wedged app-server.
-const CODEX_APP_SERVER_REQUEST_DEADLINE = "2 minutes";
+// Config reads are read-only. Native starts keep their own acknowledgement and reconciliation budgets.
+const CODEX_CONFIG_READ_DEADLINE = "2 minutes";
+
+class CodexAppServerUnresponsiveError extends Schema.TaggedError<CodexAppServerUnresponsiveError>()(
+  "CodexAppServerUnresponsiveError",
+  { method: Schema.Literal("config/read") },
+) {
+  override get message() {
+    return `Codex app-server did not answer ${this.method} within ${CODEX_CONFIG_READ_DEADLINE}.`;
+  }
+}
 
 class CodexAppServerRetiredError extends Schema.TaggedError<CodexAppServerRetiredError>()(
   "CodexAppServerRetiredError",
@@ -2336,8 +2345,11 @@ interface CodexRuntimeProducer {
   readonly resolvedRuntime: CodexEffectiveRuntime | undefined;
   readonly bindings: Map<string, OrchestrationV2ProviderThread>;
   readonly unloadedThreads: Set<string>;
+  readonly threadClosings: Map<string, Deferred.Deferred<void>>;
   readonly pendingReroutes: Map<string, ReadonlyArray<string>>;
-  readonly termination: Deferred.Deferred<CodexErrors.CodexAppServerError>;
+  readonly termination: Deferred.Deferred<
+    CodexErrors.CodexAppServerError | CodexAppServerUnresponsiveError
+  >;
   readonly terminalDrain: Deferred.Deferred<void>;
   readonly processExit: Effect.Effect<void, CodexErrors.CodexAppServerError> | undefined;
   readonly capturedLifetime: CodexCapturedLifetime.CapturedCodexProducerLifetime | undefined;
@@ -2556,7 +2568,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   runtimeGeneration: generation,
                 }),
               );
-              const termination = yield* Deferred.make<CodexErrors.CodexAppServerError>();
+              const termination = yield* Deferred.make<
+                CodexErrors.CodexAppServerError | CodexAppServerUnresponsiveError
+              >();
               const terminalDrain = yield* Deferred.make<void>();
               let capturedLifetime: CodexCapturedLifetime.CapturedCodexProducerLifetime | undefined;
               let lifetimeConflict = false;
@@ -2622,6 +2636,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     resolvedRuntime,
                     bindings: new Map<string, OrchestrationV2ProviderThread>(),
                     unloadedThreads: new Set<string>(),
+                    threadClosings: new Map<string, Deferred.Deferred<void>>(),
                     pendingReroutes: new Map<string, ReadonlyArray<string>>(),
                     active: true,
                   } satisfies CodexRuntimeProducer;
@@ -2682,6 +2697,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     if (typeof nativeId === "string") {
                       producer.unloadedThreads.add(nativeId);
                       yield* threadRetirements.observeClosed(producer, nativeId);
+                      const closing = producer.threadClosings.get(nativeId);
+                      producer.threadClosings.delete(nativeId);
+                      if (closing !== undefined) yield* Deferred.succeed(closing, undefined);
                     }
                   }
                   return yield* producer.active && producer === currentProducer
@@ -2817,7 +2835,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         );
         const rejectIfRetired = Effect.gen(function* () {
           const producer = (yield* CodexProducerContext) ?? currentProducer;
-          if (!producer.active || producer !== currentProducer)
+          if (
+            !producer.active ||
+            producer !== currentProducer ||
+            (yield* Deferred.isDone(producer.termination))
+          )
             return yield* new CodexAppServerRetiredError();
         });
         const additionalContextByThread = yield* Ref.make(
@@ -2969,22 +2991,39 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           model: input.modelSelection.model,
           now,
         });
+        const readCodexConfig = Effect.fn("CodexAdapterV2.readCodexConfig")(function* (
+          cwd: string | null | undefined,
+        ) {
+          const producer = (yield* CodexProducerContext) ?? currentProducer;
+          yield* rejectIfRetired;
+          return yield* producer.client
+            .request("config/read", {
+              ...(cwd === undefined ? {} : { cwd }),
+              includeLayers: false,
+            })
+            .pipe(
+              Effect.map(({ config }) => config),
+              Effect.catch((cause) =>
+                Effect.logDebug("Codex configuration is unavailable.", { cause }).pipe(
+                  Effect.as(undefined),
+                ),
+              ),
+              Effect.timeoutOrElse({
+                duration: CODEX_CONFIG_READ_DEADLINE,
+                orElse: () => {
+                  const error = new CodexAppServerUnresponsiveError({ method: "config/read" });
+                  return Deferred.succeed(producer.termination, error).pipe(
+                    Effect.andThen(Effect.fail(error)),
+                  );
+                },
+              }),
+            );
+        });
         // Project config can add more stdio servers for a managed thread.
         const readStdioMcpServers = (cwd: string | null | undefined) =>
           ensureInitialized.pipe(
-            Effect.andThen(
-              client.request("config/read", {
-                ...(cwd == null ? {} : { cwd }),
-                includeLayers: false,
-              }),
-            ),
-            Effect.map(({ config }) => codexStdioMcpServerNames(config.mcp_servers)),
-            Effect.timeout(CODEX_APP_SERVER_REQUEST_DEADLINE),
-            Effect.catch((cause) =>
-              Effect.logDebug("Codex MCP configuration is unavailable.", { cause }).pipe(
-                Effect.as<ReadonlyArray<string>>([]),
-              ),
-            ),
+            Effect.andThen(readCodexConfig(cwd ?? undefined)),
+            Effect.map((config) => codexStdioMcpServerNames(config?.mcp_servers)),
           );
         const rateLimitSnapshot = yield* Ref.make<CodexRateLimitSnapshot | undefined>(undefined);
         const limitedTurnItems = yield* Ref.make(
@@ -3235,8 +3274,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const pendingRuntimeRequests = yield* Ref.make(
           new Map<string, PendingCodexRuntimeRequest>(),
         );
-        /** Completed by thread/closed after this connection unsubscribes from the native thread. */
-        const threadClosings = new Map<string, Deferred.Deferred<void>>();
         /** Codex acceptForSession covers only the exact command or patch, not future commands. */
         const sessionApprovals = new Map<
           string,
@@ -5663,9 +5700,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (context === undefined) {
                 return;
               }
-              const finalAnswerItem = (yield* Ref.get(finalAnswerItemIdsByTurn))
-                .get(update.turnId)
-                ?.has(update.itemId);
+              const finalAnswerItem =
+                !context.asyncMessageIds.has(update.itemId) &&
+                (yield* Ref.get(finalAnswerItemIdsByTurn)).get(update.turnId)?.has(update.itemId);
               if (finalAnswerItem) {
                 const finalAnswerItemIds = (yield* Ref.get(finalAnswerItemIdsByTurn)).get(
                   update.turnId,
@@ -7385,9 +7422,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         // their command items, while the shared provider session stays alive.
         yield* client.handleServerNotification("thread/closed", (payload) =>
           Effect.gen(function* () {
-            const closing = threadClosings.get(payload.threadId);
-            threadClosings.delete(payload.threadId);
-            if (closing !== undefined) yield* Deferred.succeed(closing, undefined);
             const completedAt = yield* DateTime.now;
             for (const context of (yield* Ref.get(settledTurns)).values()) {
               if (context.providerThread.nativeThreadRef?.nativeId !== payload.threadId) continue;
@@ -7487,7 +7521,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (payload.item.phase != null)
                 context.messagePhases.set(payload.item.id, payload.item.phase);
               if (payload.item.delivery === "async") context.asyncMessageIds.add(payload.item.id);
-              if (payload.item.phase == null || payload.item.phase === "final_answer") {
+              if (
+                !context.asyncMessageIds.has(payload.item.id) &&
+                (payload.item.phase == null || payload.item.phase === "final_answer")
+              ) {
                 yield* Ref.update(finalAnswerItemIdsByTurn, (current) => {
                   const updated = new Map(current);
                   const itemIds = new Set(updated.get(payload.turnId) ?? []);
@@ -7930,7 +7967,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (payload.item.phase != null)
               context.messagePhases.set(payload.item.id, payload.item.phase);
             if (payload.item.delivery === "async") context.asyncMessageIds.add(payload.item.id);
-            const finalAnswer = payload.item.phase == null || payload.item.phase === "final_answer";
+            const finalAnswer =
+              !context.asyncMessageIds.has(payload.item.id) &&
+              (payload.item.phase == null || payload.item.phase === "final_answer");
             if (finalAnswer) {
               yield* Ref.update(finalAnswerItemIdsByTurn, (current) => {
                 const updated = new Map(current);
@@ -10268,14 +10307,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (continuity !== undefined) yield* continuity.turnStartContext;
               const models =
                 adapterOptions.models === undefined ? [] : yield* adapterOptions.models;
-              const configuredReasoningSummary = yield* client
-                .request("config/read", { cwd: turnInput.runtimePolicy.cwd, includeLayers: false })
-                .pipe(
-                  Effect.map((response) => response.config.model_reasoning_summary ?? undefined),
-                  Effect.catch(() =>
-                    Effect.logDebug("Codex config read failed.").pipe(Effect.as(undefined)),
-                  ),
-                );
+              const config = yield* readCodexConfig(turnInput.runtimePolicy.cwd);
+              const configuredReasoningSummary = config?.model_reasoning_summary ?? undefined;
               const turnStartParams = yield* buildCodexTurnStartParams({
                 cyberAccess: codexCyberAccess(models, turnInput.modelSelection.model),
                 ...(configuredReasoningSummary === undefined ? {} : { configuredReasoningSummary }),
@@ -10570,7 +10603,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     .pipe(Effect.andThen(resume));
                 }
                 if (/\bthread \S+ is closing\b/i.test(cause.errorMessage)) {
-                  const closing = threadClosings.get(threadId);
+                  const closing = producer.threadClosings.get(threadId);
                   return (
                     closing === undefined
                       ? Effect.void
@@ -11510,8 +11543,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* producer.client.request("thread/archive", { threadId: nativeThreadId });
               } else {
                 // A resume may already wait on the pending entry; replacing it would strand that wait.
-                if (!threadClosings.has(nativeThreadId)) {
-                  threadClosings.set(nativeThreadId, yield* Deferred.make<void>());
+                if (!producer.threadClosings.has(nativeThreadId)) {
+                  producer.threadClosings.set(nativeThreadId, yield* Deferred.make<void>());
                 }
                 yield* producer.client.request("thread/unsubscribe", { threadId: nativeThreadId });
               }
@@ -13003,14 +13036,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* Effect.gen(function* () {
                   const completedAt = yield* DateTime.now;
                   const failureMessage =
-                    error._tag === "CodexAppServerProcessExitedError"
+                    error._tag === "CodexAppServerProcessExitedError" ||
+                    error._tag === "CodexAppServerUnresponsiveError"
                       ? error.message
                       : `Codex App Server transport terminated (${error._tag}).`;
                   const failure = {
                     status: "failed" as const,
                     completedAt,
                     failureMessage,
-                    failureCode: "codexProcessExited",
+                    failureCode:
+                      error._tag === "CodexAppServerUnresponsiveError"
+                        ? "codexAppServerUnresponsive"
+                        : "codexProcessExited",
                     evidenceKind: "local_failure" as const,
                   };
                   const requests = [...capacityByThread.values()].filter(

@@ -353,6 +353,9 @@ const WITHHELD_FILE_DIFF_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 // Withheld files are often generated or minified, where one line can be megabytes.
 const WITHHELD_FILE_MAX_LINE_LENGTH = 1_000;
 const isVcsProcessExitError = Schema.is(VcsProcessExitError);
+const encodeApprovalHead = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ sha: Schema.String })),
+);
 const DIFF_FILE_MAX_OUTPUT_BYTES = 1024 * 1024;
 // REST list rows carry full descriptions, so a page can pass the 1 MB default output cap.
 const MERGE_REQUEST_LIST_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -3051,8 +3054,7 @@ export const make = Effect.gen(function* () {
           // GitLab answers 409 when `sha` is no longer the merge request's head.
           ...(input.expectedHeadSha === undefined
             ? {}
-            : // @effect-diagnostics-next-line globalJsonInEffect:off
-              { stdin: JSON.stringify({ sha: input.expectedHeadSha }) }),
+            : { stdin: encodeApprovalHead({ sha: input.expectedHeadSha }) }),
         });
       }
     }),

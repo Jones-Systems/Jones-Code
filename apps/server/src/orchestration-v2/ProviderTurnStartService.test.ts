@@ -1812,6 +1812,21 @@ function makeLocalCommandHarness(
   const getThreadRecords = vi.fn<ProjectionStore.ProjectionStoreV2Shape["getThreadRecords"]>((id) =>
     Effect.succeed(id === parentThreadId ? parentRecords : projection),
   );
+  const prepareProviderHandoff = vi.fn<
+    ContextHandoffService.ContextHandoffServiceV2["Service"]["prepareProviderHandoff"]
+  >((handoff) =>
+    input.sideChat?.nativeForkFrom === undefined
+      ? Effect.die("history read must fail first")
+      : Effect.succeed({
+          ...handoff,
+          id: ContextHandoffId.make("side-chat-fork-context"),
+          createdByProviderInstanceId: handoff.toProviderInstanceId,
+          status: "ready",
+          summaryMessageId: null,
+          summaryText: "PARENT_HISTORY",
+          updatedAt: handoff.createdAt,
+        }),
+  );
   const readTurnStartContext = () => ({
     ...projection,
     hasConversation: projection.messages.some(
