@@ -903,6 +903,8 @@ function makeLocalCommandHarness(
     readonly recreatedBeforeDispatch?: boolean;
     readonly previousNativeSession?: boolean;
     readonly previousMessages?: ReadonlyArray<string>;
+    readonly createdBy?: OrchestrationV2ThreadProjection["messages"][number]["createdBy"];
+    readonly scheduledTaskId?: ScheduledTaskId;
     readonly logoutFailure?: string;
     readonly openFailure?: unknown;
     readonly ensureThreadFailure?: unknown;
@@ -1028,7 +1030,8 @@ function makeLocalCommandHarness(
     text: input.keepWarm ? WORK_MODE_SENTINEL : input.text,
     attachments: [],
     streaming: false,
-    createdBy: input.keepWarm ? "system" : "user",
+    createdBy: input.createdBy ?? (input.keepWarm ? "system" : "user"),
+    ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
     creationSource: input.keepWarm || input.unattended ? "server" : "web",
     createdAt: now,
     updatedAt: now,

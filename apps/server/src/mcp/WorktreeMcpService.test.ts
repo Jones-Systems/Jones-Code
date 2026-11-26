@@ -319,6 +319,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
         Layer.mock(TaskFolders.TaskFolders)({
           plan: () => Effect.succeed(null),
           find: () => Effect.succeed(null),
+          removeForProjectFolder: (input) => removeWorktree(input),
         }),
         Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
           refreshStatus,
@@ -541,16 +542,14 @@ describe("t3_worktree_handoff", () => {
     });
   });
 
-  it.effect("removes the created worktree when the thread update dies with a defect", () => {
+  it.effect("retains the created worktree when the issued thread update dies with a defect", () => {
     const harness = makeHarness({ dispatchDies: true });
     return Effect.gen(function* () {
       const exit = yield* Effect.exit(runHandoff(harness, { branch: "feature/dispatch-defect" }));
       expectTypedFailure(exit, { _tag: "WorktreeMcpFailure", code: "operation_failed" });
-      expect(harness.removeWorktree).toHaveBeenCalledWith({
-        cwd: workspaceRoot,
-        path: "/worktrees/project/feature/dispatch-defect",
-        force: true,
-      });
+      expect(harness.dispatch).toHaveBeenCalledTimes(1);
+      expect(harness.removeWorktree).not.toHaveBeenCalled();
+      expect(harness.deleteLocalBranch).not.toHaveBeenCalled();
     });
   });
 
@@ -563,12 +562,12 @@ describe("t3_worktree_handoff", () => {
       expect(harness.removeWorktree).toHaveBeenCalledWith({
         cwd: workspaceRoot,
         path: "/worktrees/project/feature/raced",
-        force: true,
+        force: false,
       });
       expect(harness.deleteLocalBranch).toHaveBeenCalledWith({
         cwd: workspaceRoot,
         refName: "feature/raced",
-        force: true,
+        force: false,
       });
       expect(harness.dispatch).not.toHaveBeenCalled();
     });
@@ -582,7 +581,7 @@ describe("t3_worktree_handoff", () => {
       expect(harness.removeWorktree).toHaveBeenCalledWith({
         cwd: workspaceRoot,
         path: "/worktrees/project/feature/recheck-fails",
-        force: true,
+        force: false,
       });
       expect(harness.dispatch).not.toHaveBeenCalled();
     });
@@ -597,7 +596,7 @@ describe("t3_worktree_handoff", () => {
       expect(harness.removeWorktree).toHaveBeenCalledWith({
         cwd: workspaceRoot,
         path: "/worktrees/project/feature/archived-race",
-        force: true,
+        force: false,
       });
     });
   });

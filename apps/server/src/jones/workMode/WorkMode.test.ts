@@ -425,6 +425,8 @@ function completeLatestRun<E = never, R = never>(
         capturedAt: input.capturedAt,
       });
       const nativeCheckpoint = Layer.mock(CheckpointService.CheckpointServiceV2)({
+        repositoryScopes: () => Effect.succeed([]),
+        capturesSoFar: () => Effect.succeed(0),
         capture: (input) => Effect.succeed(materialize(input)),
         materializeBaselineCheckpoint: (input) =>
           Effect.succeed(
@@ -1122,7 +1124,7 @@ it.effect.each([
         const continued = (yield* projections.getThreadProjection(threadId)).runs.find(
           (run) => run.restartContinuationOfRunId === source.id,
         )!;
-        assert.equal(continued.status, "completed");
+        assert.equal(continued.status, stop ? "interrupted" : "completed");
         assert.isTrue(
           Option.isSome(
             yield* receipts.getByCommandId(

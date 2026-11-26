@@ -237,13 +237,14 @@ const makeTranscript = (outcome: Outcome) =>
           },
         }),
         outbound({ method: "initialized" }),
+        ...configRead(2),
         outbound({
-          id: 2,
+          id: 3,
           method: "thread/start",
           params: { config: CodexAdapterV2.CODEX_THREAD_CONFIG },
         }),
         inbound({
-          id: 2,
+          id: 3,
           result: {
             thread: {
               id: rootThread,
@@ -277,8 +278,14 @@ const makeTranscript = (outcome: Outcome) =>
             reasoningEffort: "medium",
           },
         }),
-        ...configRead(3),
-        turnStart(4),
+        outbound({
+          id: 4,
+          method: "thread/name/set",
+          params: { threadId: rootThread, name: "Reader progress" },
+        }),
+        inbound({ id: 4, result: {} }),
+        ...configRead(5),
+        turnStart(6),
         inbound({
           method: "turn/started",
           params: { threadId: rootThread, turn: turn(rootTurn, "inProgress") },
@@ -326,7 +333,7 @@ const makeTranscript = (outcome: Outcome) =>
         outcome === "goal-successor-after-early-terminal-during-replay"
           ? [rootCompletion]
           : []),
-        inbound({ id: 4, result: { turn: turn(rootTurn, "inProgress") } }, "original-ack"),
+        inbound({ id: 6, result: { turn: turn(rootTurn, "inProgress") } }, "original-ack"),
         ...(outcome === "terminal-after-ack"
           ? [
               usageUpdate(rootTurn, usageBreakdown(1030, 410, 206), usageBreakdown(20, 5, 4)),
@@ -354,18 +361,18 @@ const makeTranscript = (outcome: Outcome) =>
           : []),
         ...(reconcilesAdmission(outcome)
           ? [
-              ...configRead(5),
-              turnStart(6),
-              inbound({ id: 6, result: { turn: turn(reconciledTurn, "inProgress") } }),
+              ...configRead(7),
+              turnStart(8),
+              inbound({ id: 8, result: { turn: turn(reconciledTurn, "inProgress") } }),
               inbound({
                 method: "turn/completed",
                 params: { threadId: rootThread, turn: turn(reconciledTurn, "completed") },
               }),
             ]
           : []),
-        outbound({ id: reconcilesAdmission(outcome) ? 7 : 5, method: "model/list", params: {} }),
+        outbound({ id: reconcilesAdmission(outcome) ? 9 : 7, method: "model/list", params: {} }),
         inbound({
-          id: reconcilesAdmission(outcome) ? 7 : 5,
+          id: reconcilesAdmission(outcome) ? 9 : 7,
           result: { data: [], nextCursor: null },
         }),
       ],

@@ -1101,9 +1101,7 @@ export const layer = Layer.effect(
     const syncLiveSources = Effect.fn("ProviderRegistry.syncLiveSources")(function* (
       waitForInitial: boolean,
     ) {
-      const { newlyAdded, unavailableProviders, invalidations } = yield* syncSemaphore.withPermits(
-        1,
-      )(
+      const subscriptionChanges = yield* syncSemaphore.withPermits(1)(
         Effect.gen(function* () {
           const instances = yield* instanceRegistry.listInstances;
           const unavailableProviders = yield* instanceRegistry.listUnavailable;
@@ -1117,6 +1115,9 @@ export const layer = Layer.effect(
           );
           const newlyAdded = [...nextByInstance.values()].filter(
             (instance) => previousSubs.get(instance.instanceId) !== instance,
+          );
+          const carriedOver = [...nextByInstance.values()].filter(
+            (instance) => previousSubs.get(instance.instanceId) === instance,
           );
           const invalidations = new Map<ProviderInstanceId, CachePublication>();
           for (const [id, previous] of previousSubs) {
@@ -1173,9 +1174,10 @@ export const layer = Layer.effect(
                 [...previous].filter(([id]) => instanceRegistry.getCatalogSource(id) !== undefined),
               ),
           );
-          return { newlyAdded, unavailableProviders, invalidations };
+          return { newlyAdded, carriedOver, unavailableProviders, invalidations };
         }),
       );
+      const { newlyAdded, carriedOver, unavailableProviders, invalidations } = subscriptionChanges;
 
       const initialReads = Effect.forEach(
         newlyAdded,
@@ -1210,13 +1212,36 @@ export const layer = Layer.effect(
         ([id, publication]) => clearProviderCache(id, publication),
         { concurrency: "unbounded", discard: true },
       );
+      // Labels and accent colors can change without replacing an instance or running a probe.
+      const refreshPresentation = Effect.forEach(
+        carriedOver,
+        (instance) =>
+          Effect.gen(function* () {
+            if (instanceRegistry.getCatalogSource(instance.instanceId) !== instance) return;
+            if (yield* instance.snapshot.isAwaitingFirstCheck ?? Effect.succeed(false)) return;
+            const source = buildSnapshotSource(instance);
+            const provider = yield* source.getSnapshot;
+            const previous = (yield* Ref.get(providersRef)).find(
+              (snapshot) => snapshot.instanceId === instance.instanceId,
+            );
+            if (
+              previous?.displayName === provider.displayName &&
+              previous?.accentColor === provider.accentColor
+            )
+              return;
+            yield* correlateSnapshotWithSource(source, provider).pipe(
+              Effect.flatMap((snapshot) => syncProvider(instance, snapshot)),
+            );
+          }).pipe(Effect.ignoreCause({ log: true })),
+        { concurrency: "unbounded", discard: true },
+      );
       yield* upsertProviders(unavailableProviders, {
         persist: false,
         replace: true,
         isCurrent: (provider) =>
           instanceRegistry.getCatalogSource(provider.instanceId) === provider,
       });
-      const work = Effect.all([initialReads, cleanupRemoved], {
+      const work = Effect.all([initialReads, cleanupRemoved, refreshPresentation], {
         concurrency: "unbounded",
         discard: true,
       });

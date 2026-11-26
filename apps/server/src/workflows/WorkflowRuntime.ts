@@ -428,7 +428,10 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
 
   const boot = Effect.fn("WorkflowRuntime.boot")(
     function* (definitions: ReadonlyArray<WorkflowDefinition>) {
-      const next = Deferred.makeUnsafe<Workflows.Workflows["Service"]>();
+      // Settle the same deferred that early readers are already waiting on.
+      const next = (yield* Deferred.isDone(ready))
+        ? Deferred.makeUnsafe<Workflows.Workflows["Service"]>()
+        : ready;
       ready = next;
       const previous = running;
       if (engineScope !== undefined) yield* Scope.close(engineScope, Exit.void);

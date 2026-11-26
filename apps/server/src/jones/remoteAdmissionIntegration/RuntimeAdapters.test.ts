@@ -68,6 +68,7 @@ const setup = Effect.gen(function* () {
     title: "Synthetic project",
     hasCustomTitle: true,
     workspaceRoot: "/synthetic/project",
+    trackedFolders: [],
     defaultModelSelection: null,
     defaultThreadEnvMode: null,
     autoPull: false,

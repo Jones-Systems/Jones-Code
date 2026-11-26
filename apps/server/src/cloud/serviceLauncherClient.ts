@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as UpdateAdmission from "../jones/updates/UpdateAdmissionFence.ts";
 
@@ -42,6 +43,7 @@ import {
   type ServiceLauncherParentMessage,
   type SupportedLauncherProtocol,
 } from "./serviceProtocol.ts";
+import { RESTORE_OOMD_WATCH_SCRIPT } from "./userManagerOom.ts";
 
 export class ServiceLauncherClientError extends Schema.TaggedError<ServiceLauncherClientError>()(
   "ServiceLauncherClientError",
@@ -629,6 +631,21 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     "qualified" in context.update &&
     context.update.qualified !== undefined;
   const requiresQualifiedTrialGate = pending !== undefined && pending.qualified !== undefined;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  // The installed launcher reloads the user manager after commit. Mirror its watch before IPC.
+  const keepOomdWatch =
+    platform === "linux"
+      ? spawner
+          .exitCode(
+            ChildProcess.make("/bin/sh", ["-c", RESTORE_OOMD_WATCH_SCRIPT], {
+              env: environment,
+              stdin: "ignore",
+              stdout: "ignore",
+              stderr: "ignore",
+            }),
+          )
+          .pipe(Effect.timeout("30 seconds"), Effect.ignore)
+      : Effect.void;
   let qualifiedAttempted = false;
   const prepareQualifiedTrial: ServiceLauncherClient["Service"]["prepareQualifiedTrial"] = (
     witness,
@@ -680,10 +697,13 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     });
   const ordinaryPrepareTrial = yield* Effect.cached(
     pending !== undefined && !requiresQualifiedTrialGate
-      ? exchange(
-          { type: "prepared", updateId: pending.id },
-          (reply) => reply.type === "committed" && reply.updateId === pending.id,
-        ).pipe(
+      ? keepOomdWatch.pipe(
+          Effect.andThen(
+            exchange(
+              { type: "prepared", updateId: pending.id },
+              (reply) => reply.type === "committed" && reply.updateId === pending.id,
+            ),
+          ),
           Effect.flatMap((reply) => {
             if (reply.type !== "committed") {
               return Effect.die("service launcher returned an impossible prepared response");
