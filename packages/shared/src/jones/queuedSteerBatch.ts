@@ -1,6 +1,7 @@
 import {
   QUEUED_STEER_BATCH_LIMITS,
   isProviderSendTurnSupportedImageMimeType,
+  parseGoalCommand,
   type ChatAttachment,
   type OrchestrationMessageContext,
   type ThreadId,
@@ -24,6 +25,19 @@ export interface QueuedSteerBatchLimits {
 export interface QueuedSteerBatchCandidate {
   readonly message: QueuedSteerBatchMessage;
   readonly eligible: boolean;
+}
+
+export function isQueuedSteerControlMessage(message: Pick<QueuedSteerBatchMessage, "text">) {
+  return /^\/(?:compact|logout|goal)(?:\s|$)/iu.test(message.text.trim());
+}
+
+export function blocksQueuedSteerIntoRun(
+  message: Pick<QueuedSteerBatchMessage, "text" | "attachments">,
+) {
+  if (!isQueuedSteerControlMessage(message)) return false;
+  // A running goal start or resume can own many subsequent provider turns.
+  const goal = parseGoalCommand(message);
+  return goal?.type !== "set" && goal?.type !== "resume";
 }
 
 export function formatQueuedSteerBatch(messages: ReadonlyArray<QueuedSteerBatchMessage>) {

@@ -12,12 +12,16 @@ export const QUEUED_STEER_BATCH_LIMITS = {
   maxImageBytes: PROVIDER_SEND_TURN_MAX_TOTAL_IMAGE_BYTES,
   maxItems: 100,
 } as const;
+export const QUEUED_STEER_BATCH_CAPABILITY = { ...QUEUED_STEER_BATCH_LIMITS, version: 2 } as const;
 export const QueuedSteerBatchCapability = Schema.Struct({
   maxInputChars: PositiveInt,
   maxAttachments: PositiveInt,
   maxImageBytes: PositiveInt,
   maxItems: PositiveInt,
+  // Version 2 supports prospective same-account settings and running goals.
+  version: Schema.optionalKey(PositiveInt),
 });
+export const QueuedToolBoundaryFollowUpRunId = Schema.optional(RunId);
 export const QueuedSteerBatchCommand = Schema.Struct({
   type: Schema.Literal("queued-message.promote-batch-to-steer"),
   commandId: CommandId,

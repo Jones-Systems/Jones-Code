@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   CommandId,
+  QUEUED_STEER_BATCH_CAPABILITY,
   QUEUED_STEER_BATCH_LIMITS,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
@@ -67,7 +68,7 @@ function projection(count = 22): OrchestrationV2ThreadProjection {
 
 const input = () => ({
   projection: projection(),
-  capability: QUEUED_STEER_BATCH_LIMITS,
+  capability: QUEUED_STEER_BATCH_CAPABILITY,
   editing: false,
   hasUnsavedMessages: false,
   busy: false,
@@ -199,7 +200,7 @@ describe("queued batch client state", () => {
               ...state.projection.thread,
               modelSelection: {
                 ...state.projection.thread.modelSelection,
-                model: "unsynchronized",
+                instanceId: "different-account" as never,
               },
             },
           },
@@ -207,6 +208,38 @@ describe("queued batch client state", () => {
       ).toContain("synchronize");
     },
   );
+
+  it("allows a 19-message batch after saving a different speed for the same account", () => {
+    const state = input();
+    const base = projection(19);
+    const runningSelection = {
+      ...base.thread.modelSelection,
+      options: [{ id: "serviceTier", value: "default" }],
+    };
+    const savedSelection = {
+      ...base.thread.modelSelection,
+      options: [{ id: "serviceTier", value: "ultrafast" }],
+    };
+    const changed = {
+      ...state,
+      projection: {
+        ...base,
+        thread: { ...base.thread, modelSelection: savedSelection },
+        runs: base.runs.map((run) => ({
+          ...run,
+          modelSelection: run.status === "running" ? runningSelection : savedSelection,
+        })),
+      },
+    };
+    const view = deriveQueuedSteerBatch(changed);
+    expect(view?.reason).toBeNull();
+    expect(view?.label).toBe("Steer all (19)");
+    expect(view?.targetRunId).toBe("active");
+    expect(view?.items).toHaveLength(19);
+    expect(
+      deriveQueuedSteerBatch({ ...changed, capability: QUEUED_STEER_BATCH_LIMITS })?.reason,
+    ).toContain("saved model settings");
+  });
 
   it("stops before special commands and leaves automatic completions queued", () => {
     const state = input();
@@ -226,6 +259,33 @@ describe("queued batch client state", () => {
     const items = deriveQueuedSteerBatch({ ...state, projection: completion })!.items;
     expect(items).toHaveLength(21);
     expect(items.some((item) => item.messageId === "message-1")).toBe(false);
+  });
+
+  it.each([
+    ["/goal Verify delivery", true],
+    ["/goal resume", true],
+    ["/goal clear", false],
+    ["/compact", false],
+    ["/logout", false],
+  ])("checks a running turn that began with %s", (text, allowsSteering) => {
+    const state = input();
+    const base = state.projection;
+    const withActiveCommand = {
+      ...state,
+      projection: {
+        ...base,
+        messages: [
+          ...base.messages,
+          { ...base.messages[0]!, id: base.runs[0]!.userMessageId, text },
+        ],
+      },
+    };
+    const view = deriveQueuedSteerBatch(withActiveCommand);
+    expect(view?.reason === null).toBe(allowsSteering);
+    expect(
+      deriveQueuedSteerBatch({ ...withActiveCommand, capability: QUEUED_STEER_BATCH_LIMITS })
+        ?.reason,
+    ).toContain("current command");
   });
 });
 

@@ -1,5 +1,9 @@
 import { type CommandId, type ExecutionEnvironmentCapabilities } from "@t3tools/contracts";
-import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
+import {
+  blocksQueuedSteerIntoRun,
+  isQueuedSteerControlMessage,
+  planQueuedSteerBatch,
+} from "@t3tools/shared/jones/queuedSteerBatch";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
 import type { ThreadStructure } from "../../state/models.ts";
@@ -31,7 +35,12 @@ export function deriveQueuedSteerBatch(input: {
     (session.driver === "codex" || session.driver === "claudeAgent");
 
   const activeMessage = projection.messages.find((message) => message.id === active?.userMessageId);
-  const specialCommand = (text: string) => /^\/(?:compact|logout|goal)(?:\s|$)/iu.test(text.trim());
+  const supportsExpandedBatch = (input.capability.version ?? 1) >= 2;
+  const activeCommandBlocksBatch =
+    activeMessage !== undefined &&
+    (supportsExpandedBatch
+      ? blocksQueuedSteerIntoRun(activeMessage)
+      : isQueuedSteerControlMessage(activeMessage));
   const candidates = workflow.queuedRuns.map(({ run }) => {
     const message = projection.messages.find((item) => item.id === run.userMessageId);
     return {
@@ -40,7 +49,8 @@ export function deriveQueuedSteerBatch(input: {
       eligible:
         message !== undefined &&
         active !== null &&
-        !specialCommand(message.text) &&
+        !isQueuedSteerControlMessage(message) &&
+        run.freshContext !== true &&
         run.sourcePlanRef === undefined &&
         run.restartContinuationOfRunId === undefined &&
         projection.nodes.some((node) => node.id === run.rootNodeId) &&
@@ -84,10 +94,13 @@ export function deriveQueuedSteerBatch(input: {
                   : active.rootNodeId === null ||
                       projection.thread.activeProviderThreadId !== providerThread?.id ||
                       projection.thread.providerInstanceId !== active.providerInstanceId ||
-                      !modelSelectionsEqual(projection.thread.modelSelection, active.modelSelection)
+                      projection.thread.modelSelection.instanceId !== active.modelSelection.instanceId
                     ? "The active provider changed. Wait for the thread to synchronize."
-                    : activeMessage && specialCommand(activeMessage.text)
-                      ? "Wait for the current maintenance command to finish."
+                    : !supportsExpandedBatch &&
+                        !modelSelectionsEqual(projection.thread.modelSelection, active.modelSelection)
+                      ? "This server requires the saved model settings to match the running turn."
+                      : activeCommandBlocksBatch
+                        ? "Wait for the current command to finish."
                       : plan.count === 0
                         ? plan.reason === "first_member_over_budget"
                           ? "The first message exceeds the batch limit. Edit it or use its individual Steer action."
