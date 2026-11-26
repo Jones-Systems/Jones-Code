@@ -3318,9 +3318,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
               strength: "strong" as const,
             },
           };
-          const pendingBackgroundTasks = [
-            { taskId: "sleep-90", kind: "command" as const, awaited: true as const },
-          ];
+          const pendingTask = { taskId: "sleep-90", kind: "command" as const, awaited: true };
 
           // The child awaits a background command, replies with an interim note and ends its turn.
           yield* eventSink.write({
@@ -3336,7 +3334,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
                 occurredAt: now,
                 payload: {
                   ...childProviderThread,
-                  pendingBackgroundTasks,
+                  pendingBackgroundTasks: [pendingTask],
                 },
               },
               {
@@ -3378,7 +3376,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
           assert.deepEqual(
             childAfterTurn.providerThreads.find((thread) => thread.id === childProviderThread.id)
               ?.pendingBackgroundTasks,
-            pendingBackgroundTasks,
+            [{ ...pendingTask, runId: followupRun.id }],
           );
           assert.isTrue(
             yield* orchestrator.delegatedTaskResultPending(child.childThreadId, followupTaskId),

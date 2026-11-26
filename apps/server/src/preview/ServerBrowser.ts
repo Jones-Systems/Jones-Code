@@ -3378,7 +3378,8 @@ const make = Effect.gen(function* () {
             viewport: tab.page.viewportSize() ?? UNATTACHED_FILL_VIEWPORT,
           };
         }
-        const changed = from?.width !== to?.width || from?.height !== to?.height;
+        const changed =
+          tab.desktopResizeUndrawn || from?.width !== to?.width || from?.height !== to?.height;
         const remainingMs = () => Math.max(0, deadlineMs - Date.now());
         const within = <A>(promise: Promise<A>, ms: number) =>
           runPromise(
@@ -3482,10 +3483,15 @@ const make = Effect.gen(function* () {
         return recordAction(tab, "upload", () =>
           uploadFiles(tab, input as PreviewAutomationUploadInput),
         );
-      case "type":
+      case "type": {
+        const typeInput = {
+          ...(input as PreviewAutomationTypeInput),
+          timeoutMs: Math.max(1, Math.floor(deadlineMs - Date.now())),
+        };
         return recordAction(tab, "type", () =>
-          ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput, onDispatch),
+          ServerBrowserPage.type(tab.page, typeInput, onDispatch),
         );
+      }
       case "press":
         return recordAction(tab, "press", () =>
           ServerBrowserPage.press(tab.page, input as PreviewAutomationPressInput, onDispatch),
