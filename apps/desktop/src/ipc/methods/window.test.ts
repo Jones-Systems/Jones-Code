@@ -369,12 +369,13 @@ describe("showContextMenu", () => {
         )
         .pipe(
           Effect.provide(
-            Layer.mock(ElectronWindow.ElectronWindow)({
-              focusedMainOrFirst: Effect.succeedSome(window),
-            }),
+            Layer.merge(
+              Layer.mock(ElectronWindow.ElectronWindow)({
+                focusedMainOrFirst: Effect.succeedSome(window),
+              }),
+              ElectronMenu.layer.pipe(Layer.provide(Layer.succeed(HostProcess.Platform, "darwin"))),
+            ),
           ),
-          Effect.provide(ElectronMenu.layer),
-          Effect.provideService(HostProcess.Platform, "darwin"),
         );
 
       const template = buildFromTemplate.mock.lastCall?.[0] ?? [];
