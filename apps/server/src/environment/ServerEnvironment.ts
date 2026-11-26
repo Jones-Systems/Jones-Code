@@ -262,6 +262,8 @@ export const make = Effect.gen(function* () {
       pullRequests: true,
       pullRequestChecks: true,
       issues: true,
+      issueLinkedThreads: true,
+      issueTrackerAccounts: true,
       linkedThreadRefreshes: true,
       requestManagement: true,
       sideChats: true,

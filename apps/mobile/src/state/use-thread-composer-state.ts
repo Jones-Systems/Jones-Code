@@ -932,18 +932,23 @@ export function useThreadComposerState(input: {
           await choice.observe();
           return null;
         }
-        const preparedAttachments = await prepareTurnAttachments({
-          environmentId: thread.environmentId,
-          attachments,
-          supportsImageUploads: serverConfig?.environment.capabilities.attachmentUploads === true,
-          persistUploadedReferences: async (updated) => {
-            if (!unchanged()) return "abandon";
-            replaceComposerDraftAttachments(threadKey, updated);
-            reviewDraft = getComposerDraftSnapshot(threadKey);
-            await flushComposerDrafts();
-            return unchanged() ? "persisted" : "abandon";
-          },
-        });
+        const preparedAttachments = await Effect.runPromise(
+          prepareTurnAttachments({
+            environmentId: thread.environmentId,
+            attachments,
+            supportsImageUploads: serverConfig?.environment.capabilities.attachmentUploads === true,
+            uploadAttachment: (attachment) =>
+              uploadComposerAttachmentShared(thread.environmentId, attachment),
+            persistUploadedReferences: (updated) =>
+              Effect.promise(async () => {
+                if (!unchanged()) return "abandon";
+                replaceComposerDraftAttachments(threadKey, updated);
+                reviewDraft = getComposerDraftSnapshot(threadKey);
+                await flushComposerDrafts();
+                return unchanged() ? "persisted" : "abandon";
+              }),
+          }),
+        );
         if (preparedAttachments.status !== "ready" || !unchanged()) return null;
         const context = uploadedComposerContext(
           draft.context,

@@ -31,8 +31,9 @@ export interface ComposerThreadItem {
 
 export function matchComposerThreadItems(
   input: JonesComposerThreadMatchInput,
+  resolve?: MFunctionType,
 ): ComposerThreadItem[] {
-  return matchJonesComposerThreadItems(input);
+  return matchJonesComposerThreadItems(input, resolve);
 }
 
 /**

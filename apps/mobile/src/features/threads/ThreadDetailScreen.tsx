@@ -820,11 +820,14 @@ function ThreadDetailBody(
   })();
   const lifecycleLine = ((): ThreadStatusLineModel | null => {
     if (contentPresentationKind !== "ready" || !(lifecycleSnoozed || settled || woke)) return null;
+    const restoreAvailable = !lifecycleSnoozed && settled && restoreMenuItems.length > 0;
     const actionLabel = lifecycleSnoozed
       ? gt("Wake now")
-      : settled
-        ? gt("Un-settle", { $context: "verb, thread action" })
-        : gt("Dismiss");
+      : restoreAvailable
+        ? gt("Actions")
+        : settled
+          ? gt("Un-settle", { $context: "verb, thread action" })
+          : gt("Dismiss");
     const wake =
       lifecycleSnoozed &&
       snoozedUntil !== null &&
@@ -853,8 +856,24 @@ function ThreadDetailBody(
         disabled:
           !(lifecycleSnoozed || settled ? canTriageThread : props.canOperateThread) ||
           statusPending,
-        onPress: () =>
-          void runStatusAction(lifecycleSnoozed ? "wake" : settled ? "unsettle" : "dismiss"),
+        onPress: () => {
+          if (restoreAvailable) {
+            Dialog.alert(
+              gt("Settled thread"),
+              gt("Undo settle restores the position saved by the server."),
+              [
+                { text: gt("Cancel"), style: "cancel" },
+                { text: gt("Undo settle"), onPress: () => void runUndoSettle() },
+                {
+                  text: gt("Un-settle", { $context: "verb, thread action" }),
+                  onPress: () => void runStatusAction("unsettle"),
+                },
+              ],
+            );
+            return;
+          }
+          void runStatusAction(lifecycleSnoozed ? "wake" : settled ? "unsettle" : "dismiss");
+        },
       },
     };
   })();
@@ -922,87 +941,6 @@ function ThreadDetailBody(
         onPress: () => {
           Keyboard.dismiss();
           openLinkedThread({ environmentId: childInput.environmentId, threadId: childInput.id });
-        },
-      };
-    }
-    if (props.isCompacting && contentPresentationKind === "ready") {
-      return { kind: "compacting" };
-    }
-    if (props.activeWorkStartedAt !== null && contentPresentationKind === "ready") {
-      return {
-        kind: "working",
-        environmentId: props.environmentId,
-        startedAt: props.activeWorkStartedAt,
-      };
-    }
-    if (pendingBackgroundWork !== null && contentPresentationKind === "ready") {
-      return {
-        kind: "background",
-        label: pendingBackgroundWork.title,
-        accessibilityLabel: `${pendingBackgroundWork.title}: ${pendingBackgroundWork.items
-          .map((item) => item.label)
-          .join(", ")}`,
-        waiting: pendingBackgroundWork.waiting,
-        onPress: () => {
-          Keyboard.dismiss();
-          navigation.navigate("ThreadBackgroundWork", {
-            environmentId: props.environmentId,
-            threadId: props.selectedThread.id,
-          });
-        },
-        action: {
-          label: statusPending ? "Stopping..." : "Stop",
-          accessibilityLabel: "Stop background work",
-          disabled: !props.canOperateThread || statusPending,
-          onPress: () => void runStatusAction("stop"),
-        },
-      };
-    }
-    if (contentPresentationKind === "ready" && (lifecycleSnoozed || settled || woke)) {
-      const state = lifecycleSnoozed ? "snoozed" : settled ? "settled" : "woke";
-      const label =
-        lifecycleSnoozed && snoozedUntil !== null
-          ? `Snoozed, wakes in ${snoozeWakeLabel(snoozedUntil, { now: lifecycleNow })}`
-          : settled
-            ? "Settled"
-            : "Woke from snooze";
-      const restoreAvailable = settled && restoreMenuItems.length > 0;
-      const actionLabel = lifecycleSnoozed
-        ? "Wake now"
-        : restoreAvailable
-          ? "Actions"
-          : settled
-            ? "Un-settle"
-            : "Dismiss";
-      return {
-        kind: "lifecycle",
-        state,
-        label,
-        action: {
-          label: statusPending
-            ? lifecycleSnoozed
-              ? "Waking..."
-              : settled
-                ? "Un-settling..."
-                : "Dismissing..."
-            : actionLabel,
-          accessibilityLabel: actionLabel,
-          disabled: !props.canOperateThread || statusPending,
-          onPress: () => {
-            if (restoreAvailable) {
-              Dialog.alert(
-                "Settled thread",
-                "Undo settle restores the position saved by the server.",
-                [
-                  { text: "Cancel", style: "cancel" },
-                  { text: "Undo settle", onPress: () => void runUndoSettle() },
-                  { text: "Un-settle", onPress: () => void runStatusAction("unsettle") },
-                ],
-              );
-              return;
-            }
-            void runStatusAction(lifecycleSnoozed ? "wake" : settled ? "unsettle" : "dismiss");
-          },
         },
       };
     }

@@ -209,6 +209,7 @@ vi.mock("./use-composer-drafts", async () => {
     composerDraftsAtom: Atom.make({}),
     composerContextImportsAtom: Atom.make({}),
     getComposerDraftSnapshot: () => state.draft,
+    sameComposerDraftState: (current: unknown, captured: unknown) => current === captured,
     isFreshSessionPending: () => state.freshPending,
     setFreshSessionPending: state.setFreshPending,
     clearComposerDraftContent: state.clearDraft,
@@ -370,6 +371,49 @@ describe("mobile task permissions", () => {
     expect(state.getImportedHistoryChoice).not.toHaveBeenCalled();
     composer.onChangeDraftMessage("Edited locally");
     expect(state.draft.text).toBe("Edited locally");
+  });
+
+  it("prepares an imported history review with the uploaded attachment", async () => {
+    state.grantedEnvironments.add("secondary");
+    state.pendingRequests = { approvals: [], userInputs: [] };
+    state.projection = {
+      ...v2Projection,
+      thread: { ...v2Projection.thread, historyOrigin: "v1_import" },
+    };
+    state.draft = {
+      ...state.draft,
+      attachments: [
+        { id: "shot", type: "image", name: "shot.png" } as DraftComposerImageAttachment,
+      ],
+    };
+    const review = vi.fn(async () => undefined);
+    state.getImportedHistoryChoice.mockReturnValueOnce({
+      hydrate: async () => undefined,
+      snapshot: () => ({ pending: false }),
+      review,
+    });
+    const prepared = { threadId: "thread", commandId: "command", message: {} };
+    state.prepareImportedHistory.mockResolvedValueOnce(AsyncResult.success(prepared));
+
+    expect(await useThreadComposerState(NO_SIDE_CHATS).onSendMessage()).toBeNull();
+
+    expect(state.prepareImportedHistory).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "secondary",
+      input: expect.objectContaining({
+        threadId: "thread",
+        message: expect.objectContaining({
+          text: "Keep my draft",
+          attachments: [expect.objectContaining({ id: "uploaded-shot" })],
+        }),
+      }),
+    });
+    expect(review).toHaveBeenCalledExactlyOnceWith(
+      { type: "message", command: { ...prepared, modelSelectionExplicit: false } },
+      "secondary:thread:message",
+      expect.any(Function),
+    );
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).not.toHaveBeenCalled();
   });
 
   it("keeps an armed fresh session for the message after an approval redirect", async () => {
