@@ -14,6 +14,7 @@ import {
   IsoDateTime,
   MessageId,
   ModelSelection,
+  ORCHESTRATION_V2_WS_METHODS,
   OrchestrationMessageContext,
   OrchestrationV2WorktreeBaseFreshness,
   ProjectId,
@@ -40,7 +41,7 @@ import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/compose
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 
-// Keep current writes until a compatible native baseline includes the v4 reader.
+// Keep writing the embedded baseline's format while accepting newer upstream rows.
 const THREAD_OUTBOX_SCHEMA_VERSION = 3;
 const THREAD_OUTBOX_MAX_RETRY_DELAY_MS = 16_000;
 
@@ -173,7 +174,27 @@ export function modelSelectionsEqual(left: ModelSelectionType, right: ModelSelec
   );
 }
 
+export function queuedCreationNeedsNewerOutboxReader(
+  creation: Pick<QueuedThreadCreation, "repositories" | "startsFromRepositoryDefaults"> | undefined,
+): boolean {
+  return (
+    creation?.repositories !== undefined || creation?.startsFromRepositoryDefaults !== undefined
+  );
+}
+
 export function encodeQueuedThreadMessage(message: QueuedThreadMessage): unknown {
+  const prepared = message.issuance?.state === "issued" ? message.issuance.prepared : undefined;
+  const workspaceStrategy =
+    prepared?.method === ORCHESTRATION_V2_WS_METHODS.launchThread
+      ? prepared.payload.workspaceStrategy
+      : undefined;
+  // The embedded v3 reader drops these fields while keeping the same command ID.
+  if (
+    queuedCreationNeedsNewerOutboxReader(message.creation) ||
+    (workspaceStrategy?.type === "worktree" && workspaceStrategy.repositories !== undefined)
+  ) {
+    throw new Error("Worktree repository settings require a compatible mobile outbox reader.");
+  }
   return encodeStoredQueuedThreadMessage({
     schemaVersion: THREAD_OUTBOX_SCHEMA_VERSION,
     ...message,
@@ -284,7 +305,7 @@ export function resolveThreadOutboxDispatchStep(input: {
 }
 
 export function isQueuedThreadCreationSendable(message: QueuedThreadMessage): boolean {
-  if (!message.creation) {
+  if (!message.creation || queuedCreationNeedsNewerOutboxReader(message.creation)) {
     return false;
   }
   const hasContent = message.text.trim().length > 0 || message.attachments.length > 0;

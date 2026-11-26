@@ -68,7 +68,10 @@ import {
 } from "../../state/use-model-option-memory";
 import { useBranches, usePaginatedBranches } from "../../state/queries";
 import { vcsEnvironment } from "../../state/vcs";
-import { type QueuedThreadMessage } from "../../state/thread-outbox";
+import {
+  queuedCreationNeedsNewerOutboxReader,
+  type QueuedThreadMessage,
+} from "../../state/thread-outbox-model";
 import {
   setPendingConnectionError,
   useRemoteConnectionStatus,
@@ -154,6 +157,7 @@ type NewTaskFlowContextValue = {
   /** The project's tracked Git folders; null while they load. */
   readonly worktreeRepositoryChoices: ReadonlyArray<WorktreeRepositoryChoice> | null;
   readonly worktreeRepositorySelection: WorktreeRepositorySelection;
+  readonly worktreeQueueBlocked: boolean;
   readonly setWorktreeRepositories: (repositoryPaths: ReadonlyArray<string>) => void;
   readonly canChooseWorkspace: boolean;
   readonly selectedBranchName: string | null;
@@ -441,16 +445,29 @@ export function NewTaskFlowProvider(
   // value keeps tracking the server setting when the config loads late.
   const draftStartFromOrigin = selectedProjectDraft.workspaceSelection?.startFromOrigin;
   const draftRepositories = workspaceSelection.repositories;
-  const worktreeRepositorySelection = resolveWorktreeRepositorySelection(
-    { choices: worktreeRepositoryChoices, chosen: draftRepositories },
-    messages,
-  );
+  const resolveWorktreeRepositories = (chosen: ReadonlyArray<string> | undefined) =>
+    resolveWorktreeRepositorySelection({ choices: worktreeRepositoryChoices, chosen }, messages);
+  const worktreeRepositorySelection = resolveWorktreeRepositories(draftRepositories);
+  const worktreeCreation = ({ strategyRepositories }: WorktreeRepositorySelection) => ({
+    ...(strategyRepositories === undefined
+      ? {}
+      : { repositories: strategyRepositories.map((repository) => repository.path) }),
+    ...(isGitRepo ? {} : { startsFromRepositoryDefaults: true }),
+  });
+  const worktreeQueueBlocked =
+    workspaceMode === "worktree" &&
+    queuedCreationNeedsNewerOutboxReader(worktreeCreation(worktreeRepositorySelection));
   const capabilities = selectedEnvironmentServerConfig?.environment?.capabilities;
   const cadence = selectedProject
     ? selectedEnvironmentServerConfig?.settings.projectSettingsOverrides[selectedProject.id]
         ?.repoFreshnessCadenceSeconds
     : undefined;
-  const verifiedDefault = capabilities?.repoFreshness === true && (cadence ?? 0) > 0;
+  // Task folders resolve a base for each checkout instead of using the project root's freshness.
+  const verifiedDefault =
+    isGitRepo &&
+    !tracksGitRepositories &&
+    capabilities?.repoFreshness === true &&
+    (cadence ?? 0) > 0;
   const startFromOrigin =
     isGitRepo &&
     (draftStartFromOrigin ??
@@ -778,19 +795,6 @@ export function NewTaskFlowProvider(
     }
   };
 
-  const worktreeCreation = (chosen: ReadonlyArray<string> | undefined) => {
-    const repositories = resolveWorktreeRepositorySelection(
-      { choices: worktreeRepositoryChoices, chosen },
-      messages,
-    ).strategyRepositories;
-    return {
-      ...(repositories === undefined
-        ? {}
-        : { repositories: repositories.map((repository) => repository.path) }),
-      ...(isGitRepo ? {} : { startsFromRepositoryDefaults: true }),
-    };
-  };
-
   const buildPendingTaskMessage = (
     metadata: TurnCommandMetadata,
     options?: { readonly currentCheckoutBranch?: string | null },
@@ -863,7 +867,9 @@ export function NewTaskFlowProvider(
         worktreePath: mode === "worktree" ? null : (workspaceSelection?.worktreePath ?? null),
         ...(fetchFromOrigin ? { startFromOrigin: true } : {}),
         ...(baseFreshness === undefined ? {} : { baseFreshness }),
-        ...(mode === "worktree" ? worktreeCreation(workspaceSelection.repositories) : {}),
+        ...(mode === "worktree"
+          ? worktreeCreation(resolveWorktreeRepositories(workspaceSelection.repositories))
+          : {}),
       },
       createdAt: metadata.createdAt,
     };
@@ -942,6 +948,7 @@ export function NewTaskFlowProvider(
     tracksGitRepositories,
     worktreeRepositoryChoices,
     worktreeRepositorySelection,
+    worktreeQueueBlocked,
     setWorktreeRepositories,
     canChooseWorkspace,
     selectedBranchName,

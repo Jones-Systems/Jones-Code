@@ -76,7 +76,10 @@ import {
   isModelSelectionUnavailable,
   resolveSelectableModelSelection,
 } from "../../lib/modelOptions";
-import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
+import {
+  enqueueThreadOutboxMessage,
+  queuedCreationNeedsNewerOutboxReader,
+} from "../../state/thread-outbox";
 import {
   useRemoteConnections,
   useRemoteEnvironmentRuntime,
@@ -283,6 +286,10 @@ export function NewTaskDraftScreen(props: {
       states: uploadStates,
     });
   const queuesInsteadOfStarting = !environmentConnected || attachmentsUploading;
+  const worktreeQueueBlockMessage = gt(
+    "This version can’t queue worktrees with these repository settings. Your task is still a draft.",
+  );
+  const worktreeQueueBlockReason = flow.worktreeQueueBlocked ? worktreeQueueBlockMessage : null;
   const startLatchRef = useRef(createProjectThreadStartLatch());
   const promptInputRef = useRef<ComposerEditorHandle>(null);
   const loadedBranchesProjectKeyRef = useRef<string | null>(null);
@@ -729,6 +736,10 @@ export function NewTaskDraftScreen(props: {
     if (!message) {
       return null;
     }
+    if (queuedCreationNeedsNewerOutboxReader(message.creation)) {
+      Dialog.alert(gt("Could not queue task"), worktreeQueueBlockMessage);
+      return null;
+    }
     // Persist locally before clearing or leaving the draft; server setup runs on the thread.
     flow.setSubmitting(true);
     const queued = await settlePromise(() => enqueueThreadOutboxMessage(message));
@@ -766,16 +777,17 @@ export function NewTaskDraftScreen(props: {
   // an empty loading surface here flashes between two already-cached threads.
   if (!selectedProject) return null;
 
+  const needsWorktreeBranch =
+    flow.workspaceMode === "worktree" &&
+    (!flow.isGitRepoKnown || (flow.isGitRepo && !flow.selectedBranchName));
   const setupBlockReason =
     isIncomingShareReady && !isImportingShare
       ? cloneBlocksStart
         ? gt("Wait for the project clone to finish.")
         : flow.submitting
           ? gt("Starting the thread…")
-          : flow.workspaceMode === "worktree" &&
-              (!flow.isGitRepoKnown || (flow.isGitRepo && !flow.selectedBranchName))
-            ? gt("Choose a base branch before creating a worktree.")
-            : null
+          : (worktreeQueueBlockReason ??
+            (needsWorktreeBranch ? gt("Choose a base branch before creating a worktree.") : null))
       : gt("Wait for shared content to finish importing.");
   const chooseProject = () => {
     if (isComposerInteractionLocked) {
@@ -1052,6 +1064,11 @@ export function NewTaskDraftScreen(props: {
       ) : null}
       {viewportHeight < SHORT_DRAFT_VIEWPORT_HEIGHT ? contextControls : null}
       {flow.canChooseWorkspace ? workspaceControls : null}
+      {worktreeQueueBlockReason !== null ? (
+        <Text textRole="footnote" className="px-2 pt-1 text-foreground-muted">
+          {worktreeQueueBlockReason}
+        </Text>
+      ) : null}
     </View>
   );
 
