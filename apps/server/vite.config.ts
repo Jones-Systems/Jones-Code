@@ -97,6 +97,11 @@ export default mergeConfig(
           dependsOn: ["@t3tools/web#build"],
           cache: false,
         },
+        // A local tsbuildinfo is leftover build state, not a typecheck input.
+        typecheck: {
+          command: "effect-tsgo tsrs --noEmit",
+          cache: { input: [{ auto: true }, "!*.tsbuildinfo"] },
+        },
       },
     },
     pack: {
@@ -119,21 +124,13 @@ export default mergeConfig(
           repoEnv,
         }),
       ],
-      // SEA embeds one entry; expose the history worker as a hidden subcommand.
+      // SEA embeds one entry; expose the workers as hidden subcommands.
       entry: packBootstrap
         ? ["src/bin.ts"]
-        : packCompute
-          ? { serverComputeWorker: "src/jones/serverCompute/worker.ts" }
-          : packExecutable
-            ? ["src/binMain.ts"]
-            : ["src/bin.ts", "src/claude-history-worker.ts"],
-      outDir: packBootstrap
-        ? "dist-exe"
-        : packCompute
-          ? NodePath.join(cliAssetDir, "compute")
-          : packExecutable
-            ? cliAssetDir
-            : serverBundlePackProfile.outDir,
+        : packExecutable
+          ? ["src/binMain.ts"]
+          : ["src/bin.ts", "src/claude-history-worker.ts", "src/process-launcher.ts"],
+      outDir: packBootstrap ? "dist-exe" : packExecutable ? cliAssetDir : "dist",
       sourcemap: !packExecutable,
       clean: serverBundlePackProfile.clean,
       // SEA can only resolve built-ins; keep dynamic imports inside each emitted module.

@@ -106,7 +106,7 @@ does not perform repository deletion or authorize runtime changes.
 
 ## Workflow policy
 
-The Jones-Code workflow allowlist is `artifact-cli-linux.yml`, `artifact-cli-mac.yml`, `artifact-desktop-mac.yml`, `ci.yml`, `jones-desktop-signing.yml`, `jones-native-workflows.yml`, `jones-thread-monitor-native.yml`, `jones-update-qualification.yml`, `native-enrollment-candidate.yml`, and `server-parallel-qualification.yml`, using GitHub-hosted Ubuntu and macOS runners. CI runs
+The Jones-Code workflow allowlist is `artifact-cli-linux.yml`, `artifact-cli-mac.yml`, `artifact-desktop-mac.yml`, `ci.yml`, `jones-desktop-signing.yml`, `jones-native-workflows.yml`, `jones-packaged-picker.yml`, `jones-pr-cache-capacity.yml`, `jones-thread-monitor-native.yml`, `jones-update-qualification.yml`, `native-enrollment-candidate.yml`, and `server-parallel-qualification.yml`, using GitHub-hosted Ubuntu and macOS runners. CI runs
 on pull requests, main pushes and manual dispatch. `Check` is the required
 aggregate; selected Linux jobs may skip only
 on explicit successful classification, with full main, unknown-change and
@@ -137,8 +137,11 @@ remain an accepted gap. Re-entry requires a device-level regression that cheaper
 checks miss or a qualified macOS route with no custody hold, starting by reverting
 the retirement. Existing native startup and cleanup holds remain unresolved.
 
-There are no tag, release, privileged PR, workflow-completion or
-repository-dispatch triggers. Additional Jones-Code-owned workflows require
+The Jones packaged picker can qualify a completed canonical main Mac Desktop
+Artifact run. The Jones PR cache capacity workflow uses trusted main policy to
+reclaim space from old PR caches during and after CI. These are the two accepted
+`workflow_run` triggers. Tag, release, privileged PR, and repository-dispatch
+triggers stay disabled. Additional Jones-Code-owned workflows require
 their own reviewed PRs. Other upstream workflows are absent from
 `.github/workflows/` so a sync cannot quietly activate a release, deployment,
 privileged PR event or Blacksmith job. Deferred workflows remain available in
@@ -156,7 +159,9 @@ to deferred until its trigger, runner, permissions and secrets are reviewed.
 | `issue-labels.yml`                  | Push, manual, issue                              | Not applicable         | Upstream issue taxonomy.                                             |
 | `mobile-android-apk.yml`            | Schedule, manual                                 | Deferred               | Play credential use, release artifact writes and Blacksmith runner.  |
 | `mobile-eas-preview.yml`            | PR                                               | Deferred               | EAS preview publishing and credentials.                              |
+| `mobile-eas-preview-build.yml`      | Reusable call                                    | Deferred               | EAS preview build and publishing pipeline.                           |
 | `mobile-eas-production.yml`         | Manual, push                                     | Deferred               | Production mobile release and credentials.                           |
+| `mobile-eas-production-build.yml`   | Reusable call                                    | Deferred               | Production mobile build and publishing pipeline.                     |
 | `mobile-fingerprint-check.yml`      | PR                                               | Deferred               | Native fingerprint coverage needs a hosted-runner conversion.        |
 | `mobile-showcase-screenshots.yml`   | Manual                                           | Not applicable         | Upstream marketing assets.                                           |
 | `pr-size.yml`                       | Privileged PR event                              | Not applicable         | Upstream labeling policy.                                            |

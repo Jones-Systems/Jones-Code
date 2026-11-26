@@ -1,3 +1,5 @@
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 import {
   makeProducerGuard,
   applyProducerBatches,
@@ -16,6 +18,8 @@ import {
 import { boundedSnapshotProjection } from "@t3tools/shared/orchestrationV2BoundedSnapshot";
 import { pendingBackgroundTurnItems } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as MutableRef from "effect/MutableRef";
@@ -30,6 +34,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import { HttpClient } from "effect/http";
 import { Atom } from "effect/reactivity";
 
+import { observeServerTime } from "../clock.ts";
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import { connectionProjectionPhase } from "../connection/model.ts";
@@ -41,7 +46,7 @@ import * as ManagedRelay from "../relay/managedRelay.ts";
 import {
   isAuthorizationFailure,
   request,
-  subscribeDynamicWithProducer,
+  subscribeDynamicWithInput,
   subscriptionRetryDelay,
 } from "../rpc/client.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
@@ -56,6 +61,7 @@ import {
   EMPTY_THREAD_HISTORY_META,
   isActiveHistoryRequestCursor,
   mergeOlderHistoryIntoProjection,
+  mergeOlderSubagentsIntoProjection,
   type ThreadHistoryMeta,
 } from "./threadHistoryMerge.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
@@ -74,18 +80,36 @@ function statusWithoutLiveData(
   return Option.isSome(data) ? "cached" : "empty";
 }
 
+const THREAD_SYNC_ERROR = msg("Could not synchronize the thread.");
+const HISTORY_LOAD_ERROR = msg("Could not load earlier activity.");
+const WORK_HISTORY_CHANGED_ERROR = msg("Work history changed. Retry loading it.");
+const THREAD_ERRORS: ReadonlySet<string> = new Set([
+  THREAD_SYNC_ERROR,
+  HISTORY_LOAD_ERROR,
+  WORK_HISTORY_CHANGED_ERROR,
+]);
+
+/**
+ * A thread or history error in the active language. Errors this module wrote translate;
+ * messages from the server or another error stay as they are.
+ * @public
+ */
+export function threadErrorText(error: string, resolve: MFunctionType = mFallback): string {
+  return THREAD_ERRORS.has(error) ? resolve(error) : error;
+}
+
 function formatThreadError(cause: Cause.Cause<unknown>): string {
   const error = Cause.squash(cause);
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
-    : "Could not synchronize the thread.";
+    : THREAD_SYNC_ERROR;
 }
 
 function formatHistoryError(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
   }
-  return "Could not load earlier activity.";
+  return HISTORY_LOAD_ERROR;
 }
 
 // Steers join a running turn; every other user message opens one. The timeline shows every
@@ -538,7 +562,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   // Per-batch streaming spans add trace volume without a useful timing boundary.
   const applyEventsLocked = Effect.fnUntraced(function* (
     items: ReadonlyArray<SequencedItem>,
-    producer: SubscriptionProducer,
+    // Replayed catch-up events may predate a backward host clock correction.
+    live: boolean,
   ) {
     const appliedSequence = yield* SubscriptionRef.get(lastSequence);
     let sequence = appliedSequence;
@@ -562,7 +587,18 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     if (sequence === appliedSequence) return;
     yield* SubscriptionRef.set(lastSequence, sequence);
 
-    const waiting = awaitingCompletion;
+    if (live) {
+      const receivedAtMs = yield* Clock.currentTimeMillis;
+      for (const item of fresh) {
+        observeServerTime(
+          environmentId,
+          DateTime.toEpochMillis(item.event.occurredAt),
+          receivedAtMs,
+        );
+      }
+    }
+
+    const waiting = yield* Ref.get(awaitingCompletion);
     // Apply against the latest projection/history in one update so a concurrent
     // loadEarlier merge (or history-meta patch) cannot be clobbered by a stale
     // get-then-set rebuild.
@@ -675,18 +711,20 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     producer: SubscriptionProducer,
   ) {
     if (item.kind === "synchronized") {
-      yield* producerGuard.commit(producer, state, (current) => {
-        awaitingCompletion = false;
-        return Option.isSome(current.data) &&
-          current.status !== "deleted" &&
-          Option.isNone(current.error)
-          ? { ...current, status: "live" as const, error: Option.none() }
-          : current;
-      });
+      yield* Ref.set(awaitingCompletion, false);
+      yield* SubscriptionRef.updateSome(state, (current) =>
+        Option.isSome(current.data) &&
+        current.status !== "deleted" &&
+        current.status !== "live" &&
+        Option.isNone(current.error)
+          ? Option.some({ ...current, status: "live" as const })
+          : Option.none(),
+      );
       return;
     }
 
     if (item.kind === "snapshot") {
+      yield* Ref.set(forceSnapshot, false);
       yield* SubscriptionRef.set(lastSequence, item.snapshotSequence);
       const hasProgressiveHistory =
         item.historyCursor !== undefined ||
@@ -711,17 +749,45 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return;
     }
 
-    yield* applyEventsLocked([item], producer);
+    yield* applyEventsLocked([item], false);
   });
 
+  // Items held until the completion marker apply together, so a replay-only resume renders once.
+  // A new attempt drops the previous attempt's held and late items (unapplied, so its cursor
+  // replays them). Both run under applyLock: each batch lands wholly before or after an attempt.
+  let attempt: unknown;
+  let catchUp: OrchestrationV2ThreadStreamItem[] = [];
+  const startAttempt = applyLock.withPermits(1)(
+    Effect.sync(() => {
+      attempt = undefined;
+      catchUp = [];
+    }),
+  );
   // Keep this per-batch streaming path untraced for the same reason as applyEventsLocked.
-  const applyItems = Effect.fnUntraced(function* (
-    producer: SubscriptionProducer,
-    items: ReadonlyArray<OrchestrationV2ThreadStreamItem>,
+  const receiveItems = Effect.fnUntraced(function* (
+    received: ReadonlyArray<readonly [input: unknown, item: OrchestrationV2ThreadStreamItem]>,
   ) {
     yield* applyLock.withPermits(1)(
       Effect.gen(function* () {
-        if (!producerGuard.isCurrent(producer)) return;
+        let completes = false;
+        for (const [input, item] of received) {
+          if (input !== attempt) continue;
+          catchUp.push(item);
+          if (item.kind === "synchronized") completes = true;
+        }
+        if (catchUp.length === 0) return;
+        if (!completes && (yield* Ref.get(awaitingCompletion))) {
+          // A warm resume keeps its "live" status until it learns it is behind.
+          yield* SubscriptionRef.updateSome(state, (current) =>
+            current.status === "live"
+              ? Option.some({ ...current, status: "synchronizing" as const })
+              : Option.none(),
+          );
+          return;
+        }
+        const items = catchUp;
+        catchUp = [];
+        let live = !(yield* Ref.get(awaitingCompletion));
         let events: SequencedItem[] = [];
         for (const item of items) {
           if (
@@ -731,12 +797,16 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             events.push(item);
             continue;
           }
-          yield* applyEventsLocked(events, producer);
+          // Clearing the flag first lets the events before the marker publish
+          // "live", so a catch-up ending in the marker is one state change.
+          if (item.kind === "synchronized") yield* Ref.set(awaitingCompletion, false);
+          yield* applyEventsLocked(events, live);
           events = [];
-          yield* applyItemLocked(item, producer);
+          yield* applyItemLocked(item);
+          if (item.kind === "synchronized") live = true;
         }
-        yield* applyEventsLocked(events, producer);
-        if (producerGuard.isCurrent(producer)) yield* remember;
+        yield* applyEventsLocked(events, live);
+        yield* remember;
       }),
     );
   });
@@ -769,7 +839,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       latest: EnvironmentThreadState,
     ): ThreadHistoryController.ThreadHistoryLoadEarlierResult =>
       workAnchorId !== undefined && workCursor(latest) !== null
-        ? { _tag: "error", message: "Work history changed. Retry loading it." }
+        ? { _tag: "error", message: WORK_HISTORY_CHANGED_ERROR }
         : { _tag: "noop" };
     if (workAnchorId === undefined)
       yield* patchHistoryMeta((history) =>
@@ -857,12 +927,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
                   {
                     ...latest,
                     data: Option.some(
-                      mergeOlderHistoryIntoProjection(
-                        latest.data.value,
-                        page.items,
-                        workAnchorId === undefined
-                          ? undefined
-                          : { anchorId: workAnchorId, nextCursor: page.nextCursor },
+                      mergeOlderSubagentsIntoProjection(
+                        mergeOlderHistoryIntoProjection(
+                          latest.data.value,
+                          page.items,
+                          workAnchorId === undefined
+                            ? undefined
+                            : { anchorId: workAnchorId, nextCursor: page.nextCursor },
+                        ),
+                        page.subagents,
                       ),
                     ),
                     status:
@@ -1007,20 +1080,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const socketOpenTried = yield* Ref.make(false);
   const socketOnlyOpen = yield* Ref.make(false);
   const resubscribes = yield* Queue.unbounded<void>();
-  const retrySocketOnlyOpen = (producer: SubscriptionProducer) =>
-    SubscriptionRef.modify(state, (current) => {
-      if (
-        !producerGuard.isCurrent(producer) ||
-        !Ref.getUnsafe(socketOnlyOpen) ||
-        Option.isSome(current.data)
-      ) {
-        return [false, current] as const;
-      }
-      // Clear before the handoff: even a defect in the successor's config must use normal backoff.
-      MutableRef.set(socketOnlyOpen.ref, false);
-      Queue.offerUnsafe(resubscribes, undefined);
-      return [true, current] as const;
-    });
+  // A resumed replay that dies (an event this client cannot decode) dies the same
+  // way from the same cursor, so later attempts reload the full snapshot until one applies.
+  const resuming = yield* Ref.make(false);
+  const forceSnapshot = yield* Ref.make(false);
   const markSynchronizing = Effect.gen(function* () {
     if (yield* Ref.get(resumingLive)) return;
     yield* SubscriptionRef.update(state, (current) =>
@@ -1031,20 +1094,21 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   });
 
   let httpMisses = 0;
-  yield* markSynchronizing;
-  let applicationFailures = 0;
+  let defectRetries = 0;
+  const backOffAfterDefect = Effect.suspend(() => {
+    const retryDelay = subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, defectRetries);
+    defectRetries += 1;
+    return setStreamError(THREAD_SYNC_ERROR).pipe(Effect.andThen(Effect.sleep(retryDelay)));
+  });
   const followThread = (): Effect.Effect<
     void,
     never,
     EnvironmentSupervisor.EnvironmentSupervisor
   > =>
-    subscribeDynamicWithProducer(
+    subscribeDynamicWithInput(
       ORCHESTRATION_V2_WS_METHODS.subscribeThread,
-      Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (producer) {
-        yield* producerGuard.begin(producer);
-        const session = producer.session;
-        // Settled before the state is read, so the read below is not older than the config.
-        const config = yield* Effect.option(session.initialConfig);
+      Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (session) {
+        yield* startAttempt;
         let current = yield* SubscriptionRef.get(state);
         // A delete event already cleared this thread. Park without opening the socket.
         if (current.status === "deleted" && httpMisses === 0) {
@@ -1129,10 +1193,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }
 
         const sequence = yield* SubscriptionRef.get(lastSequence);
-        const canResume = Option.isSome(current.data);
+        const canResume = Option.isSome(current.data) && !(yield* Ref.get(forceSnapshot));
+        yield* Ref.set(resuming, canResume);
         const acceptBoundedSnapshot = yield* Ref.get(acceptsBoundedSocketSnapshots);
 
-        return {
+        const input = {
           threadId,
           ...(canResume ? { afterSequence: sequence } : {}),
           requestCompletionMarker: true as const,
@@ -1147,14 +1212,30 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           acceptDedupedBodies: true as const,
           acceptCompactThreadVisits: true as const,
         };
+        attempt = input;
+        return input;
       }),
       {
         // A socket-only open that fails retries over HTTP, which tells a
         // missing thread apart from a failure, before showing an error.
-        onDefect: Effect.fn("EnvironmentThreadState.onDefect")(function* (_cause, producer) {
-          if (!producerGuard.isCurrent(producer)) return;
-          if (yield* retrySocketOnlyOpen(producer)) return;
-          yield* setStreamError("Could not synchronize the thread.", producer);
+        onDefect: Effect.fn("EnvironmentThreadState.onDefect")(function* (cause) {
+          if (yield* failedSocketOnlyOpen) {
+            yield* Ref.set(socketOnlyOpen, false);
+            return yield* Queue.offer(resubscribes, undefined);
+          }
+          if (!Cause.hasDies(cause)) {
+            return yield* setStreamError(THREAD_SYNC_ERROR);
+          }
+          yield* Ref.set(forceSnapshot, true);
+          if (yield* Ref.getAndSet(resuming, false)) {
+            return yield* Queue.offer(resubscribes, undefined);
+          }
+          yield* backOffAfterDefect;
+          yield* Queue.offer(resubscribes, undefined);
+        }),
+        onExpectedFailure: Effect.fn("EnvironmentThreadState.onExpectedFailure")(function* (cause) {
+          const retryOverHttp = !isAuthorizationFailure(cause) && (yield* failedSocketOnlyOpen);
+          if (!retryOverHttp) yield* setStreamError(formatThreadError(cause));
         }),
         onExpectedFailure: Effect.fn("EnvironmentThreadState.onExpectedFailure")(
           function* (cause, producer) {
@@ -1170,7 +1251,16 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         resubscribeWhileSessionCurrent: "1 second",
       },
     ).pipe(
-      Stream.runForEachArray((items) => applyProducerBatches(items, applyItems)),
+      Stream.runForEachArray((items) =>
+        receiveItems(items).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              defectRetries = 0;
+            }),
+          ),
+        ),
+      ),
+      // A defect while applying items ends the stream; resubscribe for a fresh snapshot.
       Effect.catchCause((cause) =>
         Cause.hasInterrupts(cause)
           ? Effect.interrupt
@@ -1179,11 +1269,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               environmentId,
               threadId,
             }).pipe(
-              Effect.andThen(
-                Effect.sleep(
-                  subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, applicationFailures++),
-                ),
-              ),
+              Effect.andThen(Ref.set(forceSnapshot, true)),
+              Effect.andThen(backOffAfterDefect),
               Effect.andThen(Effect.suspend(followThread)),
             ),
       ),

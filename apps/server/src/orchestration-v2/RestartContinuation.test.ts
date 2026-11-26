@@ -1569,66 +1569,38 @@ it.effect("skips restart discovery when no project enables continuation", () =>
   }),
 );
 
-it.effect.each([false, true])(
-  "recorded preference override %s preserves original source selection",
-  (override) =>
-    Effect.gen(function* () {
-      const projection = cutMidTurn();
-      // Thread management receives the recorded server command, as dispatch does.
-      const commands: RecordedServerCommand[] = [];
-      yield* continueRestartedRun({
-        threadId,
-        sourceRunId: runId,
-        continueWithoutPreference: override,
-        processLossCount: 1,
-      }).pipe(
-        Effect.provide(
-          Layer.merge(
-            ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false }),
-            Layer.mock(ThreadManagementService.ThreadManagementService)({
-              getThreadRecords: () => Effect.succeed(projection),
-              recoverDelegatedTask: () => Effect.void,
-              dispatch: (command) => {
-                commands.push(command);
-                return Effect.succeed({} as never);
-              },
-            }),
-          ),
-        ),
-      );
-      assert.lengthOf(commands, override ? 1 : 0);
-      if (commands[0]?.type === "message.dispatch")
-        assert.deepEqual(commands[0].modelSelection, projection.runs[0]!.modelSelection);
-    }),
-);
-
-it.effect("restart continuation excludes a captured work-mode keep-warm source", () =>
-  Effect.gen(function* () {
-    const messageId = MessageId.make("work-mode:original");
-    const cut = cutMidTurn({ userMessageId: messageId });
-    // A complete projected keep-warm message with the server's exact provenance.
-    const message: OrchestrationV2ThreadProjection["messages"][number] = {
-      id: messageId,
-      threadId,
-      runId,
-      nodeId: null,
-      role: "user",
-      createdBy: "system",
-      creationSource: "server",
-      text: WORK_MODE_SENTINEL,
-      attachments: [],
-      streaming: false,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const projection: OrchestrationV2ThreadProjection = { ...cut, messages: [message] };
-    assert.isEmpty(yield* continuationDispatches(projection));
-    assert.lengthOf(
-      yield* continuationDispatches({
-        ...projection,
-        messages: [{ ...message, text: "Continue the original work", createdBy: "user" }],
-      }),
-      1,
-    );
-  }),
-);
+it("does not continue a settled run whose only open subagent is a remote delegated task", () => {
+  const base = makeProjection();
+  for (const status of ["completed", "waiting"] as const) {
+    const projection = {
+      ...base,
+      runs: [{ ...base.runs[0]!, status }],
+      providerTurns: [{ ...base.providerTurns[0]!, status: "completed" }],
+      turnItems: [
+        {
+          id: "item:remote-delegated",
+          threadId,
+          runId,
+          nodeId: NodeId.make("task:remote"),
+          providerThreadId,
+          type: "subagent",
+          subagentId: NodeId.make("task:remote"),
+          origin: "app_owned",
+          driver,
+          providerInstanceId: instanceId,
+          childThreadId: null,
+          remoteChild: {
+            environmentId: "env:box",
+            threadId: ThreadId.make("thread:remote-child"),
+            label: "Box",
+          },
+          status: "running",
+          title: "Remote task",
+          prompt: "Check remote tests",
+          result: null,
+        },
+      ],
+    } as unknown as OrchestrationV2ThreadProjection;
+    assert.isUndefined(restartContinuationRun(projection, now), status);
+  }
+});

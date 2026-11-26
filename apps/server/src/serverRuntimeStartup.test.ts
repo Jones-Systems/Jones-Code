@@ -29,6 +29,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
 import { resolveServerParallelismProfile } from "./jones/serverParallelism/config.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -68,172 +69,91 @@ it.effect.each([
   "subagent-only",
   "count-failure",
 ] as const)("keeps bootstrap launch failures separate from project failures: %s", (scenario) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const projectId = ProjectId.make("bootstrap-project");
-      const instanceId = ProviderInstanceId.make(
-        scenario === "disabled-default" ? "custom" : "codex",
-      );
-      const events: ServerLifecycleStreamEvent[] = [];
-      const heartbeat = yield* Deferred.make<{ threadCount: number; projectCount: number }>();
-      const existingId = ThreadId.make("bootstrap-existing-root");
-      const subagentId = ThreadId.make("bootstrap-subagent");
-      const queries: ThreadMetadataReads.ThreadMetadataQuery[] = [];
-      const metadataDefaults: Omit<ThreadMetadataReads.ThreadMetadata, "id" | "lineage"> = {
-        projectId,
-        branch: null,
-        worktreePath: null,
-        pullRequests: [],
-        archivedAt: null,
-        settledOverride: null,
-        settledAt: null,
-        createdAt: DateTime.makeUnsafe("2026-10-01T00:00:00Z"),
-        updatedAt: DateTime.makeUnsafe("2026-10-01T00:00:00Z"),
-        pinnedAt: null,
-        pinOrderKey: null,
-        deletedAt: null,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-      };
-      let launchCalls = 0;
-      const recovery = {
-        terminalizedRuns: 0,
-        stoppedSessions: 0,
-        closedRequests: 0,
-        retiredEffects: 0,
-        requeuedEffects: 0,
-      };
-      const imports = { importedThreadCount: 0, importedMessageCount: 0 };
-      const sql = yield* SqlClient.SqlClient;
-      const dependencies = Layer.mergeAll(
-        Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
-          count:
-            scenario === "count-failure"
-              ? Effect.fail(
-                  new ThreadMetadataReads.ThreadMetadataReadError({
-                    cause: "synthetic count failure",
-                  }),
-                )
-              : Effect.succeed(7),
-          list: (query = {}) =>
-            Effect.sync(() => {
-              queries.push(query);
-              return {
-                snapshotSequence: 0,
-                threads:
-                  scenario === "existing-root" || scenario === "subagent-only"
-                    ? [
-                        {
-                          ...metadataDefaults,
-                          id: subagentId,
-                          lineage: {
-                            parentThreadId: existingId,
-                            rootThreadId: existingId,
-                            relationshipToParent: "subagent" as const,
-                          },
-                        },
-                        ...(scenario === "existing-root"
-                          ? [
-                              {
-                                ...metadataDefaults,
-                                id: existingId,
-                                lineage: {
-                                  parentThreadId: null,
-                                  rootThreadId: existingId,
-                                  relationshipToParent: null,
-                                },
-                              },
-                            ]
-                          : []),
-                      ]
-                    : [],
-              };
-            }),
-        }),
-        NodeCrypto.layer,
-        Path.layer,
-        Layer.succeed(SqlClient.SqlClient, sql),
-        Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({
-          supersededTerminalTrace: SupersededTerminalTrace.make(),
-        }),
-        Layer.mock(EffectOutbox.EffectOutboxV2)({}),
-        Layer.mock(ServerConfig.ServerConfig)({
-          ...(yield* ServerConfig.deriveServerPaths("/bootstrap-project", undefined).pipe(
-            Effect.provide(Path.layer),
-          )),
-          baseDir: "/bootstrap-project",
-          logLevel: "Error",
-          traceMinLevel: "Info",
-          traceTimingEnabled: false,
-          traceBatchWindowMs: 200,
-          traceMaxBytes: 1024,
-          traceMaxFiles: 1,
-          otlpTracesUrl: undefined,
-          otlpMetricsUrl: undefined,
-          otlpLogsUrl: undefined,
-          otlpTracesExport: DEFAULT_SIGNAL_EXPORT,
-          otlpMetricsExport: DEFAULT_SIGNAL_EXPORT,
-          otlpLogsExport: DEFAULT_SIGNAL_EXPORT,
-          otelEnvironment: OtelEnvironment.none,
-          staticDir: undefined,
-          devAllowedOrigins: [],
-          desktopBootstrapToken: undefined,
-          logWebSocketEvents: false,
-          serverParallelism: resolveServerParallelismProfile(undefined),
-          tailscaleServeEnabled: false,
-          tailscaleServePort: 443,
-          mode: "web",
-          cwd: "/bootstrap-project",
-          host: "localhost",
-          port: 3773,
-          devUrl: undefined,
-          noBrowser: true,
-          startupPresentation: "browser",
-          autoBootstrapProjectFromCwd: true,
-        }),
-        Layer.mock(Keybindings.Keybindings)({ start: Effect.void }),
-        Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
-          pendingThreadCount: Effect.succeed(0),
-          reconcileShells: Effect.succeed(imports),
-          importPendingTranscripts: Effect.succeed(imports),
-        }),
-        Layer.mock(ProviderRuntimeRecovery.ProviderRuntimeRecoveryService)({
-          recover: Effect.succeed(recovery),
-          prepareForShutdown: Effect.void,
-          reconcile: () => Effect.succeed(recovery),
-        }),
-        Layer.mock(Orchestrator.OrchestratorV2)({
-          ...unusedCorePorts(),
-          recoverCodexFailover: Effect.void,
-          recoverSelfSettlements: Effect.void,
-          recoverDelegatedTasks: Effect.void,
-          recoverRemoteTaskQuestions: Effect.void,
-          recoverPlannedUpdateQueues: Effect.void,
-        }),
-        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ shutdown: Effect.void }),
-        Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({ start: () => Effect.void }),
-        Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: () => Effect.never }),
-        Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
-          publish: (event) =>
-            Effect.sync(() => {
-              const published = { ...event, sequence: events.length + 1 };
-              events.push(published);
-              return published;
-            }),
-        }),
-        Layer.mock(ServerSettings.ServerSettingsService)({
-          start: Effect.void,
-          getSettings: Effect.succeed({
-            ...DEFAULT_SERVER_SETTINGS,
-            defaultModelSelection:
-              scenario === "disabled-default" ? { instanceId, model: "custom-model" } : null,
-            providerInstances: {
-              [instanceId]: {
-                driver: ProviderDriverKind.make("codex"),
-                enabled: false,
-                config: {},
-              },
+  Effect.gen(function* () {
+    const projectId = ProjectId.make("bootstrap-project");
+    const instanceId = ProviderInstanceId.make(
+      scenario === "disabled-default" ? "custom" : "codex",
+    );
+    const events: ServerLifecycleStreamEvent[] = [];
+    const recovery = {
+      terminalizedRuns: 0,
+      stoppedSessions: 0,
+      closedRequests: 0,
+      retiredEffects: 0,
+      requeuedEffects: 0,
+    };
+    const imports = { importedThreadCount: 0, importedMessageCount: 0 };
+    const dependencies = Layer.mergeAll(
+      NodeCrypto.layer,
+      Path.layer,
+      Layer.mock(ServerConfig.ServerConfig)({
+        ...(yield* ServerConfig.deriveServerPaths("/bootstrap-project", undefined).pipe(
+          Effect.provide(Path.layer),
+        )),
+        baseDir: "/bootstrap-project",
+        logLevel: "Error",
+        traceMinLevel: "Info",
+        traceTimingEnabled: false,
+        traceBatchWindowMs: 200,
+        traceMaxBytes: 1024,
+        traceMaxFiles: 1,
+        otlpTracesUrl: undefined,
+        otlpMetricsUrl: undefined,
+        otlpLogsUrl: undefined,
+        otlpTracesExport: DEFAULT_SIGNAL_EXPORT,
+        otlpMetricsExport: DEFAULT_SIGNAL_EXPORT,
+        otlpLogsExport: DEFAULT_SIGNAL_EXPORT,
+        otelEnvironment: OtelEnvironment.none,
+        staticDir: undefined,
+        devAllowedOrigins: [],
+        desktopBootstrapToken: undefined,
+        logWebSocketEvents: false,
+        tailscaleServeEnabled: false,
+        tailscaleServePort: 443,
+        mode: "web",
+        cwd: "/bootstrap-project",
+        host: "localhost",
+        port: 3773,
+        devUrl: undefined,
+        noBrowser: true,
+        startupPresentation: "browser",
+        autoBootstrapProjectFromCwd: true,
+      }),
+      Layer.mock(Keybindings.Keybindings)({ start: Effect.void }),
+      Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
+        pendingThreadCount: Effect.succeed(0),
+        reconcileShells: Effect.succeed(imports),
+        importPendingTranscripts: Effect.succeed(imports),
+      }),
+      Layer.mock(ProviderRuntimeRecovery.ProviderRuntimeRecoveryService)({
+        recover: Effect.succeed(recovery),
+        prepareForShutdown: Effect.void,
+        reconcile: () => Effect.succeed(recovery),
+      }),
+      Layer.mock(Orchestrator.OrchestratorV2)({ recoverDelegatedTasks: Effect.void }),
+      Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ shutdown: Effect.void }),
+      Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({ start: () => Effect.void }),
+      Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: () => Effect.never }),
+      Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
+        publish: (event) =>
+          Effect.sync(() => {
+            const published = { ...event, sequence: events.length + 1 };
+            events.push(published);
+            return published;
+          }),
+      }),
+      Layer.mock(BackgroundPolicy.BackgroundPolicy)({}),
+      Layer.mock(ServerSettings.ServerSettingsService)({
+        start: Effect.void,
+        getSettings: Effect.succeed({
+          ...DEFAULT_SERVER_SETTINGS,
+          defaultModelSelection:
+            scenario === "disabled-default" ? { instanceId, model: "custom-model" } : null,
+          providerInstances: {
+            [instanceId]: {
+              driver: ProviderDriverKind.make("codex"),
+              enabled: false,
+              config: {},
             },
           }),
         }),

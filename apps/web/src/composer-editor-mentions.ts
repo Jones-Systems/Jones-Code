@@ -8,6 +8,7 @@ import {
   composerMathRanges,
   type ComposerInlineToken,
 } from "@t3tools/shared/composerInlineTokens";
+import { markdownMathRanges } from "~/markdown/wordsHast";
 
 export type ComposerPromptSegment =
   | {
@@ -90,7 +91,7 @@ function collectModelTokens(text: string, inlineTokens: ReadonlyArray<ComposerIn
     /\s/.test(text[mention.end] ?? ""),
   );
   if (mentions.length === 0) return [];
-  const taken = [...inlineTokens, ...composerMathRanges(text)];
+  const taken = [...inlineTokens, ...composerMathRanges(text, markdownMathRanges)];
   return mentions
     .filter(
       (mention) => !taken.some((range) => mention.start < range.end && mention.end > range.start),
@@ -98,14 +99,9 @@ function collectModelTokens(text: string, inlineTokens: ReadonlyArray<ComposerIn
     .map((mention) => ({ ...mention, type: "model" as const }));
 }
 
-export function collectComposerPromptInlineTokens(text: string, queryCursor = text.length) {
-  const query = oneSpaceThreadQuery(text, queryCursor, (char) => /\s/u.test(char));
-  const allInlineTokens = collectComposerInlineTokens(text);
-  const inlineTokens = allInlineTokens.filter(
-    (token) => token.type !== "mention" || token.start !== query?.rangeStart,
-  );
-  // A mention held back for a thread query still claims its range, so a model never chips inside it.
-  const models = collectModelTokens(text, allInlineTokens);
+export function collectComposerPromptInlineTokens(text: string) {
+  const inlineTokens = collectComposerInlineTokens(text, { findMath: markdownMathRanges });
+  const models = collectModelTokens(text, inlineTokens);
   const tokens =
     models.length === 0
       ? inlineTokens

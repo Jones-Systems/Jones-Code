@@ -1,4 +1,5 @@
-import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
+import { msg } from "gt-react";
+import { m } from "~/i18n/messages";
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
@@ -8,10 +9,12 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import type { RefObject } from "react";
 import type { ChatComposerProps } from "./ChatComposer";
-import type {
-  ComposerContextClipboardFragment,
-  ComposerContextRecord,
-  EnvironmentId,
+import {
+  type ChatAttachment,
+  type ComposerContextClipboardFragment,
+  type ComposerContextRecord,
+  type EnvironmentId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
 import {
   type ComposerFileAttachment,
@@ -53,6 +56,8 @@ import {
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { countPreparingComposerImages } from "./preparingComposerImages";
+import type { QueuedAttachmentContextBinding } from "./composerContextUndo";
+import { matchRestorableQueuedAttachment } from "./queuedMessageEdit";
 
 const isUnreachable = Schema.is(
   Schema.Union([ConnectionTransientError, ConnectionBlockedError, EnvironmentRpcUnavailableError]),
@@ -87,6 +92,8 @@ export function useComposerContextImport(input: {
   readonly composerFilesRef: ChatComposerProps["composerFilesRef"];
   readonly promptRef: RefObject<string>;
   readonly addComposerFilesToDraft: (files: ComposerFileAttachment[]) => string[];
+  readonly removedQueuedAttachments?: ReadonlyArray<QueuedAttachmentContextBinding> | undefined;
+  readonly onRestoreQueuedAttachment?: ((attachment: ChatAttachment) => void) | undefined;
 }) {
   const {
     environmentId,
@@ -102,6 +109,8 @@ export function useComposerContextImport(input: {
     composerImages,
     promptRef,
     addComposerFilesToDraft,
+    removedQueuedAttachments,
+    onRestoreQueuedAttachment,
   } = input;
   const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
@@ -153,15 +162,15 @@ export function useComposerContextImport(input: {
     const fail = (reason: string) => {
       toastManager.add({
         type: "error",
-        title: `Couldn't bring ${record.name} into this message`,
-        description: `${reason} Remove the chip or attach the file again.`,
+        title: m(msg("Couldn't bring {name} into this message", { name: record.name })),
+        description: m(msg("{reason} Remove the chip or attach the file again.", { reason })),
       });
     };
     let file = copiedComposerAttachmentFile(sourceEnvironmentId, record.attachmentId);
     if (!file) {
       const sourceConnection = readPreparedConnection(sourceEnvironmentId);
       if (!sourceConnection) {
-        fail("The environment it came from is not connected.");
+        fail(m(msg("The environment it came from is not connected.")));
         return;
       }
       const result = await createAssetUrl({
@@ -176,14 +185,14 @@ export function useComposerContextImport(input: {
         const cause = result._tag === "Failure" ? Cause.squash(result.cause) : null;
         fail(
           isUnreachable(cause)
-            ? "The environment it came from is not reachable right now."
-            : "The original attachment is no longer available.",
+            ? m(msg("The environment it came from is not reachable right now."))
+            : m(msg("The original attachment is no longer available.")),
         );
         return;
       }
       const blob = await downloadAttachmentBlob(url);
       if (!blob) {
-        fail("Downloading it from the source failed.");
+        fail(m(msg("Downloading it from the source failed.")));
         return;
       }
       file = new File([blob], record.name, { type: record.mimeType || blob.type });
@@ -206,6 +215,25 @@ export function useComposerContextImport(input: {
     // The draft these bytes belong to may have been sent or switched away from while they
     // downloaded. Dropping them here keeps them out of whatever draft is open now.
     if (attachmentTargetKeyRef.current !== importTargetKey) return;
+    const replacesFileMarker =
+      record.kind === "file" &&
+      composerFilesRef.current.some(
+        (candidate) =>
+          composerFileNeedsReattach(candidate) &&
+          composerFileMatchesReattachMarker(candidate, {
+            name: record.name,
+            mimeType: file.type,
+            sizeBytes: file.size,
+          }),
+      );
+    if (
+      !replacesFileMarker &&
+      (pendingThreadImportsRef.current.get(importTargetKey) ?? 0) > 0 &&
+      countReservedAttachments() >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS
+    ) {
+      fail(m(msg("The attachment limit has been reached.")));
+      return;
+    }
     if (record.kind === "image") {
       const accepted = addComposerDraftImages(
         attachmentDraftTarget,
@@ -218,6 +246,7 @@ export function useComposerContextImport(input: {
             sizeBytes: file.size,
             previewUrl: URL.createObjectURL(file),
             file,
+            ...(record.source ? { source: record.source } : {}),
           },
         ],
         {
@@ -228,7 +257,7 @@ export function useComposerContextImport(input: {
         },
       );
       if (!accepted.includes(localId))
-        fail("The draft rejected this attachment (duplicate or attachment limit reached).");
+        fail(m(msg("The draft rejected this attachment (duplicate or attachment limit reached).")));
     } else {
       const accepted = addComposerFilesToDraft([
         {
@@ -241,7 +270,7 @@ export function useComposerContextImport(input: {
         },
       ]);
       if (!accepted.includes(localId))
-        fail("The draft rejected this attachment (duplicate or attachment limit reached).");
+        fail(m(msg("The draft rejected this attachment (duplicate or attachment limit reached).")));
     }
   };
   const importAttachmentRecord = async (
@@ -399,6 +428,19 @@ export function useComposerContextImport(input: {
         case "image":
         case "file": {
           if (skippedDependentAttachmentIds.has(record.contextId)) break;
+          if (questionAttachmentTarget === null && !conflicts) {
+            const restored = matchRestorableQueuedAttachment({
+              environmentId,
+              sourceEnvironmentId,
+              record,
+              removedQueuedAttachments: removedQueuedAttachments ?? [],
+            });
+            if (restored) {
+              onRestoreQueuedAttachment?.(restored.attachment);
+              rewritten.set(record.contextId, restored.contextId);
+              break;
+            }
+          }
           if (sourceEnvironmentId === null && !conflicts) {
             rewritten.set(record.contextId, record.contextId);
             break;

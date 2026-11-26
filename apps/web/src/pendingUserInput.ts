@@ -184,8 +184,10 @@ export function derivePendingUserInputProgress<Q extends UserInputQuestion>(
         resolvePendingUserInputAnswer(question, draftAnswers[question.id], options) === null,
     ),
     isLastQuestion,
-    isComplete: buildPendingUserInputAnswers(questions, draftAnswers, options) !== null,
-    canAdvance: resolvedAnswer !== null,
+    isComplete: buildPendingUserInputAnswers(questions, draftAnswers) !== null,
+    canAdvance:
+      activeQuestion !== null &&
+      buildPendingUserInputAnswers([activeQuestion], draftAnswers) !== null,
   };
 }
 

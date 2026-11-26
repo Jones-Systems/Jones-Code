@@ -14,6 +14,7 @@ import {
   ProviderTurnId,
   RunAttemptId,
   ThreadId,
+  withMessageSenderNote,
 } from "@t3tools/contracts";
 import type * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
@@ -25,7 +26,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import { ProviderControlDeadline } from "@t3tools/provider-core/server/jones/providerControlOutcome";
+import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -114,6 +115,7 @@ export const layer: Layer.Layer<
   ProviderTurnControlServiceV2,
   never,
   | EventSink.EventSinkV2
+  | McpAppModelContext.McpAppModelContext
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
 > = Layer.effect(
@@ -122,6 +124,7 @@ export const layer: Layer.Layer<
     const eventSink = yield* EventSink.EventSinkV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const mcpAppModelContext = yield* McpAppModelContext.McpAppModelContext;
 
     const load = Effect.fn("ProviderTurnControlService.load")(function* (input: {
       readonly threadId: ThreadId;
@@ -463,103 +466,10 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
-          let batchPayload: { text: string; attachments: typeof message.attachments } | undefined;
-          let capturedMessages: ReadonlyArray<typeof message> = [message];
-          if (input.messageIds !== undefined) {
-            const records = yield* projections.getThreadRecords(input.threadId, ["messages"], {
-              messageIds: input.messageIds,
-            });
-            const messages = input.messageIds.map((id) =>
-              records.messages.find((row) => row.id === id),
-            );
-            if (
-              messages.length === 0 ||
-              input.messageIds[0] !== input.messageId ||
-              new Set(input.messageIds).size !== input.messageIds.length ||
-              messages.some(
-                (row) =>
-                  row === undefined || row.runId !== run.id || row.threadId !== input.threadId,
-              )
-            )
-              return yield* new ProviderTurnControlError({
-                threadId: input.threadId,
-                operation: "steer",
-                providerTurnId: input.providerTurnId,
-                cause: "The persisted batch membership changed.",
-              });
-            const plan = planQueuedSteerBatch(
-              messages.map((row) => ({
-                message: {
-                  ...row!,
-                  text: projectComposerContextForProvider({
-                    text: row!.text,
-                    records: row!.context?.records ?? [],
-                  }),
-                },
-                eligible: true,
-              })),
-            );
-            if (plan.count !== messages.length)
-              return yield* new ProviderTurnControlError({
-                threadId: input.threadId,
-                operation: "steer",
-                providerTurnId: input.providerTurnId,
-                cause: "The persisted batch exceeds the steering budget.",
-              });
-            batchPayload = plan;
-            capturedMessages = messages.map((row) => row!);
-          }
-          const fresh = yield* projections.getProviderControlContext(input.threadId, input);
-          const live = yield* sessions.get(input.providerSessionId, { touchActivity: false });
-          const stopped =
-            message.notification === undefined
-              ? undefined
-              : yield* projections.getThreadRecords(input.threadId, ["turnItems"], {
-                  turnItemTypes: ["run_interrupt_request"],
-                  turnItemRunIds: [run.id],
-                });
-          const persisted = yield* projections.getThreadRecords(input.threadId, ["messages"], {
-            messageIds: capturedMessages.map((row) => row.id),
-          });
-          if (
-            (message.notification !== undefined &&
-              (message.createdBy !== "agent" ||
-                message.creationSource !== "server" ||
-                (!(
-                  message.notification.source.kind === "delegated_task" &&
-                  message.notification.outcome === "updated"
-                ) &&
-                  fresh.providerThread?.goal?.status !== "active") ||
-                (stopped?.turnItems.length ?? 0) > 0)) ||
-            fresh.run?.id !== run.id ||
-            fresh.run.activeAttemptId !== run.activeAttemptId ||
-            fresh.run.status !== "running" ||
-            !Schema.toEquivalence(ModelSelection)(fresh.run.modelSelection, run.modelSelection) ||
-            fresh.providerTurn?.id !== loaded.providerTurn.id ||
-            fresh.providerThread?.providerSessionId !== loaded.providerThread.providerSessionId ||
-            fresh.providerThread?.runtimeIdentity?.runtimeGeneration !==
-              loaded.providerThread.runtimeIdentity?.runtimeGeneration ||
-            fresh.providerThread?.runtimeIdentity?.evidenceRevision !==
-              loaded.providerThread.runtimeIdentity?.evidenceRevision ||
-            fresh.providerThread?.nativeThreadRef?.nativeId !==
-              loaded.providerThread.nativeThreadRef?.nativeId ||
-            Option.isNone(live) ||
-            live.value !== loaded.session.value ||
-            capturedMessages.some(
-              (row) =>
-                JSON.stringify(persisted.messages.find((next) => next.id === row.id)) !==
-                JSON.stringify(row),
-            )
-          )
-            return yield* new ProviderTurnControlError({
-              threadId: input.threadId,
-              operation: "steer",
-              providerTurnId: input.providerTurnId,
-              cause:
-                message.notification === undefined
-                  ? "The captured steering target or persisted batch changed before dispatch."
-                  : new GoalNotificationNotDelivered(),
-            });
+          const appContext = yield* McpAppModelContext.forProvider(
+            mcpAppModelContext,
+            input.threadId,
+          );
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
@@ -569,15 +479,17 @@ export const layer: Layer.Layer<
               ...(input.modelSelection === undefined
                 ? {}
                 : { modelSelection: input.modelSelection }),
+              ...(appContext.length === 0 ? {} : { appContext }),
               message: {
                 messageId: message.id,
-                text:
-                  batchPayload?.text ??
+                text: withMessageSenderNote(
+                  message,
                   projectComposerContextForProvider({
                     text: message.text,
                     records: message.context?.records ?? [],
                   }),
-                attachments: batchPayload?.attachments ?? message.attachments,
+                ),
+                attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
                 ...(message.scheduledTaskId === undefined

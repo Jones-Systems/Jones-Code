@@ -2,6 +2,7 @@ import * as ConversationPolicy from "../jones/conversationWorkspace/Conversation
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
 import type { TerminalError, TerminalSessionSnapshot } from "@t3tools/contracts";
 import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
+import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
 import {
   projectScriptRuntimeEnv,
   projectScriptTerminalInput,
@@ -21,7 +22,6 @@ import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -394,7 +394,14 @@ export const make = Effect.gen(function* () {
           ) {
             return Effect.void;
           }
-          return input.onOutputLine(cleaned.slice(0, OUTPUT_LINE_MAX_LENGTH));
+          return input.onOutputLine(
+            cleaned.slice(
+              0,
+              splitsSurrogatePair(cleaned, OUTPUT_LINE_MAX_LENGTH)
+                ? OUTPUT_LINE_MAX_LENGTH - 1
+                : OUTPUT_LINE_MAX_LENGTH,
+            ),
+          );
         });
 
       const unsubscribe = yield* terminalManager.subscribe((event) => {
@@ -408,7 +415,10 @@ export const make = Effect.gen(function* () {
           lineBuffer = lines.pop() ?? "";
           // Bound newline-free output; the sentinel has its own line, so retaining the tail is safe.
           if (lineBuffer.length > PARTIAL_LINE_MAX_LENGTH) {
-            lineBuffer = lineBuffer.slice(-PARTIAL_LINE_MAX_LENGTH);
+            const start = lineBuffer.length - PARTIAL_LINE_MAX_LENGTH;
+            lineBuffer = lineBuffer.slice(
+              splitsSurrogatePair(lineBuffer, start) ? start + 1 : start,
+            );
           }
           return Effect.forEach(lines, handleLine, { discard: true }).pipe(
             Effect.andThen(
@@ -485,7 +495,7 @@ export const make = Effect.gen(function* () {
           const seen = activity;
           yield* Effect.sleep(SHELL_QUIET_FALLBACK);
           if (activity !== seen) continue;
-          if (!busy) return "ready" as const;
+          if (!busy) return "quiet" as const;
           yield* input.onStartupPrompt;
         }
       });
@@ -640,39 +650,20 @@ export const make = Effect.gen(function* () {
       input.preferredTerminalId ??
       (trigger === "settle"
         ? `settle-${script.id}-${(yield* random.uuidV4()).slice(0, 8)}`
-        : `setup-${script.id}`);
-    if (
-      legacy !== undefined &&
-      (legacy.binding.threadId !== input.threadId ||
-        (input.preferredTerminalId !== undefined && input.preferredTerminalId !== terminalId) ||
-        (captured !== undefined &&
-          (captured.terminalId !== terminalId ||
-            captured.cwd !== input.worktreePath ||
-            captured.projectCwd !== project.workspaceRoot ||
-            captured.generation !== legacy.binding.generation)))
-    )
-      return yield* new ProjectSetupScriptOperationError({
-        ...errorContext,
-        operation: "openTerminal",
-        cause: new TerminalManager.LegacyTerminalControlError({
-          operation: "open",
-          detail: "Captured setup target or generation changed.",
-        }),
-      });
-    if (
-      native !== undefined &&
-      (native.control.projectCwd !== project.workspaceRoot ||
-        (input.preferredTerminalId !== undefined &&
-          input.preferredTerminalId !== native.control.terminalId))
-    )
-      return yield* new ProjectSetupScriptOperationError({
-        ...errorContext,
-        operation: "openTerminal",
-        cause: new NativeSetup.NativeSetupControlError({
-          operation: "open",
-          message: "Native setup project or terminal target changed",
-        }),
-      });
+        : `setup-${script.id}`;
+    // A surviving setup shell may still hold a deleted worktree directory.
+    if (trigger === "setup") {
+      yield* terminalManager.close({ threadId: input.threadId, terminalId }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProjectSetupScriptOperationError({
+              ...errorContext,
+              operation: "openTerminal",
+              cause,
+            }),
+        ),
+      );
+    }
     const cwd = input.worktreePath;
     const env = {
       ...projectScriptRuntimeEnv({
@@ -681,6 +672,8 @@ export const make = Effect.gen(function* () {
       }),
       // Before client attachment, truecolor probes wait for terminal replies nobody can send.
       COLORTERM: "",
+      // Project scripts keep the default shell; the preference is for interactive terminals only.
+      T3CODE_TERMINAL_SHELL: "",
     };
     const observeRequested =
       input.observeCompletion !== undefined || legacy !== undefined || native !== undefined;
@@ -947,23 +940,12 @@ export const make = Effect.gen(function* () {
       return action;
     });
 
-    const cleanupObservation = (observed?.abandon ?? Effect.void).pipe(
-      Effect.andThen(
-        Effect.sync(() => {
-          observed?.unsubscribe();
-          readiness?.unsubscribe();
-        }),
-      ),
-    );
-    if (owned) yield* Scope.addFinalizer(lifetime, cleanupObservation);
-    const written = yield* Deferred.make<void, ProjectSetupScriptRunnerError>();
-    // Return once the terminal exists; each observer awaits this same single write.
-    const writer = yield* (
-      terminalExitedBeforeShellLookup
-        ? Effect.succeed("exited" as const)
-        : selectedCompletionShell === "powershell"
-          ? Effect.succeed("ready" as const)
-          : readiness.wait
+    // Return once the terminal exists so callers can show it while a startup prompt waits.
+    // PowerShell and cmd have no line-editor signal.
+    const commandWriter = yield* (
+      completionShell === "powershell" || completionShell === null
+        ? Effect.succeed("ready" as const)
+        : readiness.wait
     ).pipe(
       Effect.flatMap(
         (
@@ -1002,7 +984,12 @@ export const make = Effect.gen(function* () {
           : Effect.logWarning("project script command was not written", {
               ...errorContext,
               terminalId,
-              cause,
+              // macOS zsh garbles long typed-ahead multiline input; a live line editor takes it as one paste.
+              data: projectScriptTerminalInput(
+                shell === "ready" && completionShell === "posix" && commandLine.includes("\r")
+                  ? `\x1b[200~${commandLine.replaceAll("\r", "\n")}\x1b[201~`
+                  : commandLine,
+              ),
             }),
       ),
       Effect.forkIn(lifetime),
@@ -1015,39 +1002,18 @@ export const make = Effect.gen(function* () {
       Effect.onInterrupt(() => (owned ? cancelPendingWrite : Effect.void)),
     );
 
-    const observedCompletion = observed?.completion.pipe(
-      Effect.tap(() => releaseWorkspaceDuty.pipe(Effect.orDie)),
-      Effect.tap((result) =>
-        finishProduction(
-          result.exitCode === null ? "cancelled" : result.exitCode === 0 ? "succeeded" : "failed",
+    const completion = observed?.completion.pipe(
+      Effect.onInterrupt(() =>
+        Fiber.interrupt(commandWriter).pipe(
+          Effect.andThen(Effect.sync(() => readiness.unsubscribe())),
+          Effect.andThen(terminalManager.close({ threadId: input.threadId, terminalId })),
+          Effect.ignore,
         ),
       ),
-      Effect.tap((result) =>
-        native !== undefined
-          ? native.afterCompletion(result).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectSetupScriptOperationError({
-                    ...errorContext,
-                    operation: "writeCommand",
-                    cause,
-                  }),
-              ),
-            )
-          : legacy === undefined
-            ? observeRequested && result.exitCode === 0
-              ? terminalManager.closeIdle({ threadId: input.threadId, terminalId })
-              : Effect.void
-            : legacy.afterCompletion(result).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProjectSetupScriptOperationError({
-                      ...errorContext,
-                      operation: "writeCommand",
-                      cause,
-                    }),
-                ),
-              ),
+      Effect.tap(({ exitCode }) =>
+        exitCode === 0
+          ? terminalManager.closeIdle({ threadId: input.threadId, terminalId })
+          : Effect.void,
       ),
     );
 

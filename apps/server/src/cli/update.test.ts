@@ -21,7 +21,7 @@ import { afterEach, vi } from "vite-plus/test";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
-import * as PinnedRuntime from "../cloud/pinnedRuntime.ts";
+import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import {
   pinnedRuntimePaths,
   posixLauncherScript,
@@ -139,6 +139,7 @@ it.layer(NodeServices.layer)("t3 update under a managed policy", (it) => {
     runUpdate({
       baseDir: "/unused",
       logsDir: "/unused",
+      databasePath: "/unused",
       serverRuntimeStatePath: "/unused",
       channel: input.channel,
       requestedVersion: input.requestedVersion,
@@ -260,6 +261,32 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       // Replaced, not written through.
       assert.equal(yield* fs.readFileString(oldExe), "");
     }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
+  );
+
+  it.effect("repoints a recorded Windows launcher outside PATH", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const baseDir = path.join(root, "home");
+      const runtimeDir = path.join(baseDir, "runtime");
+      const launcher = path.join(root, "custom bin", "t3.cmd");
+      const launchedAs = path.join(runtimeDir, "versions", "1.0.0", "t3.exe");
+      const targetEntryPath = path.join(runtimeDir, "versions", "2.0.0", "t3.exe");
+      yield* fs.makeDirectory(runtimeDir, { recursive: true });
+      yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
+      yield* fs.writeFileString(launcher, `@echo off\r\n"${launchedAs}" %*`);
+      yield* fs.writeFileString(path.join(runtimeDir, "launchers"), `${launcher}\r\n`);
+
+      const repointed = yield* repointLauncher({ launchedAs, baseDir, targetEntryPath });
+
+      assert.equal(Option.getOrUndefined(repointed), launcher);
+      assert.equal(yield* fs.readFileString(launcher), `@echo off\r\n"${targetEntryPath}" %*`);
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(HostProcess.Environment, { PATH: "" }),
+    ),
   );
 
   it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
@@ -829,16 +856,24 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
       });
       const runner = ProcessRunner.ProcessRunner.of({
         run: (input) =>
-          input.args?.includes("--version") === true
-            ? unrelatedLsof
-                .run(input)
-                .pipe(Effect.map((result) => ({ ...result, stdout: `t3 v${version}\n` })))
+          input.args?.includes("__service-preflight") === true
+            ? unrelatedLsof.run(input).pipe(
+                Effect.map((result) => ({
+                  ...result,
+                  stdout: JSON.stringify({
+                    status: "ready",
+                    version,
+                    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+                  }),
+                })),
+              )
             : unrelatedLsof.run(input),
       });
 
       const output = yield* runUpdate({
         baseDir,
         logsDir: baseDir,
+        databasePath: path.join(baseDir, "statev2.sqlite"),
         serverRuntimeStatePath: path.join(baseDir, "server-runtime.json"),
         channel: undefined,
         requestedVersion: version,
@@ -880,191 +915,133 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
   );
 });
 
-describe("t3 update release source", () => {
-  it.effect("walks only the configured source pages to find a stable release", () =>
-    Effect.gen(function* () {
-      const requests: string[] = [];
-      const client = HttpClient.make((request) => {
-        requests.push(request.url);
-        const releases =
-          requests.length === 1
-            ? [{ tag_name: "v2.0.0-nightly.20261001.1" }, { tag_name: "v2.0.0-preview.20261001.1" }]
-            : [{ tag_name: "v1.9.0", draft: true }, { tag_name: "v1.8.0" }];
-        return Effect.succeed(
-          HttpClientResponse.fromWeb(request, new Response(JSON.stringify(releases))),
-        );
-      });
-      const version = yield* resolveNewestVersion("stable").pipe(
-        Effect.provideService(HttpClient.HttpClient, client),
-      );
-      assert.equal(version, "1.8.0");
-      assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1), cliReleaseIndexPageUrl(2)]);
-    }),
-  );
+it.layer(NodeServices.layer)("t3 update checks the database before switching", (it) => {
+  const preflightOutput = (stdout: string, code = 0) => ({
+    stdout,
+    stderr: code === 0 ? "" : "Unknown command: __service-preflight",
+    code: ChildProcessSpawner.ExitCode(code),
+    timedOut: false,
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    stdoutInvalidUtf8: false,
+    stderrInvalidUtf8: false,
+  });
+  const blockedReason = "This database has migrations that t3@0.1.8 does not know: 79_example.";
 
-  it.effect.each(["nightly", "preview"] as const)(
-    "selects the %s channel from the configured source",
-    (channel) =>
-      Effect.gen(function* () {
-        const requests: string[] = [];
-        const client = HttpClient.make((request) => {
-          requests.push(request.url);
-          return Effect.succeed(
-            HttpClientResponse.fromWeb(
-              request,
-              new Response(
-                JSON.stringify([
-                  { tag_name: "v2.0.0" },
-                  { tag_name: "v2.0.0-nightly.20261001.1" },
-                  { tag_name: "v2.0.0-preview.20261001.1" },
-                ]),
-              ),
+  it.effect.each([
+    {
+      name: "installs an older target that accepts this database",
+      targetVersion: "0.1.8",
+      launcherProtocol: 3,
+      preflight: preflightOutput(
+        JSON.stringify({ status: "ready", version: "0.1.8", launcherProtocol: 3 }),
+      ),
+      failure: undefined,
+    },
+    {
+      name: "refuses an older target the database is too new for",
+      targetVersion: "0.1.8",
+      launcherProtocol: 3,
+      preflight: preflightOutput(
+        JSON.stringify({ status: "blocked", version: "0.1.8", reason: blockedReason }),
+      ),
+      failure: blockedReason,
+    },
+    {
+      name: "refuses an older target too old to check the database",
+      targetVersion: "0.1.8",
+      launcherProtocol: 3,
+      preflight: preflightOutput("", 1),
+      failure:
+        "t3@0.1.8 could not confirm it supports this database (its check exited with code 1), so t3 did not switch to it.",
+    },
+    {
+      // Newer builds keep accepting the current launcher protocol, which may drop 3.
+      name: "checks a newer target with the current launcher protocol",
+      targetVersion: "99.0.0",
+      launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+      preflight: preflightOutput(
+        JSON.stringify({
+          status: "ready",
+          version: "99.0.0",
+          launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+        }),
+      ),
+      failure: undefined,
+    },
+  ])("$name", ({ targetVersion, launcherProtocol, preflight, failure }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" });
+      const databasePath = path.join(baseDir, "userdata", "statev2.sqlite");
+      const runtime = pinnedRuntimePaths(path, baseDir, targetVersion, "linux");
+      yield* fs.makeDirectory(runtime.versionDir, { recursive: true });
+      yield* fs.writeFileString(runtime.entryPath, "");
+      yield* fs.writeFileString(runtime.sentinelPath, `${targetVersion}\n`);
+      const service = Layer.mock(BootService.BootService, {
+        status: Effect.succeed<BootService.BootServiceStatus>({
+          supported: true,
+          installed: false,
+          current: false,
+          unitPath: path.join(baseDir, "t3code.service"),
+          logPath: path.join(baseDir, "boot-service.log"),
+        }),
+      });
+      const preflightArgs: Array<ReadonlyArray<string>> = [];
+      const runner = ProcessRunner.ProcessRunner.of({
+        run: (input) => {
+          if (input.args?.includes("__service-preflight") === true) {
+            preflightArgs.push(input.args);
+            return Effect.succeed(preflight);
+          }
+          // A target's --version always answers, whatever its database support.
+          return input.args?.includes("--version") === true
+            ? Effect.succeed(preflightOutput(`t3 v${targetVersion}\n`))
+            : unrelatedLsof.run(input);
+        },
+      });
+
+      const exit = yield* runUpdate({
+        baseDir,
+        logsDir: baseDir,
+        databasePath,
+        serverRuntimeStatePath: path.join(baseDir, "server-runtime.json"),
+        channel: undefined,
+        requestedVersion: targetVersion,
+        allowDowngrade: true,
+        assumeYes: true,
+      }).pipe(
+        Effect.exit,
+        Effect.provide(
+          Layer.mergeAll(
+            service,
+            Layer.succeed(ProcessRunner.ProcessRunner, runner),
+            ManagedPolicy.layerTest(),
+            Layer.succeed(
+              HttpClient.HttpClient,
+              HttpClient.make(() => Effect.die("unexpected release lookup")),
             ),
-          );
-        });
-        const version = yield* resolveNewestVersion(channel).pipe(
-          Effect.provideService(HttpClient.HttpClient, client),
-        );
-        assert.equal(version, `2.0.0-${channel}.20261001.1`);
-        assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
-      }),
-  );
-
-  it.effect.each([404, 503])(
-    "names the configured source when unavailable (%s), without fallback",
-    (status) =>
-      Effect.gen(function* () {
-        const requests: string[] = [];
-        const client = HttpClient.make((request) => {
-          requests.push(request.url);
-          return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status })));
-        });
-        const error = yield* resolveNewestVersion("stable").pipe(
-          Effect.provideService(HttpClient.HttpClient, client),
-          Effect.flip,
-        );
-        assert.equal(error.reason, `Could not list t3 releases from ${cliReleaseIndexPageUrl(1)}.`);
-        assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
-      }),
-  );
-
-  it.effect("names the configured source on timeout, without fallback", () =>
-    Effect.gen(function* () {
-      const requests: string[] = [];
-      const client = HttpClient.make((request) => {
-        requests.push(request.url);
-        return Effect.never;
-      });
-      const lookup = yield* resolveNewestVersion("stable").pipe(
-        Effect.provideService(HttpClient.HttpClient, client),
-        Effect.flip,
-        Effect.forkChild,
+            Layer.fresh(TestConsole.layer),
+          ),
+        ),
       );
-      yield* TestClock.adjust(Duration.seconds(30));
-      const error = yield* Fiber.join(lookup);
-      assert.equal(
-        error.reason,
-        `Timed out listing t3 releases from ${cliReleaseIndexPageUrl(1)}.`,
-      );
-      assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
-    }),
-  );
 
-  it.effect.each(["not json", "{}", '[{"draft":false}]'])(
-    "names the configured source for malformed index %s, without fallback",
-    (body) =>
-      Effect.gen(function* () {
-        const requests: string[] = [];
-        const client = HttpClient.make((request) => {
-          requests.push(request.url);
-          return Effect.succeed(HttpClientResponse.fromWeb(request, new Response(body)));
-        });
-        const error = yield* resolveNewestVersion("stable").pipe(
-          Effect.provideService(HttpClient.HttpClient, client),
-          Effect.flip,
-        );
-        assert.equal(
-          error.reason,
-          `The t3 release index from ${cliReleaseIndexPageUrl(1)} had an unexpected shape.`,
-        );
-        assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
-      }),
-  );
-
-  it.effect("names the configured source when the channel is unpublished, without fallback", () =>
-    Effect.gen(function* () {
-      const requests: string[] = [];
-      const client = HttpClient.make((request) => {
-        requests.push(request.url);
-        return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("[]")));
-      });
-      const error = yield* resolveNewestVersion("preview").pipe(
-        Effect.provideService(HttpClient.HttpClient, client),
-        Effect.flip,
-      );
-      assert.equal(
-        error.reason,
-        `No published preview release was found in ${cliReleaseIndexPageUrl(1)}.`,
-      );
-      assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
-    }),
-  );
-
-  it.effect(
-    "bounds pagination to ten configured source pages when the channel is unpublished",
-    () =>
-      Effect.gen(function* () {
-        const requests: string[] = [];
-        const client = HttpClient.make((request) => {
-          requests.push(request.url);
-          return Effect.succeed(
-            HttpClientResponse.fromWeb(
-              request,
-              new Response(JSON.stringify([{ tag_name: "v2.0.0-nightly.20261001.1" }])),
-            ),
-          );
-        });
-        const error = yield* resolveNewestVersion("stable").pipe(
-          Effect.provideService(HttpClient.HttpClient, client),
-          Effect.flip,
-        );
-        assert.equal(
-          error.reason,
-          `No published stable release was found in ${cliReleaseIndexPageUrl(1)}.`,
-        );
-        assert.deepStrictEqual(
-          requests,
-          Array.from({ length: 10 }, (_, index) => cliReleaseIndexPageUrl(index + 1)),
-        );
-      }),
-  );
-});
-
-it("recognizes only the Jones service cgroup for legacy server lineage", () => {
-  assert.isTrue(
-    isJonesBootServiceCgroup("0::/user.slice/user-501.slice/app.slice/jones-code.service"),
-  );
-  assert.isTrue(isJonesBootServiceCgroup("1:name=systemd:/user.slice/jones-code.service/worker"));
-  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/t3code.service"));
-  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/not-jones-code.service"));
-  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/jones-code.service-extra"));
-});
-
-it("recognizes only the exact adopted system unit outside the user hierarchy", () => {
-  assert.isTrue(
-    isJonesBootServiceCgroup("0::/system.slice/t3code.service/child", "t3code.service"),
-  );
-  assert.isTrue(
-    isJonesBootServiceCgroup(
-      "0::/hostdev.slice/host-tooling-t3.service",
-      "host-tooling-t3.service",
-    ),
-  );
-  assert.isFalse(isJonesBootServiceCgroup("0::/system.slice/not-t3code.service", "t3code.service"));
-  assert.isFalse(
-    isJonesBootServiceCgroup(
-      "0::/user.slice/user-1000.slice/user@1000.service/app.slice/t3code.service",
-      "t3code.service",
+      const error = Option.getOrUndefined(Exit.findErrorOption(exit));
+      assert.equal(error?.message, failure);
+      assert.equal(Exit.isSuccess(exit), failure === undefined);
+      assert.deepEqual(preflightArgs, [
+        [
+          "__service-preflight",
+          "--database-path",
+          databasePath,
+          "--launcher-protocol",
+          String(launcherProtocol),
+        ],
+      ]);
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provideService(HostProcess.Environment, { PATH: "" }),
     ),
   );
 });

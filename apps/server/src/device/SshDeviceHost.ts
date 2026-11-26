@@ -80,13 +80,7 @@ const Probe = Schema.Struct({
 const Started = Schema.Struct({
   ...Probe.fields,
   hubPort: Schema.Int,
-  directMedia: Schema.optionalKey(
-    Schema.Struct({
-      gatewayPort: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
-      admissionPort: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
-      generation: Schema.String,
-    }),
-  ),
+  hubToken: Schema.String,
   daemonPort: Schema.optionalKey(Schema.Int),
   token: Schema.optionalKey(Schema.String),
   entryPath: Schema.optionalKey(Schema.String),
@@ -537,19 +531,19 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
                   ),
             ),
         }),
-        ...(endpoint ? { directMedia: endpoint } : {}),
-        ...(remote.daemonPort !== undefined &&
-        remote.token !== undefined &&
-        remote.entryPath !== undefined
-          ? {
-              agentDevice: {
-                baseUrl: `http://127.0.0.1:${daemonPort}`,
-                token: remote.token,
-                entryPath: remote.entryPath,
-              },
-            }
-          : {}),
-        helpers: remote.helpers,
+      ),
+      Effect.forkIn(scope),
+    );
+    const hubOrigin = `http://127.0.0.1:${hubPort}`;
+    const next = {
+      nodePath: remote.nodePath,
+      // The forward and the remote hub both require the hub's token.
+      hub: { origin: hubOrigin, token: remote.hubToken },
+      devices: makeDeviceHubOperations({
+        hostId: config.id,
+        origin: hubOrigin,
+        token: remote.hubToken,
+        http,
         run,
       };
       const gatewayHealth = directGatewayHealth(

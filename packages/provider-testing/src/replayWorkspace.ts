@@ -7,6 +7,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { unsetInheritedGitRepositoryEnv } from "@t3tools/shared/testing/gitRepositoryEnv";
 
 class ReplayFixtureGitCommandError extends Schema.TaggedError<ReplayFixtureGitCommandError>()(
   "ReplayFixtureGitCommandError",
@@ -23,6 +25,10 @@ class ReplayFixtureGitCommandError extends Schema.TaggedError<ReplayFixtureGitCo
   }
 }
 
+// `git commit` otherwise leaves a detached `git maintenance run --auto` behind, which can still
+// be writing into `.git` when a test removes the workspace (ENOTEMPTY).
+const NO_BACKGROUND_MAINTENANCE = ["-c", "maintenance.auto=false", "-c", "gc.auto=0"];
+
 function runGit(
   cwd: string,
   args: ReadonlyArray<string>,
@@ -34,29 +40,13 @@ function runGit(
 > {
   return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const child = yield* spawner.spawn(
-      ChildProcess.make("git", args, {
+    const env = unsetInheritedGitRepositoryEnv(process.env, yield* HostProcess.Platform);
+    const exitCode = yield* spawner.exitCode(
+      ChildProcess.make("git", [...NO_BACKGROUND_MAINTENANCE, ...args], {
         cwd,
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "pipe",
+        env,
+        extendEnv: true,
       }),
-    );
-    let stderr = "";
-    const [exitCode] = yield* Effect.all(
-      [
-        child.exitCode,
-        child.stderr.pipe(
-          Stream.decodeText(),
-          Stream.runForEach((chunk) =>
-            Effect.sync(() => {
-              stderr = (stderr + chunk).slice(-8192);
-            }),
-          ),
-          Effect.ignore,
-        ),
-      ],
-      { concurrency: "unbounded" },
     );
     if (Number(exitCode) !== 0) {
       return yield* new ReplayFixtureGitCommandError({

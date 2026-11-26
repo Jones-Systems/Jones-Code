@@ -270,13 +270,15 @@ parentPort.on("message", (request) => {
     parentPort.close();
     return;
   }
-  const { id, sql, params, cached, values, raw, safeIntegers, received } = request;
+  const { id, sql, params, cached, values, raw, safeIntegers, received, savepoints } = request;
   let operation = "open";
   const started = process.hrtime.bigint();
   const timing = () => ({ durationMs: Number(process.hrtime.bigint() - started) / 1e6, sentAtMs: Number(process.hrtime.bigint()) / 1e6 });
   let iterator;
   try {
     if (db === undefined) throw new Error("database connection is unavailable");
+    operation = "execute";
+    for (const savepoint of savepoints) db.exec(savepoint);
     operation = "prepare";
     const statement = prepare(sql, cached);
     operation = "execute";
@@ -309,6 +311,8 @@ parentPort.on("message", (request) => {
       if (pendingBatch) Atomics.wait(received, 0, 0);
       parentPort.postMessage({ id, rows, isTransaction: db.isTransaction, ...timing() });
     } else {
+      // A discarded result is read as BigInt: see the same line in the in-process client.
+      if (!raw) statement.setReadBigInts(true);
       const result = statement.run(...params);
       parentPort.postMessage({ id, rows: raw ? result : [], isTransaction: db.isTransaction, ...timing() });
     }
@@ -407,6 +411,8 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
       }
     | undefined;
   let nextRequestId = 0;
+  // Materialize nested savepoints with the next statement; empty jobs need no worker round trip.
+  const pendingSavepoints: string[] = [];
   // A replacement writer would lose the pragmas callers set on it, such as foreign_keys.
   let writerStopped: string | undefined;
   // Retired generations remain owned until termination completes, even after current is cleared.
@@ -525,8 +531,18 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
           });
           if (pending.size === 1) worker.ref();
           const cached = input.cached && !hasLargeBinding(input.params);
+          const message = {
+            id,
+            safeIntegers,
+            ...input,
+            cached,
+            received,
+            savepoints: [...pendingSavepoints],
+          };
           // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Node workers do not accept a target origin.
-          worker.postMessage({ id, safeIntegers, ...input, cached, received });
+          worker.postMessage(message);
+          // An unsent savepoint must stay queued, or its rollback would target an older sibling's.
+          pendingSavepoints.length = 0;
         });
         // A posted write runs to the end, as it did on the event loop; the caller and its lock
         // must not move on while the worker is still applying it. Reads stay cancellable.
@@ -550,12 +566,27 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
       executeUnprepared(sql, params, rowTransform) {
         // Read snapshots need deferred BEGIN; readonly connections reject IMMEDIATE and EXCLUSIVE.
         const statement = readOnly && /^\s*BEGIN\b/i.test(sql) ? "BEGIN" : sql;
-        const effect = request({
-          sql: statement,
-          params: params ?? [],
-          cached: false,
-          values: false,
-          raw: false,
+        const effect = Effect.suspend(() => {
+          if (!readOnly && /^SAVEPOINT effect_sql_\d+$/.test(statement)) {
+            pendingSavepoints.push(statement);
+            return Effect.succeed([]);
+          }
+          const rollback = /^ROLLBACK TO SAVEPOINT (effect_sql_\d+)$/.exec(statement);
+          if (rollback !== null) {
+            const pending = pendingSavepoints.lastIndexOf(`SAVEPOINT ${rollback[1]}`);
+            if (pending !== -1) {
+              pendingSavepoints.splice(pending);
+              return Effect.succeed([]);
+            }
+          }
+          if (statement === "COMMIT" || statement === "ROLLBACK") pendingSavepoints.length = 0;
+          return request({
+            sql: statement,
+            params: params ?? [],
+            cached: false,
+            values: false,
+            raw: false,
+          });
         });
         return rowTransform ? Effect.map(effect, rowTransform) : effect;
       },
@@ -2070,10 +2101,32 @@ const make = Effect.fn("makeWithDatabase")(function* (
       mode: "rows" | "raw" | "values" = "rows",
     ) =>
       Effect.withFiber<ReadonlyArray<any>, SqlError>((fiber) => {
-        const classification = checkpointClassifications.get(statement);
-        const execute = () => {
-          let arrays = false;
-          let result: Exit.Exit<ReadonlyArray<unknown>, SqlError>;
+        let arrays = false;
+        let result: Exit.Exit<ReadonlyArray<unknown>, SqlError>;
+        try {
+          statement.setReadBigInts(Boolean(Context.get(fiber.context, Client.SafeIntegers)));
+          if (hasRows(statement)) {
+            arrays = mode === "values";
+            if (arrays) statement.setReturnArrays(true);
+            result = Exit.succeed(statement.all(...(params as any)));
+          } else {
+            // `run` reports the connection's last insert rowid even for BEGIN. One above 2^53
+            // throws on conversion after the statement already took effect, so a discarded
+            // result is read as BigInt.
+            if (mode !== "raw") statement.setReadBigInts(true);
+            const value = statement.run(...(params as any));
+            result = Exit.succeed(
+              mode === "raw" ? (value as unknown as ReadonlyArray<unknown>) : [],
+            );
+          }
+        } catch (cause) {
+          result = Exit.fail(
+            new SqlError({
+              reason: classifyError(cause, "Failed to execute statement", "execute"),
+            }),
+          );
+        }
+        if (arrays) {
           try {
             const value = withClassification(classification, () => {
               statement.setReadBigInts(Boolean(Context.get(fiber.context, Client.SafeIntegers)));

@@ -1,3 +1,5 @@
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 import {
   ORCHESTRATION_V2_WS_METHODS,
   type EnvironmentId,
@@ -11,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -24,6 +27,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { AsyncResult, Atom } from "effect/reactivity";
 
+import { observeServerTime } from "../clock.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import { connectionProjectionPhase, type PreparedConnection } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
@@ -97,7 +101,12 @@ function withoutDeferredPullRequests(value: DeferredShellSnapshot): Orchestratio
   return snapshot;
 }
 
-const SHELL_SYNCHRONIZATION_ERROR_MESSAGE = "Could not synchronize environment data.";
+const SHELL_SYNCHRONIZATION_ERROR_MESSAGE = msg("Could not synchronize environment data.");
+
+/** @public The shell's sync error in the active language; other messages stay as they are. */
+export function shellErrorText(error: string, resolve: MFunctionType = mFallback): string {
+  return error === SHELL_SYNCHRONIZATION_ERROR_MESSAGE ? resolve(error) : error;
+}
 
 /**
  * Replay does not refresh the older-settled cut, rows that left the newest window, or
@@ -332,42 +341,36 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     canCommit: () => boolean = () => true,
   ) {
     const fromHttp = pendingLinkIds !== undefined;
-    const now = yield* Clock.currentTimeMillis;
-    yield* SubscriptionRef.modify(state, (initial) => {
-      if (!canCommit()) return [undefined, initial] as const;
-      let waiting = Ref.getUnsafe(awaitingCompletion);
-      let snapshotRequired = false;
-      let changed: OrchestrationV2ShellSnapshot | undefined;
-      let nextOrigin = Ref.getUnsafe(origin);
-      const disconnected = initial.status === "empty" || initial.status === "cached";
-      let next = initial;
-      let receivedAuthoritativeSnapshot = false;
-      for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-        const item = items[itemIndex]!;
-        if (item.kind === "snapshot-required") {
-          snapshotRequired = true;
-          continue;
-        }
-        if (
-          refreshedAt.size === 0 &&
-          Option.isSome(next.snapshot) &&
-          item.kind !== "snapshot" &&
-          item.kind !== "synchronized" &&
-          item.kind !== "thread.refreshed" &&
-          item.kind !== "thread.omitted"
-        ) {
-          const batch: ShellStreamEvent[] = [];
-          let sequence = next.snapshot.value.snapshotSequence;
-          let removals: Map<ThreadId, number> | undefined;
-          while (itemIndex < items.length) {
-            const delta = items[itemIndex]!;
-            if (
-              delta.kind === "snapshot" ||
-              delta.kind === "snapshot-required" ||
-              delta.kind === "synchronized" ||
-              delta.kind === "thread.refreshed" ||
-              delta.kind === "thread.omitted"
-            )
+    const disconnected = initial.status === "empty" || initial.status === "cached";
+    let waiting = yield* Ref.get(awaitingCompletion);
+    let next = initial;
+    let receivedAuthoritativeSnapshot = false;
+    let snapshotRequired = false;
+    let deltas: Array<ShellStreamEvent> = [];
+    const receivedAtMs = yield* Clock.currentTimeMillis;
+    const flushDeltas = () => {
+      if (deltas.length > 0 && Option.isSome(next.snapshot)) {
+        let sequence = next.snapshot.value.snapshotSequence;
+        let removedAt: Map<ThreadId, number> | undefined;
+        for (const delta of deltas) {
+          if (delta.sequence <= sequence) continue;
+          switch (delta.kind) {
+            case "thread.removed":
+              removedAt ??= new Map(next.removedAt);
+              removedAt.set(delta.threadId, delta.sequence);
+              break;
+            case "thread.updated":
+              // Replayed catch-up deltas may predate a backward host clock correction.
+              if (!waiting) {
+                observeServerTime(
+                  environmentId,
+                  DateTime.toEpochMillis(delta.thread.updatedAt),
+                  receivedAtMs,
+                );
+              }
+              break;
+            case "project.updated":
+            case "project.removed":
               break;
             batch.push(delta);
             if (

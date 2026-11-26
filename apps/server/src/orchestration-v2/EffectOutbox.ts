@@ -24,20 +24,117 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { forkParked } from "../serverActivation.ts";
 
-import {
-  enqueue as enqueueEffects,
-  EffectOutboxError,
-  NativeOrchestrationEffectPayloadV2,
-  OrchestrationEffectRequestV2,
-  type PendingOrchestrationEffectV2,
-} from "./EffectOutboxEnqueue.ts";
-
-export {
-  EffectOutboxError,
-  NativeOrchestrationEffectPayloadV2,
-  OrchestrationEffectRequestV2,
-  type PendingOrchestrationEffectV2,
-} from "./EffectOutboxEnqueue.ts";
+export const OrchestrationEffectRequestV2 = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("provider-runtime.continue"),
+    sourceRunId: RunId,
+    processLossCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    /** Set when the provider process exited under a live server; absent means a server restart. */
+    cause: Schema.optional(Schema.Literal("provider_exit")),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-session.detach"),
+    providerSessionId: ProviderSessionId,
+    detail: Schema.optional(Schema.String),
+    revokeMcpCredential: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-session.apply-model-selection"),
+    providerSessionId: ProviderSessionId,
+    providerThreadId: ProviderThreadId,
+    modelSelection: ModelSelection,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-session.apply-thread-title"),
+    title: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.start"),
+    runId: RunId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.interrupt"),
+    providerSessionId: ProviderSessionId,
+    providerThreadId: ProviderThreadId,
+    providerTurnId: ProviderTurnId,
+    subagent: Schema.optional(Schema.Struct({ id: NodeId, nativeTaskId: Schema.String })),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.steer"),
+    providerSessionId: ProviderSessionId,
+    providerThreadId: ProviderThreadId,
+    providerTurnId: ProviderTurnId,
+    messageId: MessageId,
+    modelSelection: Schema.optional(ModelSelection),
+    steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.restart"),
+    providerSessionId: ProviderSessionId,
+    providerThreadId: ProviderThreadId,
+    providerTurnId: ProviderTurnId,
+    interruptedAttemptId: RunAttemptId,
+    runId: RunId,
+    sessionTransition: Schema.optional(
+      Schema.Union([
+        Schema.Struct({
+          type: Schema.Literal("replace"),
+          replacementProviderSessionId: ProviderSessionId,
+        }),
+        Schema.Struct({ type: Schema.Literal("detach") }),
+      ]),
+    ),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("runtime-request.respond"),
+    providerSessionId: ProviderSessionId,
+    requestId: RuntimeRequestId,
+    decision: Schema.optional(ProviderApprovalDecision),
+    feedback: Schema.optional(Schema.String),
+    answers: Schema.optional(ProviderUserInputAnswers),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-thread.rollback"),
+    restoreFiles: Schema.optional(Schema.Boolean),
+    providerThreadId: ProviderThreadId,
+    checkpointId: CheckpointId,
+    scopeId: CheckpointScopeId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("checkpoint.capture"),
+    runId: RunId,
+    scopeId: CheckpointScopeId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("scheduled-tasks.cleanup"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("terminal.cleanup"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("preview.cleanup"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("attachment.cleanup"),
+    attachmentIds: Schema.Array(Schema.String),
+    skipReferenced: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread-content.purge"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread-title.generate"),
+    kind: Schema.Union([
+      Schema.Struct({ type: Schema.Literal("initial"), messageId: MessageId }),
+      Schema.Struct({ type: Schema.Literal("regenerate") }),
+    ]),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("delegated-tasks.stop"),
+    reason: Schema.optional(Schema.String),
+  }),
+]);
+export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-runtime.continue",
@@ -48,6 +145,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "terminal.cleanup",
   "preview.cleanup",
   "attachment.cleanup",
+  "thread-content.purge",
   "thread-title.generate",
   "delegated-tasks.stop",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
@@ -112,9 +210,11 @@ export interface EffectOutboxV2Shape {
   readonly listByCommandId: (
     commandId: CommandId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
-  readonly listByThreadId: (
+  /** A message's first steer effect: it records which runs were queued before the message. */
+  readonly firstSteer: (
     threadId: ThreadId,
-  ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
+    messageId: MessageId,
+  ) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly cancelUnsettled: (input: {
     readonly threadId: ThreadId;
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
@@ -497,14 +597,23 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               : new EffectOutboxError({ operation: "list", cause }),
           ),
         ),
-      listByThreadId: (threadId) =>
-        sql<EffectRow>`SELECT * FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId}
-          ORDER BY created_at ASC, effect_id ASC`.pipe(
-          Effect.flatMap((rows) => decodeRows("list-thread", rows)),
+      firstSteer: (threadId, messageId) =>
+        sql<EffectRow>`
+          SELECT *
+          FROM orchestration_v2_effect_outbox
+          WHERE thread_id = ${threadId}
+            AND effect_type = 'provider-turn.steer'
+            AND json_extract(payload_json, '$.messageId') = ${messageId}
+          ORDER BY rowid ASC
+          LIMIT 1
+        `.pipe(
+          NodeSqliteClient.readOnly,
+          Effect.flatMap((rows) => decodeRows("first-steer", rows)),
+          Effect.map((effects) => Option.fromNullishOr(effects[0])),
           Effect.mapError((cause) =>
             isEffectOutboxError(cause)
               ? cause
-              : new EffectOutboxError({ operation: "list-thread", cause }),
+              : new EffectOutboxError({ operation: "first-steer", cause }),
           ),
         ),
       cancelUnsettled: Effect.fn("EffectOutbox.cancelUnsettled")(

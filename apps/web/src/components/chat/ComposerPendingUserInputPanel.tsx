@@ -8,7 +8,8 @@ import {
 } from "../../jones/questionAnswer/questionAnswerCard";
 import { type RuntimeRequestId, type ScopedThreadRef } from "@t3tools/contracts";
 import { markdownProseDirection, textDirection } from "~/textDirection";
-import { memo, use, useEffect, useEffectEvent, useState } from "react";
+import { useGT } from "gt-react";
+import { memo, use, useEffect, useEffectEvent, useRef, useState } from "react";
 import { BackgroundThreadContext } from "./backgroundThread";
 import { type PendingUserInput } from "../../session-logic";
 import type { PendingUserInputDraftAnswer } from "@t3tools/client-runtime/state/pending-user-input";
@@ -110,6 +111,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   onAdvance: () => void;
   onDismiss: (requestId: RuntimeRequestId) => void;
 }) {
+  const gt = useGT();
   // Message-mode requests remain answerable after their provider turn ends.
   const canRespond = prompt.responseCapability !== "not_resumable";
   const responseDisabled = disabled || isResponding || !canRespond;
@@ -140,8 +142,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   useEffect(() => {
     if (!activeQuestion || responseDisabled || isCollapsed || backgroundThread) return;
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (event.repeat || event.isComposing) return;
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target;
       if (isInSideChatPane(target)) return;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
@@ -184,24 +185,30 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   const questionTextAlign = promptDirection === "rtl" ? "text-right" : "text-left";
 
   return (
-    <ComposerBanner.Scroll>
-      <Collapsible
-        dir={promptDirection}
-        open={!isCollapsed}
-        onOpenChange={(open) => {
-          setCollapsedQuestionId(open ? null : activeQuestion.id);
-        }}
+    <Collapsible
+      dir={promptDirection}
+      open={!isCollapsed}
+      onOpenChange={(open) => {
+        setCollapsedQuestionId(open ? null : activeQuestion.id);
+      }}
+    >
+      <CollapsibleTrigger
+        render={<ComposerBanner.Row render={<button type="button" />} />}
+        title={
+          isCollapsed
+            ? gt("Show the question and its options")
+            : gt("Hide the question and its options")
+        }
+        data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
+        className="px-4 py-1.5"
       >
-        <ComposerBanner.Row className="flex flex-wrap items-center gap-2 px-4 pt-1.5 @max-[18rem]:px-2">
-          <CollapsibleTrigger
-            render={<button type="button" />}
-            title={
-              isCollapsed
-                ? "Show the question and its options"
-                : "Hide the question and its options"
-            }
-            data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
-            className="flex min-w-0 flex-1 basis-32 items-center gap-2 rounded outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        <ComposerBanner.Content>
+          <span
+            className={cn(
+              "min-w-0 text-muted-foreground",
+              isCollapsed ? "max-w-1/2 truncate" : "wrap-anywhere",
+            )}
+            dir={textDirection(activeQuestion.header)}
           >
             <ComposerBanner.Content>
               <span
@@ -243,9 +250,10 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           />
           {prompt.dismissible ? (
             <ComposerBanner.Dismiss
-              aria-label="Dismiss question without answering"
-              title="Dismiss question without answering"
-              disabled={disabled || isResponding}
+              render={<span role="button" tabIndex={0} />}
+              aria-label={gt("Dismiss question without answering")}
+              title={gt("Dismiss question without answering")}
+              disabled={isResponding}
               data-pending-user-input-dismiss
               onClick={() => {
                 if (!disabled && !isResponding) onDismiss(prompt.requestId);

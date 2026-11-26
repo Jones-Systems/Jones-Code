@@ -1,15 +1,13 @@
 import { isElectron } from "./env";
 import { isHostedStaticApp } from "./hostedPairing";
 import { showBootError } from "./lib/bootError";
+import { chunkLoadState, handleChunkLoadErrors } from "./lib/chunkReloadGuard";
 
-// Bundled dev can move UI code into shared chunks. Load it only after this
-// entry runs the React refresh preamble, and catch failures before React mounts.
-const standaloneQueue =
-  !isElectron &&
-  typeof window !== "undefined" &&
-  window.location?.pathname === "/work-queue" &&
-  isHostedStaticApp();
+handleChunkLoadErrors();
 
-void (
-  standaloneQueue ? import("./workQueuePreview") : import("./main").then(({ startup }) => startup)
-).catch(showBootError);
+// Shared dev chunks need the React refresh preamble first. Catch failures before React mounts.
+export const boot = import("./main")
+  .then(({ startup }) => startup)
+  .catch((error: unknown) => {
+    if (!chunkLoadState.reloadScheduled) showBootError(error);
+  });

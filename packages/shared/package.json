@@ -55,6 +55,10 @@
       "types": "./src/projectFavicon.ts",
       "import": "./src/projectFavicon.ts"
     },
+    "./projectMonogram": {
+      "types": "./src/projectMonogram.ts",
+      "import": "./src/projectMonogram.ts"
+    },
     "./mobileSourceMaps": {
       "types": "./src/mobileSourceMaps.ts",
       "import": "./src/mobileSourceMaps.ts"
@@ -107,6 +111,14 @@
       "types": "./src/shell.ts",
       "import": "./src/shell.ts"
     },
+    "./appImageRuntimeEnv": {
+      "types": "./src/appImageRuntimeEnv.ts",
+      "import": "./src/appImageRuntimeEnv.ts"
+    },
+    "./windowsSystem": {
+      "types": "./src/windowsSystem.ts",
+      "import": "./src/windowsSystem.ts"
+    },
     "./envTrampoline": {
       "types": "./src/envTrampoline.ts",
       "import": "./src/envTrampoline.ts"
@@ -139,6 +151,10 @@
       "types": "./src/schemaYaml.ts",
       "import": "./src/schemaYaml.ts"
     },
+    "./grepOutput": {
+      "types": "./src/grepOutput.ts",
+      "import": "./src/grepOutput.ts"
+    },
     "./toolActivity": {
       "types": "./src/toolActivity.ts",
       "import": "./src/toolActivity.ts"
@@ -150,6 +166,10 @@
     "./toolOutput": {
       "types": "./src/toolOutput.ts",
       "import": "./src/toolOutput.ts"
+    },
+    "./appLinks": {
+      "types": "./src/appLinks.ts",
+      "import": "./src/appLinks.ts"
     },
     "./htmlRender": {
       "types": "./src/htmlRender.ts",
@@ -206,6 +226,10 @@
     "./desktopBootstrapToken": {
       "types": "./src/desktopBootstrapToken.ts",
       "import": "./src/desktopBootstrapToken.ts"
+    },
+    "./desktopReadinessProof": {
+      "types": "./src/desktopReadinessProof.ts",
+      "import": "./src/desktopReadinessProof.ts"
     },
     "./dpopCommon": {
       "types": "./src/dpopCommon.ts",
@@ -371,9 +395,17 @@
       "types": "./src/managedPolicyFile.ts",
       "import": "./src/managedPolicyFile.ts"
     },
+    "./FeatureFlags": {
+      "types": "./src/FeatureFlags.ts",
+      "import": "./src/FeatureFlags.ts"
+    },
     "./HostProcess": {
       "types": "./src/HostProcess.ts",
       "import": "./src/HostProcess.ts"
+    },
+    "./testing/gitRepositoryEnv": {
+      "types": "./src/testing/gitRepositoryEnv.ts",
+      "import": "./src/testing/gitRepositoryEnv.ts"
     },
     "./testing/longTempDir": {
       "types": "./src/testing/longTempDir.ts",
@@ -447,6 +479,10 @@
       "types": "./src/t3McpToolPresentation.ts",
       "import": "./src/t3McpToolPresentation.ts"
     },
+    "./t3McpToolPresentationCopy": {
+      "types": "./src/t3McpToolPresentationCopy.ts",
+      "import": "./src/t3McpToolPresentationCopy.ts"
+    },
     "./Array": {
       "types": "./src/Array.ts",
       "import": "./src/Array.ts"
@@ -454,6 +490,10 @@
     "./orchestrationV2PendingBackgroundWork": {
       "types": "./src/orchestrationV2PendingBackgroundWork.ts",
       "import": "./src/orchestrationV2PendingBackgroundWork.ts"
+    },
+    "./orchestrationV2ManualContinuation": {
+      "types": "./src/orchestrationV2ManualContinuation.ts",
+      "import": "./src/orchestrationV2ManualContinuation.ts"
     },
     "./hostClassification": {
       "types": "./src/hostClassification.ts",
@@ -483,6 +523,10 @@
       "types": "./src/codexAuthHandoff.ts",
       "import": "./src/codexAuthHandoff.ts"
     },
+    "./oauthCallback": {
+      "types": "./src/oauthCallback.ts",
+      "import": "./src/oauthCallback.ts"
+    },
     "./codexArtifactTemplates": {
       "types": "./src/codexArtifactTemplates.ts",
       "import": "./src/codexArtifactTemplates.ts"
@@ -498,6 +542,14 @@
     "./markdownGithubAlerts": {
       "types": "./src/markdownGithubAlerts.ts",
       "import": "./src/markdownGithubAlerts.ts"
+    },
+    "./markdownChunks": {
+      "types": "./src/markdownChunks.ts",
+      "import": "./src/markdownChunks.ts"
+    },
+    "./markdownHast": {
+      "types": "./src/markdownHast.ts",
+      "import": "./src/markdownHast.ts"
     },
     "./markdownFrontmatter": {
       "types": "./src/markdownFrontmatter.ts",
@@ -583,93 +635,61 @@
       "types": "./src/pinOrderKey.ts",
       "import": "./src/pinOrderKey.ts"
     },
-    "./jones/sqliteReaders/admissionFailure": {
-      "types": "./src/jones/sqliteReaders/admissionFailure.ts",
-      "import": "./src/jones/sqliteReaders/admissionFailure.ts"
+    "./usageLimitsCopy": {
+      "types": "./src/usageLimitsCopy.ts",
+      "import": "./src/usageLimitsCopy.ts"
     },
-    "./jones/documentMarkdownAst": {
-      "types": "./src/jones/documentMarkdownAst.ts",
-      "import": "./src/jones/documentMarkdownAst.ts"
+    "./usageFormatCopy": {
+      "types": "./src/usageFormatCopy.ts",
+      "import": "./src/usageFormatCopy.ts"
     },
-    "./jones/shutdownBudget": {
-      "types": "./src/jones/shutdownBudget.ts",
-      "import": "./src/jones/shutdownBudget.ts"
+    "./speechCopy": {
+      "types": "./src/speechCopy.ts",
+      "import": "./src/speechCopy.ts"
     },
-    "./jones/sqliteReadPriority": {
-      "types": "./src/jones/sqliteReadPriority.ts",
-      "import": "./src/jones/sqliteReadPriority.ts"
+    "./threadLinksCopy": {
+      "types": "./src/threadLinksCopy.ts",
+      "import": "./src/threadLinksCopy.ts"
     },
-    "./jones/sqliteReaderContracts": {
-      "types": "./src/jones/sqliteReaderContracts.ts",
-      "import": "./src/jones/sqliteReaderContracts.ts"
+    "./terminalLabelsCopy": {
+      "types": "./src/terminalLabelsCopy.ts",
+      "import": "./src/terminalLabelsCopy.ts"
     },
-    "./jones/queuedSteerBatch": {
-      "types": "./src/jones/queuedSteerBatch.ts",
-      "import": "./src/jones/queuedSteerBatch.ts"
+    "./projectScriptsCopy": {
+      "types": "./src/projectScriptsCopy.ts",
+      "import": "./src/projectScriptsCopy.ts"
     },
-    "./jones/desktopNativeOwner": {
-      "types": "./src/jones/desktopNativeOwner.ts",
-      "import": "./src/jones/desktopNativeOwner.ts"
+    "./orchestrationTimingCopy": {
+      "types": "./src/orchestrationTimingCopy.ts",
+      "import": "./src/orchestrationTimingCopy.ts"
     },
-    "./jones/nativeWriterFence": {
-      "types": "./src/jones/nativeWriterFence.ts",
-      "import": "./src/jones/nativeWriterFence.ts"
+    "./codexArtifactTemplatesCopy": {
+      "types": "./src/codexArtifactTemplatesCopy.ts",
+      "import": "./src/codexArtifactTemplatesCopy.ts"
     },
-    "./jones/pinOrder": {
-      "types": "./src/jones/pinOrder.ts",
-      "import": "./src/jones/pinOrder.ts"
+    "./toolActivityCopy": {
+      "types": "./src/toolActivityCopy.ts",
+      "import": "./src/toolActivityCopy.ts"
     },
-    "./jones/composerThreadQuery": {
-      "types": "./src/jones/composerThreadQuery.ts",
-      "import": "./src/jones/composerThreadQuery.ts"
+    "./promptLinksCopy": {
+      "types": "./src/promptLinksCopy.ts",
+      "import": "./src/promptLinksCopy.ts"
     },
-    "./jones/previewCompanionProduct": {
-      "types": "./src/jones/previewCompanionProduct.ts",
-      "import": "./src/jones/previewCompanionProduct.ts"
+    "./paletteSearchCopy": {
+      "types": "./src/paletteSearchCopy.ts",
+      "import": "./src/paletteSearchCopy.ts"
     },
-    "./jones/previewCompanionFraming": {
-      "types": "./src/jones/previewCompanionFraming.ts",
-      "import": "./src/jones/previewCompanionFraming.ts"
+    "./markdownTaskEdits": {
+      "types": "./src/markdownTaskEdits.ts",
+      "import": "./src/markdownTaskEdits.ts"
     },
-    "./jones/importedHistoryCanonical": {
-      "types": "./src/jones/importedHistoryCanonical.ts",
-      "import": "./src/jones/importedHistoryCanonical.ts"
+    "./threadFindBlockTags": {
+      "types": "./src/threadFindBlockTags.ts",
+      "import": "./src/threadFindBlockTags.ts"
     },
-    "./jones/workMode": {
-      "types": "./src/jones/workMode.ts",
-      "import": "./src/jones/workMode.ts"
-    },
-    "./conversationLibrary": {
-      "types": "./src/conversationLibrary.ts",
-      "import": "./src/conversationLibrary.ts"
-    },
-    "./jones/buildTime": {
-      "types": "./src/jones/buildTime.ts",
-      "import": "./src/jones/buildTime.ts"
-    },
-    "./jones/jonesActions": {
-      "types": "./src/jones/jonesActions.ts",
-      "import": "./src/jones/jonesActions.ts"
-    },
-    "./jones/threadAttention": {
-      "types": "./src/jones/threadAttention.ts",
-      "import": "./src/jones/threadAttention.ts"
-    },
-    "./jones/threadReferenceExcerpt": {
-      "types": "./src/jones/threadReferenceExcerpt.ts",
-      "import": "./src/jones/threadReferenceExcerpt.ts"
-    },
-    "./jones/linkedThreads/handoffText": {
-      "types": "./src/jones/linkedThreads/handoffText.ts",
-      "import": "./src/jones/linkedThreads/handoffText.ts"
-    },
-    "./jones/packaging/pnpmProjectLockfile": {
-      "types": "./src/jones/packaging/pnpmProjectLockfile.ts",
-      "import": "./src/jones/packaging/pnpmProjectLockfile.ts"
-    },
-    "./composerContextLegacySend": {
-      "types": "./src/composerContextLegacySend.ts",
-      "import": "./src/composerContextLegacySend.ts"
+    "./assistantInsights": {
+      "types": "./src/assistantInsights.ts",
+      "import": "./src/assistantInsights.ts"
     }
   },
   "scripts": {
@@ -684,6 +704,8 @@
     "effect": "catalog:",
     "ffi-rs": "1.3.2",
     "get-east-asian-width": "^1.6.0",
+    "gt-i18n": "1.0.40",
+    "hast-util-sanitize": "^5.0.2",
     "mdast-util-directive": "catalog:",
     "mdast-util-to-hast": "^13.2.1",
     "micromark-extension-directive": "catalog:",
@@ -703,8 +725,10 @@
   "devDependencies": {
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
+    "@types/hast": "^3.0.5",
     "@types/mdast": "^4.0.4",
     "@types/node": "catalog:",
+    "hast-util-to-html": "^9.0.5",
     "micromark-util-types": "catalog:",
     "vite-plus": "catalog:"
   }

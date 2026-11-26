@@ -1,19 +1,40 @@
-import { readMigrationPlan, type MigrationPlanResult } from "../jones/updates/migrationPlan.ts";
-import type { ServicePreflightResult } from "../jones/cloud/servicePreflightResult.ts";
-import { jonesMigrationEntries } from "../jones/persistence/JonesMigrations.ts";
-import { migrationManifest } from "../persistence/Migrations.ts";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+
 import packageJson from "../../package.json" with { type: "json" };
 import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
 import { skippedV2Migrations } from "../persistence/Migrations.ts";
 import { reconciledV2PreviewHistory } from "../persistence/reconcileV2PreviewMigration.ts";
-import { isSupportedLauncherProtocol, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import type * as ProcessRunner from "../processRunner.ts";
+import {
+  pinnedRuntimeCommand,
+  PinnedRuntimeInstallError,
+  type PinnedRuntimePaths,
+  PinnedRuntimePreflightBlockedError,
+} from "./pinnedRuntime.ts";
+import {
+  isSupportedLauncherProtocol,
+  SERVICE_LAUNCHER_PROTOCOL,
+  type SupportedLauncherProtocol,
+} from "./serviceProtocol.ts";
 
-// The launcher decodes output without importing this module's migration graph.
-export {
-  decodeServicePreflightResult,
-  qualifiedServicePreflightFailure,
-  type ServicePreflightResult,
-} from "../jones/cloud/servicePreflightResult.ts";
+// A staged runtime's cold start can take over a minute on a loaded, swapping host.
+const PREFLIGHT_TIMEOUT = Duration.minutes(3);
+const decodePreflightJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+
+export type ServicePreflightResult =
+  | {
+      readonly status: "ready";
+      readonly version: string;
+      /** The launcher protocol the server named; it accepts no other in reply. */
+      readonly launcherProtocol: SupportedLauncherProtocol;
+    }
+  | {
+      readonly status: "blocked";
+      readonly version: string;
+      readonly reason: string;
+    };
 
 export function runServicePreflight(input: {
   readonly databasePath: string;
@@ -75,13 +96,15 @@ export function runServicePreflight(input: {
     };
   }
 
-  const plan = readMigrationPlan({
-    databasePath: input.databasePath,
-    upstream: migrationManifest,
-    jones: jonesMigrationEntries.map(([id, name]) => [id, name] as const),
-  });
-  if (plan.status === "blocked") {
-    return { status: "blocked", version, reason: plan.reason };
+  return { status: "ready", version, launcherProtocol };
+}
+
+function decodeServicePreflightResult(
+  value: unknown,
+  launcherProtocol: SupportedLauncherProtocol,
+): ServicePreflightResult | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
   }
   if (input.migrationPlanResult?.status === "blocked") {
     return { status: "blocked", version, reason: input.migrationPlanResult.reason };
@@ -101,3 +124,57 @@ export function runServicePreflight(input: {
       : { qualifiedRecoveryProtocol: input.qualifiedRecoveryProtocol }),
   };
 }
+
+/** Asks a staged runtime whether it can run on this database under this launcher protocol. */
+export const runStagedServicePreflight = Effect.fn("cloud.service_preflight.run_staged")(
+  function* (input: {
+    readonly runner: ProcessRunner.ProcessRunner["Service"];
+    readonly runtime: PinnedRuntimePaths;
+    readonly targetVersion: string;
+    readonly databasePath: string;
+    readonly launcherProtocol: SupportedLauncherProtocol;
+  }) {
+    const step = "running the staged service preflight";
+    const command = pinnedRuntimeCommand(input.runtime);
+    const result = yield* input.runner
+      .run({
+        command: command.command,
+        args: [
+          ...command.args,
+          "__service-preflight",
+          "--database-path",
+          input.databasePath,
+          "--launcher-protocol",
+          String(input.launcherProtocol),
+        ],
+        timeout: PREFLIGHT_TIMEOUT,
+      })
+      .pipe(Effect.mapError((cause) => new PinnedRuntimeInstallError({ step, cause })));
+    if (result.code !== 0) {
+      return yield* new PinnedRuntimeInstallError({
+        step,
+        exitCode: Number(result.code),
+        stdoutLength: result.stdout.length,
+        stderrLength: result.stderr.length,
+      });
+    }
+    const parsed = yield* decodePreflightJson(result.stdout.trim()).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PinnedRuntimeInstallError({ step: "decoding the staged service preflight", cause }),
+      ),
+    );
+    const preflight = decodeServicePreflightResult(parsed, input.launcherProtocol);
+    if (preflight === undefined || preflight.version !== input.targetVersion) {
+      return yield* new PinnedRuntimeInstallError({
+        step: "verifying the staged service preflight",
+      });
+    }
+    if (preflight.status === "blocked") {
+      return yield* new PinnedRuntimePreflightBlockedError({
+        version: input.targetVersion,
+        reason: preflight.reason,
+      });
+    }
+  },
+);

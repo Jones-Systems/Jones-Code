@@ -13,19 +13,11 @@ if (permissionIndex === -1 || argv[permissionIndex + 1] !== "dontAsk") {
   fail("text generation must deny permission prompts", 12);
 }
 const toolsIndex = argv.indexOf("--tools");
-const investigation = process.env.T3_FAKE_CLAUDE_INVESTIGATION === "1";
-if (toolsIndex === -1 || argv[toolsIndex + 1] !== (investigation ? "Read,Grep,Glob,Bash" : "")) {
-  fail("text generation must receive the exact task tool set", 6);
-}
-if (investigation) {
-  const allowed = argv[argv.indexOf("--allowedTools") + 1];
-  const denied = argv[argv.indexOf("--disallowedTools") + 1];
-  if (
-    allowed !== "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)" ||
-    denied !== "Bash(git * --output*),Bash(git * -o *)"
-  ) {
-    fail("investigation must retain read-only tool restrictions", 17);
-  }
+if (
+  toolsIndex === -1 ||
+  argv[toolsIndex + 1] !== (process.env.T3_FAKE_CLAUDE_EXPECTED_TOOLS ?? "")
+) {
+  fail("text generation did not receive the expected tool set", 6);
 }
 if (argv.includes("--dangerously-skip-permissions")) {
   fail("text generation must not bypass permissions", 7);
@@ -47,8 +39,16 @@ if (process.env.T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE === "1") {
   fail("text generation must not save a resumable session", 16);
 }
 const settingsIndex = argv.indexOf("--settings");
-if (settingsIndex === -1 || JSON.parse(argv[settingsIndex + 1]).disableAllHooks !== true) {
+const settingsValue = settingsIndex === -1 ? "{}" : argv[settingsIndex + 1];
+// Like the CLI: a value starting with a brace is inline JSON, anything else a file path.
+const settingsText = settingsValue.startsWith("{")
+  ? settingsValue
+  : NodeFS.readFileSync(settingsValue, "utf8");
+if (JSON.parse(settingsText).disableAllHooks !== true) {
   fail("text generation must disable hooks", 10);
+}
+if (process.env.T3_FAKE_CLAUDE_SETTINGS_LOG) {
+  NodeFS.writeFileSync(process.env.T3_FAKE_CLAUDE_SETTINGS_LOG, settingsText);
 }
 const cwdMustNotBe = process.env.T3_FAKE_CLAUDE_CWD_MUST_NOT_BE;
 if (cwdMustNotBe && NodeFS.realpathSync(process.cwd()) === NodeFS.realpathSync(cwdMustNotBe)) {
@@ -79,28 +79,21 @@ if (stdinMustContain && !stdinContent.includes(stdinMustContain)) {
   fail("stdin missing expected content", 4);
 }
 
-if (process.env.T3_FAKE_CLAUDE_EVALUATION === "1") {
-  if (investigation || argv[argv.indexOf("--disallowedTools") + 1] !== "mcp__*") {
-    fail("evaluation must deny every MCP tool and investigation", 18);
+const imageRejection = process.env.T3_FAKE_CLAUDE_IMAGE_REJECTION;
+if (imageRejection && stdinContent.includes('"type":"image"')) {
+  if (process.env.T3_FAKE_CLAUDE_IMAGE_ATTEMPT_LOG) {
+    NodeFS.appendFileSync(process.env.T3_FAKE_CLAUDE_IMAGE_ATTEMPT_LOG, "image\n");
   }
-  for (const flag of [
-    "--allowedTools",
-    "--chrome",
-    "--mcp-config",
-    "--plugin-dir",
-    "--agents",
-    "--add-dir",
-  ]) {
-    if (argv.includes(flag)) fail("evaluation must not enable task extensions", 19);
-  }
-}
-
-const capturePath = process.env.T3_FAKE_CLAUDE_CAPTURE_PATH;
-if (capturePath) {
-  NodeFS.writeFileSync(
-    capturePath,
-    JSON.stringify({ argv, cwd: process.cwd(), stdin: stdinContent }),
+  process.stdout.write(
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      api_error_status: 400,
+      result: `API Error: 400 ${imageRejection}`,
+    }) + "\n",
   );
+  process.exit(1);
 }
 
 const configDirMustBe = process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;

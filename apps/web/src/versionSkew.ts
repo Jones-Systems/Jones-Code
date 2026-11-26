@@ -7,17 +7,11 @@ import type {
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
+import { msg } from "gt-react";
 
-import { APP_BUILD_STARTED_AT, APP_SOURCE_SHA, APP_VERSION } from "./branding";
-import {
-  isJonesPreviewBuildPair,
-  resolveJonesClientUpdateNotice,
-} from "./jones/updates/versionSkew";
-import {
-  resolveJonesSourceCurrency,
-  type JonesSourceCurrency,
-} from "./jones/fleetUpdates/sourceCurrency";
-import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "./hooks/useLocalStorage";
+import { APP_VERSION } from "./branding";
+import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
+import { m, type MessageResolver } from "./i18n/messages";
 
 export interface VersionMismatch {
   readonly clientVersion: string;
@@ -67,7 +61,7 @@ function versionCore(version: string): string {
 export function resolveVersionMismatch(
   serverVersion: string | null | undefined,
   clientVersion: string = APP_VERSION,
-  jonesCurrency: JonesSourceCurrency = "unknown",
+  resolve: MessageResolver = m,
 ): VersionMismatch | null {
   const normalizedClientVersion = normalizeVersion(clientVersion);
   const normalizedServerVersion = normalizeVersion(serverVersion);
@@ -104,7 +98,9 @@ export function resolveVersionMismatch(
   return {
     clientVersion: normalizedClientVersion,
     serverVersion: normalizedServerVersion,
-    hint: "Version mismatch. Try syncing the client and server to the same T3 Code version.",
+    hint: resolve(
+      msg("Version mismatch. Try syncing the client and server to the same T3 Code version."),
+    ),
   };
 }
 
@@ -132,24 +128,9 @@ export function resolveServerConfigClientUpdateNotice(
 
 export function resolveServerConfigVersionMismatch(
   serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
+  resolve: MessageResolver = m,
 ): VersionMismatch | null {
-  const mismatch = resolveVersionMismatch(
-    serverConfig?.environment.serverVersion,
-    APP_VERSION,
-    resolveJonesSourceCurrency({
-      installedSource: serverConfig?.environment.jonesSource?.sha,
-      targetSource: APP_SOURCE_SHA,
-    }),
-  );
-  return mismatch === null
-    ? null
-    : {
-        ...mismatch,
-        clientBuildStartedAt: APP_BUILD_STARTED_AT,
-        serverBuildStartedAt: serverConfig?.environment.jonesBuildStartedAt,
-        clientSourceSha: APP_SOURCE_SHA,
-        serverSourceSha: serverConfig?.environment.jonesSource?.sha,
-      };
+  return resolveVersionMismatch(serverConfig?.environment.serverVersion, APP_VERSION, resolve);
 }
 
 export function resolveServerSelfUpdateCapability(

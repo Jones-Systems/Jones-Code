@@ -1,15 +1,17 @@
 import {
   AuthStandardClientScopes,
   CommandId,
-  EnvironmentHttpApi,
   EnvironmentHttpCommonError,
+  PROJECT_TRACKED_FOLDERS_MAX,
   type ProjectMutation,
   type ProjectSnapshot,
   ProjectId,
 } from "@t3tools/contracts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
 import * as SecureRandom from "effect/crypto/SecureRandom";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -19,15 +21,12 @@ import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
 import { FetchHttpClient, HttpClient, HttpClientError } from "effect/http";
-import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import * as ProcessRunner from "../processRunner.ts";
-import * as ServerOwnership from "../serverOwnership.ts";
 import type * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
@@ -37,12 +36,10 @@ import { projectMutationOperation } from "../project/ProjectMutation.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
-import {
-  clearPersistedServerRuntimeState,
-  readLiveServerRuntimeState,
-} from "../serverRuntimeState.ts";
+import { discoverFolders, mergeProjectFolders } from "../workspace/WorkspaceFolders.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { type CliAuthLocationFlags, projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
+import * as RunningServer from "./runningServer.ts";
 
 type ProjectMutationTarget = {
   readonly id: ProjectId;
@@ -50,7 +47,6 @@ type ProjectMutationTarget = {
   readonly workspaceRoot: string;
 };
 
-type ProjectCommandExecutionMode = "live" | "offline";
 type ProjectCliDispatchCommand = ProjectMutation;
 
 const isEnvironmentHttpCommonError = Schema.is(EnvironmentHttpCommonError);
@@ -91,18 +87,6 @@ export class ProjectLiveServerUndeclaredStatusError extends Schema.TaggedError<P
 ) {
   override get message(): string {
     return `Server request failed with undeclared status ${this.status}.`;
-  }
-}
-
-export class ProjectLiveServerRequestError extends Schema.TaggedError<ProjectLiveServerRequestError>()(
-  "ProjectLiveServerRequestError",
-  {
-    operation: Schema.Literal("callLiveServer"),
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return "Failed to call the running server.";
   }
 }
 
@@ -158,19 +142,33 @@ export class ProjectAlreadyExistsError extends Schema.TaggedError<ProjectAlready
   }
 }
 
+export class ProjectTooManyTrackedFoldersError extends Schema.TaggedError<ProjectTooManyTrackedFoldersError>()(
+  "ProjectTooManyTrackedFoldersError",
+  {
+    operation: Schema.Literal("addProject"),
+    count: Schema.Number,
+    max: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `--track names ${this.count} folders, but a project tracks at most ${this.max}.`;
+  }
+}
+
 export const ProjectCommandError = Schema.Union([
   ProjectCommandIdGenerationError,
   ProjectLiveServerDeclaredResponseError,
   ProjectLiveServerUndeclaredStatusError,
-  ProjectLiveServerRequestError,
   ProjectTitleEmptyError,
   ProjectIdentifierEmptyError,
   ProjectNotFoundError,
   ProjectAlreadyExistsError,
+  ProjectTooManyTrackedFoldersError,
 ]);
 export type ProjectCommandError = typeof ProjectCommandError.Type;
 
-function projectCommandErrorFromLiveServerRequest(cause: unknown): ProjectCommandError {
+/** Names a server's error answer; unanswered requests pass through for `changeState`. */
+function projectCommandErrorFromServerAnswer<E>(cause: E) {
   if (isEnvironmentHttpCommonError(cause)) {
     return new ProjectLiveServerDeclaredResponseError({
       operation: "callLiveServer",
@@ -186,8 +184,7 @@ function projectCommandErrorFromLiveServerRequest(cause: unknown): ProjectComman
       cause,
     });
   }
-
-  return new ProjectLiveServerRequestError({ operation: "callLiveServer", cause });
+  return cause;
 }
 
 const projectCommandUuid = SecureRandom.SecureRandom.pipe(
@@ -220,26 +217,6 @@ const makeProjectCliRuntimeLayer = (layerProjectService: typeof RuntimeLayer.lay
     // Built after acquireServerOwnership; layerCliConfig would contend with this process's own lock.
     Layer.provideMerge(SqlitePersistence.layerConfig),
   );
-
-const PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT = Duration.seconds(1);
-const PROJECT_CLI_LIVE_SERVER_REQUEST_TIMEOUT = Duration.seconds(10);
-const withProjectCliSessionToken = <A, E, R>(
-  environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"],
-  run: (token: string) => Effect.Effect<A, E, R>,
-) =>
-  Effect.acquireUseRelease(
-    environmentAuth.issueSession({
-      scopes: AuthStandardClientScopes,
-      label: "t3 project cli",
-    }),
-    (issued) => run(issued.token),
-    (issued) => environmentAuth.revokeSession(issued.sessionId).pipe(Effect.ignore({ log: true })),
-  );
-
-const makeLiveServerClient = (origin: string) =>
-  HttpApiClient.make(EnvironmentHttpApi, {
-    baseUrl: origin,
-  });
 
 const normalizeWorkspaceRootForProjectCommand = Effect.fn(
   "normalizeWorkspaceRootForProjectCommand",
@@ -324,53 +301,6 @@ const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (
   } satisfies ProjectMutationTarget;
 });
 
-const fetchLiveOrchestrationSnapshot = Effect.fn("project.fetchLiveOrchestrationSnapshot")(
-  function* (origin: string, bearerToken: string, _timeout?: Duration.Duration) {
-    const client = yield* makeLiveServerClient(origin);
-    return yield* client.projects.snapshot({
-      headers: { authorization: `Bearer ${bearerToken}` },
-    });
-  },
-  (effect, _origin, _bearerToken, timeout = PROJECT_CLI_LIVE_SERVER_REQUEST_TIMEOUT) =>
-    effect.pipe(Effect.timeout(timeout), Effect.mapError(projectCommandErrorFromLiveServerRequest)),
-);
-
-const dispatchLiveOrchestrationCommand = Effect.fn("project.dispatchLiveOrchestrationCommand")(
-  function* (origin: string, bearerToken: string, command: ProjectCliDispatchCommand) {
-    const client = yield* makeLiveServerClient(origin);
-    yield* client.projects.mutate({
-      headers: { authorization: `Bearer ${bearerToken}` },
-      payload: command,
-    } as Parameters<typeof client.projects.mutate>[0]);
-  },
-  (effect, _origin, _bearerToken, _command) =>
-    effect.pipe(
-      Effect.timeout(PROJECT_CLI_LIVE_SERVER_REQUEST_TIMEOUT),
-      Effect.mapError(projectCommandErrorFromLiveServerRequest),
-    ),
-);
-
-const getOfflineSnapshot = Effect.fn("getOfflineSnapshot")(function* () {
-  const projects = yield* ProjectService.ProjectService;
-  return yield* projects.snapshot;
-});
-
-const probeLiveProjectServer = Effect.fn("probeLiveProjectServer")(function* (
-  environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"],
-  origin: string,
-) {
-  const attempted = yield* withProjectCliSessionToken(environmentAuth, (token) =>
-    fetchLiveOrchestrationSnapshot(origin, token, PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT),
-  ).pipe(Effect.result);
-  if (attempted._tag === "Success") return true;
-
-  yield* Effect.logDebug("Failed to connect to the persisted project CLI server.", {
-    origin,
-    cause: attempted.failure,
-  });
-  return false;
-});
-
 const runProjectMutation = Effect.fn("runProjectMutation")(function* (
   flags: CliAuthLocationFlags,
   run: (input: {
@@ -378,7 +308,6 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
     readonly dispatch: (
       command: ProjectCliDispatchCommand,
     ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
-    readonly mode: ProjectCommandExecutionMode;
   }) => Effect.Effect<
     string,
     Error,
@@ -394,63 +323,48 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
   const minimumLogLevel = config.logLevel;
 
   return yield* Effect.gen(function* () {
-    const runtimeState = yield* readLiveServerRuntimeState(config.serverRuntimeStatePath);
-    if (Option.isSome(runtimeState)) {
-      const { origin } = runtimeState.value;
-      // Auth storage can hold the ownership lock while applying pending migrations.
-      // This layer's scope ends before the offline path attempts to acquire ownership.
-      const handled = yield* Effect.gen(function* () {
-        const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
-        if (!(yield* probeLiveProjectServer(environmentAuth, origin))) return false;
-
-        yield* withProjectCliSessionToken(environmentAuth, (token) =>
+    const output = yield* RunningServer.changeState({
+      scopes: AuthStandardClientScopes,
+      viaServer: Effect.fn("project.viaServer")(function* (client) {
+        return yield* run({
+          snapshot: yield* client.projects.snapshot({ headers: {} }),
+          dispatch: (command) =>
+            client.projects.mutate({ headers: {}, payload: command } as Parameters<
+              typeof client.projects.mutate
+            >[0]),
+        });
+      }, Effect.mapError(projectCommandErrorFromServerAnswer)),
+      locally: Effect.promise(() => import("../orchestration-v2/runtimeLayer.ts")).pipe(
+        Effect.flatMap(({ layerProjectService }) =>
           Effect.gen(function* () {
-            const snapshot = yield* fetchLiveOrchestrationSnapshot(origin, token);
-            const output = yield* run({
-              snapshot,
-              dispatch: (command) => dispatchLiveOrchestrationCommand(origin, token, command),
-              mode: "live",
+            const projects = yield* ProjectService.ProjectService;
+            return yield* run({
+              snapshot: yield* projects.snapshot,
+              dispatch: (command) =>
+                projectMutationOperation(projects, command).pipe(Effect.asVoid),
             });
-            yield* Console.log(output);
-          }),
-        );
-        return true;
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(EnvironmentAuth.layerRuntime, WorkspacePaths.layer).pipe(
-            Layer.provide(ServerConfig.layer(config)),
-            Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
+          }).pipe(
+            Effect.provide(
+              makeProjectCliRuntimeLayer(layerProjectService).pipe(
+                Layer.provide(ServerConfig.layer(config)),
+                Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
+              ),
+            ),
           ),
         ),
-      );
-      if (handled) return;
-    }
-
-    // Before ownership and clearing, so a failed import leaves server state alone.
-    const { layerProjectService } = yield* Effect.promise(
-      () => import("../orchestration-v2/runtimeLayer.ts"),
-    );
-    const layerOfflineRuntime = makeProjectCliRuntimeLayer(layerProjectService).pipe(
-      Layer.provide(ServerConfig.layer(config)),
-      Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
-    );
-
-    // An unreachable server may still be running; never write behind it.
-    yield* ServerOwnership.acquireServerOwnership(config.serverRuntimeStatePath).pipe(
-      Effect.provide(ProcessRunner.layer),
-    );
-    yield* clearPersistedServerRuntimeState(config.serverRuntimeStatePath);
-    return yield* Effect.gen(function* () {
-      const snapshot = yield* getOfflineSnapshot();
-      const projects = yield* ProjectService.ProjectService;
-      const output = yield* run({
-        snapshot,
-        dispatch: (command) => projectMutationOperation(projects, command).pipe(Effect.asVoid),
-        mode: "offline",
-      });
-      yield* Console.log(output);
-    }).pipe(Effect.provide(layerOfflineRuntime));
-  }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer));
+      ),
+    });
+    yield* Console.log(output);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(EnvironmentAuth.layerRuntime, WorkspacePaths.layer).pipe(
+        Layer.provideMerge(FetchHttpClient.layer),
+        Layer.provideMerge(ServerConfig.layer(config)),
+        Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
+      ),
+    ),
+  );
 });
 
 const projectAddCommand = Command.make("add", {
@@ -459,6 +373,12 @@ const projectAddCommand = Command.make("add", {
     Argument.withDescription("Workspace root to add as a project."),
   ),
   title: Flag.String("title").pipe(Flag.withDescription("Optional project title."), Flag.optional),
+  track: Flag.String("track").pipe(
+    Flag.withDescription(
+      "A folder outside the path that the project also works in. Repositories inside the path are found on their own. Repeat for more.",
+    ),
+    Flag.atLeast(0),
+  ),
 }).pipe(
   Command.withDescription("Add a project."),
   Command.withHandler((flags) =>
@@ -477,19 +397,51 @@ const projectAddCommand = Command.make("add", {
         const existingProject = snapshot.projects.find(
           (project) => project.deletedAt === null && project.workspaceRoot === workspaceRoot,
         );
+        const path = yield* Path.Path;
+        const home = yield* HostProcess.HomeDirectory;
+        const named = flags.track
+          .map((folder) => {
+            const resolved = path.resolve(expandHomePath(folder, home));
+            const name = (path.basename(resolved) || resolved).trimStart();
+            return {
+              path: resolved,
+              name: name.slice(0, splitsSurrogatePair(name, 128) ? 127 : 128).trim(),
+            };
+          })
+          .filter(
+            (folder, index, all) => all.findIndex((other) => other.path === folder.path) === index,
+          );
         // Re-adding an archived project's folder restores it, matching the clients.
         if (existingProject?.archivedAt != null) {
           const title = Option.isSome(flags.title)
             ? yield* resolveProjectTitle(workspaceRoot, flags.title.value)
             : undefined;
+          // An update replaces the whole list of added folders.
+          const kept = (existingProject.trackedFolders ?? [])
+            .filter((folder) => folder.discovered !== true)
+            .map((folder) => ({ path: folder.path, name: folder.name }));
+          const added = named.filter(
+            (folder) => !kept.some((existing) => existing.path === folder.path),
+          );
+          if (kept.length + added.length > PROJECT_TRACKED_FOLDERS_MAX) {
+            return yield* new ProjectTooManyTrackedFoldersError({
+              operation: "addProject",
+              count: kept.length + added.length,
+              max: PROJECT_TRACKED_FOLDERS_MAX,
+            });
+          }
           yield* dispatch({
             type: "project.update",
             commandId: CommandId.make(yield* projectCommandUuid),
             projectId: existingProject.id,
             archived: false,
             ...(title === undefined ? {} : { title }),
+            ...(added.length === 0 ? {} : { trackedFolders: [...kept, ...added] }),
           });
-          return `Unarchived project ${existingProject.id} (${title ?? existingProject.title}) at ${workspaceRoot}.`;
+          const unarchived = `Unarchived project ${existingProject.id} (${title ?? existingProject.title}) at ${workspaceRoot}.`;
+          return added.length === 0
+            ? unarchived
+            : `${unarchived} It now also covers ${added.length} more ${added.length === 1 ? "folder" : "folders"}.`;
         }
         if (existingProject) {
           return yield* new ProjectAlreadyExistsError({
@@ -500,6 +452,16 @@ const projectAddCommand = Command.make("add", {
         }
 
         const title = yield* resolveProjectTitle(workspaceRoot, Option.getOrUndefined(flags.title));
+        // Found here, not by a running server: this command runs on the server's machine.
+        const found = yield* discoverFolders(workspaceRoot);
+        if (named.length > PROJECT_TRACKED_FOLDERS_MAX) {
+          return yield* new ProjectTooManyTrackedFoldersError({
+            operation: "addProject",
+            count: named.length,
+            max: PROJECT_TRACKED_FOLDERS_MAX,
+          });
+        }
+        const trackedFolders = mergeProjectFolders(found, named);
         const projectId = ProjectId.make(yield* projectCommandUuid);
         yield* dispatch({
           type: "project.create",
@@ -507,8 +469,13 @@ const projectAddCommand = Command.make("add", {
           projectId,
           title,
           workspaceRoot,
+          ...(trackedFolders.length === 0 ? {} : { trackedFolders }),
         });
-        return `Added project ${projectId} (${title}) at ${workspaceRoot}.`;
+        const added = `Added project ${projectId} (${title}) at ${workspaceRoot}.`;
+        if (trackedFolders.length > 0) {
+          return `${added} It also covers ${trackedFolders.length} other ${trackedFolders.length === 1 ? "folder" : "folders"}.`;
+        }
+        return added;
       }),
     ),
   ),

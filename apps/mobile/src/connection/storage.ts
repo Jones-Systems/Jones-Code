@@ -9,6 +9,7 @@ import {
   removeCatalogValue,
   replaceCatalogValue,
   Persistence,
+  ThreadTriageOutboxStore,
 } from "@t3tools/client-runtime/platform";
 import { TokenStore } from "@t3tools/client-runtime/authorization";
 import {
@@ -23,6 +24,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import { mobileThreadTriageOutboxStore } from "../state/thread-triage-outbox-storage";
 import * as CatalogStore from "./catalog-store";
 
 function targetPersistenceError(
@@ -169,6 +171,7 @@ export const layer = Layer.effectContext(
       Context.add(ProfileStore.ConnectionProfileStore, profileStore),
       Context.add(CredentialStore.ConnectionCredentialStore, credentialStore),
       Context.add(TokenStore.RemoteDpopAccessTokenStore, remoteTokenStore),
+      Context.add(ThreadTriageOutboxStore, mobileThreadTriageOutboxStore),
     );
   }),
 );

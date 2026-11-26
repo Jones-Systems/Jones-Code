@@ -3,6 +3,7 @@ import {
   textGeneratorForSelection,
   type UnifiedSettings,
 } from "@t3tools/contracts";
+import { useGT } from "gt-react";
 
 import { mergeEnvironmentSettings } from "../../hooks/useSettings";
 import { scopedModelDisabledReason } from "../../jones/settings/modelSelectionCorrespondence";
@@ -23,7 +24,8 @@ export function useScopedModelDisabledReason(
   entries: readonly ProviderInstanceEntry[],
   textGeneration = false,
 ) {
-  const { target, targets } = useSettingsScope();
+  const gt = useGT();
+  const { targets } = useSettingsScope();
   const { environments } = useEnvironments();
   const providersByEnvironment = useEnvironmentProviders();
   return (instanceId: ProviderInstanceId, model: string): string | null => {
@@ -44,7 +46,14 @@ export function useScopedModelDisabledReason(
       const environment = environments.find(
         (entry) => entry.environmentId === candidate.environmentId,
       );
-      const unavailable = `This model is unavailable on ${environment?.label ?? "a selected environment"}. Select that environment to choose its model separately.`;
+      const unavailable = environment
+        ? gt(
+            "This model is unavailable on {environment}. Select that environment to choose its model separately.",
+            { environment: environment.label },
+          )
+        : gt(
+            "This model is unavailable on a selected environment. Select that environment to choose its model separately.",
+          );
       const generator = textGeneratorForSelection(candidate.settings, instanceId);
       if (shownGenerator !== undefined || generator !== undefined) {
         // Only the shown environment's model list is loaded; elsewhere it must reach the same API.

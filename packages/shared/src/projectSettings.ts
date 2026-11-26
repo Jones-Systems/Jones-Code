@@ -217,11 +217,13 @@ export function resolveNewThreadEnvMode(
   return isNewProjectFolder ? "local" : configured;
 }
 
-export function resolveSendEnvMode<Mode extends ThreadEnvMode | "auto">(input: {
-  readonly requestedEnvMode: Mode;
+/** Worktree mode needs a repository: the project folder, or a folder the project tracks. */
+export function resolveSendEnvMode(input: {
+  readonly requestedEnvMode: ThreadEnvMode;
   readonly isGitRepo: boolean;
-}): Mode | "local" {
-  return input.isGitRepo ? input.requestedEnvMode : "local";
+  readonly tracksGitRepositories?: boolean;
+}): ThreadEnvMode {
+  return input.isGitRepo || input.tracksGitRepositories === true ? input.requestedEnvMode : "local";
 }
 
 export function clearProjectSettingsOverrides(
