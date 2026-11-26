@@ -933,7 +933,13 @@ it.each(["question-test", "foreign-environment"])(
     expect(answerField().value).toBe(
       formatInlineContextReference(threadContextReference(record)) + " ",
     );
-    expect(fetchSpy).not.toHaveBeenCalled();
+    const contentRequests = fetchSpy.mock.calls.filter(([input, init]) => {
+      const url = new URL(input instanceof Request ? input.url : input, location.href);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      return method !== "GET" || url.pathname !== "/.well-known/t3/environment";
+    });
+    expect(contentRequests).toEqual([]);
+    fetchSpy.mockRestore();
   },
 );
 

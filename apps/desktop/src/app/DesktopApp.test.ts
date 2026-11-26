@@ -117,7 +117,7 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
             runtimeInstanceId: "fixture",
             appVersion: "1.0.0",
             buildCommit: null,
-          }),
+          } as const),
           configure: stub.record("identity"),
         }),
         Effect.provideService(ElectronApp.ElectronApp, {

@@ -171,6 +171,8 @@ interface BoxThread {
   readonly stops: Ref.Ref<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>;
   /** The launch starts no run, as one recorded before its run was kept. */
   readonly runless: Ref.Ref<boolean>;
+  /** An attributed run can age out of the bounded read without changing the wait result. */
+  readonly omitRunFromReads: Ref.Ref<boolean>;
   /** Completed on the first interrupt there. */
   readonly interruptedOnce: Deferred.Deferred<void>;
   readonly finished: Deferred.Deferred<void>;
@@ -222,6 +224,7 @@ const makeBoxThread = Effect.gen(function* () {
     interrupted: yield* Ref.make(0),
     stops: yield* Ref.make<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>([]),
     runless: yield* Ref.make(false),
+    omitRunFromReads: yield* Ref.make(false),
     interruptedOnce: yield* Deferred.make<void>(),
     finished: yield* Deferred.make<void>(),
     laterFinished: yield* Deferred.make<void>(),
@@ -370,8 +373,16 @@ const boxToolkitLayer = (thread: BoxThread) => {
     Layer.mock(ThreadManagement.ThreadManagementService)({
       remoteSendReceipts: receipts.remoteSendReceipts,
       getThreadShell: shellOf,
-      getProjectThreadRecords: (input) => projectionOf(input.threadId),
+      getProjectThreadRecords: (input, _records, filter) =>
+        Effect.gen(function* () {
+          const projection = yield* projectionOf(input.threadId);
+          if (filter?.latestRunLimit !== undefined && (yield* Ref.get(thread.omitRunFromReads)))
+            return { ...projection, runs: [] };
+          return projection;
+        }),
       getThreadRecords: (threadId) => projectionOf(threadId),
+      getRunCount: (threadId) =>
+        projectionOf(threadId).pipe(Effect.map((projection) => projection.runs.length)),
       waitForThread: (input) =>
         Effect.gen(function* () {
           yield* Ref.update(thread.waitedFor, (seen) => [...seen, input.runId]);
@@ -452,7 +463,13 @@ const boxToolkitLayer = (thread: BoxThread) => {
         }),
       getTimelinePage: (threadId, options) =>
         Effect.gen(function* () {
-          if (yield* Ref.get(thread.holdRead)) {
+          if (options.afterPosition === 299 && options.itemId === undefined) {
+            yield* Ref.getAndSet(thread.beforeTail, Effect.void).pipe(Effect.flatten);
+          }
+          if (
+            (yield* Ref.get(thread.holdRead)) ||
+            (options.itemId !== undefined && (yield* Ref.get(thread.holdRefill)))
+          ) {
             yield* Deferred.succeed(thread.readStarted, undefined);
             yield* Deferred.await(thread.releaseRead);
           }
@@ -462,8 +479,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
           const error = yield* Ref.get(thread.error);
           const laterError = yield* Ref.get(thread.laterError);
           const restart = yield* Ref.get(thread.restart);
-          // One item per page, with errors available only in the activity view.
-          const replies = [
+          const timeline = (yield* Ref.get(thread.timeline)) ?? [
             ...(reply === null
               ? []
               : [
@@ -517,18 +533,29 @@ const boxToolkitLayer = (thread: BoxThread) => {
                     type: "assistant_message",
                   },
                 ]),
-          ].map((entry, position) => ({ ...entry, position }));
+          ];
+          // Position 0 is the task prompt. The fixture supplies the items that follow it.
+          const replies = timeline.map((entry, index) => ({ ...entry, position: index + 1 }));
           const visible =
             options.itemId === undefined
               ? replies.filter(
                   (entry) => options.view === "activity" || entry.type === "assistant_message",
                 )
               : replies.filter((entry) => entry.id === options.itemId);
-          const matching = visible
-            .filter((entry) => entry.position > (options.afterPosition ?? -1))
-            .slice(0, 1);
+          const after = options.afterPosition ?? -1;
+          const before = options.beforePosition ?? Number.POSITIVE_INFINITY;
+          const matching =
+            options.itemId === undefined
+              ? visible.filter((entry) => entry.position > after && entry.position < before)
+              : visible;
+          const limit = Math.min(options.limit, yield* Ref.get(thread.pageSize));
+          const page =
+            options.beforePosition === undefined
+              ? matching.slice(0, limit)
+              : matching.slice(Math.max(0, matching.length - limit));
+          const firstPosition = page[0]?.position ?? options.beforePosition ?? after + 1;
           return {
-            items: matching.map(({ id, runId: itemRunId, text, position, type }) => ({
+            items: page.map(({ id, runId: itemRunId, text, position, type }) => ({
               position,
               visibility: "local" as const,
               sourceThreadId: threadId,
@@ -558,12 +585,15 @@ const boxToolkitLayer = (thread: BoxThread) => {
                     }),
               } as never,
             })),
-            totalItems: replies.length,
+            totalItems: replies.length + 1,
             hasMore:
               options.itemId === undefined &&
-              matching.length > 0 &&
-              visible.some((entry) => entry.position > matching.at(-1)!.position),
-            hasEarlier: false,
+              (options.beforePosition === undefined
+                ? matching.length > page.length
+                : (visible.at(-1)?.position ?? -1) >= before),
+            hasEarlier:
+              options.itemId === undefined &&
+              (visible[0]?.position ?? Number.POSITIVE_INFINITY) < firstPosition,
           };
         }),
       interruptThread: (input) =>
@@ -961,7 +991,9 @@ const makeLaptop = (
       Layer.provide(NodeCrypto.layer),
       Layer.provideMerge(layerThreads),
       Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
-      Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+      Layer.provide(
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+      ),
       Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
@@ -2194,7 +2226,7 @@ it.effect.each([
   "growing",
   "shrinking",
   "cancel",
-  "no-run",
+  "run-outside-read-window",
   "cancelled",
   "interrupted",
 ] as const)("reads a successful task with an aligned tail probe (%s)", (scenario) =>
@@ -2227,7 +2259,7 @@ it.effect.each([
           ...history(middle ? 150 : 300, boxRunId, "before"),
           {
             id: TurnItemId.make("selected"),
-            runId: scenario === "no-run" ? boxLaterRunId : boxRunId,
+            runId: boxRunId,
             text: result,
             type: "assistant_message",
           },
@@ -2253,7 +2285,7 @@ it.effect.each([
             }),
           );
         }
-        if (scenario === "no-run") yield* Ref.set(thread.runless, true);
+        if (scenario === "run-outside-read-window") yield* Ref.set(thread.omitRunFromReads, true);
         const delegated = yield* delegateToBox(a);
         const status =
           scenario === "cancelled" || scenario === "interrupted" ? scenario : "completed";

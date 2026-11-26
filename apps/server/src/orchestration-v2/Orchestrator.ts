@@ -3354,10 +3354,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : targetProviderThread) ?? {
         id: idAllocator.derive.providerThread({
           driver: targetAdapter.driver,
-          // The queue reserved `pending:<run>` for this run; another run may have taken it.
+          // A same-driver edit must leave the original reservation available to the other runs.
           nativeThreadId: freshContext
             ? `pending:${queuedRun.id}:fresh`
-            : `pending:${queuedRun.id}`,
+            : storedProviderThread.providerInstanceId === queuedRun.providerInstanceId
+              ? `pending:${queuedRun.id}`
+              : `pending:${queuedRun.id}:${queuedRun.providerInstanceId}`,
         }),
         driver: targetAdapter.driver,
         providerInstanceId: queuedRun.providerInstanceId,
@@ -4008,7 +4010,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
     (effect, threadId, options, selected) =>
       effect.pipe(
-        Effect.as(false),
+        Effect.map((wakeLeftUnheld) =>
+          wakeLeftUnheld === true ? ("provider-wake" as const) : false,
+        ),
         Effect.catch(
           (
             cause,
@@ -4037,11 +4041,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     threadId: ThreadId,
     options?: StartQueuedOptions,
   ) {
-    let heldByStop: boolean;
+    let attemptOptions = options;
+    let retry: boolean | "provider-wake";
     do {
-      heldByStop = yield* attemptNextQueuedRun(threadId, options, { runId: options?.queuedRunId });
+      retry = yield* attemptNextQueuedRun(threadId, attemptOptions, {
+        runId: attemptOptions?.queuedRunId,
+      });
       if (options?.queuedRunId !== undefined) return;
-    } while (heldByStop);
+      // Retry the remaining buffered wake after the failed run has placed the user queue on hold.
+      if (retry === "provider-wake") attemptOptions = undefined;
+    } while (retry !== false);
   });
 
   // Under load a resumed provider can time out before taking the prompt; the restart still owes the turn.

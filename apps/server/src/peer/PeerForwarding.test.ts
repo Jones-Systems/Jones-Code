@@ -143,8 +143,11 @@ const boxThreadsWith = (
     getThreadShell: shellOf,
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
-    getTimelinePage: () =>
-      Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
+    getRunCount: () => Effect.succeed(1),
+    getTimelinePage: (_threadId, options) =>
+      Ref.update(seen, (current) => ({ ...current, reads: [...current.reads, options] })).pipe(
+        Effect.as({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
+      ),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
     getShellSnapshot: () => linked.pipe(Effect.map((shell) => ({ threads: [shell] }) as never)),
     sendToThread: (input) =>

@@ -9400,25 +9400,34 @@ it.effect.each(["text", "reasoning"] as const)(
   "finalizes buffered %s before a lost OpenCode 2 stream ends the session",
   (kind) =>
     Effect.gen(function* () {
-      const { runtime, thread } = yield* resumed([
-        out("session.prompt", { sessionID: SESSION, text: "<any>" }),
-        promptAccepted,
-        event(`session.${kind}.started`, {
-          sessionID: SESSION,
-          assistantMessageID: "msg_buffered_exit",
-          ordinal: 0,
-          ...(kind === "reasoning" ? { state: { reasoningField: "reasoning_content" } } : {}),
-        }),
-        event(`session.${kind}.delta`, {
-          sessionID: SESSION,
-          assistantMessageID: "msg_buffered_exit",
-          ordinal: 0,
-          delta: "Answer preserved across provider exit.",
-        }),
-        { type: "runtime_exit", status: "success" },
-      ]);
-      const itemType = kind === "text" ? "assistant_message" : "reasoning";
       const buffered = yield* Deferred.make<void>();
+      const reconnectObservedExit = yield* Deferred.make<void>();
+      const { runtime, thread } = yield* resumed(
+        [
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event(`session.${kind}.started`, {
+            sessionID: SESSION,
+            assistantMessageID: "msg_buffered_exit",
+            ordinal: 0,
+            ...(kind === "reasoning" ? { state: { reasoningField: "reasoning_content" } } : {}),
+          }),
+          event(`session.${kind}.delta`, {
+            sessionID: SESSION,
+            assistantMessageID: "msg_buffered_exit",
+            ordinal: 0,
+            delta: "Answer preserved across provider exit.",
+          }),
+          { type: "runtime_exit", status: "success" },
+        ],
+        {
+          // The replay closes SSE separately from the owned process signal that bounds recovery.
+          processExit: Deferred.await(buffered).pipe(
+            Effect.tap(() => Deferred.succeed(reconnectObservedExit, undefined)),
+          ),
+        },
+      );
+      const itemType = kind === "text" ? "assistant_message" : "reasoning";
       const events = yield* runtime.events.pipe(
         Stream.tap((event) =>
           event.type === "turn_item.updated" &&
@@ -9432,7 +9441,7 @@ it.effect.each(["text", "reasoning"] as const)(
         Effect.forkScoped,
       );
       yield* runtime.startTurn(turnInput(thread));
-      yield* Deferred.await(buffered);
+      yield* Deferred.await(reconnectObservedExit);
       yield* TestClock.adjust("1 minute");
       const collected = Array.from(yield* Fiber.join(events));
       const items = collected.flatMap((event) =>
@@ -9460,9 +9469,16 @@ it.effect.each(["text", "reasoning"] as const)(
       );
       const terminalIndex = collected.findIndex((event) => event.type === "turn.terminal");
       assert.isTrue(completionIndex < terminalIndex);
+      assert.lengthOf(
+        collected.filter((event) => event.type === "turn.terminal"),
+        1,
+      );
       assert.deepInclude(collected[terminalIndex], {
         status: "failed",
         threadDisposition: "broken",
+        evidenceKind: "local_failure",
+        providerThreadId: thread.id,
+        providerTurnId: first.providerTurnId,
       });
       if (kind === "text") {
         const message = collected.findLast((event) => event.type === "message.updated");

@@ -1008,13 +1008,15 @@ export const makeCursorAgentSdkProcessRunner = Effect.fn("makeCursorAgentSdkProc
                   }
                 }).pipe(Effect.ensuring(worker.unregisterRun(sendId)), Effect.forkIn(worker.scope));
 
-                const matchRunResult = Effect.filterOrFail(
-                  (result: RunResult) => result.id === runId,
-                  () =>
-                    toRunnerError(
-                      "run.wait",
-                      new Error("Cursor SDK worker returned a different run."),
-                    ),
+                const matchRunResult = Effect.flatMap((result: RunResult) =>
+                  result.id === runId
+                    ? Effect.succeed(result)
+                    : Effect.fail(
+                        toRunnerError(
+                          "run.wait",
+                          new Error("Cursor SDK worker returned a different run."),
+                        ),
+                      ),
                 );
                 const run = {
                   runId,

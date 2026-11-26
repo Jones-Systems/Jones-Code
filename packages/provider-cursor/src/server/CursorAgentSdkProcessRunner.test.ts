@@ -510,7 +510,7 @@ describe("CursorAgentSdkProcessRunner", () => {
   it.live.each([
     ["missing-native-result", "native run result is missing"],
     ["different-native-run", "returned a different run"],
-  ] as const)("rejects %s after draining the completed run", (mode, reason) =>
+  ] as const)("rejects %s after draining the completed run", ([mode, reason]) =>
     Effect.scoped(
       Effect.gen(function* () {
         const scriptPath = yield* writeFakeWorker;

@@ -247,6 +247,7 @@ export const make = Effect.gen(function* () {
               remote,
               progress.latestTerminalRunId,
               progress.latestTerminalStatus === "failed",
+              progress.latestTerminalStatus === "completed",
             )) ?? null);
       return { observation, latestTerminalSummary };
     },
@@ -496,13 +497,15 @@ export const make = Effect.gen(function* () {
     scope: ThreadScope,
     remote: OrchestrationV2RemoteTaskChild,
     runId: RunId,
-    failed = false,
+    failed: boolean,
+    probeSuccess: boolean,
   ) {
     return yield* FinalText.lastReply(
       (input) => forwarding.readThread(scope, remote.environmentId, input),
       remote.threadId,
       runId,
       failed,
+      probeSuccess,
     );
   });
 
@@ -517,6 +520,7 @@ export const make = Effect.gen(function* () {
       remote: OrchestrationV2RemoteTaskChild,
       runId: RunId,
       failed: boolean,
+      probeSuccess: boolean,
     ) {
       const observed: { listed: boolean; executedModel: string | undefined } = {
         listed: false,
@@ -539,6 +543,7 @@ export const make = Effect.gen(function* () {
         remote.threadId,
         runId,
         failed,
+        probeSuccess,
       );
       return { text, executedModel: observed.executedModel };
     },
@@ -814,6 +819,7 @@ export const make = Effect.gen(function* () {
       remote,
       resultRun.runId,
       resultRun.status === "failed",
+      resultRun.status === "completed",
     );
     yield* complete(
       parentThreadId,
