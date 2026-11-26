@@ -3,7 +3,14 @@ import { m } from "~/i18n/messages";
 import { pipe } from "effect/Function";
 import { ChevronsLeftRightEllipsisIcon, PlusIcon, TerminalIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { T, useGT, useMessages, Var } from "gt-react";
 import {
   type DesktopDiscoveredSshHost,
@@ -368,14 +375,12 @@ export function AddEnvironmentDialog({
     }
   };
 
-  const handleSavedBackendHostChange = (value: string) => {
-    const parsedPairingUrl = parsePairingUrlFields(value);
-    if (parsedPairingUrl) {
-      setSavedBackendHost(parsedPairingUrl.host);
-      setSavedBackendPairingCode(parsedPairingUrl.pairingCode);
-      return;
-    }
-    setSavedBackendHost(value);
+  const handleSavedBackendHostPaste = (event: ClipboardEvent<HTMLInputElement>) => {
+    const parsedPairingUrl = parsePairingUrlFields(event.clipboardData.getData("text/plain"));
+    if (!parsedPairingUrl) return;
+    event.preventDefault();
+    setSavedBackendHost(parsedPairingUrl.host);
+    setSavedBackendPairingCode(parsedPairingUrl.pairingCode);
   };
   const renderConnectionModeCard = (input: {
     readonly mode: "remote" | "ssh";
@@ -429,7 +434,8 @@ export function AddEnvironmentDialog({
           </span>
           <Input
             value={savedBackendHost}
-            onChange={(event) => handleSavedBackendHostChange(event.target.value)}
+            onChange={(event) => setSavedBackendHost(event.target.value)}
+            onPaste={handleSavedBackendHostPaste}
             placeholder="backend.example.com"
             disabled={isAddingSavedBackend}
             spellCheck={false}
