@@ -9049,6 +9049,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       !freshContext &&
       !isSlashCommand(command) &&
+      // A declined steer returns here to queue the same message. Do not steer it again.
+      command.steerFollowUpOfRunId === undefined &&
       stoppedNotificationSource === undefined &&
       (delegatedCompletion !== undefined
         ? delegatedCompletion.taskIds.every(
@@ -9294,11 +9296,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // selection, while a later saved default still wins.
     // Buffered provider wakes drain output their own provider already produced.
     const incomingMessage = { ...command, delegatedCompletion };
-    // A message that names no model runs on the thread's pick when it starts, not a copy from now.
+    // A message that names no model follows the thread unless it goes ahead of queued picks.
     const followsThreadSelection =
       command.modelSelection === undefined &&
       (command.scheduledTaskId !== undefined ||
         (shouldQueue &&
+          queuedRunStop === undefined &&
           !followsCurrentConversation(incomingMessage) &&
           !isBufferedProviderNotification(incomingMessage)));
     if (

@@ -1828,7 +1828,7 @@ it.effect.each(declinedSteerTimings)(
 // regression: #41509 a declined steer of a delegated completion wake must still queue the wake
 it.effect("queues a delegated completion wake whose steer the provider declined", () =>
   Effect.gen(function* () {
-    const { events, started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+    const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
       "steering-declined-delegated-completion",
       false,
       true,
@@ -1931,6 +1931,7 @@ it.effect("queues a delegated completion wake whose steer the provider declined"
         (run) => run.userMessageId === messageId && run.id !== first.runId,
       );
       assert.equal(queued?.status, "queued");
+      assert.lengthOf(steered, 1);
 
       const turn = pending.providerTurns[0]!;
       const settled = yield* orchestrator.streamDomainEvents.pipe(
@@ -3151,7 +3152,7 @@ it.effect("steers a promoted scheduled delivery with the thread's current select
   ),
 );
 
-it.effect("steers a deferred agent message on a pick made while it waited", () =>
+it.effect("delivers a deferred agent steer while preserving a newer pick for future turns", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { started, steered, steeredSelections, layer, startFirstTurn, events } =
@@ -3209,10 +3210,12 @@ it.effect("steers a deferred agent message on a pick made while it waited", () =
         yield* worker.drain();
 
         assert.lengthOf(steered, 1);
-        assert.deepEqual(steeredSelections, [composerSelection]);
+        assert.deepEqual(steeredSelections, [undefined]);
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(projection.thread.modelSelection, composerSelection);
         assert.deepEqual(
-          (yield* orchestrator.getThreadProjection(threadId)).thread.modelSelection,
-          composerSelection,
+          projection.runs.find((run) => run.id === started[0]!.runId)?.modelSelection,
+          runSelection,
         );
       }).pipe(Effect.provide(layer));
     }),
