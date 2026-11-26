@@ -58,6 +58,7 @@ export interface ExactSourceTarget {
   readonly alternative?: JonesUpdateAlternative | undefined;
   /** A laptop target must still come from the same fresh, verified local connection. */
   readonly readTargetSource?: (() => string | undefined) | undefined;
+  readonly matchRunningGeneration?: string | undefined;
   readonly allowReplace?: boolean | undefined;
   readonly allowInstall?: boolean | undefined;
   readonly subject?: "this app" | "this laptop" | undefined;
@@ -126,6 +127,7 @@ export async function performExactSourceStep({
   targetSource,
   alternative,
   readTargetSource,
+  matchRunningGeneration,
   allowReplace,
   allowInstall,
   subject,
@@ -284,6 +286,7 @@ export async function performExactSourceStep({
     action,
     operationId,
     host: executor,
+    ...(matchRunningGeneration === undefined ? {} : { matchRunningGeneration }),
     ...(reviewed?.kind === "ready" ? { review: reviewed.review } : {}),
   });
   if (result.kind === "unknown")
@@ -353,6 +356,7 @@ export function ExactSourceUpdateAction({
   targetSource,
   alternative,
   readTargetSource,
+  matchRunningGeneration,
   allowReplace = false,
   allowInstall = true,
   subject,
@@ -410,6 +414,7 @@ export function ExactSourceUpdateAction({
           targetSource,
           alternative,
           readTargetSource,
+          matchRunningGeneration,
           allowReplace,
           allowInstall,
           subject,

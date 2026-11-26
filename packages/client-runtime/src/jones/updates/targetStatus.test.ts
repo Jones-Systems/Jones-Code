@@ -24,6 +24,19 @@ const state: JonesUpdateState = {
   },
 };
 
+it.each([
+  ["target-older-than-installed", "older than the build running on this host"],
+  ["unqualified", "The requested build could not be qualified."],
+  ["authentication-required", "Check the connection or authentication."],
+] as const)("explains the check failure %s", (reason, explanation) => {
+  expect(
+    jonesCheckOutcome({
+      ...state,
+      lastCheck: { at: "2026-07-10T15:05:00Z", outcome: "failed", reason },
+    }),
+  ).toMatchObject({ kind: "failure", text: expect.stringContaining(explanation) });
+});
+
 it("keeps held/unknown receipts and correlation visible while revoking action authority on stale or downgraded capability", () => {
   expect(
     jonesTargetStatus({ state, freshness: "fresh" }, { canOperate: true, planId: id }),

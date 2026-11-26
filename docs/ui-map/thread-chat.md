@@ -317,6 +317,14 @@ only overlays opened by the journey. Preserve state for inspection.
 | Composer promotion and recovery                               | With separately authorized provider execution, submit a synthetic draft; observe route promotion and retained composer. Exercise background/fan-out navigation and **Restore prompt** only with their controlled success/failure fixtures.                                                                                                      | No lost newer draft and correct server target. These ChatView paths are discovered, not provider-tested; there is no provider-free business-behavior stand-in here.                              |
 | Chat to Settings                                              | Follow provider/model setup, scheduled-task or connection links described in [Settings entry paths](settings.md#entry-paths-and-journeys).                                                                                                                                                                                                      | Correct settings section and scope; use Escape/back navigation to return to the fixture thread.                                                                                                  |
 
+Right-click a resolved thread reference in a fixture conversation and open
+**Assign thread**. Choose a Workstream, reopen the menu to confirm the checked
+choice, then choose **Unassigned** to restore the original state. On macOS,
+select link text before right-clicking to check placement above **Show Writing
+Tools** when macOS offers it. With a linked environment, use a fixture with
+distinct source and destination threads and check the assignment on the
+destination.
+
 ## Evidence record
 
 Original navigation source check: **2026-10-20**, Jones Code

@@ -97,7 +97,9 @@ export function FleetEnrollmentStatus({
                 >
                   <RefreshIcon refreshing={busy} />
                 </TooltipTrigger>
-                <TooltipPopup side="top">Refresh status</TooltipPopup>
+                <TooltipPopup side="top">
+                  {enrolled ? "Refresh laptop report and host status" : "Refresh status"}
+                </TooltipPopup>
               </Tooltip>
               <Switch
                 size="sm"

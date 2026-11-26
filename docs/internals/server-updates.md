@@ -251,14 +251,21 @@ campaign with its committed generation before staging **or** activation, includi
 on non-followers. A prepared campaign is insufficient. Install plans additionally
 require the native health proof described below before any selected host download.
 
-Plan targets are excluded from legacy campaigns and leader publication by durable
-native dispositions, retained after Done and restart. Enrollment is unchanged.
+Laptop rollout targets are excluded from legacy campaigns and leader publication
+by durable native dispositions, retained after Done and restart. Enrollment is unchanged.
 Before a selected enrolled host downloads, a target-owned, enrollment-bound
 manual-review directive must be confirmed. Legacy leader writes preserve it;
 it suppresses ordinary following of the leader at issue and of the plan target.
 A later different published leader source restores ordinary following. An
 unselected enrolled host is not implicitly a plan member. Builds outside a plan
 retain the ordinary follower path.
+
+A server-only plan for the verified running Laptop generation adds no disposition
+for that source. It holds publication and legacy campaign dispatch for its
+selected hosts and hosts with outstanding recovery. The renderer must opt into
+honoring those holds. Older renderers receive a withheld publication result
+while a hold applies. Existing Laptop rollout dispositions still govern their
+sources.
 
 Ordinary automatic activation waits for 30 minutes without client input, at least
 15 minutes since the previous automatic activation, and no work a restart would

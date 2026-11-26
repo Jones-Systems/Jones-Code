@@ -18,6 +18,10 @@ export interface ElectronMenuContextInput {
   readonly items: readonly ContextMenuItem[];
   readonly position: Option.Option<ElectronMenuPosition>;
   readonly source: Option.Option<ContextMenuSource>;
+  readonly textSelection?: {
+    readonly frame: Electron.WebFrameMain;
+    readonly canCopy: boolean;
+  };
 }
 
 export interface ElectronMenuTemplateInput {
@@ -271,7 +275,17 @@ export const make = Effect.gen(function* () {
         };
 
         try {
-          const menu = Electron.Menu.buildFromTemplate(buildTemplate(normalizedItems, complete));
+          const template = buildTemplate(normalizedItems, complete);
+          if (input.textSelection) {
+            template.unshift(
+              { role: "cut", enabled: false },
+              { role: "copy", enabled: input.textSelection.canCopy },
+              { role: "paste", enabled: false },
+              { role: "selectAll" },
+              { type: "separator" },
+            );
+          }
+          const menu = Electron.Menu.buildFromTemplate(template);
           const popupPosition = normalizePosition(
             input.position,
             input.window.webContents.getZoomFactor(),
@@ -288,11 +302,12 @@ export const make = Effect.gen(function* () {
               callback: () => complete(Option.none()),
             }),
           });
-          menu.popup(
-            Option.isSome(input.source)
-              ? { ...popupOptions, sourceType: input.source.value }
-              : popupOptions,
-          );
+          menu.popup({
+            ...popupOptions,
+            ...(Option.isSome(input.source) ? { sourceType: input.source.value } : {}),
+            // The native Text Services entries follow the app's items when a frame is supplied.
+            ...(input.textSelection ? { frame: input.textSelection.frame } : {}),
+          });
         } catch (cause) {
           if (completed) {
             return;

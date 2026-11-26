@@ -32,6 +32,10 @@ import {
   sessionGrantsScope,
   type EnvironmentId,
 } from "@t3tools/contracts";
+import {
+  verifiedRunningLaptop,
+  VERIFIED_LAPTOP_MAX_AGE_MS,
+} from "@t3tools/contracts/jones/installPlan";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
@@ -53,38 +57,20 @@ import {
 import type { JonesSourceComparison } from "../fleetUpdates/sourceCurrency";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { isElectron } from "../../env";
-import { readPrimaryEnvironmentTarget } from "../../environments/primary/target";
-import { primaryEnvironmentIdAtom } from "../../state/primaryEnvironment";
+import { useNowAfter } from "../../hooks/useDeadline";
+import { installStatusStore, type InstallStatusSnapshot } from "../installStatus/panelUi";
+import { useInstallPlan } from "../installStatus/useInstallPlan";
 import { environmentSession } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 
-const noLaptopSourceAtom = Atom.make(() => undefined);
-
-/** This laptop's installed source and the verified local connection that reported it. */
-const laptopInstalledSourceAtom = Atom.make((get) => {
-  if (!isElectron) return undefined;
-  const environmentId = get(primaryEnvironmentIdAtom);
-  if (environmentId === null) return undefined;
-  try {
-    const localTarget = readPrimaryEnvironmentTarget();
-    if (localTarget?.source !== "desktop-managed") return undefined;
-    const prepared = get(environmentSession.preparedConnectionValueAtom(environmentId));
-    if (prepared._tag === "None" || prepared.value.target._tag !== "PrimaryConnectionTarget")
-      return undefined;
-    const target = prepared.value.target;
-    if (
-      new URL(target.httpBaseUrl).toString() !==
-        new URL(localTarget.target.httpBaseUrl).toString() ||
-      new URL(target.wsBaseUrl).toString() !== new URL(localTarget.target.wsBaseUrl).toString()
-    )
-      return undefined;
-  } catch {
-    return undefined;
-  }
-  const observation = get(jonesUpdates.observation(environmentId));
-  const source = observation.freshness === "fresh" ? observation.state?.installedSource : undefined;
-  return source === undefined ? undefined : { environmentId, source };
-});
+function runningLaptop({ native, nativeRefusal }: InstallStatusSnapshot, now: number) {
+  return isElectron &&
+    native?.view.matchRunningLaptop === 1 &&
+    native.readOnly === undefined &&
+    nativeRefusal === null
+    ? verifiedRunningLaptop(native.laptop, native.laptop.environmentId, now)
+    : undefined;
+}
 
 type AncestryAtom = Atom.Atom<AsyncResult.AsyncResult<JonesSourceComparison | undefined, unknown>>;
 
@@ -157,11 +143,22 @@ export function JonesUpdateControls({
     if (observed.freshness === "fresh" && observed.state?.operation !== undefined)
       void reconcileJonesExecution(environmentId, observed.state.operation).catch(() => undefined);
   }, [observed, environmentId]);
-  const laptop = useAtomValue(compareWithLaptop ? laptopInstalledSourceAtom : noLaptopSourceAtom);
+  const installStatus = useInstallPlan();
+  const observedAt = Date.parse(installStatus.native?.laptop.observedAt ?? "");
+  const laptopNow = useNowAfter(
+    compareWithLaptop && Number.isFinite(observedAt)
+      ? observedAt + VERIFIED_LAPTOP_MAX_AGE_MS
+      : null,
+  );
+  const laptop = compareWithLaptop ? runningLaptop(installStatus, laptopNow) : undefined;
+  const laptopSource =
+    laptop === undefined
+      ? undefined
+      : { repository: laptop.target.repository, sha: laptop.target.sourceSha };
   const hostInstalledSource =
     observation.freshness === "fresh" ? observation.state?.installedSource : undefined;
   const pair = compareWithLaptop
-    ? installedSourcePair(hostInstalledSource, laptop?.source)
+    ? installedSourcePair(hostInstalledSource, laptopSource)
     : undefined;
   const ancestryAtom: AncestryAtom =
     pair === undefined || laptop === undefined
@@ -283,23 +280,23 @@ export function JonesUpdateControls({
   };
   const comparison = compareWithLaptop
     ? compareJonesSource(
-        laptop?.source,
+        laptopSource,
         observation.freshness === "fresh" ? observation.state?.provenance : undefined,
       )
     : null;
   const installedComparison = compareWithLaptop
-    ? installedComparisonFor({ host: hostInstalledSource, laptop: laptop?.source, ancestry })
+    ? installedComparisonFor({ host: hostInstalledSource, laptop: laptopSource, ancestry })
     : null;
   const showMatch =
     compareWithLaptop &&
     isElectron &&
-    environmentId !== laptop?.environmentId &&
-    !(laptop !== undefined && hostInstalledSource?.sha === laptop.source.sha) &&
+    environmentId !== installStatus.native?.laptop.environmentId &&
+    !(laptopSource !== undefined && hostInstalledSource?.sha === laptopSource.sha) &&
     !(
-      laptop !== undefined &&
+      laptopSource !== undefined &&
       observation.freshness === "fresh" &&
       observation.state?.stagedHandle !== undefined &&
-      observation.state.provenance?.sourceSha === laptop.source.sha
+      observation.state.provenance?.sourceSha === laptopSource.sha
     );
   return (
     <div className="min-w-0 space-y-1">
@@ -329,11 +326,15 @@ export function JonesUpdateControls({
                 <ProductionExactSourceUpdateAction
                   environmentId={environmentId}
                   label="this host"
-                  targetSource={laptop?.source.sha ?? ""}
+                  targetSource={laptopSource?.sha ?? ""}
+                  matchRunningGeneration={laptop?.generation}
                   readTargetSource={() => {
-                    const latest = appAtomRegistry.get(laptopInstalledSourceAtom);
-                    return latest !== undefined && latest.environmentId === laptop?.environmentId
-                      ? latest.source.sha
+                    const latest = runningLaptop(installStatusStore.get(), Date.now());
+                    return latest !== undefined &&
+                      laptop !== undefined &&
+                      latest.environmentId === laptop.environmentId &&
+                      latest.generation === laptop.generation
+                      ? latest.target.sourceSha
                       : undefined;
                   }}
                   subject="this laptop"

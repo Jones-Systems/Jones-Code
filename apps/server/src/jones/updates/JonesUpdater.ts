@@ -108,6 +108,7 @@ interface JonesCheckRun {
   readonly state: JonesUpdateState;
   readonly candidate: JonesActionsCandidate | undefined;
   readonly buildStartedAt?: string;
+  readonly downgradeFrom?: string;
 }
 
 export function readCurrentJonesBuildStartedAt(
@@ -170,6 +171,7 @@ export interface JonesPreparationOperation {
   readonly signal: AbortSignal;
   readonly onReserved: (jobId: string) => Promise<void>;
   readonly onAdopting: () => Promise<void>;
+  readonly onDowngradeRefusal?: (installedSource: string, message: string) => void;
 }
 export class PreparationStopRequested extends Error {
   readonly operationId: string;
@@ -181,13 +183,15 @@ export class PreparationStopRequested extends Error {
 }
 
 const FOLLOWER_WAITING = "Waiting for the laptop to report its installed build.";
+const OLDER_TARGET_REFUSAL =
+  "The requested build is older than the build running on this host. Jones Code does not downgrade.";
 const RETIRED_WITHOUT_TARGET =
   "The previous staged selection was retired, but the requested target was not staged. Start a fresh exact-source download without replacement.";
 
 /** A follower's laptop moved on; the unaccepted preparation of its earlier build is dropped. */
 class PreparationSuperseded extends Error {
   constructor() {
-    super("The laptop's installed build changed while this build was being prepared.");
+    super("The laptop source reported to this host changed during preparation.");
     this.name = "PreparationSuperseded";
   }
 }
@@ -417,7 +421,7 @@ export class JonesUpdater {
             message:
               policy?.leaderSource === null
                 ? FOLLOWER_WAITING
-                : "The laptop's installed build changed. Checking for it…",
+                : "The laptop reported a different source. Checking for it…",
           }
         : {},
     );
@@ -573,6 +577,8 @@ export class JonesUpdater {
         "classification" in result && isCheckClassification(result.classification)
           ? result.classification
           : undefined;
+      const refusedDowngrade =
+        result.state === "blocked" && result.reason === "target-older-than-installed";
       const failure =
         result.state === "blocked"
           ? sanitizeCheckFailure(new Error(result.reason))
@@ -643,23 +649,33 @@ export class JonesUpdater {
       this.clearAlternative();
       this.candidate = undefined;
       this.candidateBuildStartedAt = undefined;
-      if (staged) return { state: this.publish({ checkedAt }), candidate: undefined };
+      const unavailable = {
+        candidate: undefined,
+        ...(refusedDowngrade ? { downgradeFrom: installedSource } : {}),
+      };
+      if (staged)
+        return {
+          state: this.publish({ checkedAt }),
+          ...unavailable,
+        };
       return {
         state: this.publish({
           phase: result.state,
           checkedAt,
           message:
             result.state === "blocked"
-              ? result.reason
+              ? refusedDowngrade
+                ? OLDER_TARGET_REFUSAL
+                : result.reason
               : result.state === "building"
                 ? "A fresh main build is still being qualified."
                 : targetSource === undefined
                   ? "No newer qualified main build."
                   : targetSource === this.state.policy?.leaderSource
-                    ? "This host runs the laptop's installed build."
+                    ? "This host runs the last source the laptop reported."
                     : "This host already runs the requested source.",
         }),
-        candidate: undefined,
+        ...unavailable,
       };
     } catch (error) {
       this.clearAlternative();
@@ -747,6 +763,16 @@ export class JonesUpdater {
     if (running?.controller.signal.aborted === true) await running.done;
     const run = await this.checkRun(targetSource, operation);
     if (operation?.signal.aborted) return this.snapshot();
+    if (run.downgradeFrom !== undefined) {
+      operation?.onDowngradeRefusal?.(run.downgradeFrom, OLDER_TARGET_REFUSAL);
+      return replace === undefined
+        ? run.state
+        : {
+            ...run.state,
+            phase: "blocked",
+            message: `${OLDER_TARGET_REFUSAL} The staged selection was retained.`,
+          };
+    }
     // Download only the candidate this run returned for the target; a skipped run, or a build
     // offered by any other check, must not be staged.
     const candidate = run.candidate;
@@ -1088,7 +1114,7 @@ export class JonesUpdater {
       }
       if (signal.reason instanceof PreparationSuperseded) {
         this.setProgress((progress, now) =>
-          failProgress(progress, now, "The laptop's installed build changed.", "superseded"),
+          failProgress(progress, now, "The laptop reported a different source.", "superseded"),
         );
         const { provenance: _provenance, ...rest } = this.state;
         this.state = rest;
@@ -1097,7 +1123,7 @@ export class JonesUpdater {
           phase: "no-new",
           message: retiredSelection
             ? RETIRED_WITHOUT_TARGET
-            : "The laptop's installed build changed. Checking for it…",
+            : "The laptop reported a different source. Checking for it…",
         });
       }
       return this.fail(
