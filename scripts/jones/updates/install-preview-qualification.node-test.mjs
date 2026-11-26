@@ -1053,7 +1053,14 @@ NodeTest.test(
     const seededHold = at("Hold the saved Off current-version catalog connection");
     NodeAssert.ok(hold < seed && seed < seededHold && seededHold < checkpoint);
     NodeAssert.deepEqual(steps[seed + 2], { action: "navigate", path: "/settings/connections" });
-    NodeAssert.equal(steps.filter((step) => step.action === "navigate").length, 3);
+    const navigations = steps.flatMap((step, index) => (step.action === "navigate" ? [index] : []));
+    NodeAssert.equal(navigations.length, 3);
+    for (const navigation of navigations) {
+      NodeAssert.deepEqual(steps[navigation + 1], {
+        action: "click",
+        locator: '[aria-label="Show environments as"] >> button:text-is("List")',
+      });
+    }
     NodeAssert.ok(steps.some((step) => step.name === "saved-connection-reload"));
   },
 );

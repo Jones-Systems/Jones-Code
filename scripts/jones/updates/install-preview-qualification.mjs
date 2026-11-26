@@ -1048,6 +1048,10 @@ function indexedDbStep(phase, label, expected, syntheticOrigin) {
 }
 
 export function scenarioSteps(remotePairing) {
+  const openConnectionsList = [
+    { action: "navigate", path: "/settings/connections" },
+    { action: "click", locator: '[aria-label="Show environments as"] >> button:text-is("List")' },
+  ];
   const disabledPreference = {
     action: "assert-evaluate",
     label: "Update access must preserve the saved disabled host",
@@ -1056,7 +1060,7 @@ export function scenarioSteps(remotePairing) {
     expected: { present: true, checked: "false", disabled: true },
   };
   return [
-    { action: "navigate", path: "/settings/connections" },
+    ...openConnectionsList,
     { action: "wait", text: "Add environment" },
     { action: "capture", name: "connections-before", contains: ["Add environment"] },
     indexedDbStep("upgrade-control", "Native IndexedDB detects the legacy upgrade hazard", {
@@ -1089,7 +1093,7 @@ export function scenarioSteps(remotePairing) {
       "Release the initial legacy handle before loading the saved Off fixture",
       { legacyProofReleased: true },
     ),
-    { action: "navigate", path: "/settings/connections" },
+    ...openConnectionsList,
     { action: "wait", text: "Synthetic incompatible Jones host" },
     { action: "wait", text: "Source matches this app." },
     disabledPreference,
@@ -1127,7 +1131,7 @@ export function scenarioSteps(remotePairing) {
     indexedDbStep("close", "Release the legacy catalog handle before hard reload", {
       legacyProofReleased: true,
     }),
-    { action: "navigate", path: "/settings/connections" },
+    ...openConnectionsList,
     { action: "wait", text: "Source relationship has not been verified." },
     {
       action: "capture",
