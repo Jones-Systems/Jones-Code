@@ -6,6 +6,8 @@ const testState = vi.hoisted(() => {
   let completeProjectFileRead: (value: ProjectFile) => void = () => undefined;
   let projectFileRead = Promise.resolve<ProjectFile>(null);
   let projectRemoved = false;
+  let trackedFolders: string[] = [];
+  let repoFreshnessCadenceSeconds = 0;
   let draftSession = {
     environmentId: "environment-ssh",
     projectId: "project-remote",
@@ -68,6 +70,13 @@ const testState = vi.hoisted(() => {
   };
 
   return {
+    get trackedFolders() {
+      return trackedFolders;
+    },
+    setRepositoryDefaults(folders: string[], cadenceSeconds: number) {
+      trackedFolders = folders;
+      repoFreshnessCadenceSeconds = cadenceSeconds;
+    },
     completeProjectFileRead: (value: ProjectFile) => completeProjectFileRead(value),
     discoverBranch(branch: string) {
       draftSession = { ...draftSession, branch };
@@ -106,7 +115,11 @@ const testState = vi.hoisted(() => {
       allocation = mode;
     },
     get targetSettings() {
-      return { ...targetSettings, worktreeAllocation: allocation };
+      return {
+        ...targetSettings,
+        worktreeAllocation: allocation,
+        projectSettingsOverrides: { "project-remote": { repoFreshnessCadenceSeconds } },
+      };
     },
     reset(
       nextStoredDraft: typeof storedDraft,
@@ -126,6 +139,8 @@ const testState = vi.hoisted(() => {
         environmentSelection: undefined,
       };
       projectRemoved = false;
+      trackedFolders = [];
+      repoFreshnessCadenceSeconds = 0;
       conversationWorkspace = undefined;
       allocation = "on-write";
       connectedEnvironmentIds = ["environment-primary", "environment-ssh"];
@@ -163,6 +178,7 @@ const testEnvironment = (environmentId: string, conversationWorkspace?: boolean)
   serverVersion: "0.0.0-test",
   capabilities: {
     repositoryIdentity: false,
+    repoFreshness: true,
     ...(conversationWorkspace === undefined ? {} : { conversationWorkspace }),
   },
 });
@@ -285,6 +301,9 @@ vi.mock("../state/entities", () => {
     workspaceRoot: "/remote/project",
     defaultThreadEnvMode: null,
     defaultModelSelection: null,
+    get trackedFolders() {
+      return testState.trackedFolders;
+    },
   };
   return {
     readProjects: () => (testState.projectRemoved ? [] : [project]),
@@ -533,6 +552,26 @@ describe("useNewThreadHandler", () => {
       expect.objectContaining({ envMode: "worktree", startFromOrigin: true }),
     );
   });
+
+  it.each([false, true])(
+    "respects remote start with cadence on projects with tracked folders=%s",
+    async (hasTrackedFolders) => {
+      testState.reset(null, { envMode: "worktree", startFromOrigin: true });
+      testState.setRepositoryDefaults(hasTrackedFolders ? ["secondary"] : [], 60);
+
+      const opened = await useNewThreadHandler()({
+        environmentId: "environment-ssh",
+        projectId: "project-remote",
+      } as never);
+
+      expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+        "remote-project",
+        expect.anything(),
+        opened?.draftId,
+        expect.objectContaining({ envMode: "worktree", startFromOrigin: hasTrackedFolders }),
+      );
+    },
+  );
 });
 
 describe("default project selection", () => {

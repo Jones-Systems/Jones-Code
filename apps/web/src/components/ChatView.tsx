@@ -2472,7 +2472,11 @@ export default function ChatView(props: ChatViewProps) {
     canOverrideServerThreadEnvMode && pendingServerThreadBranchEntryForThread !== null
       ? pendingServerThreadBranchEntryForThread.branch
       : (activeThread?.branch ?? null);
-  const verifiedDefault = usesVerifiedDefault(composerEnvironmentConfig, activeProject?.id);
+  const verifiedDefault = usesVerifiedDefault(
+    composerEnvironmentConfig,
+    activeProject?.id,
+    activeProject?.trackedFolders?.length,
+  );
   const startFromOrigin = isLocalDraftThread
     ? (draftThread?.startFromOrigin ?? false)
     : canOverrideServerThreadEnvMode

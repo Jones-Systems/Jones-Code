@@ -475,14 +475,16 @@ const layerThreadLaunchProvided = ThreadLaunchService.layerProduction.pipe(
       nativeCreationOwnersProvided,
       EffectOutbox.layer,
       layerEventStoreProvided,
-      layerProjectSetupScriptRunner,
       layerManagedProjectFoldersProvided,
       layerThreadManagementProvided,
       layerCommandReceiptStoreProvided,
       layerEventSink,
       ProjectionStore.layer,
       IdAllocator.layer,
-    ).pipe(Layer.provideMerge(layerProjectService)),
+    ).pipe(
+      Layer.provideMerge(layerProjectSetupScriptRunner),
+      Layer.provideMerge(layerProjectService),
+    ),
   ),
 );
 const layerWorkflowsProvided = WorkflowRuntime.layer.pipe(

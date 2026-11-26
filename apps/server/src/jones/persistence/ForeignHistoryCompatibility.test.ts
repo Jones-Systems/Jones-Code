@@ -144,7 +144,7 @@ it.effect.each([
     assert.strictEqual(sweep._tag, blocker);
     assert.deepStrictEqual(yield* snapshot, before);
     assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
-  }).pipe(Effect.provide(maintenanceLayer), Effect.provide(memory)),
+  }).pipe(Effect.provide(maintenanceLayer.pipe(Layer.provideMerge(memory)))),
 );
 
 it.effect("an empty foreign schema allows deleted-thread and legacy history reclamation", () =>
@@ -163,7 +163,7 @@ it.effect("an empty foreign schema allows deleted-thread and legacy history recl
       { title: ProjectionMaintenance.DELETED_THREAD_TITLE },
     ]);
     assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
-  }).pipe(Effect.provide(maintenanceLayer), Effect.provide(memory)),
+  }).pipe(Effect.provide(maintenanceLayer.pipe(Layer.provideMerge(memory)))),
 );
 
 it.effect.each([11, 13])(

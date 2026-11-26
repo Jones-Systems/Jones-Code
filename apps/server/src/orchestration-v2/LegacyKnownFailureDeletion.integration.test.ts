@@ -76,6 +76,7 @@ import {
 type LegacyPreparationStep = LegacyPreparation["steps"][number];
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const isProjectionError = Schema.is(Orchestrator.OrchestratorProjectionError);
 
 const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.1-codex" };
 const adapter = {
@@ -756,8 +757,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     requestCompletionMarker: true,
                   }).pipe(Effect.flip);
                   const projectionError = snapshotError.cause;
-                  if (!Schema.is(Orchestrator.OrchestratorProjectionError)(projectionError))
-                    return yield* Effect.die(snapshotError);
+                  if (!isProjectionError(projectionError)) return yield* Effect.die(snapshotError);
                   assert.instanceOf(
                     projectionError.cause,
                     ProjectionStore.ProjectionStoreThreadNotFoundError,

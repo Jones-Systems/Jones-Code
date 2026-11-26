@@ -3758,6 +3758,7 @@
     "docs/user/t3-connect-troubleshooting.md": "policy",
     "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts": "jones-owned",
     "apps/server/src/jones/orchestration/WorkspacePreparationRead.test.ts": "jones-owned",
+    "packages/client-runtime/src/state/turnItemPresentation.test.ts": "jones-tests-in-upstream",
     "scripts/jones/boundary/fragments/workspace-preparation-reads.json": "jones-owned",
     "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/HistoryDeliveryOutcome.ts": "jones-owned",
@@ -4884,6 +4885,10 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
       "to": "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts"
     },
     {

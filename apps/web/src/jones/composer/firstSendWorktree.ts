@@ -5,8 +5,9 @@ import type { DraftThreadEnvMode } from "../../composerDraftStore";
 export function usesVerifiedDefault(
   config: ServerConfig | null | undefined,
   projectId: ProjectId | null | undefined,
+  trackedFolderCount = 0,
 ): boolean {
-  if (!config || !projectId) return false;
+  if (!config || !projectId || trackedFolderCount > 0) return false;
   const capabilities = config.environment?.capabilities;
   return (
     capabilities?.repoFreshness === true &&

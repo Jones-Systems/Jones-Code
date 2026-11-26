@@ -9,6 +9,7 @@ import {
   BearerConnectionCredential,
   BearerConnectionProfile,
   BearerConnectionRegistration,
+  DpopConnectionCredential,
   RelayConnectionRegistration,
   SshConnectionProfile,
   SshConnectionRegistration,
@@ -28,11 +29,13 @@ import {
   ConnectionCatalogDocument,
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
   catalogRoutes,
+  connectionCredentialFromCatalog,
   connectionCompatibilityRouteBinding,
   decodeConnectionCompatibilityHints,
   listConnectionCompatibilityHints,
   setConnectionCompatibilityHintInRecords,
   putConnectionProfileInCatalog,
+  putConnectionCredentialInCatalog,
   removeConnectionProfileFromCatalog,
   setRoutesInCatalog,
   putRemoteDpopTokenInCatalog,
@@ -79,6 +82,75 @@ const REMOTE_TOKEN = new TokenStore.RemoteDpopAccessToken({
 });
 
 describe("ConnectionCatalogDocument", () => {
+  it("keeps unrelated saved credentials readable by a client without direct DPoP support", () => {
+    const directId = EnvironmentId.make("direct-dpop-environment");
+    const directTarget = new BearerConnectionTarget({
+      environmentId: directId,
+      label: "DPoP host",
+      connectionId: "direct-dpop-route",
+    });
+    const first = registerConnectionInCatalog(
+      EMPTY_CONNECTION_CATALOG_DOCUMENT,
+      new BearerConnectionRegistration({
+        target: BEARER_TARGET,
+        profile: BEARER_PROFILE,
+        credential: BEARER_CREDENTIAL,
+      }),
+    );
+    const keyBound = new DpopConnectionCredential({
+      accessToken: "synthetic-direct-token",
+      expiresAtEpochMs: 1_000_000,
+    });
+    const paired = registerConnectionInCatalog(
+      first,
+      new BearerConnectionRegistration({
+        target: directTarget,
+        profile: new BearerConnectionProfile({
+          connectionId: directTarget.connectionId,
+          environmentId: directId,
+          label: directTarget.label,
+          httpBaseUrl: "https://direct.example.test",
+          wsBaseUrl: "wss://direct.example.test",
+        }),
+        credential: keyBound,
+      }),
+    );
+    const currentJson = Schema.fromJsonString(ConnectionCatalogDocument);
+    const { directDpopCredentials: _extension, ...legacyFields } = ConnectionCatalogDocument.fields;
+    // The receiving v1 decoder rejects unknown tags inside credentials and ignores new fields.
+    const legacyJson = Schema.fromJsonString(
+      Schema.Struct({
+        ...legacyFields,
+        credentials: Schema.Array(
+          Schema.Struct({ connectionId: Schema.String, credential: BearerConnectionCredential }),
+        ),
+      }),
+    );
+    const encoded = Schema.encodeSync(currentJson)(paired);
+    const restored = Schema.decodeUnknownSync(legacyJson)(encoded);
+    expect(restored.targets).toEqual([BEARER_TARGET, directTarget]);
+    expect(restored.credentials).toEqual(first.credentials);
+    expect(restored.profiles[0]).toEqual(BEARER_PROFILE);
+    const rewritten = Schema.decodeUnknownSync(currentJson)(
+      Schema.encodeSync(legacyJson)(restored),
+    );
+    expect(connectionCredentialFromCatalog(rewritten, BEARER_TARGET.connectionId)).toEqual(
+      Option.some(BEARER_CREDENTIAL),
+    );
+
+    const upgraded = Schema.decodeUnknownSync(currentJson)(encoded);
+    expect(connectionCredentialFromCatalog(upgraded, directTarget.connectionId)).toEqual(
+      Option.some(keyBound),
+    );
+    const changedAuth = putConnectionCredentialInCatalog(
+      upgraded,
+      directTarget.connectionId,
+      BEARER_CREDENTIAL,
+    );
+    expect(changedAuth.directDpopCredentials).toBeUndefined();
+    expect(removeConnectionFromCatalog(upgraded, directId)).toEqual(first);
+  });
+
   it.effect("persists explicit GitHub trust and forgets it when a connection is removed", () =>
     Effect.gen(function* () {
       let document = EMPTY_CONNECTION_CATALOG_DOCUMENT;

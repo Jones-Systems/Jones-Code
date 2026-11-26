@@ -19,7 +19,9 @@ import {
   removeConnectionFromCatalog,
   setConnectionEnabledInCatalog,
   setRoutesInCatalog,
-  replaceCatalogValue,
+  connectionCredentialFromCatalog,
+  putConnectionCredentialInCatalog,
+  removeConnectionCredentialFromCatalog,
   Persistence,
   ThreadTriageOutboxStore,
   makeStoredShellSnapshotEncoder,
@@ -1147,29 +1149,14 @@ export const layer = Layer.effectContext(
     const credentialStore = CredentialStore.make({
       get: (connectionId) =>
         catalog.read.pipe(
-          Effect.map((document) =>
-            Option.fromUndefinedOr(
-              document.credentials.find((entry) => entry.connectionId === connectionId)?.credential,
-            ),
-          ),
+          Effect.map((document) => connectionCredentialFromCatalog(document, connectionId)),
         ),
       put: (connectionId, credential) =>
-        catalog.update((document) => ({
-          ...document,
-          credentials: replaceCatalogValue(document.credentials, (value) => value.connectionId, {
-            connectionId,
-            credential,
-          }),
-        })),
+        catalog.update((document) =>
+          putConnectionCredentialInCatalog(document, connectionId, credential),
+        ),
       remove: (connectionId) =>
-        catalog.update((document) => ({
-          ...document,
-          credentials: removeCatalogValue(
-            document.credentials,
-            (value) => value.connectionId,
-            connectionId,
-          ),
-        })),
+        catalog.update((document) => removeConnectionCredentialFromCatalog(document, connectionId)),
     });
     const remoteTokenStore = TokenStore.make({
       get: (environmentId) =>

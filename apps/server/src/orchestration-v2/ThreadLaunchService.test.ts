@@ -21,6 +21,7 @@ import {
   EnvironmentId,
   GitCommandError,
   MessageId,
+  ORCHESTRATION_V2_WORKSPACE_PREPARATION_RECONCILIATION_CODE,
   RunId,
   ProjectId,
   ProviderDriverKind,
@@ -3166,23 +3167,16 @@ it.live(
         assert.isNull(limited.thread.worktreePath);
         assert.equal(yield* ran, "");
 
-        // Preparing the same run again reads the link from the thread, not from a request.
+        // The recorded task-folder attempt needs reconciliation before another dispatch.
         const threads = yield* ThreadManagement.ThreadManagementService;
-        yield* launches.retryPreparation({
-          commandId: CommandId.make("launch:limited:retry"),
-          threadId: limited.thread.id,
-          runId: limited.runs[0]!.id,
-        });
-        yield* threads.streamStoredEventsFrom({ threadId: limited.thread.id }).pipe(
-          Stream.filter(
-            (stored) =>
-              stored.event.type === "run.updated" &&
-              (stored.commandId?.endsWith(":release") === true ||
-                stored.event.payload.status === "failed"),
-          ),
-          Stream.take(2),
-          Stream.runDrain,
-        );
+        const retry = yield* launches
+          .retryPreparation({
+            commandId: CommandId.make("launch:limited:retry"),
+            threadId: limited.thread.id,
+            runId: limited.runs[0]!.id,
+          })
+          .pipe(Effect.flip);
+        assert.include(String(retry.cause), "needs reconciliation");
         assert.equal(yield* ran, "");
 
         // A first message sent into an empty thread the link started names no link; the
@@ -3291,22 +3285,14 @@ it.live(
         assert.equal(below.runs[0]?.status, "failed");
         assert.equal(yield* ran, "");
 
-        // Preparing the run again is still that thread's request.
-        yield* launches.retryPreparation({
-          commandId: CommandId.make("launch:below:retry"),
-          threadId: below.thread.id,
-          runId: below.runs[0]!.id,
-        });
-        yield* threads.streamStoredEventsFrom({ threadId: below.thread.id }).pipe(
-          Stream.filter(
-            (stored) =>
-              stored.event.type === "run.updated" &&
-              (stored.commandId?.endsWith(":release") === true ||
-                stored.event.payload.status === "failed"),
-          ),
-          Stream.take(2),
-          Stream.runDrain,
-        );
+        const retry = yield* launches
+          .retryPreparation({
+            commandId: CommandId.make("launch:below:retry"),
+            threadId: below.thread.id,
+            runId: below.runs[0]!.id,
+          })
+          .pipe(Effect.flip);
+        assert.include(String(retry.cause), "needs reconciliation");
         assert.equal(yield* ran, "");
 
         // A thread that asked and can no longer be read is not replaced by the new one.
@@ -3690,7 +3676,33 @@ it.live.each(taskFolderLaunchCases)("$name", ({ kind }) => {
 
         yield* Deferred.succeed(interruptCreate, undefined);
         const after = yield* preparationSettled(launched.threadId);
-        assert.equal(after.runs[0]?.status, "failed");
+        const failedRun = after.runs[0]!;
+        assert.equal(failedRun.status, "failed");
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const receipt = yield* receipts.getByCommandId(
+          CommandId.make(`${failedRun.id}:task-folder:worktree`),
+        );
+        assert.equal(Option.getOrUndefined(receipt)?.status, "accepted");
+        const failure = after.turnItems.find((item) => item.type === "error");
+        assert.equal(
+          failure?.failure.code,
+          ORCHESTRATION_V2_WORKSPACE_PREPARATION_RECONCILIATION_CODE,
+        );
+        assert.include(failure?.failure.message ?? "", "needs reconciliation");
+        const retryId = CommandId.make(`${input.commandId}:retry`);
+        const refused = yield* launches
+          .retryPreparation({
+            commandId: retryId,
+            threadId: launched.threadId,
+            runId: failedRun.id,
+          })
+          .pipe(Effect.flip);
+        assert.equal(refused._tag, "OrchestratorDispatchError");
+        assert.include(String(refused.cause), "needs reconciliation");
+        assert.equal(
+          (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
+          "failed",
+        );
         assert.isNull(after.thread.worktreePath);
         assert.isNull(yield* taskFolders.find(root));
         assert.isFalse(yield* fileSystem.exists(root));

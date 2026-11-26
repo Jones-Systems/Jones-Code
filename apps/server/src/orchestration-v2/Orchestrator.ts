@@ -61,7 +61,11 @@ import {
   canSettleWaitingRun,
   type WaitingRunStopEvidence,
 } from "../jones/orchestration/WaitingRunSettlement.ts";
-import { retryWorkspacePreparationRead } from "../jones/orchestration/WorkspacePreparationRead.ts";
+import {
+  retryWorkspacePreparationRead,
+  taskFolderProgressId,
+  TASK_FOLDER_RECONCILIATION_MESSAGE,
+} from "../jones/orchestration/WorkspacePreparationRead.ts";
 import { buildUserInputRequestRecord } from "../jones/orchestration/userInputRequestRecord.ts";
 import { questionId as checkoutRecoveryQuestionId } from "../jones/workspaceRecreation/Recovery.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
@@ -171,6 +175,7 @@ import {
 } from "../sourceControl/threadPullRequests.ts";
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  ORCHESTRATION_V2_WORKSPACE_PREPARATION_RECONCILIATION_CODE,
   type ChatAttachment,
   CommandId,
   EventId,
@@ -15232,6 +15237,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Run ${command.runId} is not awaiting workspace preparation.`,
       });
     }
+    const taskFolderProgress =
+      state.run.workspacePreparation?.type === "worktree"
+        ? yield* commandReceipts
+            .getByCommandId(taskFolderProgressId(command.runId))
+            .pipe(mapDispatchError(command))
+        : Option.none();
+    const reconciliationRequired = Option.isSome(taskFolderProgress);
+    const failureMessage = reconciliationRequired
+      ? `${command.failure.message}\n\n${TASK_FOLDER_RECONCILIATION_MESSAGE}`
+      : command.failure.message;
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     yield* emitEvent({
@@ -15263,7 +15278,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...state.preparationItem,
         status: "failed",
         title: "Workspace preparation failed",
-        output: command.failure.message,
+        output: failureMessage,
         exitCode: 1,
         completedAt: now,
         updatedAt: now,
@@ -15297,7 +15312,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         type: "error",
         failure: {
           ...command.failure,
-          code: ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+          message: failureMessage,
+          code: reconciliationRequired
+            ? ORCHESTRATION_V2_WORKSPACE_PREPARATION_RECONCILIATION_CODE
+            : ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
         },
       },
     });
@@ -15350,6 +15368,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       { turnItemTypes: ["command_execution", "error"], turnItemRunId: command.runId },
     );
     const state = preparedRunState(command, projection);
+    if (state?.run.workspacePreparation?.type === "worktree") {
+      const taskFolderProgress = yield* commandReceipts
+        .getByCommandId(taskFolderProgressId(command.runId))
+        .pipe(mapDispatchError(command));
+      if (Option.isSome(taskFolderProgress)) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: TASK_FOLDER_RECONCILIATION_MESSAGE,
+        });
+      }
+    }
     const failureItem = projection.turnItems.find(
       (candidate): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "error" }> =>
         candidate.type === "error" &&

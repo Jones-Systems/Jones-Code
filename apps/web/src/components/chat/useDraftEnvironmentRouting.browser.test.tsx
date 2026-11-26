@@ -119,6 +119,18 @@ vi.mock(import("../files/projectFilesQueryState"), async (original) => ({
   ...(await original()),
   getProjectFileQueryAtom: resources.getProjectFileQueryAtom,
 }));
+vi.mock(import("../../lib/storage"), async (original) => {
+  const storage = await original();
+  return {
+    ...storage,
+    // This fixture seeds a routing draft in an origin shared by other browser suites.
+    createDeferredStorage: <Value,>(
+      _base: Parameters<typeof storage.createDeferredStorage<Value>>[0],
+      serialize: (value: Value) => string,
+      debounceMs?: number,
+    ) => storage.createDeferredStorage(storage.createMemoryStorage(), serialize, debounceMs),
+  };
+});
 
 function projectFileResult(contents: string) {
   return AsyncResult.success<ProjectReadFileResult>({

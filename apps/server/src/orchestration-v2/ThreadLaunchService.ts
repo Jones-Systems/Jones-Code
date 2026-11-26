@@ -14,6 +14,7 @@ import * as AutoLaunchStrategy from "../jones/conversationWorkspace/LaunchStrate
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
+import { taskFolderProgressId } from "../jones/orchestration/WorkspacePreparationRead.ts";
 import {
   launchDeliveryEvidence,
   readLaunchMessage,
@@ -524,9 +525,6 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
         ...(threadId === undefined ? {} : { threadId }),
         cause,
       });
-
-  // A run's original task-folder progress remains identifiable even if its tracked list changes.
-  const taskFolderProgressId = (runId: RunId) => CommandId.make(`${runId}:task-folder:worktree`);
 
   const mapConversationFailure = (
     input: ThreadLaunchInput,

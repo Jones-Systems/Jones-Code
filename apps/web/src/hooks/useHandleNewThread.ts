@@ -123,7 +123,6 @@ export function createNewThreadHandler(router: AnyRouter) {
     const environmentServerConfigs = appAtomRegistry.get(environmentServerConfigsAtom);
     const targetServerConfig = environmentServerConfigs.get(projectRef.environmentId);
     const targetServerSettings = targetServerConfig?.settings ?? DEFAULT_SERVER_SETTINGS;
-    const verifiedDefault = usesVerifiedDefault(targetServerConfig, projectRef.projectId);
     const {
       getComposerDraft,
       getDraftSessionByLogicalProjectKey,
@@ -178,6 +177,11 @@ export function createNewThreadHandler(router: AnyRouter) {
       (candidate) =>
         candidate.id === projectRef.projectId &&
         candidate.environmentId === projectRef.environmentId,
+    );
+    const verifiedDefault = usesVerifiedDefault(
+      targetServerConfig,
+      projectRef.projectId,
+      project?.trackedFolders?.length,
     );
     const projectSettings = resolveProjectSettings(
       targetServerSettings,
