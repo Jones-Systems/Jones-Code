@@ -17072,7 +17072,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                           requested: rollbackInput.providerThread.runtimeIdentity.requested,
                           observed: ProviderAdapter.unobservedRuntimeIdentity(),
                           evidenceRevision:
-                            (rollbackInput.providerThread.runtimeIdentity.evidenceRevision ?? 0) + 1,
+                            (rollbackInput.providerThread.runtimeIdentity.evidenceRevision ?? 0) +
+                            1,
                         },
                       }),
                   providerSessionId: input.providerSessionId,
