@@ -190,46 +190,72 @@ describe("durable client update duties", () => {
     });
   });
 
-  it("holds new unsupported replies and refines an older archived one with exact read evidence", async () => {
-    const storage = disk();
-    const provisional: JonesOperationReceipt = {
-      ...request,
-      protocol: 1,
-      phase: "refused",
-      code: "unsupported",
-      updatedAt: "2026-10-27T04:05:00Z",
-    };
-    const duty = {
-      id: id(1),
-      environmentId,
-      kind: "operation",
-      action: "download-exact",
-      targetSource,
-      operationId: id(1),
-      request,
-    } as const;
-    const waiting = createJonesActionJournal(storage);
-    await waiting.reserve(duty);
-    expect(await waiting.reconcileReceipt(provisional)).toBe(false);
-    expect(waiting.getSnapshot().duties).toEqual([duty]);
+  it.each(["running", "held", "stopped", "unsupported"] as const)(
+    "corrects an older archived unsupported reply with exact %s read evidence",
+    async (outcome) => {
+      const storage = disk();
+      const provisional: JonesOperationReceipt = {
+        ...request,
+        protocol: 1,
+        phase: "refused",
+        code: "unsupported",
+        updatedAt: "2026-10-27T04:05:00Z",
+      };
+      const duty = {
+        id: id(1),
+        environmentId,
+        kind: "operation",
+        action: "download-exact",
+        targetSource,
+        operationId: id(1),
+        request,
+      } as const;
+      const waiting = createJonesActionJournal(storage);
+      await waiting.reserve(duty);
+      expect(await waiting.reconcileReceipt(provisional)).toBe(false);
+      expect(waiting.getSnapshot().duties).toEqual([duty]);
 
-    storage.values.set(
-      JONES_ACTION_JOURNAL_KEY,
-      JSON.stringify({
-        schema: 1,
-        duties: [],
-        history: [{ ...duty, receipt: provisional }],
-      }),
-    );
-    const archived = createJonesActionJournal(storage);
-    await archived.load();
-    const stopped = receipt("stopped");
-    await archived.reconcileReceipt(stopped);
-    expect(archived.getSnapshot().history[0]?.receipt).toEqual(provisional);
-    await archived.reconcileReceipt(stopped, { ledgerRead: true });
-    expect(archived.getSnapshot().duties).toEqual([]);
-    expect(archived.getSnapshot().history[0]?.receipt).toEqual(stopped);
-  });
+      storage.values.set(
+        JONES_ACTION_JOURNAL_KEY,
+        JSON.stringify({
+          schema: 1,
+          duties: [],
+          history: [{ ...duty, receipt: provisional }],
+        }),
+      );
+      const archived = createJonesActionJournal(storage);
+      await archived.load();
+      const proof = outcome === "unsupported" ? provisional : receipt(outcome);
+      await archived.reconcileReceipt(proof);
+      await archived.reconcileReceipt({ ...proof, operationId: id(99) }, { ledgerRead: true });
+      expect(archived.getSnapshot().history[0]?.receipt).toEqual(provisional);
+      await archived.reconcileReceipt(proof, { ledgerRead: true });
+      const restarted = createJonesActionJournal(storage);
+      await restarted.load();
+      if (outcome === "running" || outcome === "held") {
+        expect(restarted.getSnapshot().history).toEqual([]);
+        expect(restarted.getSnapshot().duties).toEqual([{ ...duty, receipt: proof }]);
+        const terminal = { ...receipt("stopped"), updatedAt: "2026-10-27T04:06:00Z" };
+        expect(await restarted.reconcileReceipt(terminal)).toBe(true);
+        expect(restarted.getSnapshot().duties).toEqual([]);
+        expect(restarted.getSnapshot().history[0]?.receipt).toEqual(terminal);
+      } else {
+        expect(restarted.getSnapshot().duties).toEqual([]);
+        expect(restarted.getSnapshot().history).toEqual([
+          {
+            ...duty,
+            receipt: proof,
+            ...(outcome === "unsupported" ? { unsupportedReceiptVerified: true } : {}),
+          },
+        ]);
+        if (outcome === "unsupported") {
+          await restarted.reconcileReceipt(receipt("running"), { ledgerRead: true });
+          expect(restarted.getSnapshot().history[0]?.receipt).toEqual(provisional);
+          expect(restarted.getSnapshot().duties).toEqual([]);
+        }
+      }
+    },
+  );
 
   it("holds Stop through missing/wrong IDs, held results, backwards receipts and a late start reply", async () => {
     const storage = disk(),

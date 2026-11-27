@@ -68,7 +68,8 @@ export function pendingJonesOperationId(
       d.kind === "operation" &&
       d.request !== undefined &&
       d.receipt !== undefined &&
-      isProvisionalUnsupportedReceipt(d.receipt),
+      isProvisionalUnsupportedReceipt(d.receipt) &&
+      d.unsupportedReceiptVerified !== true,
   )?.operationId;
 }
 export function reconcileJonesExecution(

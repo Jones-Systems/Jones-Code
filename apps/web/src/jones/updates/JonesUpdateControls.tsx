@@ -15,6 +15,7 @@ import {
 import {
   executeWebJonesAction,
   unresolvedJonesExecution,
+  pendingJonesOperationId,
   reconcileJonesExecution,
   stopWebJonesDownload,
 } from "../installStatus/execution";
@@ -180,6 +181,7 @@ export function JonesUpdateControls({
   const session = useAtomValue(environmentSession.sessionStateAtom(environmentId));
   const allowed =
     session._tag === "Success" &&
+    !session.waiting &&
     session.value.authenticated &&
     sessionGrantsScope(session.value, AuthOrchestrationOperateScope);
   const authority = useWebReviewAuthority(environmentId, allowed);
@@ -378,6 +380,7 @@ export function JonesUpdateControls({
                     );
                     return (
                       latest._tag === "Success" &&
+                      !latest.waiting &&
                       latest.value.authenticated &&
                       sessionGrantsScope(latest.value, AuthOrchestrationOperateScope)
                     );
@@ -401,7 +404,8 @@ export function JonesUpdateControls({
             Stop download
           </Button>
         ) : null}
-        {journal.duties.some((d) => d.environmentId === environmentId && d.kind !== "legacy") ? (
+        {pendingJonesOperationId(environmentId, journal) !== undefined ||
+        journal.duties.some((d) => d.environmentId === environmentId && d.kind === "native") ? (
           <Button
             size="xs"
             variant="outline"

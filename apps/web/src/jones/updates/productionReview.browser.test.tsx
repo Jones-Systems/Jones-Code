@@ -1,11 +1,15 @@
 import { act, render, stubGlobal, type Screen } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
+import * as Cause from "effect/Cause";
 import { AuthOrchestrationReadScope, EnvironmentId } from "@t3tools/contracts";
-import type {
-  JonesUpdateObservation,
-  JonesOperationCommand,
+import {
+  JonesOperationNotSentError,
+  type JonesStopCommand,
+  type JonesUpdateObservation,
+  type JonesOperationCommand,
 } from "@t3tools/client-runtime/jones/updates";
+import { JONES_ACTION_JOURNAL_KEY } from "@t3tools/client-runtime/jones/updates/action-journal";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type {
   JonesOperationReceipt,
@@ -19,6 +23,7 @@ const h = vi.hoisted(() => ({
   observations: new Map<string, JonesUpdateObservation>(),
   permissions: new Map<string, boolean>(),
   canRead: new Set<string>(),
+  checking: new Set<string>(),
   confirmations: [] as Array<(value: boolean) => void>,
   recoveries: [] as Array<(policy: JonesRecoveryPolicy | null) => void>,
   disk: new Map<string, string>(),
@@ -90,6 +95,7 @@ vi.mock("../../rpc/atomRegistry", () => ({
         ? h.observations.get(atom.env)
         : {
             _tag: "Success",
+            waiting: h.checking.has(atom.env),
             value: {
               authenticated: true,
               permissions: h.permissions.get(atom.env) ? ["orchestration:operate"] : [],
@@ -446,6 +452,88 @@ describe("production web review authority", () => {
     ).toEqual([]);
     expect(h.legacy).not.toHaveBeenCalled();
     expect(h.native).not.toHaveBeenCalled();
+  });
+
+  it("restores Stop after exact Read proves a legacy archived download is running", async () => {
+    await using _fixture = await fixture();
+    const { a } = hosts();
+    const operationId = "77777777-1111-4111-8111-111111111111";
+    const request: JonesOperationStartInput = {
+      operationId,
+      environmentId: a,
+      expectedInstalledSource: old,
+      action: { kind: "download-exact", targetSource: source },
+    };
+    const updatedAt = "2026-10-27T04:00:00Z";
+    const running: JonesOperationReceipt = {
+      ...request,
+      protocol: 1,
+      phase: "running",
+      acceptedAt: updatedAt,
+      updatedAt,
+    };
+    const { duties, history } = webJonesJournal.getSnapshot();
+    h.disk.set(
+      JONES_ACTION_JOURNAL_KEY,
+      JSON.stringify({
+        schema: 1,
+        duties,
+        history: [
+          ...history,
+          {
+            kind: "operation",
+            action: "download-exact",
+            id: operationId,
+            operationId,
+            environmentId: a,
+            targetSource: source,
+            request,
+            receipt: {
+              ...request,
+              protocol: 1,
+              phase: "refused",
+              code: "unsupported",
+              updatedAt,
+            },
+          },
+        ],
+      }),
+    );
+    await act(() => webJonesJournal.notSent(operationId));
+    h.observations.set(a, {
+      state: { ...state(a, true), phase: "downloading", operation: running },
+      freshness: "fresh",
+    });
+    h.canRead.add(a);
+    h.operation.mockResolvedValue(success({ receipts: [{ operationId, receipt: running }] }));
+
+    await draw("connections", a);
+    expect(container.textContent).not.toContain("Stop download");
+    await click("Read operation status");
+    expect(h.operation).toHaveBeenCalledExactlyOnceWith({
+      environmentId: a,
+      input: { action: "operationRead", input: { environmentId: a, operationIds: [operationId] } },
+    });
+    expect(webJonesJournal.getSnapshot().duties.find((d) => d.id === operationId)?.receipt).toEqual(
+      running,
+    );
+
+    const send = vi.fn();
+    h.stop.mockImplementation(async ({ input }: { input: JonesStopCommand }) => {
+      h.checking.add(a);
+      if (!(await input.beforeSend?.())) {
+        return { _tag: "Failure", cause: Cause.fail(new JonesOperationNotSentError({})) };
+      }
+      send(input.input);
+      return { _tag: "Failure", cause: Cause.fail(new Error("Stop reply lost")) };
+    });
+    await click("Stop download");
+    expect(h.stop).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalled();
+    expect(webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a)).toMatchObject(
+      [{ id: operationId, receipt: running }],
+    );
+    h.checking.delete(a);
   });
 
   it("keeps one Stop through pointer/keyboard, remount, wrong proofs and a late start response", async () => {

@@ -102,6 +102,12 @@ it("selects the exact read for a retained legacy unsupported reply after pending
   } as const;
   const saved = { ready: true, duties: [], history: [previous] };
   expect(pendingJonesOperationId(environmentId, saved)).toBe(request.operationId);
+  expect(
+    pendingJonesOperationId(environmentId, {
+      ...saved,
+      history: [{ ...previous, unsupportedReceiptVerified: true }],
+    }),
+  ).toBeUndefined();
   expect(pendingJonesOperationId(EnvironmentId.make("other"), saved)).toBeUndefined();
   const { receipt: _, ...unresolved } = previous;
   expect(

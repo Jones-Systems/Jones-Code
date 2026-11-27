@@ -34,6 +34,7 @@ export const JonesActionDuty = Schema.Struct({
   stopId: Schema.optionalKey(JonesOperationId),
   request: Schema.optionalKey(JonesOperationStartInput),
   receipt: Schema.optionalKey(JonesOperationReceipt),
+  unsupportedReceiptVerified: Schema.optionalKey(Schema.Literal(true)),
   native: Schema.optionalKey(
     Schema.Struct({
       commandId: JonesOperationId,
@@ -74,8 +75,6 @@ export function canonicalJonesCommand(value: unknown): string {
     )
     .join(",")}}`;
 }
-const settledJonesReceipt = (receipt: JonesOperationReceipt) =>
-  terminal.has(receipt.phase) && receipt.code !== "launcher-unconfirmed";
 
 export function validateJonesStopReceipt(
   previous: JonesOperationReceipt,
@@ -233,6 +232,7 @@ function metadataDuty(duty: JonesActionDuty): JonesActionDuty {
     ...(duty.stopId === undefined ? {} : { stopId: duty.stopId }),
     ...(duty.request === undefined ? {} : { request: correlationRequest(duty.request) }),
     ...(duty.receipt === undefined ? {} : { receipt: correlationReceipt(duty.receipt) }),
+    ...(duty.unsupportedReceiptVerified === true ? { unsupportedReceiptVerified: true } : {}),
     ...(duty.native === undefined
       ? {}
       : {
@@ -261,6 +261,13 @@ function noExtraFields(value: unknown, metadata: unknown): boolean {
   );
 }
 function validDuty(duty: JonesActionDuty) {
+  if (
+    duty.unsupportedReceiptVerified === true &&
+    (duty.kind !== "operation" ||
+      duty.receipt === undefined ||
+      !isProvisionalUnsupportedReceipt(duty.receipt))
+  )
+    return false;
   const target = (action: JonesOperationReceipt["action"]) =>
     action.kind === "download" ? action.sourceSha : action.targetSource;
   if (duty.kind === "operation")
@@ -400,25 +407,38 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
           return fail();
         if (JSON.stringify(snapshot) !== JSON.stringify(persisted)) publish(persisted);
       }
-      const duties = change(snapshot.duties);
+      const updatedDuties = change(snapshot.duties);
+      const recovered: JonesActionDuty[] = [];
       const previousHistory = snapshot.history;
       const revisedHistory =
         evidence?.ledgerRead !== true || proof === undefined
           ? previousHistory
-          : previousHistory.map((d) => {
+          : previousHistory.flatMap((d) => {
               if (
                 d.kind !== "operation" ||
                 d.request === undefined ||
                 d.receipt === undefined ||
                 !isProvisionalUnsupportedReceipt(d.receipt) ||
-                !isSettledOperationReceipt(proof) ||
+                d.unsupportedReceiptVerified === true ||
                 !validateOperationEvidence(d.request, proof, { ledgerRead: true }) ||
-                !validateOperationEvidence(d.receipt, proof, { ledgerRead: true }) ||
-                canonicalJonesCommand(d.receipt) === canonicalJonesCommand(proof)
+                !validateOperationEvidence(d.receipt, proof, { ledgerRead: true })
               )
-                return d;
-              return { ...d, receipt: proof };
+                return [d];
+              if (isSettledOperationReceipt(proof))
+                return [
+                  {
+                    ...d,
+                    receipt: proof,
+                    ...(isProvisionalUnsupportedReceipt(proof)
+                      ? { unsupportedReceiptVerified: true as const }
+                      : {}),
+                  },
+                ];
+              // Keep live work in the duty journal so later receipts and exact Stop can settle it.
+              recovered.push({ ...d, receipt: proof });
+              return [];
             });
+      const duties = recovered.length === 0 ? updatedDuties : [...updatedDuties, ...recovered];
       if (duties === snapshot.duties && revisedHistory.every((d, i) => d === previousHistory[i]))
         return;
       const removed = (
@@ -427,7 +447,15 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
         proof !== undefined &&
         d.operationId === proof.operationId &&
         d.environmentId === proof.environmentId
-          ? { ...d, receipt: proof }
+          ? {
+              ...d,
+              receipt: proof,
+              ...(d.kind === "operation" &&
+              evidence?.ledgerRead === true &&
+              isProvisionalUnsupportedReceipt(proof)
+                ? { unsupportedReceiptVerified: true as const }
+                : {}),
+            }
           : d,
       );
       const history = [...revisedHistory, ...removed].slice(-64);
@@ -533,7 +561,10 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
               (d.receipt !== undefined &&
                 !(d.kind === "stop"
                   ? validateJonesStopReceipt(d.receipt, receipt)
-                  : validateOperationEvidence(d.receipt, receipt, options))) ||
+                  : validateOperationEvidence(d.receipt, receipt, {
+                      ledgerRead:
+                        options.ledgerRead === true && d.unsupportedReceiptVerified !== true,
+                    }))) ||
               (d.kind === "stop" && receipt.stop?.stopId !== d.stopId)
             )
               return [d];
@@ -541,7 +572,7 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
             const stopSettled =
               d.kind !== "stop" ||
               ["stopped", "too-late", "not-stoppable-phase"].includes(receipt.stop?.result ?? "");
-            if (settledJonesReceipt(receipt) && stopSettled) {
+            if (isSettledOperationReceipt(receipt) && stopSettled) {
               settled = true;
               return [];
             }
