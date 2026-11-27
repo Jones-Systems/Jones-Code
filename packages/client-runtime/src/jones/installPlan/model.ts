@@ -396,7 +396,7 @@ export function canFenceWithUnavailableFleet(
 /** Callers separately qualify the exact operation, current host scope, and applicable lease. */
 export function allowsOperationRecovery(
   enrollment: PlanEnrollmentMatch,
-  action: "read" | "start" | "fence" | "stop",
+  action: "read" | "start" | "fence" | "stop" | "cleanup",
   allowUnavailableFence = false,
 ): boolean {
   if (enrollment === "identity-changed") return false;
@@ -588,6 +588,27 @@ export function operationOutstanding(operation: JonesInstallPlanHostOperation): 
   return outstanding(operation);
 }
 
+export function operationHasUnverifiedUnsupported(
+  operation: JonesInstallPlanHostOperation,
+): boolean {
+  return (
+    operation.receipt !== undefined &&
+    isProvisionalUnsupportedReceipt(operation.receipt) &&
+    operation.unsupportedReceiptVerified !== true
+  );
+}
+
+export function canFenceExpiredOperation(
+  operation: JonesInstallPlanHostOperation,
+  now: number,
+): boolean {
+  return (
+    operation.request.kind === "operation-start" &&
+    (operation.receipt === undefined || operationHasUnverifiedUnsupported(operation)) &&
+    Date.parse(operation.lease.leaseUntil) <= now
+  );
+}
+
 export function hasUnconfirmedLauncherOutcome(receipt: JonesOperationReceipt | undefined): boolean {
   return receipt?.code === "launcher-unconfirmed" || receipt?.code === "launcher-unreadable";
 }
@@ -601,8 +622,7 @@ function outstanding(operation: JonesInstallPlanHostOperation): boolean {
     ? operation.directive === undefined && operation.directiveFence === undefined
     : operation.receipt === undefined ||
         !isSettledOperationReceipt(operation.receipt) ||
-        (isProvisionalUnsupportedReceipt(operation.receipt) &&
-          operation.unsupportedReceiptVerified !== true);
+        operationHasUnverifiedUnsupported(operation);
 }
 
 /** Recovery follows all retained work, even after visual completion or a membership change. */
@@ -680,10 +700,7 @@ export function deviceLedgerState(
       const receipt = latest.receipt;
       if (receipt === undefined)
         return Date.parse(latest.lease.leaseUntil) > now ? "reserved" : "unknown";
-      if (
-        hasUnconfirmedLauncherOutcome(receipt) ||
-        (isProvisionalUnsupportedReceipt(receipt) && latest.unsupportedReceiptVerified !== true)
-      )
+      if (hasUnconfirmedLauncherOutcome(receipt) || operationHasUnverifiedUnsupported(latest))
         return "unknown";
       if (receipt.phase === "held") return "held";
       if (receipt.phase === "fenced") return "fenced";

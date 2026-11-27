@@ -14,6 +14,7 @@ import type {
   JonesOperationReceipt,
   JonesOperationStartInput,
 } from "@t3tools/contracts/jones/jonesOperations";
+import type { JonesUpdatePolicy } from "@t3tools/contracts/jones/jonesUpdates";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import {
   isJonesOperationNotSentError,
@@ -58,6 +59,7 @@ export interface InstallPlanDriver {
     readonly canReportReceipt?: boolean;
     readonly enrollment: PlanEnrollmentMatch;
     readonly fleetStatus: FleetHostStatus | null | undefined;
+    readonly reviewTarget?: JonesUpdatePolicy["reviewTarget"];
     readonly boundAdmission?: 1;
     readonly allowUnavailableFence?: boolean;
   };
@@ -227,8 +229,14 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         if (directive !== undefined) return canReplayDirective(directive, current.fleetStatus);
         return (
           recovery === "fence" ||
-          (matchesForwardRoute(plan, device, input, fleetStatus) &&
-            matchesForwardRoute(plan, device, input, current.fleetStatus))
+          (matchesForwardRoute(
+            plan,
+            device,
+            input,
+            fleetStatus,
+            observation.state?.policy?.reviewTarget,
+          ) &&
+            matchesForwardRoute(plan, device, input, current.fleetStatus, current.reviewTarget))
         );
       };
       const before = authority();
@@ -352,6 +360,7 @@ export function matchesForwardRoute(
   device: JonesInstallPlanDevice,
   input: JonesOperationStartInput | undefined,
   status: FleetHostStatus | null | undefined,
+  reviewTarget?: JonesUpdatePolicy["reviewTarget"],
 ): boolean {
   const admission = input?.admission;
   if (device.route === "operations") return admission?.kind !== "follower";
@@ -373,6 +382,10 @@ export function matchesForwardRoute(
     original.targetSource === plan.target.sourceSha &&
     original.targetTree === plan.target.sourceTree &&
     validateDirectiveEvidence(original, status) &&
+    (reviewTarget === undefined ||
+      (reviewTarget.directiveId === original.directiveId &&
+        reviewTarget.source === original.targetSource &&
+        reviewTarget.tree === original.targetTree)) &&
     (admission === undefined ||
       (admission.kind === "follower" &&
         admission.enrollmentId === original.enrollmentId &&

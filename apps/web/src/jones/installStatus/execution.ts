@@ -7,9 +7,12 @@ import {
   type JonesExecutorHost,
 } from "@t3tools/client-runtime/jones/updates/executor";
 import { isSettledOperationReceipt } from "@t3tools/client-runtime/jones/install-plan";
-import { resolveJonesExactSourceAction } from "@t3tools/client-runtime/jones/updates";
+import {
+  isJonesOperationNotSentError,
+  JonesOperationNotSentError,
+  resolveJonesExactSourceAction,
+} from "@t3tools/client-runtime/jones/updates";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
-import { isJonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
 import {
   isProvisionalUnsupportedReceipt,
   validateOperationEvidence,
@@ -395,11 +398,10 @@ export function stopWebJonesDownload(
     readonly receipt: JonesOperationReceipt;
     readonly uuid: () => string;
     readonly canOperate: () => boolean;
-    readonly send: (request: {
-      environmentId: EnvironmentId;
-      operationId: string;
-      stopId: string;
-    }) => Promise<JonesOperationReceipt>;
+    readonly send: (
+      request: { environmentId: EnvironmentId; operationId: string; stopId: string },
+      beforeSend: () => boolean,
+    ) => Promise<JonesOperationReceipt>;
   },
   journal = webJonesJournal,
 ): Promise<string> {
@@ -447,21 +449,24 @@ export function stopWebJonesDownload(
     });
     if (!input.canOperate()) {
       await journal.notSent(stopId);
-      return "The control changed before Stop was sent.";
+      return m(msg("The control changed before Stop was sent."));
     }
     try {
-      const receipt = await input.send({
-        environmentId: input.environmentId,
-        operationId: input.receipt.operationId,
-        stopId,
-      });
+      const receipt = await input.send(
+        { environmentId: input.environmentId, operationId: input.receipt.operationId, stopId },
+        input.canOperate,
+      );
       const settled = await journal.reconcileReceipt(receipt);
       return settled && !journal.getSnapshot().duties.some((d) => d.id === stopId)
         ? receipt.stop?.result === "stopped"
           ? "Download stopped. Nothing was installed."
           : "The exact Stop result was recorded. Review installation separately."
         : "Stop is not confirmed. Read its exact operation; nothing will be resent.";
-    } catch {
+    } catch (error) {
+      if (isJonesOperationNotSentError(error)) {
+        await journal.notSent(stopId);
+        return m(msg("The control changed before Stop was sent."));
+      }
       return "Stop is not confirmed. Read its exact operation; nothing will be resent.";
     }
   })();

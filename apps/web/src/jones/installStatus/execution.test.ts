@@ -859,6 +859,40 @@ describe("web durable execution", () => {
     }
   });
 
+  it("releases a local Stop reservation when the queued send loses control authority", async () => {
+    const journal = createWebJonesJournal(storage());
+    const receipt: JonesOperationReceipt = {
+      protocol: 1,
+      environmentId,
+      operationId: id(1),
+      expectedInstalledSource: "c".repeat(40),
+      action: { kind: "download-exact", targetSource },
+      phase: "running",
+      acceptedAt: "2026-10-27T04:00:00Z",
+      updatedAt: "2026-10-27T04:00:00Z",
+    };
+    let active = true;
+    const sent = vi.fn();
+    const result = await stopWebJonesDownload(
+      {
+        environmentId,
+        receipt,
+        uuid: () => id(2),
+        canOperate: () => active,
+        send: async (input, beforeSend) => {
+          active = false;
+          if (!beforeSend()) throw new JonesOperationNotSentError({});
+          sent(input);
+          return receipt;
+        },
+      },
+      journal,
+    );
+    expect(result).toContain("before Stop was sent");
+    expect(sent).not.toHaveBeenCalled();
+    expect(journal.getSnapshot().duties).toEqual([]);
+  });
+
   it("retains exactly one Stop through repeated calls, lost reply, fresh runtime and mismatched proof", async () => {
     const disk = storage(),
       journal = createWebJonesJournal(disk);

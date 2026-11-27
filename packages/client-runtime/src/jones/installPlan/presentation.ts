@@ -23,6 +23,7 @@ import {
   deviceStagedReceipt,
   deviceSelectionLocked,
   hasUnconfirmedLauncherOutcome,
+  operationHasUnverifiedUnsupported,
   operationOutstanding,
   isPlanComplete,
   type InstallPlanDeviceState,
@@ -289,7 +290,11 @@ export function installPlanPresentation(
         device.stageReplacement === undefined
           ? "Removed · earlier attempts kept"
           : "Removed · replacement kept";
-    if (latest?.step === "download" && latest.receipt?.phase === "refused")
+    if (
+      latest?.step === "download" &&
+      latest.receipt?.phase === "refused" &&
+      !operationHasUnverifiedUnsupported(latest)
+    )
       text = "Download request did not start";
     if (setupUnconfirmed)
       text =

@@ -26,7 +26,9 @@ import {
   jonesUpdateActionError,
   jonesInstallRefusal,
   compareJonesSource,
+  isJonesOperationNotSentError,
 } from "@t3tools/client-runtime/jones/updates";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthOrchestrationOperateScope,
   sessionGrantsScope,
@@ -380,13 +382,15 @@ export function JonesUpdateControls({
                       sessionGrantsScope(latest.value, AuthOrchestrationOperateScope)
                     );
                   })(),
-                send: async (input) => {
+                send: async (input, beforeSend) => {
                   const result = await stop({
                     environmentId,
-                    input: { action: "operationStop", input },
+                    input: { action: "operationStop", input, beforeSend },
                   });
-                  if (result._tag !== "Success") throw new Error("Stop is not confirmed.");
-                  return result.value;
+                  if (result._tag === "Success") return result.value;
+                  const error = squashAtomCommandFailure(result);
+                  if (isJonesOperationNotSentError(error)) throw error;
+                  throw new Error("Stop is not confirmed.");
                 },
               })
                 .then(setActionError)

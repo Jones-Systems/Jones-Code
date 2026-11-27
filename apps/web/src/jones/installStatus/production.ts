@@ -114,9 +114,10 @@ export function productionInstallPlanServices(
         { environmentId, input },
         { reportFailure: false, reportDefect: false },
       );
-      if (result._tag !== "Success")
-        throw new Error("Stop is not confirmed. Read the exact operation.");
-      return result.value;
+      if (result._tag === "Success") return result.value;
+      const error = squashAtomCommandFailure(result);
+      if (isJonesOperationNotSentError(error)) throw error;
+      throw new Error("Stop is not confirmed. Read the exact operation.");
     },
     host: fleetHost,
     kick: jonesUpdates.kick,

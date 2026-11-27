@@ -95,7 +95,11 @@ export type JonesOperationCommand =
   | { action: "abandonStage"; input: JonesAbandonStageInput }
   | { action: "recoverCleanup"; input: JonesRecoverCleanupInput }
   | { action: "recoveryPreflight"; input: JonesRecoveryPreflightInput };
-export type JonesStopCommand = { action: "operationStop"; input: JonesOperationStopInput };
+export type JonesStopCommand = {
+  action: "operationStop";
+  input: JonesOperationStopInput;
+  beforeSend?: JonesOperationBeforeSend;
+};
 
 type JonesRequest =
   | JonesAction

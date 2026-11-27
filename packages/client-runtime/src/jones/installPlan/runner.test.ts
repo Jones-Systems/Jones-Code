@@ -33,7 +33,7 @@ import type * as RpcSession from "../../rpc/session.ts";
 import { runAtomCommand } from "../../state/runtime.ts";
 import { createJonesUpdateAtoms, JonesOperationNotSentError } from "../updates/jonesUpdates.ts";
 import { matchPlanEnrollment, startPlan } from "./model.ts";
-import { advanceInstallPlan, type InstallPlanDriver } from "./runner.ts";
+import { advanceInstallPlan, matchesForwardRoute, type InstallPlanDriver } from "./runner.ts";
 
 const env = EnvironmentId.make("host");
 const otherEnv = EnvironmentId.make("other-host");
@@ -279,6 +279,58 @@ const operationTransport = (fetchFn: typeof fetch, failures: unknown[] = []) =>
   });
 
 describe("bounded install plan runner", () => {
+  it("blocks an unbound forward request when live status contradicts the cached directive", () => {
+    const f = fixture();
+    const plan = f.plan();
+    const directive = {
+      directiveId: previousDirectiveId,
+      targetSource: source,
+      targetTree: tree,
+      mode: "manual-review",
+      issuedAt: now,
+    } as const;
+    const device = {
+      ...plan.devices[0]!,
+      route: "follower-operations",
+      enrollmentId,
+      operations: [
+        {
+          operationId: directive.directiveId,
+          step: "directive",
+          lease: reservation().lease,
+          request: {
+            kind: "plan-directive",
+            input: {
+              directiveId: directive.directiveId,
+              environmentId: env,
+              enrollmentId,
+              repository: plan.target.repository,
+              targetSource: source,
+              targetTree: tree,
+              expectedDirectiveId: null,
+            },
+          },
+          directive: { kind: "applied", observedAt: now, directive },
+        },
+      ],
+    } as const;
+    const fleet = {
+      ...enrolled(),
+      follower: {
+        protocol: 1,
+        leaderSource: source,
+        state: "waiting-for-leader",
+        planDirective: directive,
+      },
+    } as const;
+    const live = { source, tree, directiveId: directive.directiveId };
+    expect(matchesForwardRoute(plan, device, request, fleet)).toBe(true);
+    expect(matchesForwardRoute(plan, device, request, fleet, live)).toBe(true);
+    expect(
+      matchesForwardRoute(plan, device, request, fleet, { ...live, directiveId: otherOpId }),
+    ).toBe(false);
+  });
+
   effectIt.effect.each([
     "cancelled",
     "closed",

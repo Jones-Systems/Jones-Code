@@ -2,7 +2,10 @@ import { msg } from "gt-react";
 import { m } from "../../i18n/messages";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
-import { isJonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
+import {
+  isJonesOperationNotSentError,
+  JonesOperationNotSentError,
+} from "@t3tools/client-runtime/jones/updates";
 import type {
   JonesInstallPlan,
   JonesInstallPlanCommandReceipt,
@@ -22,10 +25,12 @@ import {
 import {
   allowsOperationRecovery,
   canReplayDirective,
+  canFenceExpiredOperation,
   deviceActiveOperations,
   hasUnconfirmedLauncherOutcome,
   laptopGateIssue,
   laptopInstallNeedsReopen,
+  operationHasUnverifiedUnsupported,
   operationOutstanding,
   orphanReceiptCheck,
   sameDirectiveBinding,
@@ -120,8 +125,7 @@ export function latestPanelOperation(device: JonesInstallPlanDevice, archived: b
 export function canFenceArchivedOperation(operation: JonesInstallPlanHostOperation, now: number) {
   if (operation.request.kind === "plan-directive") return operationOutstanding(operation);
   return (
-    operation.receipt === undefined &&
-    Date.parse(operation.lease.leaseUntil) <= now &&
+    canFenceExpiredOperation(operation, now) &&
     (operation.fence === undefined || Date.parse(operation.fence.lease.leaseUntil) <= now)
   );
 }
@@ -218,7 +222,7 @@ async function recoverRemoteOperation(
         directive.targetSource !== plan.target.sourceSha ||
         directive.targetTree !== plan.target.sourceTree ||
         observed.fleetStatus?.fencePlanDirective !== 1)) ||
-    device.membership !== "selected" ||
+    (device.membership !== "selected" && (!archived || original === undefined)) ||
     device.abandoning === true ||
     (archived && (state.view.recoveryHistory !== 1 || target.expectedRevision === undefined)) ||
     (step === "stop"
@@ -340,7 +344,7 @@ async function recoverRemoteOperation(
   const readReservation = async () => {
     const read = await readTargetPlan(binding, target);
     requireWritablePlan(binding, read.result);
-    const member = issuedDevice(read.plan, plan, device);
+    const member = issuedDevice(read.plan, plan, device, archived);
     const reserved = (
       archived || member === undefined ? member?.operations : deviceActiveOperations(member)
     )?.find((item) => item.operationId === operationId);
@@ -350,24 +354,31 @@ async function recoverRemoteOperation(
   };
   const leaseLive = () => Date.parse(grant.leaseUntil) > services.now();
   let receipt: JonesOperationReceipt;
+  let ledgerRead: true | undefined;
   if (
     step === "stop" &&
     request.kind === "operation-stop" &&
     request.input.environmentId === environmentId &&
     request.input.operationId === operationId
   ) {
-    const reserved = await readReservation();
-    recheckHost();
-    if (
-      reserved === undefined ||
-      !canStopOperation(reserved) ||
-      reserved.stop?.stopId !== request.input.stopId ||
-      reserved.stop.lease.claimant !== claimant ||
-      reserved.stop.lease.leaseUntil !== grant.leaseUntil ||
-      !leaseLive()
-    )
-      throw new Error(staleDownload);
-    receipt = await services.stop(environmentId, { action: "operationStop", input: request.input });
+    const beforeSend = async () => {
+      const reserved = await readReservation();
+      recheckHost();
+      return (
+        reserved !== undefined &&
+        canStopOperation(reserved) &&
+        reserved.stop?.stopId === request.input.stopId &&
+        reserved.stop.lease.claimant === claimant &&
+        reserved.stop.lease.leaseUntil === grant.leaseUntil &&
+        leaseLive()
+      );
+    };
+    if (!(await beforeSend())) throw new Error(staleDownload);
+    receipt = await services.stop(environmentId, {
+      action: "operationStop",
+      input: request.input,
+      beforeSend,
+    });
   } else if (
     step === "fence" &&
     request.kind === "operation-fence" &&
@@ -382,10 +393,10 @@ async function recoverRemoteOperation(
           const reserved = await readReservation();
           recheckHost();
           return (
-            reserved?.receipt === undefined &&
-            reserved?.fence?.lease.claimant === claimant &&
+            reserved !== undefined &&
+            canFenceExpiredOperation(reserved, services.now()) &&
+            reserved.fence?.lease.claimant === claimant &&
             reserved.fence.lease.leaseUntil === grant.leaseUntil &&
-            Date.parse(reserved.lease.leaseUntil) <= services.now() &&
             leaseLive()
           );
         },
@@ -393,10 +404,28 @@ async function recoverRemoteOperation(
     } catch (error) {
       if (!isJonesOperationNotSentError(error)) throw error;
       recheckHost();
-      throw new Error("The fence reservation changed or expired. Check the original operation.");
+      throw new Error(
+        m(msg("This plan's exact reservation changed or expired. Check the original operation.")),
+        { cause: error },
+      );
     }
     if (!("operationId" in result)) throw new Error("The fence has no exact operation receipt.");
     receipt = result;
+    if (operationHasUnverifiedUnsupported(operation)) {
+      if (!hasOperationReadScope(services, environmentId) || !validateReceipt(original, receipt))
+        throw new Error("Check the exact operation receipt before settling this request.");
+      const read = await services.operation(environmentId, {
+        action: "operationRead",
+        input: { environmentId, operationIds: [operationId] },
+      });
+      const saved = exactReadReceipt(read, operationId);
+      if (saved === null)
+        throw new Error(
+          "The host has no confirmed receipt for the fence. Check the original operation.",
+        );
+      receipt = saved;
+      ledgerRead = true;
+    }
   } else
     throw new Error(
       step === "stop"
@@ -404,8 +433,9 @@ async function recoverRemoteOperation(
         : "The native grant does not match the original operation.",
     );
   if (
-    !validateOperationEvidence(original, receipt) ||
-    (operation.receipt !== undefined && !validateReceipt(operation.receipt, receipt))
+    !validateOperationEvidence(original, receipt, { ledgerRead: ledgerRead === true }) ||
+    (operation.receipt !== undefined &&
+      !validateReceipt(operation.receipt, receipt, { ledgerRead: ledgerRead === true }))
   )
     throw new Error(
       "The reply did not confirm the original operation. Check its exact receipt in Install status.",
@@ -419,7 +449,7 @@ async function recoverRemoteOperation(
         planId,
         environmentId,
         operationId,
-        evidence: { kind: "receipt", receipt },
+        evidence: { kind: "receipt", receipt, ...(ledgerRead === true ? { ledgerRead } : {}) },
       },
       binding,
     );
@@ -538,7 +568,8 @@ async function readHeldCleanup(binding: InstallPlanBinding, target: CleanupTarge
     receipt.jobId !== jobId ||
     receipt.action.kind === "install" ||
     !validateReceipt(original, receipt) ||
-    !hasCurrentPlanEnrollment(binding.services, device, observed) ||
+    !allowsOperationRecovery(planEnrollmentFor(device, observed), "cleanup") ||
+    !allowsOperationRecovery(currentPlanHostAuthority(binding, device).enrollment, "cleanup") ||
     authorizedUpdateStatus(observed, environmentId)?.capability.operations !== 1 ||
     currentAuthorizedUpdateStatus(binding.services, environmentId)?.capability.operations !== 1
   )

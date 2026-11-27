@@ -268,6 +268,7 @@ export function currentPlanHostAuthority(
       ? { boundAdmission: 1 as const }
       : {}),
     fleetStatus: direct?.fleetStatus,
+    reviewTarget: status?.policy?.reviewTarget,
   } as const;
 }
 
@@ -356,6 +357,7 @@ export function issuedDevice(
   plan: JonesInstallPlan | null | undefined,
   original: JonesInstallPlan,
   selected: JonesInstallPlanDevice,
+  includeRemoved = false,
 ) {
   if (
     plan?.planId !== original.planId ||
@@ -365,7 +367,9 @@ export function issuedDevice(
   )
     return undefined;
   const device = plan.devices.find((item) => item.environmentId === selected.environmentId);
-  return device?.membership === "selected" &&
+  return device !== undefined &&
+    (device.membership === "selected" ||
+      (includeRemoved && device.membership === selected.membership)) &&
     device.route === selected.route &&
     device.enrollmentId === selected.enrollmentId &&
     device.abandoning !== true
@@ -437,7 +441,7 @@ export function planStartIssue(
     (newlyReserved && (claim.boundAdmission === 1) !== (admission !== undefined))
   )
     return operationAdmissionMessage("admission-binding-required");
-  if (!matchesForwardRoute(current, member, input, authority.fleetStatus))
+  if (!matchesForwardRoute(current, member, input, authority.fleetStatus, authority.reviewTarget))
     return operationAdmissionMessage("admission-route-changed");
   if (
     action.kind === "install" &&

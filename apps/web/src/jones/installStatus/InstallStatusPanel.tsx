@@ -19,7 +19,7 @@ import {
   allowsOperationRecovery,
   deviceSelectionLocked,
   deviceStatusActive,
-  isProvisionalUnsupportedReceipt,
+  operationHasUnverifiedUnsupported,
   operationOutstanding,
   orphanReceiptCheck,
 } from "@t3tools/client-runtime/jones/install-plan";
@@ -890,6 +890,9 @@ function InstallStatusPlan({
               const stopReason =
                 hostRecoveryReason ??
                 (!allowsOperationRecovery(enrollment, "stop") ? routeUnconfirmed : undefined);
+              const cleanupReason =
+                hostRecoveryReason ??
+                (!allowsOperationRecovery(enrollment, "cleanup") ? routeUnconfirmed : undefined);
               const fenceReason = setupUnconfirmed
                 ? (recoveryReason ??
                   (snapshot.native?.view.directiveFence !== 1 ||
@@ -1066,7 +1069,7 @@ function InstallStatusPlan({
                       {receipt?.code ? <p>Code: {receipt.code}</p> : null}
                       {receiptMessage ? <p>{receiptMessage}</p> : null}
                       {routeMessage ? <p>{routeMessage}</p> : null}
-                      {receipt !== undefined && isProvisionalUnsupportedReceipt(receipt) ? (
+                      {operation !== undefined && operationHasUnverifiedUnsupported(operation) ? (
                         <p>
                           <T>
                             Check the exact operation receipt to confirm what the host recorded.
@@ -1109,9 +1112,11 @@ function InstallStatusPlan({
                                   : "Inspection could not confirm cleanup. The update remains on hold."}
                         </p>
                       ) : null}
-                      {recoveryReason !== undefined &&
-                      (resumeArchived || (cleanupTarget !== undefined && canInspect)) ? (
+                      {recoveryReason !== undefined && resumeArchived ? (
                         <p id={recoveryDescription}>{recoveryReason}</p>
+                      ) : null}
+                      {cleanupTarget !== undefined && canInspect && cleanupReason !== undefined ? (
+                        <p id={`${recoveryDescription}-cleanup`}>{cleanupReason}</p>
                       ) : null}
                       {(row?.actions.stop || stopArchived) && stopReason !== undefined ? (
                         <p id={`${recoveryDescription}-stop`}>{stopReason}</p>
@@ -1125,9 +1130,11 @@ function InstallStatusPlan({
                             <Button
                               variant="outline"
                               size="micro"
-                              disabled={pending.has(inspectKey) || recoveryReason !== undefined}
+                              disabled={pending.has(inspectKey) || cleanupReason !== undefined}
                               aria-describedby={
-                                recoveryReason === undefined ? undefined : recoveryDescription
+                                cleanupReason === undefined
+                                  ? undefined
+                                  : `${recoveryDescription}-cleanup`
                               }
                               onClick={() =>
                                 void perform(inspectKey, async () => {
@@ -1151,9 +1158,11 @@ function InstallStatusPlan({
                             <Button
                               variant="outline"
                               size="micro"
-                              disabled={pending.has(inspectKey) || recoveryReason !== undefined}
+                              disabled={pending.has(inspectKey) || cleanupReason !== undefined}
                               aria-describedby={
-                                recoveryReason === undefined ? undefined : recoveryDescription
+                                cleanupReason === undefined
+                                  ? undefined
+                                  : `${recoveryDescription}-cleanup`
                               }
                               onClick={() => {
                                 const token = cleanup.inspection.recoveryToken;

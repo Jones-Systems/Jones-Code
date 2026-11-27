@@ -13032,5 +13032,6 @@
   "eb3f427a2c326d28": "Fresh control authority and the selected device's enrollment are required.",
   "26f58319308650a1": "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
   "7fd7bc99180bcfad": "This plan's exact reservation changed or expired. Check the original operation.",
-  "096cbc9bd8370186": "The reviewed stage changed. Check the original operation and review again."
+  "096cbc9bd8370186": "The reviewed stage changed. Check the original operation and review again.",
+  "08ff07123c656e31": "The control changed before Stop was sent."
 }

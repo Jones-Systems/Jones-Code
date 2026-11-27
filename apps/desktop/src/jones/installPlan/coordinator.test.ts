@@ -635,98 +635,143 @@ describe("bound host operation grants", () => {
     expect(f.snapshot()).toBe(confirmed);
   });
 
-  it("recovers live work from an archived legacy unsupported reply and preserves replay identity", async () => {
-    const f = fixture();
-    const plan = await f.start();
-    const claim = {
-      ...downloadRequest(plan.planId),
-      expectedRevision: plan.revision,
-      command: {
-        commandId: id(111),
-        environmentId: remote,
-        action: "download-exact",
-        targetSource: source,
-        planId: plan.planId,
+  it.each(["running", "removed", "fenced", "confirmed unsupported"] as const)(
+    "settles recovery from an archived legacy unsupported reply with %s proof",
+    async (outcome) => {
+      const f = fixture();
+      const plan = await f.start();
+      const claim = {
+        ...downloadRequest(plan.planId),
         expectedRevision: plan.revision,
-      },
-    } as const;
-    const send = f.coordinator.request;
-    const issued = await send(claim);
-    const running = f.receipt(issued.grant!);
-    f.advance();
-    const { acceptedAt: _acceptedAt, ...scope } = f.receipt(issued.grant!);
-    const provisional = { ...scope, phase: "refused", code: "unsupported" } as const;
-    // Reproduce a terminal result already recorded by a desktop before this change.
-    const current = f.snapshot().document.current!;
-    const [device] = current.devices;
-    await f.options.store.transact(async (snapshot) => ({
-      ...snapshot,
-      document: {
-        ...snapshot.document,
-        commands: (snapshot.document.commands ?? []).map((entry) => ({
-          ...entry,
-          receipt: { ...entry.receipt, outcome: "terminal" as const, code: "unsupported" },
-        })),
-        current: {
-          ...current,
-          devices: [
-            { ...device!, operations: [{ ...device!.operations[0]!, receipt: provisional }] },
-          ],
+        command: {
+          commandId: id(111),
+          environmentId: remote,
+          action: "download-exact",
+          targetSource: source,
+          planId: plan.planId,
+          expectedRevision: plan.revision,
         },
-      },
-      result: undefined,
-    }));
-    expect((await send(cancelRequest(current))).state.recoveryHistory).toMatchObject([
-      { planId: plan.planId, pendingDevices: [{ environmentId: remote }] },
-    ]);
-    expect((await send(claim)).command).toMatchObject({ outcome: "terminal", code: "unsupported" });
-    const before = f.snapshot();
-    expect((await send(reportRequest(plan.planId, running))).refused?.code).toBe(
-      "invalid-evidence",
-    );
-    expect(
-      (
-        await send(
-          reportRequest(plan.planId, { ...running, admission: { kind: "ordinary" } }, true),
-        )
-      ).refused?.code,
-    ).toBe("invalid-evidence");
-    expect(f.snapshot()).toBe(before);
-    const observed = await send(reportRequest(plan.planId, running, true));
-    expect(observed.refused).toBeUndefined();
-    expect(observed.state.current).toBeNull();
-    expect(observed.state.last?.devices[0]?.operations[0]?.receipt).toEqual(running);
-    expect(observed.state.recoveryHistory).toMatchObject([
-      { planId: plan.planId, pendingDevices: [{ environmentId: remote }] },
-    ]);
-    expect((await send(claim)).command).toEqual(issued.command);
-    const stop = await send({
-      ...downloadRequest(plan.planId),
-      step: "stop",
-      explicit: true,
-      operationId: running.operationId,
-      expectedRevision: observed.state.last!.revision,
-    });
-    expect(stop.grant?.request).toMatchObject({
-      kind: "operation-stop",
-      input: { operationId: running.operationId, environmentId: remote },
-    });
-    const held = {
-      ...f.receipt(issued.grant!, "held"),
-      code: "cleanup-unconfirmed",
-      jobId: id(112),
-    };
-    expect((await send(reportRequest(plan.planId, held, true))).state.recoveryHistory).toHaveLength(
-      1,
-    );
-    f.advance();
-    const exact = { ...f.receipt(issued.grant!, "completed"), jobId: held.jobId };
-    const corrected = await send(reportRequest(plan.planId, exact, true));
-    expect(corrected.state.last?.devices[0]?.operations[0]?.receipt).toEqual(exact);
-    expect(corrected.state.current).toBeNull();
-    expect(corrected.state.recoveryHistory).toEqual([]);
-    expect((await send(claim)).command).toEqual({ ...issued.command, outcome: "terminal" });
-  });
+      } as const;
+      const send = f.coordinator.request;
+      const issued = await send(claim);
+      const running = f.receipt(issued.grant!);
+      f.advance();
+      const { acceptedAt: _acceptedAt, ...scope } = f.receipt(issued.grant!);
+      const provisional = { ...scope, phase: "refused", code: "unsupported" } as const;
+      // Reproduce a terminal result already recorded by a desktop before this change.
+      const current = f.snapshot().document.current!;
+      const [device] = current.devices;
+      await f.options.store.transact(async (snapshot) => ({
+        ...snapshot,
+        document: {
+          ...snapshot.document,
+          commands: (snapshot.document.commands ?? []).map((entry) => ({
+            ...entry,
+            receipt: { ...entry.receipt, outcome: "terminal" as const, code: "unsupported" },
+          })),
+          current: {
+            ...current,
+            devices: [
+              {
+                ...device!,
+                ...(outcome === "removed"
+                  ? {
+                      membership: "removed" as const,
+                      removedAt: timestamp,
+                      archivedOperationCount: 1,
+                    }
+                  : {}),
+                operations: [{ ...device!.operations[0]!, receipt: provisional }],
+              },
+            ],
+          },
+        },
+        result: undefined,
+      }));
+      expect((await send(cancelRequest(current))).state.recoveryHistory).toMatchObject([
+        { planId: plan.planId, pendingDevices: [{ environmentId: remote }] },
+      ]);
+      expect((await send(claim)).command).toMatchObject({
+        outcome: "terminal",
+        code: "unsupported",
+      });
+      const before = f.snapshot();
+      expect((await send(reportRequest(plan.planId, running))).refused?.code).toBe(
+        "invalid-evidence",
+      );
+      expect(
+        (
+          await send(
+            reportRequest(plan.planId, { ...running, admission: { kind: "ordinary" } }, true),
+          )
+        ).refused?.code,
+      ).toBe("invalid-evidence");
+      expect(f.snapshot()).toBe(before);
+      if (outcome === "fenced" || outcome === "confirmed unsupported") {
+        const requestFence = () =>
+          send({
+            ...downloadRequest(plan.planId),
+            explicit: true,
+            step: "fence",
+            operationId: running.operationId,
+            expectedRevision: f.snapshot().document.last!.revision,
+          });
+        const fence = await requestFence();
+        expect(fence.grant?.request).toEqual({
+          kind: "operation-fence",
+          input: issued.grant!.request.input,
+        });
+        const receipt = outcome === "fenced" ? { ...scope, phase: "fenced" as const } : provisional;
+        expect((await send(reportRequest(plan.planId, receipt))).refused?.code).toBe(
+          "invalid-evidence",
+        );
+        const exact = await send(reportRequest(plan.planId, receipt, true));
+        expect(exact.refused).toBeUndefined();
+        expect(exact.state.current).toBeNull();
+        expect(exact.state.last?.devices[0]?.operations[0]).toMatchObject({
+          receipt,
+          ...(outcome === "confirmed unsupported" ? { unsupportedReceiptVerified: true } : {}),
+        });
+        expect(exact.state.recoveryHistory).toEqual([]);
+        expect((await requestFence()).refused?.code).toBe("outstanding-operation");
+        return;
+      }
+      const observed = await send(reportRequest(plan.planId, running, true));
+      expect(observed.refused).toBeUndefined();
+      expect(observed.state.current).toBeNull();
+      expect(observed.state.last?.devices[0]?.operations[0]?.receipt).toEqual(running);
+      expect(observed.state.recoveryHistory).toMatchObject([
+        { planId: plan.planId, pendingDevices: [{ environmentId: remote }] },
+      ]);
+      expect((await send(claim)).command).toEqual(issued.command);
+      const stop = await send({
+        ...downloadRequest(plan.planId),
+        step: "stop",
+        explicit: true,
+        operationId: running.operationId,
+        expectedRevision: observed.state.last!.revision,
+      });
+      expect(stop.grant?.request).toMatchObject({
+        kind: "operation-stop",
+        input: { operationId: running.operationId, environmentId: remote },
+      });
+      const held = {
+        ...f.receipt(issued.grant!, "held"),
+        code: "cleanup-unconfirmed",
+        jobId: id(112),
+      };
+      expect(
+        (await send(reportRequest(plan.planId, held, true))).state.recoveryHistory,
+      ).toHaveLength(1);
+      f.advance();
+      const exact = { ...f.receipt(issued.grant!, "completed"), jobId: held.jobId };
+      const corrected = await send(reportRequest(plan.planId, exact, true));
+      expect(corrected.state.last?.devices[0]?.operations[0]?.receipt).toEqual(exact);
+      expect(corrected.state.current).toBeNull();
+      expect(corrected.state.recoveryHistory).toEqual([]);
+      expect((await send(claim)).command).toEqual({ ...issued.command, outcome: "terminal" });
+    },
+  );
 });
 
 describe("closed plan recovery", () => {

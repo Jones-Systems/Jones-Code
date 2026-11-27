@@ -35,6 +35,7 @@ import {
 } from "./entrypoints";
 import {
   fencePanelOperation,
+  inspectPanelCleanup,
   performPanelAction,
   refreshDeviceEvidence,
   stopPanelDownload,
@@ -704,6 +705,7 @@ describe("bound Install status actions", () => {
       });
       expect(f.stop).toHaveBeenCalledExactlyOnceWith(hostId, {
         action: "operationStop",
+        beforeSend: expect.any(Function),
         input: { environmentId: hostId, operationId: hostOperationId, stopId: localStopId },
       });
       expect(f.installPlan.mock.calls.at(-1)?.[0]).toEqual({
@@ -718,9 +720,11 @@ describe("bound Install status actions", () => {
     }
   });
 
-  it.each([true, false])(
-    "qualifies archived Stop against the same host after enrollment changes (%s)",
-    async (sameHost) => {
+  it.each(["changed enrollment", "different host", "expired in queue"] as const)(
+    "qualifies exact archived Stop with %s",
+    async (scope) => {
+      const sameHost = scope !== "different host";
+      let now = Date.parse(at);
       const f = bindFixture();
       let closed = { ...f.state.current!, dismissedAt: at };
       const state = {
@@ -773,8 +777,20 @@ describe("bound Install status actions", () => {
         ...(await f.services.observe(hostId)),
         fleetStatus: sameHost ? enrolledFleet : { ...enrolledFleet, environmentId },
       };
+      const sent = vi.fn();
+      f.stop.mockImplementation(async (_id, command) => {
+        if (scope === "expired in queue") now = Date.parse(grant.leaseUntil);
+        if (!(await command.beforeSend?.())) throw new JonesOperationNotSentError({});
+        sent(command.input);
+        return hostReceipt;
+      });
       const unbind = bindInstallPlanServices(
-        { ...f.services, devices: () => [observed], observe: async () => observed },
+        {
+          ...f.services,
+          devices: () => [observed],
+          observe: async () => observed,
+          now: () => now,
+        },
         f.store,
       );
       f.store.update({ native: state });
@@ -788,10 +804,18 @@ describe("bound Install status actions", () => {
           operationId: hostOperationId,
         });
       try {
-        if (sameHost) {
+        if (scope === "expired in queue") {
+          await expect(stop()).rejects.toBeInstanceOf(JonesOperationNotSentError);
+          expect(f.installPlan.mock.calls.some(([request]) => request.type === "report")).toBe(
+            false,
+          );
+          expect(sent).not.toHaveBeenCalled();
+        } else if (sameHost) {
           await stop();
+          expect(sent).toHaveBeenCalledTimes(1);
           expect(f.stop).toHaveBeenCalledExactlyOnceWith(hostId, {
             action: "operationStop",
+            beforeSend: expect.any(Function),
             input: { operationId: hostOperationId, environmentId: hostId, stopId: localStopId },
           });
         } else {
@@ -1098,6 +1122,9 @@ describe("bound Install status actions", () => {
     "mismatched grant",
     "expired in queue",
     "legacy unsupported",
+    "fence replaces provisional",
+    "provisional read-back missing",
+    "verified unsupported",
   ] as const)("qualifies the exact archived Fence with %s", async (scenario) => {
     const f = bindFixture();
     const current = f.state.current!;
@@ -1110,13 +1137,37 @@ describe("bound Install status actions", () => {
           }
         : current.devices[0]!;
     const { receipt: _receipt, ...pending } = device.operations[0]!;
+    const unsupported = {
+      ...input,
+      protocol: 1,
+      phase: "refused",
+      code: "unsupported",
+      updatedAt: at,
+    } as const;
+    const tombstone = { ...input, protocol: 1, phase: "fenced", updatedAt: at } as const;
+    const provisional =
+      scenario === "fence replaces provisional" ||
+      scenario === "provisional read-back missing" ||
+      scenario === "verified unsupported";
     let closed: JonesInstallPlan = {
       ...current,
       revision: 7,
       dismissedAt: at,
       cancelled: true as const,
       devices: [
-        { ...device, operations: [{ ...pending, lease: { ...pending.lease, leaseUntil: at } }] },
+        {
+          ...device,
+          operations: [
+            {
+              ...pending,
+              lease: { ...pending.lease, leaseUntil: at },
+              ...(provisional ? { receipt: unsupported } : {}),
+              ...(scenario === "verified unsupported"
+                ? { unsupportedReceiptVerified: true as const }
+                : {}),
+            },
+          ],
+        },
       ],
     };
     const state = {
@@ -1153,13 +1204,16 @@ describe("bound Install status actions", () => {
           ],
         };
       }
-      if (request.type === "report") {
+      if (request.type === "report" && request.evidence.kind === "receipt") {
         const recorded = closed.devices[0]!;
         closed = {
           ...closed,
           revision: closed.revision + 1,
           devices: [
-            { ...recorded, operations: [{ ...recorded.operations[0]!, receipt: accepted }] },
+            {
+              ...recorded,
+              operations: [{ ...recorded.operations[0]!, receipt: request.evidence.receipt }],
+            },
           ],
         };
       }
@@ -1185,19 +1239,23 @@ describe("bound Install status actions", () => {
     });
     const sent = vi.fn();
     const operation = vi.fn<InstallPlanServices["operation"]>(async (id, request) => {
+      if (request.action === "operationRead") {
+        expect(request.input).toEqual({ environmentId: hostId, operationIds: [hostOperationId] });
+        return {
+          receipts: [
+            {
+              operationId: hostOperationId,
+              receipt: scenario === "fence replaces provisional" ? tombstone : null,
+            },
+          ],
+        };
+      }
       if (request.action !== "operationFence") throw new Error("Unexpected host command.");
       if (scenario === "expired in queue") now = Date.parse(grant.leaseUntil);
       if (!(await request.beforeSend?.())) throw new JonesOperationNotSentError({});
       sent(id, request.input);
-      return scenario === "legacy unsupported"
-        ? {
-            ...input,
-            protocol: 1,
-            phase: "refused",
-            code: "unsupported",
-            updatedAt: at,
-          }
-        : accepted;
+      if (scenario === "legacy unsupported") return unsupported;
+      return provisional ? tombstone : accepted;
     });
     const observed = await f.services.observe(hostId);
     const host = {
@@ -1230,7 +1288,11 @@ describe("bound Install status actions", () => {
         expectedRevision: closed.revision,
         archived: true,
       });
-      if (scenario === "matching" || scenario === "changed enrollment") {
+      if (
+        scenario === "matching" ||
+        scenario === "changed enrollment" ||
+        scenario === "fence replaces provisional"
+      ) {
         await action;
         expect(sent).toHaveBeenCalledExactlyOnceWith(hostId, input);
         expect(f.installPlan).toHaveBeenCalledWith({
@@ -1238,14 +1300,23 @@ describe("bound Install status actions", () => {
           planId: closed.planId,
           environmentId: hostId,
           operationId: hostOperationId,
-          evidence: { kind: "receipt", receipt: accepted },
+          evidence:
+            scenario === "fence replaces provisional"
+              ? { kind: "receipt", receipt: tombstone, ledgerRead: true }
+              : { kind: "receipt", receipt: accepted },
         });
       } else {
         await expect(action).rejects.toThrow();
-        expect(sent).toHaveBeenCalledTimes(scenario === "legacy unsupported" ? 1 : 0);
+        expect(sent).toHaveBeenCalledTimes(
+          scenario === "legacy unsupported" || scenario === "provisional read-back missing" ? 1 : 0,
+        );
         expect(f.installPlan.mock.calls.some(([request]) => request.type === "report")).toBe(false);
       }
-      if (scenario === "different host" || scenario === "unknown enrollment") {
+      if (
+        scenario === "different host" ||
+        scenario === "unknown enrollment" ||
+        scenario === "verified unsupported"
+      ) {
         expect(f.installPlan.mock.calls.some(([request]) => request.type === "claim")).toBe(false);
       } else
         expect(f.installPlan).toHaveBeenCalledWith({
@@ -1264,6 +1335,87 @@ describe("bound Install status actions", () => {
       f.unbind();
     }
   });
+
+  it.each(["changed enrollment", "different host"] as const)(
+    "checks an exact archived cleanup hold with %s",
+    async (scope) => {
+      const f = bindFixture();
+      const current = f.state.current!;
+      const device = current.devices[0]!;
+      const jobId = earlierOperationId;
+      const receipt = {
+        ...running,
+        phase: "held",
+        code: "cleanup-unconfirmed",
+        jobId,
+      } as const;
+      const closed = {
+        ...current,
+        dismissedAt: at,
+        cancelled: true as const,
+        devices: [
+          {
+            ...device,
+            operations: [{ ...device.operations[0]!, receipt }],
+          },
+        ],
+      };
+      const state = {
+        ...f.state,
+        current: null,
+        last: closed,
+        view: { complete: false, recoveryHistory: 1 as const },
+      };
+      f.installPlan.mockResolvedValue({ state, historyPlan: closed });
+      const observation = await f.services.observe(hostId);
+      const host = {
+        ...observation,
+        fleetStatus:
+          scope === "changed enrollment" ? enrolledFleet : { ...enrolledFleet, environmentId },
+      };
+      const inspection = {
+        operationId: hostOperationId,
+        status: "eligible" as const,
+        recoveryToken: localStopId,
+      };
+      const operation = vi.fn<InstallPlanServices["operation"]>(async () => ({
+        receipts: [{ operationId: hostOperationId, receipt }],
+        cleanupInspection: inspection,
+      }));
+      const unbind = bindInstallPlanServices(
+        { ...f.services, operation, devices: () => [host], observe: async () => host },
+        f.store,
+      );
+      f.store.update({ native: state });
+      try {
+        const result = await inspectPanelCleanup({
+          planId: closed.planId,
+          environmentId: hostId,
+          operationId: hostOperationId,
+          archived: true,
+          expectedRevision: closed.revision,
+          jobId,
+        });
+        if (scope === "different host") {
+          expect(result).toEqual({ status: "unproved" });
+          expect(operation).not.toHaveBeenCalled();
+        } else {
+          expect(result).toEqual(inspection);
+          expect(operation).toHaveBeenCalledExactlyOnceWith(hostId, {
+            action: "operationRead",
+            input: {
+              environmentId: hostId,
+              operationIds: [hostOperationId],
+              inspectCleanup: hostOperationId,
+            },
+          });
+        }
+      } finally {
+        unbind();
+        f.unbind();
+      }
+    },
+  );
 
   it.each([
     "supported",

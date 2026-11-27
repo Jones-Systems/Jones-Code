@@ -30,6 +30,7 @@ import {
   validateDirectiveEvidence,
   validateDirectiveFenceEvidence,
   hasUnconfirmedLauncherOutcome,
+  canFenceExpiredOperation,
   isProvisionalUnsupportedReceipt,
   deviceHasRecoveryDuty,
   planHasLaptopRecoveryDuty,
@@ -1860,7 +1861,21 @@ export function createInstallPlanCoordinator(options: {
             options.now() - runningTarget.observedAt <= LEASE_MS &&
             runningTarget.build.sourceSha === plan.target.sourceSha &&
             runningTarget.build.sourceTree === plan.target.sourceTree;
-          if (device === undefined || (device.membership !== "selected" && req.type !== "report"))
+          const archivedOperationRecovery =
+            recoverArchived &&
+            req.type === "claim" &&
+            req.explicit &&
+            device?.operations.some(
+              (operation) =>
+                operation.operationId === req.operationId &&
+                operation.request.kind === "operation-start",
+            ) === true;
+          if (
+            device === undefined ||
+            (device.membership !== "selected" &&
+              req.type !== "report" &&
+              !archivedOperationRecovery)
+          )
             refuse("not-selectable", "This device is not selected.");
           else if (req.type === "abandon-device") {
             const download = deviceStagedReceipt(operations);
@@ -2153,7 +2168,7 @@ export function createInstallPlanCoordinator(options: {
               if (
                 targeted === undefined ||
                 (targeted.request.kind !== "operation-start" && !directiveFence) ||
-                !operations.includes(targeted) ||
+                (!archivedOperationRecovery && !operations.includes(targeted)) ||
                 !matchesOperationTarget(plan, device, targeted) ||
                 (req.enrollmentId !== undefined && req.enrollmentId !== device.enrollmentId) ||
                 (directiveFence &&
@@ -2219,9 +2234,8 @@ export function createInstallPlanCoordinator(options: {
                 } else if (
                   directiveFence
                     ? !outstanding(targeted)
-                    : targeted.receipt !== undefined ||
-                      !Number.isFinite(Date.parse(targeted.lease.leaseUntil)) ||
-                      Date.parse(targeted.lease.leaseUntil) > options.now()
+                    : !canFenceExpiredOperation(targeted, options.now()) ||
+                      (targeted.receipt !== undefined && !archivedOperationRecovery)
                 )
                   refuse(
                     "outstanding-operation",
