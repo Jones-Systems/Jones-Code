@@ -17,6 +17,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import WorkflowAgentJournalMigration from "../jones/persistence/Migrations/167_JonesWorkflowAgentJournal.ts";
 import * as UpdateAdmission from "../jones/updates/UpdateAdmissionFence.ts";
 import WorkflowsMigration from "../persistence/Migrations/110_Workflows.ts";
 import WorkflowSkippedRunsMigration from "../persistence/Migrations/113_WorkflowSkippedRuns.ts";
@@ -69,6 +70,7 @@ const setup = Effect.fn("setup")(function* (
       Effect.andThen(WorkflowMailSenderMigration),
       Effect.andThen(WorkflowPoolsMigration),
       Effect.andThen(WorkflowRunSubjectMigration),
+      Effect.andThen(WorkflowAgentJournalMigration),
     ),
     database,
   );
