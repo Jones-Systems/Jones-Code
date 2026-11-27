@@ -242,6 +242,7 @@ export const make = Effect.gen(function* () {
       repoFreshness: true,
       workQueueMetadata: true,
       workstreamsPersonal: { version: 1 },
+      workstreamsPersonalFleet: { version: 1 },
       workstreamsPersonalHttp: { version: 1 },
       settlementOrigins: SETTLEMENT_ORIGINS_CAPABILITY,
       // Startup refuses to serve until Jones migrations, including the restore table, have run.

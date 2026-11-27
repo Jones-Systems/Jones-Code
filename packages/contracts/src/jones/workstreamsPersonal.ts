@@ -119,6 +119,70 @@ export const PersonalWorkstreamAutoAssignment = Schema.Struct({
 });
 export type PersonalWorkstreamAutoAssignment = typeof PersonalWorkstreamAutoAssignment.Type;
 
+export const PersonalWorkstreamOperationKind = Schema.Literals([
+  "put",
+  "close",
+  "delete",
+  "recovery",
+]);
+export const PersonalWorkstreamOperationStatus = Schema.Literals([
+  "pending",
+  "discovered",
+  "applied",
+  "stale",
+  "cancelled",
+  "superseded",
+]);
+export const PersonalWorkstreamDeliveryState = Schema.Literals([
+  "pending",
+  "delivered",
+  "guard_rejected",
+  "conflict",
+  "blocked",
+  "unknown",
+]);
+export const PersonalWorkstreamDelivery = Schema.Struct({
+  environmentId: EnvironmentId,
+  state: PersonalWorkstreamDeliveryState,
+  reason: Schema.NullOr(Schema.String),
+  observed: Schema.optionalKey(
+    Schema.Struct({
+      key: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+      name: PersonalWorkstreamName,
+      lifecycle: PersonalWorkstreamLifecycle,
+      deleted: Schema.Boolean,
+    }),
+  ),
+});
+export type PersonalWorkstreamDelivery = typeof PersonalWorkstreamDelivery.Type;
+export const PersonalWorkstreamOperation = Schema.Struct({
+  requestId: PersonalWorkstreamId,
+  workstreamId: PersonalWorkstreamId,
+  kind: PersonalWorkstreamOperationKind,
+  status: PersonalWorkstreamOperationStatus,
+  rosterRevision: NonNegativeInt,
+  requestedLifecycle: Schema.NullOr(PersonalWorkstreamLifecycle),
+  reason: Schema.NullOr(Schema.String),
+  peers: Schema.Array(PersonalWorkstreamDelivery),
+});
+export type PersonalWorkstreamOperation = typeof PersonalWorkstreamOperation.Type;
+
+export const PersonalWorkstreamFleetProposal = Schema.Struct({
+  authorityEnvironmentId: EnvironmentId,
+  sessionId: Schema.String,
+  label: Schema.String,
+});
+export type PersonalWorkstreamFleetProposal = typeof PersonalWorkstreamFleetProposal.Type;
+
+export const PersonalWorkstreamFleet = Schema.Struct({
+  authorityEnvironmentId: EnvironmentId,
+  role: Schema.Literals(["authority", "follower"]),
+  rosterRevision: NonNegativeInt,
+  members: Schema.Array(EnvironmentId),
+  operations: Schema.Array(PersonalWorkstreamOperation),
+});
+export type PersonalWorkstreamFleet = typeof PersonalWorkstreamFleet.Type;
+
 export const PersonalWorkstreamsSnapshot = Schema.Struct({
   environmentId: EnvironmentId,
   sequence: NonNegativeInt,
@@ -129,6 +193,8 @@ export const PersonalWorkstreamsSnapshot = Schema.Struct({
   supportsSnooze: Schema.optionalKey(Schema.Literal(true)),
   // Optional: older servers omit it and older clients ignore it.
   autoAssignments: Schema.optionalKey(Schema.Array(PersonalWorkstreamAutoAssignment)),
+  fleet: Schema.optionalKey(PersonalWorkstreamFleet),
+  fleetProposals: Schema.optionalKey(Schema.Array(PersonalWorkstreamFleetProposal)),
 });
 export type PersonalWorkstreamsSnapshot = typeof PersonalWorkstreamsSnapshot.Type;
 
@@ -142,6 +208,8 @@ export class WorkstreamsPersonalError extends Schema.TaggedError<WorkstreamsPers
       "workstream_closed",
       "unsettled_threads",
       "closure_unavailable",
+      "authority_required",
+      "operation_pending",
       "precondition_failed",
       "invalid_request",
       "storage_unavailable",
@@ -187,6 +255,44 @@ export const AssignPersonalWorkstreamResult = Schema.Struct({
 export type AssignPersonalWorkstreamResult = typeof AssignPersonalWorkstreamResult.Type;
 export type PutResult = PutPersonalWorkstreamResult;
 export type AssignResult = AssignPersonalWorkstreamResult;
+
+export const PersonalWorkstreamFleetAction = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("create"),
+    name: PersonalWorkstreamName,
+    orderKey: PersonalWorkstreamOrderKey,
+    nameIconProjectKey: Schema.optionalKey(PersonalWorkstreamNameIconProjectKey),
+    lifecycle: Schema.optionalKey(PersonalWorkstreamLifecycle),
+    color: Schema.optionalKey(PersonalWorkstreamColor),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("edit"),
+    patch: Schema.Struct({
+      name: Schema.optionalKey(PersonalWorkstreamName),
+      lifecycle: Schema.optionalKey(PersonalWorkstreamLifecycle),
+      color: Schema.optionalKey(PersonalWorkstreamColor),
+      orderKey: Schema.optionalKey(PersonalWorkstreamOrderKey),
+      snoozedAt: Schema.optionalKey(Schema.NullOr(PersonalTimestamp)),
+      snoozedUntil: Schema.optionalKey(Schema.NullOr(PersonalTimestamp)),
+      nameIconProjectKey: Schema.optionalKey(Schema.NullOr(PersonalWorkstreamNameIconProjectKey)),
+    }),
+  }),
+  Schema.Struct({ kind: Schema.Literal("delete") }),
+]);
+export type PersonalWorkstreamFleetAction = typeof PersonalWorkstreamFleetAction.Type;
+export const RequestPersonalWorkstreamOperation = Schema.Struct({
+  requestId: PersonalWorkstreamId,
+  workstreamId: PersonalWorkstreamId,
+  expected: Schema.NullOr(PersonalWorkstream),
+  action: PersonalWorkstreamFleetAction,
+});
+export type RequestPersonalWorkstreamOperation = typeof RequestPersonalWorkstreamOperation.Type;
+export const PersonalWorkstreamOperationResult = Schema.Struct({
+  operation: PersonalWorkstreamOperation,
+  workstream: Schema.NullOr(PersonalWorkstream),
+  sequence: NonNegativeInt,
+});
+export type PersonalWorkstreamOperationResult = typeof PersonalWorkstreamOperationResult.Type;
 
 const personalWorkstreamBaseFields = (workstream: PersonalWorkstream) => [
   workstream.id,

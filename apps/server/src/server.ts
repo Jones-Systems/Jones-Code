@@ -75,6 +75,7 @@ import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import * as PersonalWorkstreams from "./jones/workstreams/personal/service.ts";
+import * as WorkstreamFleet from "./jones/workstreams/personal/fleetWorker.ts";
 import * as WorkstreamAutoRoute from "./jones/workstreams/autoRoute/WorkstreamAutoRoute.ts";
 import * as PersonalHttp from "./jones/workstreams/personal/http.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -1037,7 +1038,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
     speechStreamRouteLayer,
-  ),
+  ).pipe(Layer.provide(WorkstreamFleet.workerLayer)),
   JonesHttp.remoteAdmissionResumeLayer.pipe(
     Layer.provideMerge(McpHttpServer.layer),
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),

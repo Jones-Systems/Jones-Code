@@ -28,6 +28,15 @@ export function MobileWorkstreamControls(props: {
   const [busy, setBusy] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
   const group = props.state.workstreams.find((entry) => entry.id === props.selection?.groupKey);
+  const closeRequest = props.state.fleet?.operations.find(
+    (operation) =>
+      operation.workstreamId === group?.id &&
+      operation.kind === "close" &&
+      (operation.status === "pending" || operation.status === "stale"),
+  );
+  const waitingOn = closeRequest?.peers
+    .filter((peer) => peer.state !== "delivered")
+    .map((peer) => props.environmentNames.get(peer.environmentId) ?? peer.environmentId);
   const thread = props.selection?.thread;
   const openWorkstreams = openPersonalWorkstreams(props.state);
   const closedWorkstreams = props.state.workstreams.filter((entry) =>
@@ -50,7 +59,9 @@ export function MobileWorkstreamControls(props: {
       live = false;
     };
   }, [controller, closedId]);
-  const writable = thread ? props.controller.canAssign(thread) : props.state.canCreate;
+  const writable = thread
+    ? props.controller.canAssign(thread)
+    : props.state.canCreate && !closeRequest;
   const run = async (action: () => Promise<PersonalResult<unknown>>) => {
     if (busy) return;
     setBusy(true);
@@ -100,6 +111,26 @@ export function MobileWorkstreamControls(props: {
         <Text accessibilityRole="header" style={{ fontSize: 24, fontWeight: "600" }}>
           {group?.name ?? "Workstreams"}
         </Text>
+        {closeRequest ? (
+          <View>
+            <Text accessibilityLiveRegion="polite">
+              {closeRequest.status === "stale"
+                ? "Close requested · environment list changed"
+                : closeRequest.reason === "unsettled_threads"
+                  ? "Close requested · settle or move active threads on the authority"
+                  : waitingOn?.length
+                    ? `Close requested · waiting for ${waitingOn.join(", ")}`
+                    : "Close requested"}
+            </Text>
+            {controller.cancelOperation
+              ? button(
+                  "Cancel close request",
+                  () => void run(() => controller.cancelOperation!(closeRequest.requestId)),
+                  !props.state.canCreate,
+                )
+              : null}
+          </View>
+        ) : null}
         {!closedId && (
           <TextInput
             accessibilityLabel={group ? "Workstream name" : "New Workstream name"}
@@ -232,7 +263,8 @@ export function MobileWorkstreamControls(props: {
                     props.onSelect({ groupKey: entry.id });
                   }
                 },
-                !!thread && !writable,
+                !!thread &&
+                  (!writable || props.state.pendingCloseWorkstreamIds?.has(entry.id) === true),
               ),
             )}
             {!thread && closedWorkstreams.length > 0 && (
