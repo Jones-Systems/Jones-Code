@@ -120,8 +120,8 @@ export function OrchestratorComposer(props: {
     inFlight.current = true;
     setSaving(true);
     setFeedback(null);
-    const metadata = makeQueuedMessageMetadata();
-    try {
+    const saveMessage = async () => {
+      const metadata = makeQueuedMessageMetadata();
       await enqueueThreadOutboxMessage({
         environmentId: target.environmentId,
         threadId: target.id,
@@ -139,12 +139,15 @@ export function OrchestratorComposer(props: {
       });
       if (getComposerDraftSnapshot(draftKey).text === draft) setComposerDraftText(draftKey, "");
       setFeedback(gt("Queued in {thread}.", { thread: target.title }));
-    } catch {
-      setFeedback(gt("Could not save the message. Your draft is still here."));
-    } finally {
-      inFlight.current = false;
-      setSaving(false);
-    }
+    };
+    await saveMessage()
+      .catch(() => {
+        setFeedback(gt("Could not save the message. Your draft is still here."));
+      })
+      .finally(() => {
+        inFlight.current = false;
+        setSaving(false);
+      });
   };
 
   return (
