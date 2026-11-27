@@ -5,7 +5,10 @@ import type {
   JonesOperationReceipt,
   JonesOperationStartInput,
 } from "@t3tools/contracts/jones/jonesOperations";
-import { createJonesActionJournal } from "@t3tools/client-runtime/jones/updates/action-journal";
+import {
+  createJonesActionJournal,
+  JONES_ACTION_JOURNAL_KEY,
+} from "@t3tools/client-runtime/jones/updates/action-journal";
 vi.mock("../../connection/runtime", () => ({ connectionAtomRuntime: {} }));
 vi.mock("./actionJournal", async () => {
   const { createJonesActionJournal } =
@@ -49,11 +52,11 @@ const state: JonesUpdateState = {
   },
 };
 function disk() {
-  let bytes: string | null = null;
+  const values = new Map<string, string>();
   return {
-    getItem: () => bytes,
-    setItem: (_key: string, value: string) => {
-      bytes = value;
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
     },
   };
 }
@@ -70,74 +73,104 @@ function transport(): MobileJonesTransport {
 }
 
 describe("mobile process recreation", () => {
-  it("recovers a legacy unsupported download only with an exact host read", async () => {
-    const storage = disk(),
-      target = transport();
-    const operationId = "99999999-1111-4111-8111-111111111111";
-    const request: JonesOperationStartInput = {
-      environmentId,
-      operationId,
-      expectedInstalledSource: "e".repeat(40),
-      action: { kind: "download-exact", targetSource },
-    };
-    const updatedAt = "2026-10-27T04:00:00Z";
-    const provisional: JonesOperationReceipt = {
-      protocol: 1,
-      ...request,
-      phase: "refused",
-      code: "unsupported",
-      updatedAt,
-    };
-    const running: JonesOperationReceipt = {
-      protocol: 1,
-      ...request,
-      phase: "running",
-      acceptedAt: updatedAt,
-      updatedAt,
-    };
-    storage.setItem(
-      "journal",
-      JSON.stringify({
-        schema: 1,
-        duties: [],
-        history: [
-          {
-            id: operationId,
-            environmentId,
-            kind: "operation",
-            action: "download-exact",
-            targetSource,
-            operationId,
-            request,
-            receipt: provisional,
+  it.each(["running", "durable refusal"] as const)(
+    "recovers legacy unsupported with exact %s proof",
+    async (outcome) => {
+      const storage = disk(),
+        target = transport();
+      const operationId = "99999999-1111-4111-8111-111111111111";
+      const request: JonesOperationStartInput = {
+        environmentId,
+        operationId,
+        expectedInstalledSource: "e".repeat(40),
+        action: { kind: "download-exact", targetSource },
+      };
+      const updatedAt = "2026-10-27T04:00:00Z";
+      const provisional: JonesOperationReceipt = {
+        protocol: 1,
+        ...request,
+        phase: "refused",
+        code: "unsupported",
+        updatedAt,
+      };
+      const running: JonesOperationReceipt = {
+        protocol: 1,
+        ...request,
+        phase: "running",
+        acceptedAt: updatedAt,
+        updatedAt,
+      };
+      storage.setItem(
+        JONES_ACTION_JOURNAL_KEY,
+        JSON.stringify({
+          schema: 1,
+          duties: [],
+          history: [
+            {
+              id: operationId,
+              environmentId,
+              kind: "operation",
+              action: "download-exact",
+              targetSource,
+              operationId,
+              request,
+              receipt: provisional,
+            },
+          ],
+        }),
+      );
+      const journal = createJonesActionJournal(storage);
+      const runtime = createMobileJonesRuntime(journal);
+      const session = runtime.session(environmentId);
+      await journal.load();
+      await session.observe(running);
+      expect(session.getSnapshot().receipt).toEqual(provisional);
+      const actions = runtime.actions({
+        environmentId,
+        transport: target,
+        readLatest: () => ({
+          observation: {
+            state: { ...state, capability: { ...state.capability, operations: 1 } },
+            freshness: "fresh",
           },
-        ],
-      }),
-    );
-    const journal = createJonesActionJournal(storage);
-    const runtime = createMobileJonesRuntime(journal);
-    const session = runtime.session(environmentId);
-    await journal.load();
-    await session.observe(running);
-    expect(session.getSnapshot().receipt).toEqual(provisional);
-    const actions = runtime.actions({
-      environmentId,
-      transport: target,
-      readLatest: () => ({
-        observation: {
-          state: { ...state, capability: { ...state.capability, operations: 1 } },
-          freshness: "fresh",
-        },
-        canOperate: true,
-      }),
-    });
-    vi.mocked(target.read).mockResolvedValue({ receipts: [{ operationId, receipt: running }] });
-    await actions.read();
-    expect(target.read).toHaveBeenCalledWith(operationId);
-    expect(target.start).not.toHaveBeenCalled();
-    expect(session.getSnapshot().receipt).toEqual(running);
-    expect(journal.getSnapshot().duties[0]?.receipt).toEqual(running);
-  });
+          canOperate: true,
+        }),
+      });
+      if (outcome === "durable refusal") {
+        const confirmed = { ...provisional, message: "The host durably refused the request." };
+        vi.mocked(target.read).mockResolvedValue({
+          receipts: [{ operationId, receipt: confirmed }],
+        });
+        await actions.read();
+        const restartedJournal = createJonesActionJournal(storage);
+        const restarted = createMobileJonesRuntime(restartedJournal);
+        const restoredSession = restarted.session(environmentId);
+        await restartedJournal.load();
+        expect(restartedJournal.getSnapshot().history[0]?.unsupportedReceiptVerified).toBe(true);
+        await restarted
+          .actions({
+            environmentId,
+            transport: target,
+            readLatest: () => ({
+              observation: {
+                state: { ...state, capability: { ...state.capability, operations: 1 } },
+                freshness: "fresh",
+              },
+              canOperate: true,
+            }),
+          })
+          .read();
+        expect(restoredSession.getSnapshot().message).toBe(confirmed.message);
+        return;
+      }
+      vi.mocked(target.read).mockResolvedValue({ receipts: [{ operationId, receipt: running }] });
+      await actions.read();
+      expect(target.read).toHaveBeenCalledWith(operationId);
+      expect(target.start).not.toHaveBeenCalled();
+      expect(session.getSnapshot().receipt).toEqual(running);
+      expect(journal.getSnapshot().duties[0]?.receipt).toEqual(running);
+    },
+  );
 
   it("restores a lost legacy dispatch before enabling controls, with no operations request to the old host", async () => {
     const storage = disk(),

@@ -3,6 +3,11 @@ import {
   jonesTargetStatus,
 } from "@t3tools/client-runtime/jones/updates/target-status";
 import {
+  isProvisionalUnsupportedReceipt,
+  isSettledOperationReceipt,
+  validateReceipt,
+} from "@t3tools/client-runtime/jones/install-plan";
+import {
   prepareReviewedInstall,
   resolveDownloadAction,
   type JonesDownloadResolution,
@@ -134,18 +139,28 @@ export function JonesUpdateControls({
     stopDuty?.receipt ??
     journal.duties.find((d) => d.environmentId === environmentId)?.receipt ??
     settled?.receipt;
+  const liveReceipt = observed.freshness === "fresh" ? observed.state?.operation : undefined;
+  const freshSettlement =
+    liveReceipt !== undefined &&
+    retained !== undefined &&
+    isSettledOperationReceipt(liveReceipt) &&
+    validateReceipt(retained, liveReceipt);
   const observation =
-    observed.state === null || retained === undefined
+    observed.state === null || retained === undefined || freshSettlement
       ? observed
       : {
           ...observed,
           state: { ...observed.state, operation: retained },
         };
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Exact fresh receipts reconcile persisted duties; rendering never clears an unknown request.
+  const awaitingLedgerRead =
+    retained !== undefined &&
+    liveReceipt?.operationId === retained.operationId &&
+    isProvisionalUnsupportedReceipt(retained);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile exact fresh receipts after any provisional refusal has been verified.
   useEffect(() => {
-    if (observed.freshness === "fresh" && observed.state?.operation !== undefined)
-      void reconcileJonesExecution(environmentId, observed.state.operation).catch(() => undefined);
-  }, [observed, environmentId]);
+    if (liveReceipt !== undefined && !awaitingLedgerRead)
+      void reconcileJonesExecution(environmentId, liveReceipt).catch(() => undefined);
+  }, [liveReceipt, environmentId, awaitingLedgerRead]);
   const installStatus = useInstallPlan();
   const observedAt = Date.parse(installStatus.native?.laptop.observedAt ?? "");
   const laptopNow = useNowAfter(

@@ -249,6 +249,11 @@ describe("durable client update duties", () => {
           },
         ]);
         if (outcome === "unsupported") {
+          expect(JSON.parse(storage.values.get(JONES_ACTION_JOURNAL_KEY)!)).toEqual({
+            schema: 1,
+            duties: [],
+            history: [{ ...duty, receipt: provisional }],
+          });
           await restarted.reconcileReceipt(receipt("running"), { ledgerRead: true });
           expect(restarted.getSnapshot().history[0]?.receipt).toEqual(provisional);
           expect(restarted.getSnapshot().duties).toEqual([]);
@@ -256,6 +261,65 @@ describe("durable client update duties", () => {
       }
     },
   );
+
+  it("keeps an unrelated pending Stop readable when optional refusal proof is unavailable", async () => {
+    const storage = disk();
+    const journal = createJonesActionJournal(storage);
+    const stoppedOperation = { ...receipt(), environmentId: otherEnvironment };
+    const stopId = id(3);
+    await journal.reserve({
+      kind: "stop",
+      id: stopId,
+      stopId,
+      operationId: request.operationId,
+      environmentId: otherEnvironment,
+      action: "stop",
+      targetSource,
+      receipt: stoppedOperation,
+    });
+    await journal.reserve({
+      id: request.operationId,
+      environmentId,
+      kind: "operation",
+      action: "download-exact",
+      operationId: request.operationId,
+      targetSource,
+      request,
+    });
+    const unsupported: JonesOperationReceipt = {
+      ...request,
+      protocol: 1,
+      phase: "refused",
+      code: "unsupported",
+      updatedAt: "2026-10-27T04:01:00Z",
+    };
+    expect(await journal.reconcileReceipt(unsupported, { ledgerRead: true })).toBe(true);
+    const retained = JSON.parse(storage.values.get(JONES_ACTION_JOURNAL_KEY)!);
+    expect(retained.duties.map((d: { id: string }) => d.id)).toEqual([stopId]);
+    expect(retained.history[0]).not.toHaveProperty("unsupportedReceiptVerified");
+    const lostProof = createJonesActionJournal({
+      ...storage,
+      getItem: (key) => {
+        if (key !== JONES_ACTION_JOURNAL_KEY) throw new Error("Optional proof is unavailable");
+        return storage.getItem(key);
+      },
+    });
+    await lostProof.load();
+    expect(lostProof.getSnapshot().duties[0]?.id).toBe(stopId);
+    expect(lostProof.getSnapshot().history[0]?.unsupportedReceiptVerified).toBeUndefined();
+    expect(
+      await lostProof.reconcileReceipt(
+        {
+          ...stoppedOperation,
+          phase: "stopped",
+          updatedAt: "2026-10-27T04:02:00Z",
+          stop: { stopId, requestedAt: "2026-10-27T04:01:00Z", result: "stopped" },
+        },
+        { ledgerRead: true },
+      ),
+    ).toBe(true);
+    expect(lostProof.getSnapshot().duties).toEqual([]);
+  });
 
   it("holds Stop through missing/wrong IDs, held results, backwards receipts and a late start reply", async () => {
     const storage = disk(),

@@ -34,7 +34,6 @@ export const JonesActionDuty = Schema.Struct({
   stopId: Schema.optionalKey(JonesOperationId),
   request: Schema.optionalKey(JonesOperationStartInput),
   receipt: Schema.optionalKey(JonesOperationReceipt),
-  unsupportedReceiptVerified: Schema.optionalKey(Schema.Literal(true)),
   native: Schema.optionalKey(
     Schema.Struct({
       commandId: JonesOperationId,
@@ -45,13 +44,17 @@ export const JonesActionDuty = Schema.Struct({
     }),
   ),
 });
-export type JonesActionDuty = typeof JonesActionDuty.Type;
+export type JonesActionDuty = typeof JonesActionDuty.Type & {
+  readonly unsupportedReceiptVerified?: true;
+};
 const Document = Schema.Struct({
   schema: Schema.Literal(1),
   duties: Schema.Array(JonesActionDuty).check(Schema.isMaxLength(64)),
   history: Schema.optionalKey(Schema.Array(JonesActionDuty).check(Schema.isMaxLength(64))),
 });
 export const JONES_ACTION_JOURNAL_KEY = "jones.update-duties.v1";
+// Keep the v1 journal readable to existing clients. This optional proof only suppresses a repeat Read.
+const VERIFIED_UNSUPPORTED_KEY = "jones.verified-unsupported.v1";
 const JONES_ACTION_JOURNAL_BYTES = 128 * 1024;
 const terminal = new Set([
   "completed",
@@ -219,6 +222,16 @@ function correlationReceipt(receipt: JonesOperationReceipt): JonesOperationRecei
         }),
   };
 }
+export function sameRetainedJonesReceipt(
+  previous: JonesOperationReceipt,
+  next: JonesOperationReceipt,
+): boolean {
+  return (
+    canonicalJonesCommand(correlationReceipt(previous)) ===
+    canonicalJonesCommand(correlationReceipt(next))
+  );
+}
+
 function metadataDuty(duty: JonesActionDuty): JonesActionDuty {
   return {
     id: duty.id,
@@ -232,7 +245,6 @@ function metadataDuty(duty: JonesActionDuty): JonesActionDuty {
     ...(duty.stopId === undefined ? {} : { stopId: duty.stopId }),
     ...(duty.request === undefined ? {} : { request: correlationRequest(duty.request) }),
     ...(duty.receipt === undefined ? {} : { receipt: correlationReceipt(duty.receipt) }),
-    ...(duty.unsupportedReceiptVerified === true ? { unsupportedReceiptVerified: true } : {}),
     ...(duty.native === undefined
       ? {}
       : {
@@ -261,13 +273,6 @@ function noExtraFields(value: unknown, metadata: unknown): boolean {
   );
 }
 function validDuty(duty: JonesActionDuty) {
-  if (
-    duty.unsupportedReceiptVerified === true &&
-    (duty.kind !== "operation" ||
-      duty.receipt === undefined ||
-      !isProvisionalUnsupportedReceipt(duty.receipt))
-  )
-    return false;
   const target = (action: JonesOperationReceipt["action"]) =>
     action.kind === "download" ? action.sourceSha : action.targetSource;
   if (duty.kind === "operation")
@@ -301,6 +306,15 @@ function validDuty(duty: JonesActionDuty) {
 /** A failed persistence operation holds admission; unresolved entries are never evicted. */
 const compiledIs1 = Schema.is(Document);
 const compiledIs2 = Schema.is(JonesOperationReceipt);
+const isVerifiedUnsupportedList = Schema.is(
+  Schema.Array(JonesOperationReceipt).check(Schema.isMaxLength(64)),
+);
+
+function verifiedUnsupportedReceipts(history: readonly JonesActionDuty[]) {
+  return history.flatMap((d) =>
+    d.unsupportedReceiptVerified === true && d.receipt !== undefined ? [d.receipt] : [],
+  );
+}
 const isBoundRequest = Schema.is(JonesBoundOperationStartInput);
 
 export function createJonesActionJournal(storage: JonesActionStorage) {
@@ -348,7 +362,38 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
         !all.every(validDuty)
       )
         return fail();
-      return { ready: true, duties, history };
+      if (
+        !history.some(
+          (d) =>
+            d.kind === "operation" &&
+            d.receipt !== undefined &&
+            isProvisionalUnsupportedReceipt(d.receipt),
+        )
+      )
+        return { ready: true, duties, history };
+      let proof: readonly JonesOperationReceipt[] = [];
+      try {
+        const saved = await storage.getItem(VERIFIED_UNSUPPORTED_KEY);
+        if (saved !== null && byteLength(saved) <= JONES_ACTION_JOURNAL_BYTES) {
+          const decoded: unknown = JSON.parse(saved);
+          if (isVerifiedUnsupportedList(decoded)) proof = decoded;
+        }
+      } catch {
+        // The original journal remains available when optional Read evidence is unavailable.
+      }
+      return {
+        ready: true,
+        duties,
+        history: history.map((d): JonesActionDuty => {
+          const receipt = d.receipt;
+          return d.kind === "operation" &&
+            receipt !== undefined &&
+            isProvisionalUnsupportedReceipt(receipt) &&
+            proof.some((candidate) => sameRetainedJonesReceipt(receipt, candidate))
+            ? { ...d, unsupportedReceiptVerified: true }
+            : d;
+        }),
+      };
     } catch {
       fail();
     }
@@ -458,8 +503,12 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
             }
           : d,
       );
-      const history = [...revisedHistory, ...removed].slice(-64);
-      const document = { schema: 1 as const, duties, history };
+      let history = [...revisedHistory, ...removed].slice(-64);
+      const document = {
+        schema: 1 as const,
+        duties: duties.map(metadataDuty),
+        history: history.map(metadataDuty),
+      };
       const json = JSON.stringify(document);
       if (
         !compiledIs1(document) ||
@@ -472,6 +521,16 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
         await storage.setItem(JONES_ACTION_JOURNAL_KEY, json);
       } catch {
         return fail();
+      }
+      const previousProof = JSON.stringify(verifiedUnsupportedReceipts(previousHistory));
+      const nextProof = JSON.stringify(verifiedUnsupportedReceipts(history));
+      if (previousProof !== nextProof) {
+        try {
+          await storage.setItem(VERIFIED_UNSUPPORTED_KEY, nextProof);
+        } catch {
+          // Keep the compatible journal result. A later exact Read can recover confirmation.
+          history = document.history;
+        }
       }
       publish({ ready: true, duties, history });
     };
@@ -561,10 +620,7 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
               (d.receipt !== undefined &&
                 !(d.kind === "stop"
                   ? validateJonesStopReceipt(d.receipt, receipt)
-                  : validateOperationEvidence(d.receipt, receipt, {
-                      ledgerRead:
-                        options.ledgerRead === true && d.unsupportedReceiptVerified !== true,
-                    }))) ||
+                  : validateOperationEvidence(d.receipt, receipt, options))) ||
               (d.kind === "stop" && receipt.stop?.stopId !== d.stopId)
             )
               return [d];

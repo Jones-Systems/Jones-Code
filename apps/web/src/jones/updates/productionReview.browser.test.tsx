@@ -454,87 +454,137 @@ describe("production web review authority", () => {
     expect(h.native).not.toHaveBeenCalled();
   });
 
-  it("restores Stop after exact Read proves a legacy archived download is running", async () => {
-    await using _fixture = await fixture();
-    const { a } = hosts();
-    const operationId = "77777777-1111-4111-8111-111111111111";
-    const request: JonesOperationStartInput = {
-      operationId,
-      environmentId: a,
-      expectedInstalledSource: old,
-      action: { kind: "download-exact", targetSource: source },
-    };
-    const updatedAt = "2026-10-27T04:00:00Z";
-    const running: JonesOperationReceipt = {
-      ...request,
-      protocol: 1,
-      phase: "running",
-      acceptedAt: updatedAt,
-      updatedAt,
-    };
-    const { duties, history } = webJonesJournal.getSnapshot();
-    h.disk.set(
-      JONES_ACTION_JOURNAL_KEY,
-      JSON.stringify({
-        schema: 1,
-        duties,
-        history: [
-          ...history,
-          {
-            kind: "operation",
-            action: "download-exact",
-            id: operationId,
-            operationId,
-            environmentId: a,
-            targetSource: source,
-            request,
-            receipt: {
-              ...request,
-              protocol: 1,
-              phase: "refused",
-              code: "unsupported",
-              updatedAt,
+  it.each(["running", "already settled"] as const)(
+    "reconciles legacy unsupported in Connections with a %s download",
+    async (outcome) => {
+      await using _fixture = await fixture();
+      const { a } = hosts();
+      const ordinal = outcome === "running" ? "7777777" : "7777778";
+      const operationId = `${ordinal}7-1111-4111-8111-111111111111`;
+      const request: JonesOperationStartInput = {
+        operationId,
+        environmentId: a,
+        expectedInstalledSource: old,
+        action: { kind: "download-exact", targetSource: source },
+      };
+      const updatedAt = "2026-10-27T04:00:00Z";
+      const running: JonesOperationReceipt = {
+        ...request,
+        protocol: 1,
+        phase: "running",
+        acceptedAt: updatedAt,
+        updatedAt,
+      };
+      const otherId = `${ordinal}6-1111-4111-8111-111111111111`;
+      const otherRequest = { ...request, operationId: otherId };
+      const { duties, history } = webJonesJournal.getSnapshot();
+      h.disk.set(
+        JONES_ACTION_JOURNAL_KEY,
+        JSON.stringify({
+          schema: 1,
+          duties,
+          history: [
+            ...history,
+            {
+              kind: "operation",
+              action: "download-exact",
+              id: otherId,
+              operationId: otherId,
+              environmentId: a,
+              targetSource: source,
+              request: otherRequest,
+              receipt: {
+                ...otherRequest,
+                protocol: 1,
+                phase: "refused",
+                code: "unsupported",
+                updatedAt,
+              },
             },
-          },
-        ],
-      }),
-    );
-    await act(() => webJonesJournal.notSent(operationId));
-    h.observations.set(a, {
-      state: { ...state(a, true), phase: "downloading", operation: running },
-      freshness: "fresh",
-    });
-    h.canRead.add(a);
-    h.operation.mockResolvedValue(success({ receipts: [{ operationId, receipt: running }] }));
+            {
+              kind: "operation",
+              action: "download-exact",
+              id: operationId,
+              operationId,
+              environmentId: a,
+              targetSource: source,
+              request,
+              receipt: {
+                ...request,
+                protocol: 1,
+                phase: "refused",
+                code: "unsupported",
+                updatedAt,
+              },
+            },
+          ],
+        }),
+      );
+      await act(() => webJonesJournal.notSent(operationId));
+      const stopped: JonesOperationReceipt = {
+        ...running,
+        phase: "stopped",
+        updatedAt: "2026-10-27T04:01:00Z",
+      };
+      h.observations.set(a, {
+        state: {
+          ...state(a, true),
+          phase: outcome === "running" ? "downloading" : "available",
+          operation: outcome === "running" ? running : stopped,
+        },
+        freshness: "fresh",
+      });
+      h.canRead.add(a);
+      h.operation.mockResolvedValue(success({ receipts: [{ operationId, receipt: running }] }));
 
-    await draw("connections", a);
-    expect(container.textContent).not.toContain("Stop download");
-    await click("Read operation status");
-    expect(h.operation).toHaveBeenCalledExactlyOnceWith({
-      environmentId: a,
-      input: { action: "operationRead", input: { environmentId: a, operationIds: [operationId] } },
-    });
-    expect(webJonesJournal.getSnapshot().duties.find((d) => d.id === operationId)?.receipt).toEqual(
-      running,
-    );
-
-    const send = vi.fn();
-    h.stop.mockImplementation(async ({ input }: { input: JonesStopCommand }) => {
-      h.checking.add(a);
-      if (!(await input.beforeSend?.())) {
-        return { _tag: "Failure", cause: Cause.fail(new JonesOperationNotSentError({})) };
+      await draw("connections", a);
+      expect(container.textContent).not.toContain("Stop download");
+      h.operation.mockResolvedValueOnce(
+        success({
+          receipts: [{ operationId, receipt: { ...running, operationId: otherId } }],
+        }),
+      );
+      await click("Read operation status");
+      expect(webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a)).toEqual([]);
+      expect(container.textContent).not.toContain("Stop download");
+      h.operation.mockClear();
+      await click("Read operation status");
+      expect(h.operation).toHaveBeenCalledExactlyOnceWith({
+        environmentId: a,
+        input: {
+          action: "operationRead",
+          input: { environmentId: a, operationIds: [operationId] },
+        },
+      });
+      if (outcome === "already settled") {
+        expect(container.textContent).not.toContain("Stop download");
+        expect(
+          webJonesJournal.getSnapshot().history.find((d) => d.id === operationId)?.receipt,
+        ).toEqual(stopped);
+        return;
       }
-      send(input.input);
-      return { _tag: "Failure", cause: Cause.fail(new Error("Stop reply lost")) };
-    });
-    await click("Stop download");
-    expect(h.stop).toHaveBeenCalledOnce();
-    expect(send).not.toHaveBeenCalled();
-    expect(webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a)).toMatchObject(
-      [{ id: operationId, receipt: running }],
-    );
-    h.checking.delete(a);
-  });
+      expect(
+        webJonesJournal.getSnapshot().duties.find((d) => d.id === operationId)?.receipt,
+      ).toEqual(running);
+
+      const send = vi.fn();
+      h.stop.mockImplementation(async ({ input }: { input: JonesStopCommand }) => {
+        h.checking.add(a);
+        if (!(await input.beforeSend?.())) {
+          return { _tag: "Failure", cause: Cause.fail(new JonesOperationNotSentError({})) };
+        }
+        send(input.input);
+        return { _tag: "Failure", cause: Cause.fail(new Error("Stop reply lost")) };
+      });
+      await click("Stop download");
+      expect(h.stop).toHaveBeenCalledOnce();
+      expect(send).not.toHaveBeenCalled();
+      expect(
+        webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a),
+      ).toMatchObject([{ id: operationId, receipt: running }]);
+      h.checking.delete(a);
+    },
+  );
 
   it("keeps one Stop through pointer/keyboard, remount, wrong proofs and a late start response", async () => {
     await using _fixture = await fixture();

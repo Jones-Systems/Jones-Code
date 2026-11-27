@@ -16,13 +16,13 @@ import {
   type JonesReviewedInstall,
 } from "@t3tools/client-runtime/jones/updates/executor";
 import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/target-status";
-import {
-  validateOperationEvidence,
-  validateReceipt,
-} from "@t3tools/client-runtime/jones/install-plan/model";
+import { validateOperationEvidence } from "@t3tools/client-runtime/jones/install-plan/model";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesActionJournal } from "@t3tools/client-runtime/jones/updates/action-journal";
-import { validateJonesStopReceipt } from "@t3tools/client-runtime/jones/updates/action-journal";
+import {
+  sameRetainedJonesReceipt,
+  validateJonesStopReceipt,
+} from "@t3tools/client-runtime/jones/updates/action-journal";
 import { mobileJonesJournal } from "./actionJournal";
 import type {
   JonesOperationReceipt,
@@ -183,7 +183,7 @@ function createSession(environmentId: EnvironmentId, journal: JonesActionJournal
       !(state.stopId !== undefined
         ? validateJonesStopReceipt(state.receipt, receipt)
         : verifiedUnsupported
-          ? options.ledgerRead === true && validateReceipt(state.receipt, receipt)
+          ? options.ledgerRead === true && sameRetainedJonesReceipt(state.receipt, receipt)
           : validateOperationEvidence(state.receipt, receipt, options))
     )
       return false;
