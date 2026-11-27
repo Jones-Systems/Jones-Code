@@ -510,17 +510,19 @@ function CleanupSection() {
       !state.some((entry) => entry.environmentId === environmentId && entry.allowed)
     )
       return;
-    const targets = [];
-    for (const entry of entries) {
-      if (!entry.threadId || !entry.path || !entry.retirement?.fingerprint) return;
-      targets.push({
-        path: entry.path,
-        coveredPaths: entry.retirement.paths,
-        recoverability: entry.retirement.recoverability,
-        threadId: entry.threadId,
-        expectedFingerprint: entry.retirement.fingerprint,
-      });
-    }
+    const targets = entries.flatMap((entry) => {
+      if (!entry.threadId || !entry.path || !entry.retirement?.fingerprint) return [];
+      return [
+        {
+          path: entry.path,
+          coveredPaths: entry.retirement.paths,
+          recoverability: entry.retirement.recoverability,
+          threadId: entry.threadId,
+          expectedFingerprint: entry.retirement.fingerprint,
+        },
+      ];
+    });
+    if (targets.length !== entries.length) return;
     const total = targets.length;
     const message =
       total === 1
