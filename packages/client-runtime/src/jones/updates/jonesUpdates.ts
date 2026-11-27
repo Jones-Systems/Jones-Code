@@ -68,6 +68,8 @@ export class JonesOperationNotSentError extends Schema.TaggedError<JonesOperatio
   }
 }
 
+export const isJonesOperationNotSentError = Schema.is(JonesOperationNotSentError);
+
 export type JonesAction =
   | { action: "check" }
   | { action: "download"; input: JonesUpdateDownloadInput }
@@ -207,21 +209,19 @@ const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
             ].includes(input.action)
           ? 60_000
           : 20 * 60_000,
-    request: (context) =>
-      Effect.gen(function* () {
-        if (beforeSend !== undefined) {
-          const permit = yield* Effect.tryPromise({
-            try: async () => beforeSend(),
-            catch: () => new JonesOperationNotSentError({}),
-          });
-          if (permit !== true) return yield* new JonesOperationNotSentError({});
-        }
-        return yield* dispatchRequest(input, context);
-      }),
+    request: Effect.fn("clientRuntime.jonesUpdates.sendAuthorizedRequest")(function* (context) {
+      if (beforeSend !== undefined) {
+        const permit = yield* Effect.tryPromise({
+          try: async () => beforeSend(),
+          catch: () => new JonesOperationNotSentError({}),
+        });
+        if (permit !== true) return yield* new JonesOperationNotSentError({});
+      }
+      return yield* dispatchRequest(input, context);
+    }),
   }).pipe(
     Effect.mapError((error) =>
-      error._tag === "RemoteEnvironmentAuthFetchError" &&
-      error.cause instanceof JonesOperationNotSentError
+      error._tag === "RemoteEnvironmentAuthFetchError" && isJonesOperationNotSentError(error.cause)
         ? error.cause
         : error,
     ),

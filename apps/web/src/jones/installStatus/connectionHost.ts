@@ -109,6 +109,10 @@ export async function readUnresolvedJonesExecution(environmentId: EnvironmentId)
   )
     return;
   const exact = result.value.receipts[0];
-  if (exact?.operationId === operationId && exact.receipt !== null)
+  if (
+    exact?.operationId === operationId &&
+    exact.receipt !== null &&
+    readEnvironmentScopeAccess(environmentId, AuthOrchestrationReadScope).status === "granted"
+  )
     await reconcileJonesExecution(environmentId, exact.receipt, { ledgerRead: true });
 }

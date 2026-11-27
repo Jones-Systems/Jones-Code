@@ -1,3 +1,5 @@
+import { msg } from "gt-react";
+import { m } from "../../i18n/messages";
 import type { DesktopBridge, EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesAction,
@@ -414,7 +416,9 @@ export function planStartIssue(
     current.laptop.gatePause === true ||
     native?.laptop.activationBlocked !== false
   )
-    return "This plan's exact reservation changed or expired. Check the original operation.";
+    return m(
+      msg("This plan's exact reservation changed or expired. Check the original operation."),
+    );
   const authority = currentPlanHostAuthority(binding, device);
   if (authority.enrollment === "route-changed")
     return operationAdmissionMessage("admission-route-changed");
@@ -423,7 +427,7 @@ export function planStartIssue(
     !allowsOperationRecovery(authority.enrollment, "start") ||
     authority.status?.installedSource?.sha !== input.expectedInstalledSource
   )
-    return "Fresh control authority and the selected device's enrollment are required.";
+    return m(msg("Fresh control authority and the selected device's enrollment are required."));
   const { admission, action } = input;
   const newlyReserved = !deviceActiveOperations(device).some(
     (item) => item.operationId === input.operationId,
@@ -443,7 +447,7 @@ export function planStartIssue(
       authority.status.provenance?.sourceSha !== plan.target.sourceSha ||
       authority.status.provenance.sourceTree !== plan.target.sourceTree)
   )
-    return "The reviewed stage changed. Check the original operation and review again.";
+    return m(msg("The reviewed stage changed. Check the original operation and review again."));
   return undefined;
 }
 

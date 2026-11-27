@@ -1,7 +1,7 @@
 import { act, render, stubGlobal, type Screen } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
-import { EnvironmentId } from "@t3tools/contracts";
+import { AuthOrchestrationReadScope, EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesUpdateObservation,
   JonesOperationCommand,
@@ -18,6 +18,7 @@ import "../../index.css";
 const h = vi.hoisted(() => ({
   observations: new Map<string, JonesUpdateObservation>(),
   permissions: new Map<string, boolean>(),
+  canRead: new Set<string>(),
   confirmations: [] as Array<(value: boolean) => void>,
   recoveries: [] as Array<(policy: JonesRecoveryPolicy | null) => void>,
   disk: new Map<string, string>(),
@@ -60,6 +61,10 @@ vi.mock("./jonesUpdates", () => ({
 }));
 vi.mock("../../state/session", () => ({
   environmentSession: { sessionStateAtom: (env: string) => ({ kind: "session", env }) },
+  readEnvironmentScopeAccess: (env: string, scope: string) => ({
+    status:
+      scope === AuthOrchestrationReadScope && h.canRead.has(env) ? "granted" : "scope_missing",
+  }),
 }));
 vi.mock("@effect/atom-react", async (original) => {
   const actual = await original<typeof import("@effect/atom-react")>();
@@ -483,6 +488,10 @@ describe("production web review authority", () => {
     h.operation.mockImplementation(async () =>
       success({ receipts: [{ operationId: running.operationId, receipt: answer }] }),
     );
+    const callsBeforeRead = h.operation.mock.calls.length;
+    await click("Read operation status");
+    expect(h.operation.mock.calls).toHaveLength(callsBeforeRead);
+    h.canRead.add(a);
     await click("Read operation status");
     expect(container.textContent).toContain("Read operation status");
     answer = {
@@ -496,6 +505,14 @@ describe("production web review authority", () => {
     await click("Read operation status");
     expect(container.textContent).toContain("Read operation status");
     answer = { ...answer, stop: { ...answer.stop!, stopId } };
+    const exact = success({ receipts: [{ operationId: running.operationId, receipt: answer }] });
+    const readReply = Promise.withResolvers<typeof exact>();
+    h.operation.mockImplementationOnce(() => readReply.promise);
+    await click("Read operation status");
+    h.canRead.delete(a);
+    await act(async () => readReply.resolve(exact));
+    expect(webJonesJournal.getSnapshot().duties.some((d) => d.id === stopId)).toBe(true);
+    h.canRead.add(a);
     await click("Read operation status");
     expect(webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a)).toEqual([]);
     const stopped = () =>

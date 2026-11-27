@@ -1,6 +1,6 @@
 import type { DesktopBridge, EnvironmentId } from "@t3tools/contracts";
 import { AuthOrchestrationOperateScope, sessionGrantsScope } from "@t3tools/contracts";
-import { JonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
+import { isJonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentSession } from "../../state/session";
@@ -21,7 +21,7 @@ export const runJonesOperation: InstallPlanServices["operation"] = async (enviro
   );
   if (result._tag === "Success") return result.value;
   const error = squashAtomCommandFailure(result);
-  if (error instanceof JonesOperationNotSentError) throw error;
+  if (isJonesOperationNotSentError(error)) throw error;
   throw new Error("The operation has no acknowledged receipt.");
 };
 

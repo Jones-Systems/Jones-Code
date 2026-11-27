@@ -30,6 +30,7 @@ import { EnvironmentRegistry } from "../../connection/registry.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
 import { layerRemoteHttpClient } from "../../rpc/http.ts";
 import type * as RpcSession from "../../rpc/session.ts";
+import { runAtomCommand } from "../../state/runtime.ts";
 import { createJonesUpdateAtoms, JonesOperationNotSentError } from "../updates/jonesUpdates.ts";
 import { matchPlanEnrollment, startPlan } from "./model.ts";
 import { advanceInstallPlan, type InstallPlanDriver } from "./runner.ts";
@@ -260,7 +261,12 @@ const operationTransport = (fetchFn: typeof fetch, failures: unknown[] = []) =>
       ),
     );
     const operation: InstallPlanDriver["operation"] = async (environmentId, input) => {
-      const result = await atoms.operation.run(registry, { environmentId, input });
+      const result = await runAtomCommand(
+        registry,
+        atoms.operation,
+        { environmentId, input },
+        { reportFailure: false, reportDefect: false },
+      );
       if (result._tag === "Success") {
         if ("operationId" in result.value || "receipts" in result.value) return result.value;
         throw new Error("Unexpected operation result in the test transport.");

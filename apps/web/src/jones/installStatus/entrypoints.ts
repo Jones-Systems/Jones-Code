@@ -770,7 +770,7 @@ export function connectionsPlanDispatch(
           (currentPlanHostAuthority(binding, device).enrollment === "route-changed"
             ? operationAdmissionMessage("admission-route-changed")
             : undefined) ??
-          "Fresh control authority and the selected device's enrollment are required.",
+          m(msg("Fresh control authority and the selected device's enrollment are required.")),
       };
     const claimant = `window:${claimantId()}`;
     const request = {

@@ -893,7 +893,6 @@ export function nextRunnerStep(
   if (!allowsOperationRecovery(enrollment, "read"))
     return wait("The selected host identity changed.");
   const operations = deviceActiveOperations(device);
-  const latest = operations.at(-1);
   const pending = operations.find(outstanding);
   if (pending?.request.kind === "operation-start") {
     const leaseUntil = Date.parse(pending.lease.leaseUntil);

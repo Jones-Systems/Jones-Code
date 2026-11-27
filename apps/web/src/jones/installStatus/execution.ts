@@ -9,7 +9,7 @@ import {
 import { isSettledOperationReceipt } from "@t3tools/client-runtime/jones/install-plan";
 import { resolveJonesExactSourceAction } from "@t3tools/client-runtime/jones/updates";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
-import { JonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
+import { isJonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
 import {
   isProvisionalUnsupportedReceipt,
   validateOperationEvidence,
@@ -322,7 +322,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
           try {
             receipt = await host.start(request, guard);
           } catch (error) {
-            if (error instanceof JonesOperationNotSentError) {
+            if (isJonesOperationNotSentError(error)) {
               dispatched = false;
               refusedBeforeDispatch = nativeStart?.startIssue(request) ?? error.message;
               if (localReservation) {
@@ -348,7 +348,11 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
         code: "native-handoff-unknown",
         message:
           refusedBeforeDispatch ??
-          "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
+          m(
+            msg(
+              "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
+            ),
+          ),
       };
     const stopped = [...journal.getSnapshot().duties, ...journal.getSnapshot().history].find(
       (d) =>

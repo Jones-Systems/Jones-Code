@@ -16,7 +16,7 @@ import type {
 } from "@t3tools/contracts/jones/jonesOperations";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import {
-  JonesOperationNotSentError,
+  isJonesOperationNotSentError,
   type JonesOperationBeforeSend,
   type JonesOperationCommand,
   type JonesUpdateObservation,
@@ -332,7 +332,7 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         const needsLedgerRead = await dispatchGrant(driver, grant, beforeSend, report);
         if (needsLedgerRead && grantedInput !== undefined) await readReceipt(grantedInput);
       } catch (error) {
-        if (grantedInput?.admission !== undefined && !(error instanceof JonesOperationNotSentError))
+        if (grantedInput?.admission !== undefined && !isJonesOperationNotSentError(error))
           await readReceipt(grantedInput);
       }
     } catch {

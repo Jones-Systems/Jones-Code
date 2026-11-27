@@ -1,6 +1,8 @@
+import { msg } from "gt-react";
+import { m } from "../../i18n/messages";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
-import { JonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
+import { isJonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
 import type {
   JonesInstallPlan,
   JonesInstallPlanCommandReceipt,
@@ -389,7 +391,7 @@ async function recoverRemoteOperation(
         },
       });
     } catch (error) {
-      if (!(error instanceof JonesOperationNotSentError)) throw error;
+      if (!isJonesOperationNotSentError(error)) throw error;
       recheckHost();
       throw new Error("The fence reservation changed or expired. Check the original operation.");
     }
@@ -802,7 +804,7 @@ export async function refreshDeviceEvidence(
     operationOutstanding(operation);
   if (!canRead())
     return explain
-      ? `Read permission is required to check the exact receipt on ${label}.`
+      ? m(msg("Read permission is required to check the exact receipt on {label}."), { label })
       : undefined;
   const liveStatus = wantsLauncherCheck ? authority() : undefined;
   const checkLauncher =

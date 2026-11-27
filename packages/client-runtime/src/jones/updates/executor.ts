@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Promise entrypoints use injected clocks for reviews and native lease admission; Date only parses/formats those clocks.
+import { mFallback, msg } from "gt-i18n";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesInstallPlanGrant,
@@ -16,7 +17,7 @@ import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import {
   jonesInstallRefusal,
   jonesUpdatePresentation,
-  JonesOperationNotSentError,
+  isJonesOperationNotSentError,
   resolveJonesExactSourceAction,
   type JonesAction,
   type JonesExactSourceInput,
@@ -464,7 +465,9 @@ export async function executeJonesAction(input: {
         return {
           kind: "unknown",
           code: "operation-conflict",
-          message: receipt.message ?? "This operation ID is already bound to another request.",
+          message:
+            receipt.message ??
+            mFallback(msg("This operation ID is already bound to another request.")),
         };
       if (!validateOperationEvidence(request, receipt))
         return {
@@ -529,8 +532,7 @@ export async function executeJonesAction(input: {
       message: "Request accepted. Install always requires a separate review.",
     };
   } catch (error) {
-    if (error instanceof JonesOperationNotSentError)
-      return refused("not-sent", "Nothing was sent.");
+    if (isJonesOperationNotSentError(error)) return refused("not-sent", "Nothing was sent.");
     return dispatched
       ? {
           kind: "unknown",

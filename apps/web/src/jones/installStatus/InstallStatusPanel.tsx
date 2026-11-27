@@ -1,3 +1,4 @@
+import { T, useMessages } from "gt-react";
 import { type Ref, useEffect, useId, useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesInstallPlanSelection } from "@t3tools/contracts/jones/installPlan";
@@ -170,6 +171,7 @@ function InstallStatusPlan({
   readonly view: NonNullable<ReturnType<typeof panelPresentation>>;
   readonly historyRefreshing: boolean;
 }) {
+  const messages = useMessages();
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [detail, setDetail] = useState<EnvironmentId | "laptop" | null>(null);
   const allDevicesButton = useRef<HTMLButtonElement>(null);
@@ -825,12 +827,13 @@ function InstallStatusPlan({
               const receipt = operation?.receipt;
               const enrollment =
                 member === undefined ? "unknown" : planEnrollmentFor(member, device);
-              const receiptMessage = operationAdmissionMessage(receipt?.code) ?? receipt?.message;
+              const receiptMessage =
+                operationAdmissionMessage(receipt?.code, messages) ?? receipt?.message;
               const routeMessage =
                 enrollment === "route-changed" &&
                 member?.membership === "selected" &&
                 receipt?.code !== "admission-route-changed"
-                  ? operationAdmissionMessage("admission-route-changed")
+                  ? operationAdmissionMessage("admission-route-changed", messages)
                   : undefined;
               const operationId = operation?.operationId;
               const setupUnconfirmed =
@@ -899,7 +902,7 @@ function InstallStatusPlan({
                     : operation?.request.kind === "operation-start" &&
                         operation.request.input.admission !== undefined &&
                         device?.observation.state?.capability.boundAdmission !== 1
-                      ? operationAdmissionMessage("admission-binding-required")
+                      ? operationAdmissionMessage("admission-binding-required", messages)
                       : undefined));
               const recoveryDescription = `${descriptionId}-recovery-${environmentId}`;
               return (
@@ -1064,7 +1067,11 @@ function InstallStatusPlan({
                       {receiptMessage ? <p>{receiptMessage}</p> : null}
                       {routeMessage ? <p>{routeMessage}</p> : null}
                       {receipt !== undefined && isProvisionalUnsupportedReceipt(receipt) ? (
-                        <p>Check the exact operation receipt to confirm what the host recorded.</p>
+                        <p>
+                          <T>
+                            Check the exact operation receipt to confirm what the host recorded.
+                          </T>
+                        </p>
                       ) : null}
                       {operation?.directiveFence === undefined ? null : (
                         <p>
