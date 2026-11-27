@@ -8,6 +8,8 @@ function reasonForText(value: unknown) {
     case "The launch reservation or native ownership was lost.":
       return "reservation_or_ownership_lost";
     case "Another producer already owns this native conversation.":
+    case "The original launch predecessor changed before admission.":
+    case "The original predecessor was not admitted for this binding.":
     case "The original predecessor changed before binding publication.":
       return "previous_generation_mismatch";
     case "The native binding changed before its boundary committed.":

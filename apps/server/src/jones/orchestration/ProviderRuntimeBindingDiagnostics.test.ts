@@ -68,6 +68,8 @@ const refusals = [
     "An original native load still owns unpublished or uncertain work.",
     "native_load_publication_pending",
   ],
+  ["The original launch predecessor changed before admission.", "previous_generation_mismatch"],
+  ["The original predecessor was not admitted for this binding.", "previous_generation_mismatch"],
 ] as const;
 const lifecycleDetail =
   "Failed to establish the actual provider runtime binding; native effects must not be replayed.";
