@@ -215,11 +215,12 @@ it.effect("links with a pairing code, and the peer holds its agents to the limit
       const other = yield* serveApart(descriptorOf("environment-other", "Other"));
       const relink = yield* b.auth.issuePairingCredential({ access: "auto", purpose: "peer-link" });
       yield* a.links.link({ url: b.url, pairingCode: relink.credential, access: "auto" });
-      yield* a.sql`UPDATE peer_environment_links SET urls_json = ${JSON.stringify([other.url])}`;
+      yield* a.sql`UPDATE jones_peer_environment_links SET urls_json = ${JSON.stringify([other.url])}`;
       expect(yield* a.links.unlink(box.environmentId)).toEqual({
         removed: true,
         endedThere: false,
       });
+      expect(yield* linkedSessions(b)).toHaveLength(1);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

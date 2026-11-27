@@ -1004,11 +1004,20 @@ describe("rollback history reads", () => {
       );
       const checkpoints = yield* sql<{ status: string }>`
         SELECT status FROM orchestration_v2_projection_checkpoints
-        WHERE thread_id = ${threadId} ORDER BY ordinal_within_scope`;
+        WHERE thread_id = ${threadId} AND scope_id != ${history.repositoryScopeId}
+        ORDER BY ordinal_within_scope`;
       assert.deepEqual(
         checkpoints.map((checkpoint) => checkpoint.status),
         ["ready", "ready", "ready", "stale", "stale", "stale", "stale", "stale", "ready"],
       );
+      const repositoryCheckpoints = yield* sql<{ status: string }>`
+        SELECT status FROM orchestration_v2_projection_checkpoints
+        WHERE scope_id = ${history.repositoryScopeId} ORDER BY ordinal_within_scope`;
+      assert.deepEqual(
+        repositoryCheckpoints.map((checkpoint) => checkpoint.status),
+        ["ready", "stale"],
+      );
+      assert.deepEqual(history.discardedRepositoryOrdinals, [3, 4, 5, 6]);
     }).pipe(Effect.provide(layerHistory)),
   );
 

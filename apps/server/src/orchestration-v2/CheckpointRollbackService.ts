@@ -439,7 +439,7 @@ export const layer: Layer.Layer<
                     const saved = path.join(aside, "folder");
                     if (Exit.isFailure(exit) && !(yield* fileSystem.exists(worktreePath))) {
                       yield* fileSystem.rename(saved, worktreePath);
-                      yield* fileSystem.remove(aside);
+                      yield* fileSystem.remove(aside, { recursive: true });
                       return;
                     }
                     yield* Effect.logWarning(

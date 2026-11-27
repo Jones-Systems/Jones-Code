@@ -172,7 +172,7 @@ const onlineCompactionWith = (rewind: Effect.Effect<void, SqlError, SqlClient.Sq
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const config = yield* ServerConfig.ServerConfig;
-    const timestampPath = path.join(path.dirname(config.dbPath), "compacted-at");
+    const timestampPath = path.join(path.dirname(config.dbPath), "compacted-at-v2");
     const settled = yield* Deferred.make<void>();
     const warnings: Array<string> = [];
     let prunes = 0;
@@ -197,7 +197,11 @@ const onlineCompactionWith = (rewind: Effect.Effect<void, SqlError, SqlClient.Sq
         writeFileString: (file, content, options) =>
           fs
             .writeFileString(file, content, options)
-            .pipe(Effect.ensuring(Deferred.succeed(settled, undefined))),
+            .pipe(
+              Effect.tap(() =>
+                file === timestampPath ? Deferred.succeed(settled, undefined) : Effect.void,
+              ),
+            ),
       }),
       Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
     );
