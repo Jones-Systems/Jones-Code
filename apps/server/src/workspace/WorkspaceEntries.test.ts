@@ -96,6 +96,24 @@ const appendSeparator = (input: string) =>
       : `${input}${platform === "win32" ? "\\" : "/"}`,
   );
 
+const primeIndex = (
+  entries: WorkspaceEntries.WorkspaceEntries["Service"],
+  cwd: string,
+  variant: WorkspaceSearchIndex.WorkspaceSearchIndexVariant,
+) =>
+  variant === "paths"
+    ? Effect.asVoid(entries.list({ cwd }))
+    : Effect.asVoid(
+        entries.searchContents({
+          cwd,
+          query: "file",
+          limit: 1,
+          caseSensitive: false,
+          wholeWord: false,
+          useRegex: false,
+        }),
+      );
+
 it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -112,13 +130,16 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         const refreshed: string[] = [];
         const lookup = vi.fn((key: string): ReturnType<typeof WorkspaceSearchIndex.layer> =>
           Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
+            list: () => Effect.succeed({ entries: [], truncated: false }),
             refresh: () =>
               Effect.sync(() => {
                 refreshed.push(key);
               }),
           }),
         );
-        const indexes = yield* LayerMap.make(lookup);
+        const indexes = yield* LayerMap.make(lookup, {
+          idleTimeToLive: WorkspaceSearchIndex.WORKSPACE_INDEX_IDLE_TTL,
+        });
         const entries = yield* WorkspaceEntries.make.pipe(
           Effect.provideService(WorkspaceSearchIndex.WorkspaceSearchIndexMap, indexes),
         );
@@ -126,7 +147,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         expect(lookup).not.toHaveBeenCalled();
         const pathKey = WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "paths");
         const contentKey = WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "content");
-        yield* indexes.contextEffect(pathKey);
+        yield* primeIndex(entries, cwd, "paths");
 
         yield* entries.refresh(cwdAlias);
 
@@ -147,13 +168,14 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
           const cwd = yield* makeTempDir();
           const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
           const normalizedCwd = yield* workspacePaths.normalizeWorkspaceRoot(cwd);
+          const siblingVariant = failingVariant === "paths" ? "content" : "paths";
           const failedKey = WorkspaceSearchIndex.workspaceSearchIndexKey(
             normalizedCwd,
             failingVariant,
           );
           const siblingKey = WorkspaceSearchIndex.workspaceSearchIndexKey(
             normalizedCwd,
-            failingVariant === "paths" ? "content" : "paths",
+            siblingVariant,
           );
           const error =
             failure === "timeout"
@@ -168,6 +190,8 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
           const refreshed: string[] = [];
           const lookup = vi.fn((key: string): ReturnType<typeof WorkspaceSearchIndex.layer> =>
             Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
+              list: () => Effect.succeed({ entries: [], truncated: false }),
+              searchContents: () => Effect.succeed({ matches: [], truncated: false }),
               refresh: () =>
                 Effect.gen(function* () {
                   refreshed.push(key);
@@ -175,14 +199,15 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
                 }),
             }),
           );
-          const indexes = yield* LayerMap.make(lookup);
-          yield* indexes.contextEffect(failedKey);
-          yield* indexes.contextEffect(siblingKey);
+          const indexes = yield* LayerMap.make(lookup, {
+            idleTimeToLive: WorkspaceSearchIndex.WORKSPACE_INDEX_IDLE_TTL,
+          });
+          let priming = true;
           const entries = yield* WorkspaceEntries.make.pipe(
             Effect.provideService(WorkspaceSearchIndex.WorkspaceSearchIndexMap, {
               ...indexes,
               get: (key) =>
-                failure === "create" && key === failedKey
+                !priming && failure === "create" && key === failedKey
                   ? Layer.effect(
                       WorkspaceSearchIndex.WorkspaceSearchIndex,
                       Effect.fail(
@@ -196,6 +221,9 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
             }),
           );
 
+          yield* primeIndex(entries, cwd, failingVariant);
+          yield* primeIndex(entries, cwd, siblingVariant);
+          priming = false;
           yield* entries.refresh(cwd);
 
           expect(refreshed.toSorted()).toEqual(

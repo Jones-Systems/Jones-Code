@@ -722,15 +722,24 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
             });
           const runner = ProcessRunner.ProcessRunner.of({
             run: (input) =>
-              unrelatedLsof
-                .run(input)
-                .pipe(
-                  Effect.map((result) =>
-                    input.args?.includes("--version") === true
-                      ? { ...result, stdout: `t3 v${version}\n` }
-                      : result,
-                  ),
-                ),
+              unrelatedLsof.run(input).pipe(
+                Effect.map((result) => {
+                  if (input.args?.includes("__service-preflight") === true) {
+                    return {
+                      ...result,
+                      stdout: JSON.stringify({
+                        status: "ready",
+                        version,
+                        launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+                      }),
+                    };
+                  }
+                  if (input.args?.includes("--version") === true) {
+                    return { ...result, stdout: `t3 v${version}\n` };
+                  }
+                  return result;
+                }),
+              ),
           });
           try {
             const { error, output } = yield* runUpdate({

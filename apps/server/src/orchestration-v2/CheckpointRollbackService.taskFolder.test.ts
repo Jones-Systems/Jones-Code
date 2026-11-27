@@ -141,6 +141,15 @@ const layerFor = (state: State, options: Options) => {
       const git = yield* GitVcsDriver.GitVcsDriver;
       return Layer.mock(GitWorkflow.GitWorkflowService)({
         createWorktree: git.createWorktree,
+        hasCommit: ({ cwd, refName }) =>
+          git
+            .execute({
+              operation: "CheckpointRollbackService.test.hasCommit",
+              cwd,
+              args: ["rev-parse", "--verify", `${refName}^{commit}`],
+              allowNonZeroExit: true,
+            })
+            .pipe(Effect.map(({ exitCode }) => exitCode === 0)),
         pruneWorktrees: git.pruneWorktrees,
       });
     }),
@@ -667,7 +676,7 @@ it.live("refuses a project folder whose own snapshot is missing, before any fold
 
       // Recorded as present, but the snapshot itself is gone.
       yield* thread.run(folders.shop, "update-ref", "-d", target.ref);
-      assert.equal((yield* thread.rewind(1).pipe(Effect.flip)).reason, "unexpected-failure");
+      assert.equal((yield* thread.rewind(1).pipe(Effect.flip)).reason, "task-folder-unverified");
       yield* untouched;
 
       yield* thread.apply({
@@ -720,11 +729,11 @@ it.live("puts restored folders back when a later folder's restore fails", () =>
 );
 
 it.live.each([{ projectIsRepository: true }, { projectIsRepository: false }])(
-  "restores a task folder storage cleanup removed before rewinding it, project is a repository=$projectIsRepository",
+  "holds rewind when storage cleanup removed the task folder, project is a repository=$projectIsRepository",
   (options) =>
     withThread(options, (thread) =>
       Effect.gen(function* () {
-        const { path, folders, write, read, taskFolder, fileSystem } = thread;
+        const { path, folders, write, taskFolder, fileSystem } = thread;
         const taskFolders = yield* TaskFolders.TaskFolders;
         const edit = (contents: string) =>
           Effect.all([
@@ -745,17 +754,13 @@ it.live.each([{ projectIsRepository: true }, { projectIsRepository: false }])(
         assert.deepEqual(removal.kept, []);
         assert.isFalse(yield* fileSystem.exists(taskFolder.root));
 
-        yield* thread.rewind(1);
+        const before = yield* thread.recorded;
+        const refused = yield* thread.rewind(1).pipe(Effect.flip);
 
-        assert.deepEqual(
-          yield* Effect.all([
-            read(path.join(folders.shop, "AGENTS.md")),
-            read(path.join(folders.api, "a.txt")),
-            read(path.join(folders.web, "a.txt")),
-          ]),
-          ["rules\n", "1", "1"],
-        );
-        assert.equal(yield* thread.run(folders.web, "rev-parse", "--abbrev-ref", "HEAD"), branch);
+        assert.equal(refused.reason, "task-folder-unverified");
+        assert.isFalse(yield* fileSystem.exists(taskFolder.root));
+        assert.deepEqual(yield* taskFolders.find(taskFolder.projectPath), taskFolder);
+        assert.deepEqual(yield* thread.recorded, before);
       }),
     ),
 );

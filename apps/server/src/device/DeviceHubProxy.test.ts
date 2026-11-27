@@ -522,7 +522,7 @@ it("strips client credentials from the shared forwarding surface", async () => {
   expect(response.status).toBe(200);
   await response.text();
   expect(f.requests).toEqual(["http://hub.test/vendor/serve-sim/helper/phone/stream.avcc"]);
-  expect(f.forwardedHeaders[0]).not.toHaveProperty("authorization");
+  expect(f.forwardedHeaders[0]?.authorization).toBe("Bearer hub-token");
   expect(f.forwardedHeaders[0]).not.toHaveProperty("cookie");
   expect(f.forwardedHeaders[0]).not.toHaveProperty("dpop");
   expect(f.forwardedHeaders[0]).not.toHaveProperty("proxy-authorization");

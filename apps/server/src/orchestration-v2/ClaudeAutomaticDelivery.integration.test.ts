@@ -1365,6 +1365,13 @@ it.effect.each([
       }
 
       if (outcome === "the Claude process exits") {
+        const queueHeld = yield* watch(
+          (event) =>
+            event.type === "run.updated" &&
+            event.payload.userMessageId === steerId &&
+            event.payload.status === "queued" &&
+            event.payload.queueHeld === true,
+        );
         const requeued = yield* watch(
           (event) =>
             (event.type === "run.created" || event.type === "run.updated") &&
@@ -1374,6 +1381,7 @@ it.effect.each([
         yield* Queue.end(sdkMessages);
         yield* Fiber.join(requeued);
         yield* worker.drain();
+        yield* Fiber.join(queueHeld);
         // The provider failure holds the queue, the follow-up included, until someone resumes it.
         assert.deepEqual(yield* queuedOrder, [
           [MessageId.make("before"), true],

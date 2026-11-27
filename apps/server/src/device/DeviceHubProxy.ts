@@ -190,6 +190,7 @@ const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
       name === "transfer-encoding" ||
       name === "connection" ||
       name === "set-cookie" ||
+      name === "clear-site-data" ||
       name === "location"
     ) {
       continue;
