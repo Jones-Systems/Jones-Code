@@ -51,6 +51,10 @@
     },
     {
       "from": "apps/server/src/workflows/WorkflowRuntime.test.ts",
+      "to": "apps/server/src/jones/persistence/Migrations/167_JonesWorkflowAgentJournal.ts"
+    },
+    {
+      "from": "apps/server/src/workflows/WorkflowRuntime.test.ts",
       "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
     },
     {
