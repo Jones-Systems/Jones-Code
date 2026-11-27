@@ -107,6 +107,7 @@ const fixture = (
       },
       readFollower: async () => follower,
       readConfirmedFollower: async () => follower,
+      withConfirmedOperationRoute: (admit) => admit(savedEnrollment, follower),
       editFollower: async (change) => (follower = change(follower)),
       transactDirective: async (change) => {
         const { record, result } = change(follower, savedEnrollment);

@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import {
   AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
   EnvironmentInternalError,
   AuthSessionId,
   EnvironmentAuthenticatedAuth,
@@ -40,6 +41,7 @@ import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import * as SourceRelation from "./sourceRelation.ts";
 import { retainStagedSelection, selectionPath } from "./stagedSelection.ts";
 import { createOperationLedger } from "./operations/ledger.ts";
+import { createFleetHostStore } from "../fleetUpdates/store.ts";
 import { JONES_OPERATION_RECEIPTS_HEADER } from "./serverCapability.ts";
 import {
   QUALIFIED_RUNTIME_RECEIPT,
@@ -67,9 +69,10 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
     { supported: false, restoreStage: true },
     { supported: true, restoreStage: true },
     { supported: true, restoreStage: true, failRestore: true },
+    { supported: true, restoreStage: false, qualifiedTarget: true },
   ])(
-    "preserves settlement and plan ownership ($supported, $restoreStage, failed restore $failRestore)",
-    ({ supported, restoreStage, failRestore }) =>
+    "preserves settlement and plan ownership ($supported, $restoreStage, failed restore $failRestore, qualified target $qualifiedTarget)",
+    ({ supported, restoreStage, failRestore, qualifiedTarget }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const temporary = yield* fs.makeTempDirectoryScoped({ prefix: "jones-settlement-http-" });
@@ -197,17 +200,18 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
           targetVersion,
           reason: "launcher-restarted",
         };
+        const targetOperations = failRestore === true || qualifiedTarget === true;
         const dependencies = Layer.mergeAll(
           ServerConfig.layer({ ...config, mode: "web" }),
           UpdateAdmissionFence.layer,
           Layer.succeed(HostProcess.Platform, "linux"),
           Layer.succeed(HostProcess.Architecture, "x64"),
           Layer.succeed(HostProcess.Arguments, ["synthetic", "unbundled-test.ts"]),
-          Layer.succeed(HostProcess.IsExecutable, failRestore === true),
+          Layer.succeed(HostProcess.IsExecutable, targetOperations),
           Layer.mock(SelfUpdate.ServerSelfUpdate)({
             update: () => Effect.die("No install in settlement test"),
-            ...(failRestore
-              ? { installQualified: () => Effect.die("A failed restore must never install") }
+            ...(targetOperations
+              ? { installQualified: () => Effect.die("This fixture must not start an install") }
               : {}),
           }),
           Layer.mock(Startup.ServerRuntimeStartup)({}),
@@ -221,7 +225,7 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             prepareTrial: () => Effect.undefined,
             prepareQualifiedTrial: () => Effect.die("No trial in settlement test"),
             requestUpdate: () => Effect.die("No install in settlement test"),
-            ...(failRestore
+            ...(targetOperations
               ? {
                   qualifiedOperations: true,
                   qualifiedRetirement: true,
@@ -274,6 +278,110 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
               }),
           }),
         );
+        if (qualifiedTarget) {
+          const scopes = new Set([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]);
+          const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (effect) =>
+            effect.pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+                sessionId: AuthSessionId.make("synthetic-admission-session"),
+                subject: "synthetic-admission-user",
+                method: "bearer-access-token",
+                scopes,
+              }),
+            ),
+          );
+          const routes = HttpApiBuilder.layer(JonesUpdatesTestApi).pipe(
+            Layer.provide(jonesUpdatesHttpApiLayer),
+            Layer.provide(JonesUpdates.layer.pipe(Layer.provide(dependencies))),
+            Layer.provide(Layer.mock(SourceRelation.JonesSourceRelation)({})),
+            Layer.provide(auth),
+            Layer.provide(HttpServer.layerServices),
+          );
+          yield* Effect.acquireUseRelease(
+            Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
+            (app) =>
+              Effect.promise(async () => {
+                const root = "http://fixture/api/jones-updates";
+                const post = async (path: string, body: unknown, status = 200) => {
+                  const response = await app.handler(
+                    new Request(`${root}/operations/${path}`, {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify(body),
+                    }),
+                  );
+                  expect(response.status).toBe(status);
+                  if (status !== 200) return undefined;
+                  expect(response.headers.get("cache-control")).toBe("no-store");
+                  return response.json();
+                };
+                const state = await app.handler(new Request(root));
+                expect(await state.json()).toMatchObject({
+                  capability: { operations: 1, boundAdmission: 1 },
+                });
+                const legacy = {
+                  operationId: NodeCrypto.randomUUID(),
+                  environmentId: binding.environmentId,
+                  expectedInstalledSource: binding.expectedInstalledSource,
+                  action: { kind: "download-exact", targetSource: binding.targetSource },
+                  correlation: {
+                    planId: NodeCrypto.randomUUID(),
+                    deviceKey: binding.environmentId,
+                  },
+                };
+                const neverEnrolled = {
+                  ...legacy,
+                  operationId: NodeCrypto.randomUUID(),
+                  action: { kind: "download-exact", targetSource: binding.expectedInstalledSource },
+                };
+                expect(await post("start", neverEnrolled)).toMatchObject({
+                  ...neverEnrolled,
+                  code: "already-installed",
+                  phase: "refused",
+                });
+                const bound = { ...legacy, admission: { kind: "ordinary" } };
+                await post("start", bound, 400);
+                const fence = await post("v2/fence", bound);
+                expect(fence).toMatchObject({ ...bound, phase: "fenced" });
+                expect(fence).not.toHaveProperty("acceptedAt");
+
+                const fleet = createFleetHostStore(baseDir);
+                await fleet.editEnrollment(() => ({
+                  enrollmentId: NodeCrypto.randomUUID(),
+                  environmentId: EnvironmentId.make(binding.environmentId),
+                  enabled: true,
+                  continueRunningThreads: false,
+                }));
+                const newBound = { ...bound, operationId: NodeCrypto.randomUUID() };
+                const refused = await post("v2/start", newBound);
+                expect(refused).toMatchObject({
+                  ...newBound,
+                  phase: "refused",
+                  code: "admission-route-changed",
+                });
+                expect(await post("v2/start", bound)).toEqual(fence);
+                expect(await post("v2/start", newBound)).toEqual(refused);
+                expect(
+                  await post("start", { ...legacy, operationId: NodeCrypto.randomUUID() }),
+                ).toMatchObject({
+                  phase: "refused",
+                  code: "admission-binding-required",
+                });
+                const read = {
+                  environmentId: legacy.environmentId,
+                  operationIds: [bound.operationId, newBound.operationId],
+                };
+                expect(await post("read", read)).toEqual({
+                  receipts: [
+                    { operationId: bound.operationId, receipt: fence },
+                    { operationId: newBound.operationId, receipt: refused },
+                  ],
+                });
+              }),
+            (app) => Effect.promise(() => app.dispose()),
+          );
+          return;
+        }
         if (failRestore) {
           const targetLedger = createOperationLedger(baseDir);
           const intent = {
@@ -325,14 +433,17 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             ).toEqual({ receipts: [{ operationId: newInstall.operationId, receipt: null }] });
             expect(yield* updates.operationStart(newInstall)).toMatchObject({
               phase: "refused",
-              code: "unsupported",
+              code: "operation-admission-disabled",
             });
             const download = yield* updates.operationStart({
               ...newInstall,
               operationId: NodeCrypto.randomUUID(),
               action: { kind: "download-exact", targetSource: binding.targetSource },
             });
-            expect(download).toMatchObject({ phase: "refused", code: "unsupported" });
+            expect(download).toMatchObject({
+              phase: "refused",
+              code: "operation-admission-disabled",
+            });
             expect(download.acceptedAt).toBeUndefined();
             yield* fs.writeFileString(`${ledger}.outcome.json`, failedBytes);
             const refreshed = yield* updates.operationRead({
@@ -354,7 +465,7 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             expect(yield* updates.operationRead(read)).toEqual(outcome);
             expect(yield* updates.operationStart(newInstall)).toMatchObject({
               phase: "refused",
-              code: "unsupported",
+              code: "operation-admission-disabled",
             });
             yield* fs.writeFileString(
               `${baseDir}/runtime/jones-operations/${operationId}.json`,
@@ -610,22 +721,30 @@ function fixture(
       calls.push({ action, input });
       return state;
     });
+  const unavailable = (action: string, input: unknown, run: () => Promise<never>) =>
+    Effect.tryPromise({
+      try: () => {
+        calls.push({ action, input });
+        return run();
+      },
+      catch: () =>
+        new EnvironmentInternalError({
+          code: "internal_error",
+          reason: "internal_error",
+          traceId: "synthetic-operation-unavailable",
+        }),
+    });
   const service = Layer.succeed(JonesUpdates.JonesUpdates, {
     operationStart: (input) =>
-      Effect.promise(() => {
-        calls.push({ action: "operationStart", input });
-        return unsupportedTargetOperations.start(input);
-      }),
+      unavailable("operationStart", input, () => unsupportedTargetOperations.start(input)),
+    operationStartBound: (input) =>
+      unavailable("operationStartBound", input, () => unsupportedTargetOperations.start(input)),
     operationStop: (input) =>
-      Effect.promise(() => {
-        calls.push({ action: "operationStop", input });
-        return unsupportedTargetOperations.stop(input);
-      }),
+      unavailable("operationStop", input, () => unsupportedTargetOperations.stop(input)),
     operationFence: (input) =>
-      Effect.promise(() => {
-        calls.push({ action: "operationFence", input });
-        return unsupportedTargetOperations.fence(input);
-      }),
+      unavailable("operationFence", input, () => unsupportedTargetOperations.fence(input)),
+    operationFenceBound: (input) =>
+      unavailable("operationFenceBound", input, () => unsupportedTargetOperations.fence(input)),
     operationRead: (input) =>
       Effect.sync(() => {
         calls.push({ action: "operationRead", input });
@@ -1025,6 +1144,7 @@ describe("durable operation HTTP scopes", () => {
       deviceKey: "synthetic-service-host",
     },
   };
+  const bound = { ...original, admission: { kind: "ordinary" } };
 
   test("separates read from operate and returns no-store for operation endpoints", async () => {
     for (const scopes of [[], ["orchestration:read"], ["orchestration:operate"]] as const) {
@@ -1032,6 +1152,7 @@ describe("durable operation HTTP scopes", () => {
       try {
         for (const [path, action, payload, read] of [
           ["operations/start", "operationStart", original, false],
+          ["operations/v2/start", "operationStartBound", bound, false],
           [
             "operations/stop",
             "operationStop",
@@ -1039,6 +1160,7 @@ describe("durable operation HTTP scopes", () => {
             false,
           ],
           ["operations/fence", "operationFence", original, false],
+          ["operations/v2/fence", "operationFenceBound", bound, false],
           [
             "operations/abandon-stage",
             "abandonStage",
@@ -1080,7 +1202,11 @@ describe("durable operation HTTP scopes", () => {
               body: JSON.stringify(payload),
             }),
           );
-          const unsupported = action === "recoveryPreflight" || action === "operationStop";
+          const unsupported =
+            action === "recoveryPreflight" ||
+            action === "operationStop" ||
+            action.startsWith("operationStart") ||
+            action.startsWith("operationFence");
           expect(response.status).toBe(permitted ? (unsupported ? 500 : 200) : 403);
           expect(app.calls.slice(count)).toEqual(permitted ? [{ action, input: payload }] : []);
           if (permitted) expect(response.headers.get("cache-control")).toBe("no-store");
@@ -1170,7 +1296,7 @@ describe("durable operation HTTP scopes", () => {
     }
   });
 
-  test("rejects incomplete fence intents and preserves full binding in refused receipts", async () => {
+  test("requires the original fence intent and reports unsupported without a receipt", async () => {
     const app = fixture(["orchestration:operate"]);
     try {
       const { expectedInstalledSource: _source, ...withoutSource } = original;
@@ -1191,6 +1317,20 @@ describe("durable operation HTTP scopes", () => {
         expect(response.status).toBe(400);
       }
       expect(app.calls).toEqual([]);
+      const { correlation: _correlation, ...withoutCorrelation } = bound;
+      for (const path of ["operations/v2/start", "operations/v2/fence"]) {
+        for (const payload of [original, withoutCorrelation]) {
+          const response = await app.handler(
+            new Request(`http://fixture/api/jones-updates/${path}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload),
+            }),
+          );
+          expect(response.status).toBe(400);
+        }
+      }
+      expect(app.calls).toEqual([]);
       for (const action of [
         original.action,
         { kind: "download", artifactId: 101, sourceSha: "b".repeat(40) },
@@ -1209,11 +1349,11 @@ describe("durable operation HTTP scopes", () => {
             body: JSON.stringify(payload),
           }),
         );
-        expect(response.status).toBe(200);
+        expect(response.status).toBe(500);
         expect(response.headers.get("cache-control")).toBe("no-store");
-        const receipt = await response.json();
-        expect(receipt).toMatchObject({ ...payload, phase: "refused", code: "unsupported" });
-        expect(receipt).not.toHaveProperty("acceptedAt");
+        const error = await response.json();
+        expect(error).toMatchObject({ code: "internal_error" });
+        expect(error).not.toHaveProperty("operationId");
         expect(app.calls.at(-1)).toEqual({ action: "operationFence", input: payload });
       }
     } finally {

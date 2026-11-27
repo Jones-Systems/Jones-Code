@@ -10,6 +10,7 @@ import { startPlan } from "@t3tools/client-runtime/jones/install-plan";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type { JonesExecutorHost } from "@t3tools/client-runtime/jones/updates/executor";
 import { prepareReviewedInstall } from "@t3tools/client-runtime/jones/updates/executor";
+import { JonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
 import type {
   JonesOperationReceipt,
   JonesOperationStartInput,
@@ -18,6 +19,7 @@ import { createWebJonesJournal } from "./executionJournal";
 import {
   createWebJonesExecutor,
   executeWebJonesReplacement,
+  pendingJonesOperationId,
   stopWebJonesDownload,
 } from "./execution";
 import { readLegacyConnectionsAuthority } from "./entrypoints";
@@ -75,15 +77,65 @@ function host(legacy = vi.fn()): JonesExecutorHost {
 }
 afterEach(() => vi.unstubAllGlobals());
 
+it("selects the exact read for a retained legacy unsupported reply after pending work", () => {
+  const request = {
+    environmentId,
+    operationId: id(31),
+    action: { kind: "download-exact", targetSource },
+    expectedInstalledSource: "e".repeat(40),
+  } as const;
+  const previous = {
+    id: request.operationId,
+    kind: "operation",
+    action: request.action.kind,
+    targetSource,
+    environmentId,
+    operationId: request.operationId,
+    request,
+    receipt: {
+      ...request,
+      protocol: 1,
+      phase: "refused",
+      code: "unsupported",
+      updatedAt: "2026-10-27T04:01:00.000Z",
+    },
+  } as const;
+  const saved = { ready: true, duties: [], history: [previous] };
+  expect(pendingJonesOperationId(environmentId, saved)).toBe(request.operationId);
+  expect(
+    pendingJonesOperationId(environmentId, {
+      ...saved,
+      history: [{ ...previous, unsupportedReceiptVerified: true }],
+    }),
+  ).toBeUndefined();
+  expect(pendingJonesOperationId(EnvironmentId.make("other"), saved)).toBeUndefined();
+  const { receipt: _, ...unresolved } = previous;
+  expect(
+    pendingJonesOperationId(environmentId, {
+      ...saved,
+      duties: [
+        {
+          ...unresolved,
+          id: id(32),
+          operationId: id(32),
+          request: { ...request, operationId: id(32) },
+        },
+      ],
+    }),
+  ).toBe(id(32));
+});
+
 function connectionsInstallFixture(
   route: "operations" | "follower-operations" = "follower-operations",
+  support = { native: true, host: true },
 ) {
   const at = "2026-10-27T04:00:00Z";
-  const now = () => Date.parse(at);
+  let clock = Date.parse(at);
+  const now = () => clock;
   const laptop = EnvironmentId.make("laptop");
   const installedSource = "c".repeat(40);
   const enrollmentId = id(4);
-  const plan = startPlan({
+  const initial = startPlan({
     planId: id(1),
     origin: "connections",
     target: {
@@ -99,11 +151,62 @@ function connectionsInstallFixture(
     ],
     now: at,
   });
+  const directive = {
+    directiveId: id(7),
+    targetSource,
+    targetTree: initial.target.sourceTree,
+    mode: "manual-review" as const,
+    issuedAt: at,
+  };
+  const plan = {
+    ...initial,
+    laptop: {
+      ...initial.laptop,
+      gate: {
+        openedAt: at,
+        basis: "plan-install" as const,
+        transactionId: "synthetic-install",
+        activeGeneration: "synthetic-generation",
+        activeSource: targetSource,
+        activeTree: initial.target.sourceTree,
+      },
+    },
+    devices: initial.devices.map((device) => ({
+      ...device,
+      operations:
+        route === "operations"
+          ? []
+          : [
+              {
+                step: "directive" as const,
+                operationId: directive.directiveId,
+                request: {
+                  kind: "plan-directive" as const,
+                  input: {
+                    environmentId,
+                    enrollmentId,
+                    directiveId: directive.directiveId,
+                    expectedDirectiveId: null,
+                    repository: initial.target.repository,
+                    targetSource,
+                    targetTree: initial.target.sourceTree,
+                  },
+                },
+                lease: { claimant: "fixture", reservedAt: at, leaseUntil: at },
+                directive: { kind: "applied" as const, observedAt: at, directive },
+              },
+            ],
+    })),
+  };
   const installState: JonesUpdateState = {
     ...state,
     phase: "staged",
     stagedHandle: "reviewed-stage",
-    capability: { ...state.capability, operations: 1 },
+    capability: {
+      ...state.capability,
+      operations: 1,
+      ...(support.host ? { boundAdmission: 1 } : {}),
+    },
     installedSource: {
       repository: "Jones-Systems/Jones-Code",
       sha: installedSource,
@@ -123,16 +226,30 @@ function connectionsInstallFixture(
     operation: null,
     update: installState,
     enrollment: { environmentId, enrollmentId, enabled: true, continueRunningThreads: false },
+    follower: {
+      protocol: 1,
+      leaderSource: targetSource,
+      state: "current",
+      planDirective: directive,
+    },
   };
   let projected = view;
-  let direct: FleetHostStatus | null | undefined = route === "operations" ? null : matchingFleet;
+  const ordinaryFleet: FleetHostStatus = {
+    environmentId,
+    operationProtocol: 1,
+    update: installState,
+    enrollment: null,
+    operation: null,
+  };
+  let direct: FleetHostStatus | null | undefined =
+    route === "operations" ? ordinaryFleet : matchingFleet;
   let current: JonesInstallPlanState = {
     schema: 1,
     documentRevision: 1,
     current: plan,
     last: null,
     laptop: { environmentId: laptop, observedAt: at, activationBlocked: false },
-    view: { complete: false, recoveryHistory: 1 },
+    view: { complete: false, recoveryHistory: 1, ...(support.native ? { boundAdmission: 1 } : {}) },
     clientCommands: 1,
   };
   const waiting = deferred<JonesInstallPlanRequest>();
@@ -148,10 +265,52 @@ function connectionsInstallFixture(
         throw new Error("Expected a correlated reviewed install claim.");
       waiting.resolve(request);
       await grantReply.promise;
+      const lease = {
+        claimant: request.claimant,
+        reservedAt: at,
+        leaseUntil: "2026-10-27T04:02:00Z",
+      };
+      const grantInput: JonesOperationStartInput = {
+        operationId: id(3),
+        action: request.action,
+        environmentId,
+        expectedInstalledSource: installedSource,
+        correlation: { planId: plan.planId, deviceKey: environmentId },
+        ...(request.boundAdmission !== 1
+          ? {}
+          : route === "operations"
+            ? { admission: { kind: "ordinary" } }
+            : {
+                admission: {
+                  kind: "follower",
+                  enrollmentId,
+                  directiveId: directive.directiveId,
+                  targetSource,
+                  targetTree: directive.targetTree,
+                },
+              }),
+      };
+      const operationRequest = { kind: "operation-start" as const, input: grantInput };
       current = {
         ...current,
         documentRevision: 2,
-        current: { ...plan, revision: plan.revision + 1 },
+        current: {
+          ...plan,
+          revision: plan.revision + 1,
+          devices: plan.devices.map((device) => ({
+            ...device,
+            operations: [
+              ...device.operations,
+              {
+                step: "install" as const,
+                operationId: grantInput.operationId,
+                lease,
+                request: operationRequest,
+                ...(request.review === undefined ? {} : { review: request.review }),
+              },
+            ],
+          })),
+        },
       };
       return {
         state: current,
@@ -160,17 +319,8 @@ function connectionsInstallFixture(
           environmentId,
           operationId: id(3),
           step: "install",
-          leaseUntil: "2026-10-27T04:02:00Z",
-          request: {
-            kind: "operation-start",
-            input: {
-              operationId: id(3),
-              action: request.action,
-              environmentId,
-              expectedInstalledSource: installedSource,
-              correlation: { planId: plan.planId, deviceKey: environmentId },
-            },
-          },
+          leaseUntil: lease.leaseUntil,
+          request: operationRequest,
         },
       };
     },
@@ -210,6 +360,14 @@ function connectionsInstallFixture(
       updatedAt: at,
     }),
   );
+  const queued = deferred();
+  let releaseQueue: ReturnType<typeof deferred<void>> | undefined;
+  const enterQueue: JonesExecutorHost["start"] = async (request, beforeSend) => {
+    queued.resolve();
+    await releaseQueue?.promise;
+    if (beforeSend === undefined || !(await beforeSend())) throw new JonesOperationNotSentError({});
+    return start(request);
+  };
   const review = {
     reviewedAt: at,
     stagedHandle: "reviewed-stage",
@@ -229,17 +387,31 @@ function connectionsInstallFixture(
       targetSource,
       currentVersion: review.currentVersion,
     },
-    host: { ...host(), start, readLatest: () => view },
+    host: { ...host(), start: enterQueue, readLatest: () => projected },
   };
   return {
     plan,
     matchingFleet,
+    ordinaryFleet,
     view,
     installPlan,
     start,
     input,
     waiting,
     grantReply,
+    queued,
+    pauseQueue: () => (releaseQueue = deferred()),
+    expire: () => {
+      clock += 120_000;
+    },
+    archive: () => {
+      current = {
+        ...current,
+        documentRevision: 3,
+        last: { ...current.current!, dismissedAt: at },
+        current: null,
+      };
+    },
     unbind,
     journal: createWebJonesJournal(storage()),
     project: (device: InstallStatusDevice) => {
@@ -252,10 +424,15 @@ function connectionsInstallFixture(
 }
 
 describe("Connections reviewed install enrollment", () => {
-  it.each(["operations", "follower-operations"] as const)(
-    "dispatches the exact granted %s install with positive direct evidence and an omitted cache field",
-    async (route) => {
-      const f = connectionsInstallFixture(route);
+  it.each([
+    { route: "operations", native: true, host: true },
+    { route: "follower-operations", native: true, host: true },
+    { route: "operations", native: false, host: true },
+    { route: "follower-operations", native: true, host: false },
+  ] as const)(
+    "dispatches the exact $route install with native=$native and host=$host",
+    async ({ route, native, host }) => {
+      const f = connectionsInstallFixture(route, { native, host });
       try {
         f.grantReply.resolve();
         const result = await createWebJonesExecutor(f.journal)(f.input);
@@ -267,6 +444,26 @@ describe("Connections reviewed install enrollment", () => {
             correlation: { planId: f.plan.planId, deviceKey: environmentId },
           }),
         );
+        const claim = f.installPlan.mock.calls
+          .map(([request]) => request)
+          .find(({ type }) => type === "claim");
+        if (native && host) {
+          expect(claim).toMatchObject({ boundAdmission: 1, review: f.input.review });
+          expect(f.start.mock.calls[0]?.[0].admission).toEqual(
+            route === "operations"
+              ? { kind: "ordinary" }
+              : {
+                  kind: "follower",
+                  enrollmentId: f.matchingFleet.enrollment!.enrollmentId,
+                  directiveId: f.matchingFleet.follower!.planDirective!.directiveId,
+                  targetSource,
+                  targetTree: f.plan.target.sourceTree,
+                },
+          );
+        } else {
+          expect(claim).not.toHaveProperty("boundAdmission");
+          expect(f.start.mock.calls[0]?.[0]).not.toHaveProperty("admission");
+        }
       } finally {
         f.unbind();
       }
@@ -282,7 +479,7 @@ describe("Connections reviewed install enrollment", () => {
           scenario === "unknown"
             ? undefined
             : scenario === "changed route"
-              ? null
+              ? f.ordinaryFleet
               : {
                   ...f.matchingFleet,
                   enrollment: { ...f.matchingFleet.enrollment!, enrollmentId: id(5) },
@@ -326,7 +523,7 @@ describe("Connections reviewed install enrollment", () => {
           });
           await installPlanServices()!.services.observe(environmentId);
         } else if (scenario === "changed route") {
-          f.project({ ...f.view, fleetStatus: null });
+          f.project({ ...f.view, fleetStatus: f.ordinaryFleet });
         } else {
           const observation = f.view.observation;
           f.project({
@@ -370,6 +567,56 @@ describe("Connections reviewed install enrollment", () => {
       }
     },
   );
+
+  it.each([
+    "expired lease",
+    "archived plan",
+    "different directive",
+    "lost host support",
+    "different host",
+  ] as const)("makes no Connections host send when the queue sees %s", async (scenario) => {
+    const f = connectionsInstallFixture();
+    const release = f.pauseQueue();
+    try {
+      f.grantReply.resolve();
+      const result = createWebJonesExecutor(f.journal)(f.input);
+      expect(await Promise.race([f.queued.promise, result])).toBeUndefined();
+      if (scenario === "expired lease") f.expire();
+      else if (scenario === "archived plan") f.archive();
+      else if (scenario === "different directive") {
+        f.observeFleet({
+          ...f.matchingFleet,
+          follower: {
+            ...f.matchingFleet.follower!,
+            planDirective: { ...f.matchingFleet.follower!.planDirective!, directiveId: id(9) },
+          },
+        });
+        await installPlanServices()!.services.observe(environmentId);
+      } else if (scenario === "lost host support") {
+        const { boundAdmission: _bound, ...capability } = f.view.observation.state!.capability;
+        f.project({
+          ...f.view,
+          observation: {
+            ...f.view.observation,
+            state: { ...f.view.observation.state!, capability },
+          },
+        });
+      } else {
+        f.observeFleet({ ...f.matchingFleet, environmentId: EnvironmentId.make("wrong-host") });
+        await installPlanServices()!.services.observe(environmentId);
+      }
+      release.resolve();
+      expect(await result).toMatchObject({ kind: "unknown", code: "native-handoff-unknown" });
+      expect(f.start).not.toHaveBeenCalled();
+      expect(f.installPlan.mock.calls.filter(([request]) => request.type === "claim")).toHaveLength(
+        1,
+      );
+      expect(f.journal.getSnapshot().duties).toMatchObject([{ kind: "native", environmentId }]);
+    } finally {
+      release.resolve();
+      f.unbind();
+    }
+  });
 
   it("rechecks enrollment after the native handoff journal reserves the command", async () => {
     const f = connectionsInstallFixture();
@@ -616,6 +863,40 @@ describe("web durable execution", () => {
     } finally {
       unbind();
     }
+  });
+
+  it("releases a local Stop reservation when the queued send loses control authority", async () => {
+    const journal = createWebJonesJournal(storage());
+    const receipt: JonesOperationReceipt = {
+      protocol: 1,
+      environmentId,
+      operationId: id(1),
+      expectedInstalledSource: "c".repeat(40),
+      action: { kind: "download-exact", targetSource },
+      phase: "running",
+      acceptedAt: "2026-10-27T04:00:00Z",
+      updatedAt: "2026-10-27T04:00:00Z",
+    };
+    let active = true;
+    const sent = vi.fn();
+    const result = await stopWebJonesDownload(
+      {
+        environmentId,
+        receipt,
+        uuid: () => id(2),
+        canOperate: () => active,
+        send: async (input, beforeSend) => {
+          active = false;
+          if (!beforeSend()) throw new JonesOperationNotSentError({});
+          sent(input);
+          return receipt;
+        },
+      },
+      journal,
+    );
+    expect(result).toContain("before Stop was sent");
+    expect(sent).not.toHaveBeenCalled();
+    expect(journal.getSnapshot().duties).toEqual([]);
   });
 
   it("retains exactly one Stop through repeated calls, lost reply, fresh runtime and mismatched proof", async () => {

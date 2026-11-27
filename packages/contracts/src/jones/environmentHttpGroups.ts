@@ -21,9 +21,11 @@ import {
   JonesUpdateState,
 } from "./jonesUpdates.ts";
 import {
-  JonesOperationStartInput,
+  JonesLegacyOperationStartInput,
+  JonesBoundOperationStartInput,
   JonesOperationStopInput,
-  JonesOperationFenceInput,
+  JonesLegacyOperationFenceInput,
+  JonesBoundOperationFenceInput,
   JonesOperationReadInput,
   JonesOperationReceipt,
   JonesOperationReadResult,
@@ -540,7 +542,7 @@ export const makeJonesHttpGroups = ({
     .add(
       HttpApiEndpoint.post("operationStart", "/api/jones-updates/operations/start", {
         headers: OptionalBearerHeaders,
-        payload: JonesOperationStartInput,
+        payload: JonesLegacyOperationStartInput,
         success: JonesOperationReceipt,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
@@ -556,7 +558,23 @@ export const makeJonesHttpGroups = ({
     .add(
       HttpApiEndpoint.post("operationFence", "/api/jones-updates/operations/fence", {
         headers: OptionalBearerHeaders,
-        payload: JonesOperationFenceInput,
+        payload: JonesLegacyOperationFenceInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationStartBound", "/api/jones-updates/operations/v2/start", {
+        headers: OptionalBearerHeaders,
+        payload: JonesBoundOperationStartInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationFenceBound", "/api/jones-updates/operations/v2/fence", {
+        headers: OptionalBearerHeaders,
+        payload: JonesBoundOperationFenceInput,
         success: JonesOperationReceipt,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),

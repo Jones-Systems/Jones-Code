@@ -21,9 +21,8 @@ import {
 } from "../storage/privateJsonStore.ts";
 
 const PLAN_BYTES = 1024 * 1024;
-// V1 permits two plans with 16 devices and 16 operations per device. Even if all 512
-// operations still learn a receipt, V2 has room for their bounded receipt and recovery
-// fields plus the repeated original identities. New admissions use a much smaller budget.
+// The recovery document can fit all 512 V1 operations after adding bounded receipts,
+// recovery fields and repeated identities. New admissions use a much smaller budget.
 const RECOVERY_DOCUMENT_BYTES = 20 * 1024 * 1024;
 // Keep replay identities and publication dispositions even after old plan detail ages out.
 export const MAX_PLAN_COMMANDS = 1024;
@@ -45,7 +44,7 @@ const LegacyDocument = Schema.Struct({
   commands: Schema.optionalKey(Commands.check(Schema.isMaxLength(64))),
 });
 const RecoveryDocument = Schema.Struct({
-  schema: Schema.Literal(2),
+  schema: Schema.Literals([2, 3]),
   ...slots,
   documentRevision: Schema.Int.check(Schema.isGreaterThan(0)),
   older: Schema.Array(JonesInstallPlan).check(
@@ -71,15 +70,32 @@ const isDocument = Schema.is(Document);
 
 export const closedPlans = (document: PlanDocument) => [
   ...(document.last === null ? [] : [document.last]),
-  ...(document.schema === 2 ? document.older : []),
+  ...(document.schema === 1 ? [] : document.older),
 ];
 export const retainedPlans = (document: PlanDocument) => [
   ...(document.current === null ? [] : [document.current]),
   ...closedPlans(document),
 ];
 
+export function requiresV3Schema(document: PlanDocument): boolean {
+  return (
+    retainedPlans(document).some((plan) =>
+      plan.devices.some((device) =>
+        device.operations.some(
+          ({ request, receipt, unsupportedReceiptVerified }) =>
+            unsupportedReceiptVerified === true ||
+            (request.kind === "operation-start" && request.input.admission !== undefined) ||
+            receipt?.admission !== undefined,
+        ),
+      ),
+    ) ||
+    document.commands?.some(({ orphanReceipt }) => orphanReceipt?.admission !== undefined) === true
+  );
+}
+
 const validDocument = (value: unknown): value is PlanDocument =>
   isDocument(value) &&
+  (value.schema === 3 || !requiresV3Schema(value)) &&
   (value.schema === 1 ||
     ((value.last !== null || value.older.length === 0) &&
       new Set(retainedPlans(value).map((plan) => plan.planId)).size ===
@@ -95,7 +111,7 @@ const validDocument = (value: unknown): value is PlanDocument =>
     ({ body, receipt, orphanReceipt }) =>
       (receipt.bodyHash === undefined || receipt.bodyHash === body) &&
       (orphanReceipt === undefined ||
-        (value.schema === 2 &&
+        (value.schema !== 1 &&
           receipt.outcome === "terminal" &&
           receipt.requestType === "claim" &&
           receipt.operationId === orphanReceipt.operationId &&
@@ -175,7 +191,7 @@ export function createInstallPlanStore(options: {
               PLAN_BYTES,
             );
             hasDispositions = dispositions !== null;
-            if (schemaAbove(document, 2) || schemaAbove(dispositions, 1))
+            if (schemaAbove(document, 3) || schemaAbove(dispositions, 1))
               snapshot = {
                 ...snapshot,
                 readOnly: {
@@ -218,8 +234,9 @@ export function createInstallPlanStore(options: {
           if (snapshot.readOnly !== undefined && changed)
             throw new PlanStorageError("storage", "Read-only plan evidence cannot be replaced.");
           if (!changed) return next.result;
-          const limit = next.document.schema === 2 ? RECOVERY_DOCUMENT_BYTES : PLAN_BYTES;
+          const limit = next.document.schema === 1 ? PLAN_BYTES : RECOVERY_DOCUMENT_BYTES;
           if (
+            (snapshot.document.schema === 3 && next.document.schema !== 3) ||
             !validDocument(next.document) ||
             !isDispositions(next.dispositions) ||
             Buffer.byteLength(JSON.stringify(next.document)) + 1 > limit ||

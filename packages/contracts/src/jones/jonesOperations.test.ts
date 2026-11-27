@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  JonesBoundOperationStartInput,
   JonesOperationAction,
   JonesOperationCode,
   JonesOperationFenceInput,
@@ -28,6 +29,13 @@ const start = {
   expectedInstalledSource: "c".repeat(40),
   action: { kind: "download-exact", targetSource: source },
   correlation: { planId, deviceKey: environmentId },
+} as const;
+const followerAdmission = {
+  kind: "follower",
+  enrollmentId: "44444444-4444-4444-8444-444444444444",
+  directiveId: "55555555-5555-4555-8555-555555555555",
+  targetSource: source,
+  targetTree: tree,
 } as const;
 const receipt = {
   ...start,
@@ -112,6 +120,32 @@ describe("durable Jones operation contracts", () => {
       expect(() => decode({ ...install, recovery })).toThrow();
     expect(() => decode({ kind: "download", artifactId: 42 })).toThrow();
     expect(() => decode({ kind: "install", version: "1.0.0" })).toThrow();
+  });
+
+  it("requires exact follower identities and the same source as the requested action", () => {
+    const decode = Schema.decodeUnknownSync(JonesBoundOperationStartInput);
+    for (const action of [
+      start.action,
+      { kind: "download", artifactId: 42, sourceSha: source },
+      {
+        kind: "install",
+        stagedHandle: "host-stage",
+        currentVersion: "1.0.0",
+        targetSource: source,
+      },
+    ]) {
+      const input = { ...start, action, admission: followerAdmission };
+      expect(decode(input)).toEqual(input);
+      expect(() =>
+        decode({ ...input, admission: { ...followerAdmission, targetSource: tree } }),
+      ).toThrow();
+    }
+    for (const admission of [
+      { ...followerAdmission, enrollmentId: "legacy-enrollment" },
+      { ...followerAdmission, directiveId: undefined },
+      { ...followerAdmission, targetTree: tree.slice(1) },
+    ])
+      expect(() => decode({ ...start, admission })).toThrow();
   });
 
   it("binds repeatable Stop and fence requests to an exact operation and environment", () => {
@@ -212,6 +246,20 @@ describe("durable Jones operation contracts", () => {
       decodeResult({ receipts: Array.from({ length: 32 }, () => missing) }).receipts,
     ).toHaveLength(32);
     expect(() => decodeResult({ receipts: Array.from({ length: 33 }, () => missing) })).toThrow();
+  });
+
+  it("preserves old preacceptance and new bound receipts through protocol-1 ledger readback", () => {
+    const { acceptedAt: _acceptedAt, ...neverAccepted } = receipt;
+    const oldRefusal = { ...neverAccepted, phase: "refused", code: "unsupported" };
+    const fenced = { ...neverAccepted, phase: "fenced", admission: { kind: "ordinary" } };
+    const bound = { ...receipt, admission: followerAdmission };
+    const codec = Schema.toCodecJson(JonesOperationReadResult);
+    const encode = Schema.encodeUnknownSync(codec);
+    const decode = Schema.decodeUnknownSync(codec);
+    for (const retained of [oldRefusal, fenced, bound]) {
+      const result = { receipts: [{ operationId, receipt: retained }] };
+      expect(decode(encode(result))).toEqual(result);
+    }
   });
 
   it("accepts new reason codes while enforcing code and message bounds", () => {

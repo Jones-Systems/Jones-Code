@@ -42,14 +42,54 @@ export const JonesOperationCorrelation = Schema.Struct({
 });
 export type JonesOperationCorrelation = typeof JonesOperationCorrelation.Type;
 
-export const JonesOperationStartInput = Schema.Struct({
+export const JonesOperationAdmission = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("ordinary") }),
+  Schema.Struct({
+    kind: Schema.Literal("follower"),
+    enrollmentId: JonesOperationId,
+    directiveId: JonesOperationId,
+    targetSource: JonesSourceSha,
+    targetTree: JonesSourceSha,
+  }),
+]);
+export type JonesOperationAdmission = typeof JonesOperationAdmission.Type;
+
+const operationStartFields = {
   operationId: JonesOperationId,
   environmentId: EnvironmentId,
   expectedInstalledSource: JonesSourceSha,
   action: JonesOperationAction,
   correlation: Schema.optionalKey(JonesOperationCorrelation),
+};
+
+export const JonesLegacyOperationStartInput = Schema.Struct({
+  ...operationStartFields,
+  // Reject V2 admissions at the V1 boundary, where extra keys are normally dropped.
+  admission: Schema.optionalKey(Schema.Never),
+});
+export type JonesLegacyOperationStartInput = typeof JonesLegacyOperationStartInput.Type;
+
+export const JonesOperationStartInput = Schema.Struct({
+  ...operationStartFields,
+  admission: Schema.optionalKey(JonesOperationAdmission),
 });
 export type JonesOperationStartInput = typeof JonesOperationStartInput.Type;
+
+export const JonesBoundOperationStartInput = Schema.Struct({
+  ...operationStartFields,
+  correlation: JonesOperationCorrelation,
+  admission: JonesOperationAdmission,
+}).check(
+  Schema.makeFilter(({ admission, action }) => {
+    const actionSource = action.kind === "download" ? action.sourceSha : action.targetSource;
+    return (
+      admission.kind === "ordinary" ||
+      admission.targetSource === actionSource ||
+      "Follower admission must match the action source."
+    );
+  }),
+);
+export type JonesBoundOperationStartInput = typeof JonesBoundOperationStartInput.Type;
 
 export const JonesOperationStopInput = Schema.Struct({
   operationId: JonesOperationId,
@@ -59,8 +99,12 @@ export const JonesOperationStopInput = Schema.Struct({
 export type JonesOperationStopInput = typeof JonesOperationStopInput.Type;
 
 // Fencing preserves the unsent intent without claiming it was accepted or executed.
+export const JonesLegacyOperationFenceInput = JonesLegacyOperationStartInput;
+export type JonesLegacyOperationFenceInput = typeof JonesLegacyOperationFenceInput.Type;
 export const JonesOperationFenceInput = JonesOperationStartInput;
 export type JonesOperationFenceInput = typeof JonesOperationFenceInput.Type;
+export const JonesBoundOperationFenceInput = JonesBoundOperationStartInput;
+export type JonesBoundOperationFenceInput = typeof JonesBoundOperationFenceInput.Type;
 
 export const JonesOperationReadInput = Schema.Struct({
   environmentId: EnvironmentId,
@@ -96,6 +140,7 @@ export const JonesOperationReceipt = Schema.Struct({
   action: JonesOperationAction,
   expectedInstalledSource: JonesSourceSha,
   correlation: Schema.optionalKey(JonesOperationCorrelation),
+  admission: Schema.optionalKey(JonesOperationAdmission),
   phase: JonesOperationPhase,
   acceptedAt: Schema.optionalKey(Schema.String), // absent: never accepted (refused before acceptance, or fenced)
   updatedAt: Schema.String,

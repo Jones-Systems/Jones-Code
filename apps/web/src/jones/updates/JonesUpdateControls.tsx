@@ -3,6 +3,11 @@ import {
   jonesTargetStatus,
 } from "@t3tools/client-runtime/jones/updates/target-status";
 import {
+  isProvisionalUnsupportedReceipt,
+  isSettledOperationReceipt,
+  validateReceipt,
+} from "@t3tools/client-runtime/jones/install-plan";
+import {
   prepareReviewedInstall,
   resolveDownloadAction,
   type JonesDownloadResolution,
@@ -15,6 +20,7 @@ import {
 import {
   executeWebJonesAction,
   unresolvedJonesExecution,
+  pendingJonesOperationId,
   reconcileJonesExecution,
   stopWebJonesDownload,
 } from "../installStatus/execution";
@@ -26,7 +32,9 @@ import {
   jonesUpdateActionError,
   jonesInstallRefusal,
   compareJonesSource,
+  isJonesOperationNotSentError,
 } from "@t3tools/client-runtime/jones/updates";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthOrchestrationOperateScope,
   sessionGrantsScope,
@@ -131,18 +139,28 @@ export function JonesUpdateControls({
     stopDuty?.receipt ??
     journal.duties.find((d) => d.environmentId === environmentId)?.receipt ??
     settled?.receipt;
+  const liveReceipt = observed.freshness === "fresh" ? observed.state?.operation : undefined;
+  const freshSettlement =
+    liveReceipt !== undefined &&
+    retained !== undefined &&
+    isSettledOperationReceipt(liveReceipt) &&
+    validateReceipt(retained, liveReceipt);
   const observation =
-    observed.state === null || retained === undefined
+    observed.state === null || retained === undefined || freshSettlement
       ? observed
       : {
           ...observed,
           state: { ...observed.state, operation: retained },
         };
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Exact fresh receipts reconcile persisted duties; rendering never clears an unknown request.
+  const awaitingLedgerRead =
+    retained !== undefined &&
+    liveReceipt?.operationId === retained.operationId &&
+    isProvisionalUnsupportedReceipt(retained);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile exact fresh receipts after any provisional refusal has been verified.
   useEffect(() => {
-    if (observed.freshness === "fresh" && observed.state?.operation !== undefined)
-      void reconcileJonesExecution(environmentId, observed.state.operation).catch(() => undefined);
-  }, [observed, environmentId]);
+    if (liveReceipt !== undefined && !awaitingLedgerRead)
+      void reconcileJonesExecution(environmentId, liveReceipt).catch(() => undefined);
+  }, [liveReceipt, environmentId, awaitingLedgerRead]);
   const installStatus = useInstallPlan();
   const observedAt = Date.parse(installStatus.native?.laptop.observedAt ?? "");
   const laptopNow = useNowAfter(
@@ -178,6 +196,7 @@ export function JonesUpdateControls({
   const session = useAtomValue(environmentSession.sessionStateAtom(environmentId));
   const allowed =
     session._tag === "Success" &&
+    !session.waiting &&
     session.value.authenticated &&
     sessionGrantsScope(session.value, AuthOrchestrationOperateScope);
   const authority = useWebReviewAuthority(environmentId, allowed);
@@ -376,17 +395,20 @@ export function JonesUpdateControls({
                     );
                     return (
                       latest._tag === "Success" &&
+                      !latest.waiting &&
                       latest.value.authenticated &&
                       sessionGrantsScope(latest.value, AuthOrchestrationOperateScope)
                     );
                   })(),
-                send: async (input) => {
+                send: async (input, beforeSend) => {
                   const result = await stop({
                     environmentId,
-                    input: { action: "operationStop", input },
+                    input: { action: "operationStop", input, beforeSend },
                   });
-                  if (result._tag !== "Success") throw new Error("Stop is not confirmed.");
-                  return result.value;
+                  if (result._tag === "Success") return result.value;
+                  const error = squashAtomCommandFailure(result);
+                  if (isJonesOperationNotSentError(error)) throw error;
+                  throw new Error("Stop is not confirmed.");
                 },
               })
                 .then(setActionError)
@@ -397,7 +419,8 @@ export function JonesUpdateControls({
             Stop download
           </Button>
         ) : null}
-        {journal.duties.some((d) => d.environmentId === environmentId && d.kind !== "legacy") ? (
+        {pendingJonesOperationId(environmentId, journal) !== undefined ||
+        journal.duties.some((d) => d.environmentId === environmentId && d.kind === "native") ? (
           <Button
             size="xs"
             variant="outline"

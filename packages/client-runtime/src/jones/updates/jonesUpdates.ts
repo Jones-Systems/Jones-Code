@@ -25,6 +25,10 @@ import type {
   JonesOperationReadResult,
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
+import {
+  JonesBoundOperationStartInput,
+  JonesLegacyOperationStartInput,
+} from "@t3tools/contracts/jones/jonesOperations";
 import * as Schema from "effect/Schema";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -55,6 +59,17 @@ export class JonesUpdateDisconnectedError extends Schema.TaggedError<JonesUpdate
   {},
 ) {}
 
+export class JonesOperationNotSentError extends Schema.TaggedError<JonesOperationNotSentError>()(
+  "JonesOperationNotSentError",
+  {},
+) {
+  override get message(): string {
+    return "Operation authorization could not be confirmed before sending.";
+  }
+}
+
+export const isJonesOperationNotSentError = Schema.is(JonesOperationNotSentError);
+
 export type JonesAction =
   | { action: "check" }
   | { action: "download"; input: JonesUpdateDownloadInput }
@@ -63,14 +78,28 @@ export type JonesAction =
   | { action: "reconcile"; input: JonesUpdateReconcileInput }
   | { action: "install"; input: JonesUpdateInstallInput };
 
+export type JonesOperationBeforeSend = () => boolean | Promise<boolean>;
+
 export type JonesOperationCommand =
-  | { action: "operationStart"; input: JonesOperationStartInput }
-  | { action: "operationFence"; input: JonesOperationFenceInput }
+  | {
+      action: "operationStart";
+      input: JonesOperationStartInput;
+      beforeSend?: JonesOperationBeforeSend;
+    }
+  | {
+      action: "operationFence";
+      input: JonesOperationFenceInput;
+      beforeSend?: JonesOperationBeforeSend;
+    }
   | { action: "operationRead"; input: JonesOperationReadInput }
   | { action: "abandonStage"; input: JonesAbandonStageInput }
   | { action: "recoverCleanup"; input: JonesRecoverCleanupInput }
   | { action: "recoveryPreflight"; input: JonesRecoveryPreflightInput };
-export type JonesStopCommand = { action: "operationStop"; input: JonesOperationStopInput };
+export type JonesStopCommand = {
+  action: "operationStop";
+  input: JonesOperationStopInput;
+  beforeSend?: JonesOperationBeforeSend;
+};
 
 type JonesRequest =
   | JonesAction
@@ -96,6 +125,13 @@ type JonesDispatchContext = {
   readonly headers: EnvironmentHttpAuthHeaders;
 };
 
+const isBoundOperation = Schema.is(JonesBoundOperationStartInput);
+const isLegacyOperation = Schema.is(JonesLegacyOperationStartInput);
+
+function boundOperationEndpoint(action: "operationStart" | "operationFence") {
+  return action === "operationStart" ? "operationStartBound" : "operationFenceBound";
+}
+
 const dispatchRequest = Effect.fn("clientRuntime.jonesUpdates.dispatch")(function* (
   input: JonesRequest,
   { client, headers }: JonesDispatchContext,
@@ -117,11 +153,17 @@ const dispatchRequest = Effect.fn("clientRuntime.jonesUpdates.dispatch")(functio
     case "reconcile":
       return yield* client.reconcile({ headers, payload: input.input });
     case "operationStart":
-      return yield* client.operationStart({ headers, payload: input.input });
+    case "operationFence": {
+      const payload = input.input;
+      if (payload.admission !== undefined) {
+        if (!isBoundOperation(payload)) return yield* new JonesOperationNotSentError({});
+        return yield* client[boundOperationEndpoint(input.action)]({ headers, payload });
+      }
+      if (!isLegacyOperation(payload)) return yield* new JonesOperationNotSentError({});
+      return yield* client[input.action]({ headers, payload });
+    }
     case "operationStop":
       return yield* client.operationStop({ headers, payload: input.input });
-    case "operationFence":
-      return yield* client.operationFence({ headers, payload: input.input });
     case "operationRead":
       return yield* client.operationRead({ headers, payload: input.input });
     case "abandonStage":
@@ -134,17 +176,14 @@ const dispatchRequest = Effect.fn("clientRuntime.jonesUpdates.dispatch")(functio
 });
 
 const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
-  input:
-    | JonesAction
-    | JonesOperationCommand
-    | JonesStopCommand
-    | { action: "state"; after?: number },
+  input: JonesRequest,
 ) {
   const supervisor = yield* EnvironmentSupervisor;
   const prepared = yield* SubscriptionRef.get(supervisor.prepared);
   if (Option.isNone(prepared)) return yield* new JonesUpdateDisconnectedError({});
   const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
   const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
+  const beforeSend = "beforeSend" in input ? input.beforeSend : undefined;
   return yield* executeAuthenticatedEnvironmentHttpRequest({
     prepared: prepared.value,
     signer,
@@ -154,7 +193,12 @@ const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
     url: (urls) =>
       input.action === "state"
         ? urls.state({ query: input.after === undefined ? {} : { after: input.after } })
-        : urls[input.action](),
+        : urls[
+            (input.action === "operationStart" || input.action === "operationFence") &&
+            input.input.admission !== undefined
+              ? boundOperationEndpoint(input.action)
+              : input.action
+          ](),
     timeoutMs:
       input.action === "state"
         ? 35_000
@@ -169,8 +213,23 @@ const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
             ].includes(input.action)
           ? 60_000
           : 20 * 60_000,
-    request: (context) => dispatchRequest(input, context),
-  });
+    request: Effect.fn("clientRuntime.jonesUpdates.sendAuthorizedRequest")(function* (context) {
+      if (beforeSend !== undefined) {
+        const permit = yield* Effect.tryPromise({
+          try: async () => beforeSend(),
+          catch: () => new JonesOperationNotSentError({}),
+        });
+        if (permit !== true) return yield* new JonesOperationNotSentError({});
+      }
+      return yield* dispatchRequest(input, context);
+    }),
+  }).pipe(
+    Effect.mapError((error) =>
+      error._tag === "RemoteEnvironmentAuthFetchError" && isJonesOperationNotSentError(error.cause)
+        ? error.cause
+        : error,
+    ),
+  );
 });
 
 function request<I extends JonesRequest>(input: I) {

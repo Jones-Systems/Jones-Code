@@ -6,6 +6,7 @@ import * as NodeCrypto from "node:crypto";
 import { describe, it, expect, vi } from "vite-plus/test";
 import { EnvironmentId, type JonesUpdateState } from "@t3tools/contracts";
 import type {
+  JonesBoundOperationStartInput,
   JonesOperationReceipt,
   JonesOperationStartInput,
 } from "@t3tools/contracts/jones/jonesOperations";
@@ -25,10 +26,15 @@ import { preparationJobsDirectory } from "../preparation/protocol.ts";
 import { sweepPreparationLeftovers } from "../preparation/sweep.ts";
 import { sourceWorkerCommand } from "../preparation/Preparation.testkit.ts";
 import { withQualifiedRuntimeLock } from "../../cloud/qualifiedRuntime.ts";
+import { createFleetHostStore, type FleetFollowerRecord } from "../../fleetUpdates/store.ts";
 import { preparationJobLock } from "../preparation/protocol.ts";
 import { createOperationLedger } from "./ledger.ts";
 import { createTargetOperations } from "./operations.ts";
 import { createRecoveryPreflights } from "./recoveryPreflight.ts";
+
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
+}));
 
 function deferred<A>() {
   let resolve!: (value: A) => void;
@@ -64,6 +70,49 @@ const candidate: JonesActionsCandidate = {
   version: "0.0.0-preview.20261002.2.1",
   platform: "linux",
   architecture: "x64",
+};
+const enrollment = {
+  enrollmentId: "22222222-2222-4222-8222-222222222222",
+  environmentId: input.environmentId,
+  enabled: true,
+  continueRunningThreads: false,
+};
+const directive = {
+  enrollmentId: enrollment.enrollmentId,
+  directiveId: "33333333-3333-4333-8333-333333333333",
+  targetSource: candidate.source,
+  targetTree: candidate.tree,
+  mode: "manual-review",
+  issuedAt: "2026-11-19T00:00:00Z",
+  leaderAtIssue: null,
+} as const;
+const follower: FleetFollowerRecord = {
+  schema: 1,
+  leader: null,
+  operation: null,
+  lastAutomaticActivationAt: null,
+  directive,
+};
+const legacyPlan = {
+  ...input,
+  correlation: {
+    planId: "44444444-4444-4444-8444-444444444444",
+    deviceKey: input.environmentId,
+  },
+};
+const ordinaryPlan: JonesBoundOperationStartInput = {
+  ...legacyPlan,
+  admission: { kind: "ordinary" },
+};
+const followerPlan: JonesBoundOperationStartInput = {
+  ...legacyPlan,
+  admission: {
+    kind: "follower",
+    enrollmentId: directive.enrollmentId,
+    directiveId: directive.directiveId,
+    targetSource: directive.targetSource,
+    targetTree: directive.targetTree,
+  },
 };
 async function fixture(
   run: (f: Awaited<ReturnType<typeof make>>) => Promise<void>,
@@ -141,6 +190,7 @@ async function make(
           install: true,
           exactSource: true,
           operations: 1,
+          boundAdmission: 1,
           ...(recoveryEnabled ? { recoveryPolicy: 1 as const } : {}),
         },
       },
@@ -197,6 +247,7 @@ async function make(
     return reservation;
   });
   const ledger = createOperationLedger(base);
+  const fleetStore = createFleetHostStore(base);
   let native: OperationReconciliation = { state: "absent", operationId: input.operationId };
   const install = vi.fn(
     async (
@@ -226,6 +277,7 @@ async function make(
   const operations = createTargetOperations({
     key: base,
     ledger,
+    fleetStore,
     updater,
     preparation,
     refreshPolicy,
@@ -241,6 +293,7 @@ async function make(
   return {
     base,
     ledger,
+    fleetStore,
     operations,
     resolveNativeHandoff,
     preparation,
@@ -297,6 +350,316 @@ async function make(
     },
   };
 }
+describe("plan-bound target admission", () => {
+  it("durably refuses ordinary admission after enrollment wins during discovery", async () =>
+    fixture(async (f) => {
+      const peer = createFleetHostStore(f.base);
+      const releaseCheck = deferred<void>();
+      f.blockCheck(releaseCheck.promise);
+      const discovery = f.updater.check();
+      await f.checkEntered;
+      const started = f.operations.start(ordinaryPlan);
+      await f.admissionReserved;
+      try {
+        await peer.editEnrollment(() => enrollment);
+      } finally {
+        releaseCheck.resolve();
+      }
+      await discovery;
+      const refused = await started;
+      expect(refused).toMatchObject({
+        ...ordinaryPlan,
+        code: "admission-route-changed",
+        phase: "refused",
+      });
+      expect(refused.acceptedAt).toBeUndefined();
+      expect(await f.receipt()).toEqual(refused);
+      await peer.editEnrollment(() => ({ ...enrollment, enabled: false }));
+      expect(await f.operations.start(ordinaryPlan)).toEqual(refused);
+      expect(await f.operations.start(followerPlan)).toMatchObject({ code: "operation-conflict" });
+      await expect(f.operations.fence(followerPlan)).rejects.toThrow("original request");
+      expect(await f.receipt()).toEqual(refused);
+      expect(f.prepareCalls()).toBe(0);
+      expect(f.install).not.toHaveBeenCalled();
+    }));
+
+  it.each(["disabled enrollment", "same-source directive"] as const)(
+    "refuses a follower when the competing %s write wins the fleet lock",
+    async (change) =>
+      fixture(async (f) => {
+        const peer = createFleetHostStore(f.base);
+        await peer.editEnrollment(() => enrollment);
+        await peer.editFollower(() => follower);
+        const destination = NodePath.join(
+          f.base,
+          "runtime",
+          "jones-fleet",
+          change === "disabled enrollment" ? "enrollment.json" : "follower.json",
+        );
+        const entered = deferred<void>();
+        const release = deferred<void>();
+        const originalRename = NodeFSP.rename;
+        const rename = vi.spyOn(NodeFSP, "rename").mockImplementation(async (from, to) => {
+          if (to === destination) {
+            entered.resolve();
+            await release.promise;
+          }
+          await originalRename(from, to);
+        });
+        const edit =
+          change === "disabled enrollment"
+            ? peer.editEnrollment(() => ({ ...enrollment, enabled: false }))
+            : peer.transactDirective((old) => ({
+                record: {
+                  ...old!,
+                  directive: { ...directive, directiveId: NodeCrypto.randomUUID() },
+                },
+                result: undefined,
+              }));
+        try {
+          await entered.promise;
+          const prepared = deferred<void>();
+          f.refreshPolicy.mockImplementation(async () => prepared.resolve());
+          const started = f.operations.start(followerPlan);
+          await prepared.promise;
+          expect(await f.receipt()).toBeNull();
+          release.resolve();
+          await edit;
+          const refused = await started;
+          expect(refused).toMatchObject({
+            ...followerPlan,
+            phase: "refused",
+            code: "admission-route-changed",
+          });
+          expect(refused.acceptedAt).toBeUndefined();
+          expect(await f.receipt()).toEqual(refused);
+          expect(f.prepareCalls()).toBe(0);
+          expect(f.install).not.toHaveBeenCalled();
+        } finally {
+          release.resolve();
+          await edit;
+          rename.mockRestore();
+        }
+      }),
+  );
+
+  it("commits exact follower acceptance before a waiting enrollment edit", async () =>
+    fixture(async (f) => {
+      const peer = createFleetHostStore(f.base);
+      await peer.editEnrollment(() => enrollment);
+      await peer.editFollower(() => follower);
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const accept = f.ledger.accept.bind(f.ledger);
+      let committed = false;
+      const spy = vi.spyOn(f.ledger, "accept").mockImplementation(async (request) => {
+        entered.resolve();
+        await release.promise;
+        const result = await accept(request);
+        committed = result.created;
+        return result;
+      });
+      const started = f.operations.start(followerPlan);
+      try {
+        await entered.promise;
+        await expect(
+          withQualifiedRuntimeLock(f.base, "jones-fleet", async () => undefined),
+        ).rejects.toThrow("already owns this home");
+        const edit = peer.editEnrollment(() => {
+          expect(committed).toBe(true);
+          return { ...enrollment, enabled: false };
+        });
+        release.resolve();
+        const accepted = await started;
+        expect(accepted).toMatchObject({
+          ...followerPlan,
+          phase: "accepted",
+          acceptedAt: expect.any(String),
+        });
+        await edit;
+        await f.prepareStarted;
+        f.finish("completed");
+        const completed = await f.receiptAt("completed");
+        expect(completed.admission).toEqual(followerPlan.admission);
+        expect(await f.operations.start(followerPlan)).toEqual(completed);
+        expect(await f.operations.fence(followerPlan)).toEqual(completed);
+        expect(f.prepareCalls()).toBe(1);
+      } finally {
+        release.resolve();
+        spy.mockRestore();
+      }
+    }));
+
+  it("preserves never-enrolled V1 acceptance and refuses new V1 plan IDs even after disablement", async () =>
+    fixture(async (f) => {
+      expect(await f.operations.start(legacyPlan)).toMatchObject({
+        ...legacyPlan,
+        phase: "accepted",
+      });
+      await f.prepareStarted;
+      f.finish("completed");
+      const completed = await f.receiptAt("completed");
+      const peer = createFleetHostStore(f.base);
+      await peer.editEnrollment(() => ({ ...enrollment, enabled: false }));
+      const other = { ...legacyPlan, operationId: NodeCrypto.randomUUID() };
+      const refused = await f.operations.start(other);
+      expect(refused).toMatchObject({
+        ...other,
+        phase: "refused",
+        code: "admission-binding-required",
+      });
+      expect(await f.ledger.read(other.operationId)).toEqual(refused);
+      expect(await f.operations.start(legacyPlan)).toEqual(completed);
+      expect(await f.operations.start(ordinaryPlan)).toMatchObject({ code: "operation-conflict" });
+      expect(f.prepareCalls()).toBe(1);
+    }));
+
+  it("keeps unreadable enrollment unconfirmed and preserves an exact retained receipt", async () =>
+    fixture(async (f) => {
+      const old = (await f.ledger.refuse(legacyPlan, "busy", "Already decided.")).receipt;
+      await f.fleetStore.readEnrollment();
+      await NodeFSP.writeFile(
+        NodePath.join(f.base, "runtime", "jones-fleet", "enrollment.json"),
+        "{}",
+        { mode: 0o600 },
+      );
+      const newStart = { ...legacyPlan, operationId: NodeCrypto.randomUUID() };
+      await expect(f.operations.start(newStart)).rejects.toThrow("Fleet receipt is invalid");
+      expect(await f.ledger.read(newStart.operationId)).toBeNull();
+      expect(await f.operations.start(legacyPlan)).toEqual(old);
+      expect(f.prepareCalls()).toBe(0);
+    }));
+
+  it("checks the follower action source and the exact staged install identity", async () =>
+    fixture(async (f) => {
+      await f.fleetStore.editEnrollment(() => enrollment);
+      await f.fleetStore.editFollower(() => follower);
+      await f.updater.check();
+      const snapshot = f.updater.snapshot.bind(f.updater);
+      vi.spyOn(f.updater, "snapshot").mockImplementation(() => ({
+        ...snapshot(),
+        stagedHandle: "actual-stage",
+      }));
+      for (const action of [
+        { kind: "download-exact", targetSource: "f".repeat(40) },
+        {
+          kind: "install",
+          targetSource: candidate.source,
+          currentVersion: snapshot().currentVersion!,
+          stagedHandle: "another-stage",
+        },
+      ] as const) {
+        const request = { ...followerPlan, operationId: NodeCrypto.randomUUID(), action };
+        const refused = await f.operations.start(request);
+        expect(refused).toMatchObject({
+          ...request,
+          phase: "refused",
+          code: "admission-route-changed",
+        });
+        expect(await f.ledger.read(request.operationId)).toEqual(refused);
+      }
+      expect(f.prepareCalls()).toBe(0);
+      expect(f.install).not.toHaveBeenCalled();
+    }));
+
+  it("keeps the original V2 fence when it wins against a pending Start and changed payload", async () =>
+    fixture(async (f) => {
+      const release = deferred<void>();
+      f.blockCheck(release.promise);
+      const discovery = f.updater.check();
+      await f.checkEntered;
+      const started = f.operations.start(ordinaryPlan);
+      await f.admissionReserved;
+      try {
+        const fence = await f.operations.fence(ordinaryPlan);
+        expect(fence).toMatchObject({ ...ordinaryPlan, phase: "fenced" });
+        expect(fence.acceptedAt).toBeUndefined();
+        release.resolve();
+        expect(await started).toEqual(fence);
+        expect(await f.operations.start(followerPlan)).toEqual(fence);
+        expect(await f.operations.fence(followerPlan)).toEqual(fence);
+        expect(await f.receipt()).toEqual(fence);
+        expect(f.prepareCalls()).toBe(0);
+      } finally {
+        release.resolve();
+        await discovery;
+      }
+    }));
+
+  it.each(["fenced", "running"] as const)(
+    "does not dispatch a deferred Start while another writer's %s rename is unconfirmed",
+    async (phase) =>
+      fixture(async (f) => {
+        const request: JonesBoundOperationStartInput =
+          phase === "fenced"
+            ? ordinaryPlan
+            : {
+                ...ordinaryPlan,
+                action: {
+                  kind: "install",
+                  targetSource: candidate.source,
+                  currentVersion: "old",
+                  stagedHandle: "retained-stage",
+                },
+              };
+        const release = deferred<void>();
+        f.blockCheck(release.promise);
+        const discovery = f.updater.check();
+        await f.checkEntered;
+        const started = f.operations.start(request);
+        const failure = new Error("Synthetic operation directory sync failure");
+        const denied = expect(started).rejects.toThrow(failure);
+        await f.admissionReserved;
+        const writer = createOperationLedger(f.base);
+        if (phase === "running") await writer.accept(request);
+        const directory = NodePath.join(f.base, "runtime", "jones-operations");
+        const path = NodePath.join(directory, `${request.operationId}.json`);
+        const originalRename = NodeFSP.rename;
+        const originalOpen = NodeFSP.open;
+        let unconfirmed = false;
+        const rename = vi.spyOn(NodeFSP, "rename").mockImplementation(async (from, to) => {
+          await originalRename(from, to);
+          if (to === path) unconfirmed = true;
+        });
+        const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+          const handle = await originalOpen(...args);
+          if (args[0] === directory && unconfirmed)
+            handle.sync = async () => {
+              throw failure;
+            };
+          return handle;
+        });
+        try {
+          await expect(
+            phase === "fenced"
+              ? writer.fence(request)
+              : writer.transition(request.operationId, (old) => ({ ...old, phase })),
+          ).rejects.toThrow(failure);
+          expect(JSON.parse(await NodeFSP.readFile(path, "utf8"))).toMatchObject({
+            ...request,
+            phase,
+          });
+          release.resolve();
+          await denied;
+          expect(f.updater.snapshot().operation).toBeUndefined();
+          expect(f.prepareCalls()).toBe(0);
+          expect(f.install).not.toHaveBeenCalled();
+          unconfirmed = false;
+          const confirmed = await createOperationLedger(f.base).read(request.operationId);
+          expect(confirmed).toMatchObject({ ...request, phase });
+          expect(await f.operations.start(request)).toEqual(confirmed);
+          expect(f.prepareCalls()).toBe(0);
+          expect(f.install).not.toHaveBeenCalled();
+        } finally {
+          release.resolve();
+          open.mockRestore();
+          rename.mockRestore();
+          await discovery;
+        }
+      }),
+  );
+});
+
 describe("target operations", () => {
   it.each(["download", "download-exact"] as const)(
     "joins an in-flight check before accepting %s and replays concurrent IDs with one preparation",
@@ -388,10 +751,10 @@ describe("target operations", () => {
   it.each([
     ["environment", "stale-binding"],
     ["installed source", "stale-binding"],
-    ["operations", "unsupported"],
-    ["download", "unsupported"],
-    ["check", "unsupported"],
-    ["exact source", "unsupported"],
+    ["operations", "operation-admission-disabled"],
+    ["download", "action-unsupported"],
+    ["check", "exact-source-unsupported"],
+    ["exact source", "exact-source-unsupported"],
     ["artifact", "stale-binding"],
     ["stage", "another-stage"],
     ["policy", "follower-policy"],
@@ -1276,6 +1639,7 @@ it.each(["transfer", "native-effects"] as const)(
           createTargetOperations({
             key: f.base,
             ledger: owner.ledger,
+            fleetStore: owner.fleetStore,
             updater: owner.updater,
             preparation,
             install: owner.install,
@@ -1361,6 +1725,7 @@ it("keeps adoption admission held when a later scan proves worker release", asyn
     const operations = createTargetOperations({
       key: f.base,
       ledger: f.ledger,
+      fleetStore: f.fleetStore,
       updater: f.updater,
       preparation,
       refreshPolicy: f.refreshPolicy,
@@ -1556,6 +1921,7 @@ it("creates no idle or standing-hold sweep jobs, then coalesces release into one
         const operations = createTargetOperations({
           key: f.base,
           ledger: f.ledger,
+          fleetStore: f.fleetStore,
           updater: f.updater,
           preparation,
           refreshPolicy: f.refreshPolicy,
@@ -1616,6 +1982,7 @@ it("preserves holds and cleanup demand when reconciliation fails", async () =>
     const operations = createTargetOperations({
       key: f.base,
       ledger: f.ledger,
+      fleetStore: f.fleetStore,
       updater: f.updater,
       preparation,
       refreshPolicy: f.refreshPolicy,
@@ -1658,6 +2025,7 @@ it("tracks newly found lifecycle holds even when the subsequent ledger scan fail
           yield* f.ledger.listUnsettled();
         },
       },
+      fleetStore: f.fleetStore,
       updater: f.updater,
       preparation,
       refreshPolicy: f.refreshPolicy,

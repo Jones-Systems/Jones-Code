@@ -131,6 +131,268 @@ describe("durable client update duties", () => {
     expect(restarted.getSnapshot().history[0]?.receipt?.phase).toBe("stopped");
   });
 
+  it("retains bound admission and treats reordered journal fields as the same request under the lock", async () => {
+    const storage = disk();
+    const journal = createJonesActionJournal({ ...storage, withLock: (work) => work() });
+    const admission = {
+      kind: "follower",
+      enrollmentId: id(2),
+      directiveId: id(3),
+      targetSource,
+      targetTree: "d".repeat(40),
+    } as const;
+    const input = {
+      ...request,
+      correlation: { planId: id(4), deviceKey: environmentId },
+      admission,
+    };
+    const duty = {
+      id: id(1),
+      environmentId,
+      kind: "operation",
+      action: "download-exact",
+      targetSource,
+      operationId: id(1),
+      request: input,
+    } as const;
+    await journal.reserve(duty);
+    const reordered = {
+      targetTree: admission.targetTree,
+      directiveId: admission.directiveId,
+      targetSource,
+      enrollmentId: admission.enrollmentId,
+      kind: admission.kind,
+    };
+    const sidecar = "jones.bound-action-duties.v1";
+    storage.values.set(
+      sidecar,
+      JSON.stringify([{ ...duty, request: { ...input, admission: reordered } }]),
+    );
+    expect(JSON.parse(storage.values.get(JONES_ACTION_JOURNAL_KEY)!)).toMatchObject({
+      duties: [{ kind: "legacy", operationId: id(1) }],
+    });
+    const stopped = { ...receipt("stopped"), ...input, admission: reordered };
+    expect(await journal.reconcileReceipt(receipt("stopped"), { ledgerRead: true })).toBe(false);
+    expect(
+      await journal.reconcileReceipt(
+        {
+          ...stopped,
+          admission: { ...admission, directiveId: id(5) },
+        },
+        { ledgerRead: true },
+      ),
+    ).toBe(false);
+    expect(await journal.reconcileReceipt(stopped)).toBe(true);
+    const reloaded = createJonesActionJournal(storage);
+    await reloaded.load();
+    expect(reloaded.getSnapshot().history[0]).toMatchObject({
+      request: { admission },
+      receipt: { admission, phase: "stopped" },
+    });
+  });
+
+  it("keeps bound Stops exact and preserves unrelated work for older readers", async () => {
+    const storage = disk();
+    const shared = { ...storage, withLock: <A>(work: () => Promise<A>) => work() };
+    const current = createJonesActionJournal(shared);
+    const bound = {
+      ...receipt(),
+      correlation: { planId: id(3), deviceKey: environmentId },
+      admission: { kind: "ordinary" as const },
+    };
+    const other = { ...receipt(), environmentId: otherEnvironment, operationId: id(4) };
+    const stopDuty = {
+      id: id(2),
+      kind: "stop",
+      action: "stop",
+      environmentId,
+      targetSource,
+      operationId: bound.operationId,
+      stopId: id(2),
+      receipt: bound,
+    } as const;
+    await current.reserve({
+      ...stopDuty,
+      id: id(5),
+      stopId: id(5),
+      operationId: other.operationId,
+      environmentId: otherEnvironment,
+      receipt: other,
+    });
+    await current.reserve(stopDuty);
+    const key = "jones.bound-action-duties.v1";
+    const bindings = storage.values.get(key)!;
+    const raw = storage.values.get(JONES_ACTION_JOURNAL_KEY)!;
+    expect(JSON.parse(raw).duties[1]).toEqual({
+      id: id(2),
+      kind: "legacy",
+      action: "stop",
+      environmentId,
+      targetSource,
+      operationId: bound.operationId,
+      stopId: id(2),
+    });
+    expect(raw).not.toContain("admission");
+    storage.values.delete(key);
+    const held = createJonesActionJournal(shared);
+    await held.load();
+    expect(held.getSnapshot().duties).toMatchObject([
+      { kind: "stop", receipt: other },
+      { kind: "legacy", stopId: id(2) },
+    ]);
+    await expect(held.reserve({ ...stopDuty, id: id(6), stopId: id(6) })).rejects.toThrow(
+      "earlier request",
+    );
+    storage.values.set(key, bindings);
+    const restored = createJonesActionJournal(shared);
+    await restored.load();
+    const stopped = {
+      ...bound,
+      phase: "stopped",
+      updatedAt: "2026-10-27T04:05:02Z",
+      stop: { stopId: id(2), requestedAt: "2026-10-27T04:05:01Z", result: "stopped" },
+    } as const;
+    const { admission: _admission, ...unbound } = stopped;
+    expect(await restored.reconcileReceipt(unbound, { ledgerRead: true })).toBe(false);
+    expect(await restored.reconcileReceipt(stopped, { ledgerRead: true })).toBe(true);
+    const reopened = createJonesActionJournal(shared);
+    await reopened.load();
+    expect(reopened.getSnapshot().duties.map((d) => d.id)).toEqual([id(5)]);
+    expect(reopened.getSnapshot().history[0]).toMatchObject({ id: id(2), receipt: stopped });
+    expect(storage.values.get(JONES_ACTION_JOURNAL_KEY)).not.toContain("admission");
+  });
+
+  it.each(["running", "held", "stopped", "unsupported"] as const)(
+    "corrects an older archived unsupported reply with exact %s read evidence",
+    async (outcome) => {
+      const storage = disk();
+      const provisional: JonesOperationReceipt = {
+        ...request,
+        protocol: 1,
+        phase: "refused",
+        code: "unsupported",
+        updatedAt: "2026-10-27T04:05:00Z",
+      };
+      const duty = {
+        id: id(1),
+        environmentId,
+        kind: "operation",
+        action: "download-exact",
+        targetSource,
+        operationId: id(1),
+        request,
+      } as const;
+      const waiting = createJonesActionJournal(storage);
+      await waiting.reserve(duty);
+      expect(await waiting.reconcileReceipt(provisional)).toBe(false);
+      expect(waiting.getSnapshot().duties).toEqual([duty]);
+
+      storage.values.set(
+        JONES_ACTION_JOURNAL_KEY,
+        JSON.stringify({
+          schema: 1,
+          duties: [],
+          history: [{ ...duty, receipt: provisional }],
+        }),
+      );
+      const archived = createJonesActionJournal(storage);
+      await archived.load();
+      const proof = outcome === "unsupported" ? provisional : receipt(outcome);
+      await archived.reconcileReceipt(proof);
+      await archived.reconcileReceipt({ ...proof, operationId: id(99) }, { ledgerRead: true });
+      expect(archived.getSnapshot().history[0]?.receipt).toEqual(provisional);
+      await archived.reconcileReceipt(proof, { ledgerRead: true });
+      const restarted = createJonesActionJournal(storage);
+      await restarted.load();
+      if (outcome === "running" || outcome === "held") {
+        expect(restarted.getSnapshot().history).toEqual([]);
+        expect(restarted.getSnapshot().duties).toEqual([{ ...duty, receipt: proof }]);
+        const terminal = { ...receipt("stopped"), updatedAt: "2026-10-27T04:06:00Z" };
+        expect(await restarted.reconcileReceipt(terminal)).toBe(true);
+        expect(restarted.getSnapshot().duties).toEqual([]);
+        expect(restarted.getSnapshot().history[0]?.receipt).toEqual(terminal);
+      } else {
+        expect(restarted.getSnapshot().duties).toEqual([]);
+        expect(restarted.getSnapshot().history).toEqual([
+          {
+            ...duty,
+            receipt: proof,
+            ...(outcome === "unsupported" ? { unsupportedReceiptVerified: true } : {}),
+          },
+        ]);
+        if (outcome === "unsupported") {
+          expect(JSON.parse(storage.values.get(JONES_ACTION_JOURNAL_KEY)!)).toEqual({
+            schema: 1,
+            duties: [],
+            history: [{ ...duty, receipt: provisional }],
+          });
+          await restarted.reconcileReceipt(receipt("running"), { ledgerRead: true });
+          expect(restarted.getSnapshot().history[0]?.receipt).toEqual(provisional);
+          expect(restarted.getSnapshot().duties).toEqual([]);
+        }
+      }
+    },
+  );
+
+  it("keeps an unrelated pending Stop readable when optional refusal proof is unavailable", async () => {
+    const storage = disk();
+    const journal = createJonesActionJournal(storage);
+    const stoppedOperation = { ...receipt(), environmentId: otherEnvironment };
+    const stopId = id(3);
+    await journal.reserve({
+      kind: "stop",
+      id: stopId,
+      stopId,
+      operationId: request.operationId,
+      environmentId: otherEnvironment,
+      action: "stop",
+      targetSource,
+      receipt: stoppedOperation,
+    });
+    await journal.reserve({
+      id: request.operationId,
+      environmentId,
+      kind: "operation",
+      action: "download-exact",
+      operationId: request.operationId,
+      targetSource,
+      request,
+    });
+    const unsupported: JonesOperationReceipt = {
+      ...request,
+      protocol: 1,
+      phase: "refused",
+      code: "unsupported",
+      updatedAt: "2026-10-27T04:01:00Z",
+    };
+    expect(await journal.reconcileReceipt(unsupported, { ledgerRead: true })).toBe(true);
+    const retained = JSON.parse(storage.values.get(JONES_ACTION_JOURNAL_KEY)!);
+    expect(retained.duties.map((d: { id: string }) => d.id)).toEqual([stopId]);
+    expect(retained.history[0]).not.toHaveProperty("unsupportedReceiptVerified");
+    const lostProof = createJonesActionJournal({
+      ...storage,
+      getItem: (key) => {
+        if (key !== JONES_ACTION_JOURNAL_KEY) throw new Error("Optional proof is unavailable");
+        return storage.getItem(key);
+      },
+    });
+    await lostProof.load();
+    expect(lostProof.getSnapshot().duties[0]?.id).toBe(stopId);
+    expect(lostProof.getSnapshot().history[0]?.unsupportedReceiptVerified).toBeUndefined();
+    expect(
+      await lostProof.reconcileReceipt(
+        {
+          ...stoppedOperation,
+          phase: "stopped",
+          updatedAt: "2026-10-27T04:02:00Z",
+          stop: { stopId, requestedAt: "2026-10-27T04:01:00Z", result: "stopped" },
+        },
+        { ledgerRead: true },
+      ),
+    ).toBe(true);
+    expect(lostProof.getSnapshot().duties).toEqual([]);
+  });
+
   it("holds Stop through missing/wrong IDs, held results, backwards receipts and a late start reply", async () => {
     const storage = disk(),
       journal = createJonesActionJournal(storage);

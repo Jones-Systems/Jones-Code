@@ -1,3 +1,4 @@
+import { T, useMessages } from "gt-react";
 import { type Ref, useEffect, useId, useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesInstallPlanSelection } from "@t3tools/contracts/jones/installPlan";
@@ -15,8 +16,10 @@ import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import {
+  allowsOperationRecovery,
   deviceSelectionLocked,
   deviceStatusActive,
+  operationHasUnverifiedUnsupported,
   operationOutstanding,
   orphanReceiptCheck,
 } from "@t3tools/client-runtime/jones/install-plan";
@@ -35,9 +38,9 @@ import { ProgressSteps } from "./ProgressSteps";
 import { desktopCanPreviewInstallPlan, selectionFor, targetForDesktop } from "./entrypoints";
 import {
   confirmClosedPlan,
-  hasPlanEnrollment,
   installPlanServices,
   nativePlanIssue,
+  planEnrollmentFor,
   readTargetPlan,
   readWritableTarget,
   requestInstallPlan,
@@ -50,6 +53,7 @@ import {
   checkOrphanedPlanCommand,
   fencePanelOperation,
   inspectPanelCleanup,
+  latestPanelOperation,
   performPanelAction,
   recoverPanelCleanup,
   stopPanelDownload,
@@ -65,6 +69,7 @@ import {
   INSTALL_PLAN_WAIT,
   LAPTOP_REOPEN_TO_CHECK_INSTALL,
   lastUpdateLabel,
+  operationAdmissionMessage,
 } from "./copy";
 
 interface EditDraft {
@@ -166,6 +171,7 @@ function InstallStatusPlan({
   readonly view: NonNullable<ReturnType<typeof panelPresentation>>;
   readonly historyRefreshing: boolean;
 }) {
+  const messages = useMessages();
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [detail, setDetail] = useState<EnvironmentId | "laptop" | null>(null);
   const allDevicesButton = useRef<HTMLButtonElement>(null);
@@ -814,9 +820,21 @@ function InstallStatusPlan({
               const member = plan.devices.find((d) => d.environmentId === environmentId);
               const operations = member?.operations;
               const operation = view.archived
-                ? (operations?.find(operationOutstanding) ?? operations?.at(-1))
+                ? member === undefined
+                  ? undefined
+                  : latestPanelOperation(member, true)
                 : operations?.find((op) => op.operationId === row?.operationId);
               const receipt = operation?.receipt;
+              const enrollment =
+                member === undefined ? "unknown" : planEnrollmentFor(member, device);
+              const receiptMessage =
+                operationAdmissionMessage(receipt?.code, messages) ?? receipt?.message;
+              const routeMessage =
+                enrollment === "route-changed" &&
+                member?.membership === "selected" &&
+                receipt?.code !== "admission-route-changed"
+                  ? operationAdmissionMessage("admission-route-changed", messages)
+                  : undefined;
               const operationId = operation?.operationId;
               const setupUnconfirmed =
                 operation?.step === "directive" && operationOutstanding(operation);
@@ -848,7 +866,7 @@ function InstallStatusPlan({
               const abandonTarget = deviceAbandonTarget(plan, environmentId, view.archived);
               const resumeArchived = archivedRecovery && abandonTarget?.resume === true;
               const canInspect = !view.archived || archivedRecovery || plan.cancelled === true;
-              const recoveryReason = view.deskReadOnly
+              const hostRecoveryReason = view.deskReadOnly
                 ? (snapshot.native?.readOnly?.message ??
                   snapshot.nativeRefusal ??
                   "Install status is read-only.")
@@ -861,18 +879,34 @@ function InstallStatusPlan({
                       ? "Fresh status for this device is required."
                       : device.observation.state.capability.operations !== 1
                         ? "This device does not currently support update operations."
-                        : view.archived &&
-                            member !== undefined &&
-                            !hasPlanEnrollment(member, device)
-                          ? "The original device route is unconfirmed. Refresh this device."
-                          : undefined;
-              const fenceReason =
-                recoveryReason ??
-                (setupUnconfirmed &&
-                (snapshot.native?.view.directiveFence !== 1 ||
-                  device?.fleetStatus?.fencePlanDirective !== 1)
-                  ? "The host and Laptop must support fencing this original setup request."
+                        : undefined;
+              const routeUnconfirmed =
+                "The original device route is unconfirmed. Refresh this device.";
+              const recoveryReason =
+                hostRecoveryReason ??
+                (view.archived && member !== undefined && enrollment !== "match"
+                  ? routeUnconfirmed
                   : undefined);
+              const stopReason =
+                hostRecoveryReason ??
+                (!allowsOperationRecovery(enrollment, "stop") ? routeUnconfirmed : undefined);
+              const cleanupReason =
+                hostRecoveryReason ??
+                (!allowsOperationRecovery(enrollment, "cleanup") ? routeUnconfirmed : undefined);
+              const fenceReason = setupUnconfirmed
+                ? (recoveryReason ??
+                  (snapshot.native?.view.directiveFence !== 1 ||
+                  device?.fleetStatus?.fencePlanDirective !== 1
+                    ? "The host and Laptop must support fencing this original setup request."
+                    : undefined))
+                : (hostRecoveryReason ??
+                  (!allowsOperationRecovery(enrollment, "fence")
+                    ? routeUnconfirmed
+                    : operation?.request.kind === "operation-start" &&
+                        operation.request.input.admission !== undefined &&
+                        device?.observation.state?.capability.boundAdmission !== 1
+                      ? operationAdmissionMessage("admission-binding-required", messages)
+                      : undefined));
               const recoveryDescription = `${descriptionId}-recovery-${environmentId}`;
               return (
                 <li key={environmentId}>
@@ -1033,7 +1067,15 @@ function InstallStatusPlan({
                       {device === undefined ? null : <HeardAgo at={choice.heardAt} />}
                       {row?.operationId ? <OperationId value={row.operationId} /> : null}
                       {receipt?.code ? <p>Code: {receipt.code}</p> : null}
-                      {receipt?.message ? <p>{receipt.message}</p> : null}
+                      {receiptMessage ? <p>{receiptMessage}</p> : null}
+                      {routeMessage ? <p>{routeMessage}</p> : null}
+                      {operation !== undefined && operationHasUnverifiedUnsupported(operation) ? (
+                        <p>
+                          <T>
+                            Check the exact operation receipt to confirm what the host recorded.
+                          </T>
+                        </p>
+                      ) : null}
                       {operation?.directiveFence === undefined ? null : (
                         <p>
                           {operation.directiveFence.outcome === "fenced"
@@ -1070,11 +1112,14 @@ function InstallStatusPlan({
                                   : "Inspection could not confirm cleanup. The update remains on hold."}
                         </p>
                       ) : null}
-                      {recoveryReason !== undefined &&
-                      (stopArchived ||
-                        resumeArchived ||
-                        (cleanupTarget !== undefined && canInspect)) ? (
+                      {recoveryReason !== undefined && resumeArchived ? (
                         <p id={recoveryDescription}>{recoveryReason}</p>
+                      ) : null}
+                      {cleanupTarget !== undefined && canInspect && cleanupReason !== undefined ? (
+                        <p id={`${recoveryDescription}-cleanup`}>{cleanupReason}</p>
+                      ) : null}
+                      {(row?.actions.stop || stopArchived) && stopReason !== undefined ? (
+                        <p id={`${recoveryDescription}-stop`}>{stopReason}</p>
                       ) : null}
                       {fenceArchived && fenceReason !== undefined ? (
                         <p id={`${recoveryDescription}-fence`}>{fenceReason}</p>
@@ -1085,9 +1130,11 @@ function InstallStatusPlan({
                             <Button
                               variant="outline"
                               size="micro"
-                              disabled={pending.has(inspectKey) || recoveryReason !== undefined}
+                              disabled={pending.has(inspectKey) || cleanupReason !== undefined}
                               aria-describedby={
-                                recoveryReason === undefined ? undefined : recoveryDescription
+                                cleanupReason === undefined
+                                  ? undefined
+                                  : `${recoveryDescription}-cleanup`
                               }
                               onClick={() =>
                                 void perform(inspectKey, async () => {
@@ -1111,9 +1158,11 @@ function InstallStatusPlan({
                             <Button
                               variant="outline"
                               size="micro"
-                              disabled={pending.has(inspectKey) || recoveryReason !== undefined}
+                              disabled={pending.has(inspectKey) || cleanupReason !== undefined}
                               aria-describedby={
-                                recoveryReason === undefined ? undefined : recoveryDescription
+                                cleanupReason === undefined
+                                  ? undefined
+                                  : `${recoveryDescription}-cleanup`
                               }
                               onClick={() => {
                                 const token = cleanup.inspection.recoveryToken;
@@ -1185,13 +1234,10 @@ function InstallStatusPlan({
                               variant="outline"
                               size="micro"
                               disabled={
-                                pending.has(`${environmentId}:stop`) ||
-                                (view.archived && recoveryReason !== undefined)
+                                pending.has(`${environmentId}:stop`) || stopReason !== undefined
                               }
                               aria-describedby={
-                                view.archived && recoveryReason !== undefined
-                                  ? recoveryDescription
-                                  : undefined
+                                stopReason !== undefined ? `${recoveryDescription}-stop` : undefined
                               }
                               onClick={() => stop("device", environmentId, operationId)}
                             >

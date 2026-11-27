@@ -10,6 +10,7 @@ import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperat
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import {
+  allowsOperationRecovery,
   applyEdit,
   canSupersede,
   deviceHasRecoveryDuty,
@@ -20,11 +21,13 @@ import {
   laptopSettled,
   matchPlanEnrollment,
   nextRunnerStep,
+  operationOutstanding,
   planCompletion,
   planHasLaptopRecoveryDuty,
   selectability,
   startPlan,
   validateDirectiveEvidence,
+  validateOperationEvidence,
   validateReceipt,
 } from "./model.ts";
 
@@ -117,7 +120,7 @@ describe("install plan model", () => {
     const follower = { ...selection, route: "follower-operations" as const, enrollmentId: id };
     expect(matchPlanEnrollment(selection, state, null)).toBe("match");
     expect(matchPlanEnrollment(selection, state, undefined)).toBe("unknown");
-    expect(matchPlanEnrollment(selection, state, fleet)).toBe("changed");
+    expect(matchPlanEnrollment(selection, state, fleet)).toBe("route-changed");
     expect(
       matchPlanEnrollment(selection, state, {
         ...fleet,
@@ -130,22 +133,44 @@ describe("install plan model", () => {
         { ...state, policy: { role: "follower", leaderSource: null } },
         null,
       ),
-    ).toBe("changed");
+    ).toBe("unknown");
     expect(matchPlanEnrollment(follower, state, fleet)).toBe("match");
     expect(matchPlanEnrollment(follower, state, undefined)).toBe("unknown");
-    expect(matchPlanEnrollment(follower, state, null)).toBe("changed");
+    expect(matchPlanEnrollment(follower, state, null)).toBe("unknown");
     for (const contradictory of [
       { ...fleet, environmentId: laptop },
       { ...fleet, update: { ...state, environmentId: laptop } },
       { ...fleet, enrollment: { ...enrollment, environmentId: laptop } },
-      { ...fleet, enrollment: { ...enrollment, enrollmentId: operationId } },
     ]) {
-      expect(matchPlanEnrollment(follower, state, contradictory)).toBe("changed");
+      expect(matchPlanEnrollment(follower, state, contradictory)).toBe("identity-changed");
     }
     expect(matchPlanEnrollment(follower, { ...state, environmentId: laptop }, fleet)).toBe(
-      "changed",
+      "identity-changed",
     );
+    const newEnrollment = { ...fleet, enrollment: { ...enrollment, enrollmentId: operationId } };
+    expect(matchPlanEnrollment(follower, state, newEnrollment)).toBe("route-changed");
+    expect(matchPlanEnrollment(follower, null, newEnrollment)).toBe("unknown");
     expect(matchPlanEnrollment(follower, null, fleet)).toBe("unknown");
+  });
+
+  it("keeps forward and protective operation authorization distinct", () => {
+    const actions = ["read", "start", "fence", "stop"] as const;
+    expect(actions.filter((action) => allowsOperationRecovery("match", action))).toEqual(actions);
+    expect(actions.filter((action) => allowsOperationRecovery("route-changed", action))).toEqual([
+      "read",
+      "fence",
+      "stop",
+    ]);
+    expect(
+      actions.filter((action) => allowsOperationRecovery("identity-changed", action, true)),
+    ).toEqual([]);
+    expect(actions.filter((action) => allowsOperationRecovery("unknown", action))).toEqual([
+      "read",
+    ]);
+    expect(actions.filter((action) => allowsOperationRecovery("unknown", action, true))).toEqual([
+      "read",
+      "fence",
+    ]);
   });
 
   it("does not recover an earlier stage after retiring the replacement", () => {
@@ -482,6 +507,76 @@ describe("install plan model", () => {
         staged: { ...completed.staged!, stagedHandle: "other" },
       }),
     ).toBe(false);
+  });
+
+  it("compares every admission field and requires ledger evidence to replace provisional unsupported", () => {
+    const reserved = operation();
+    if (reserved.request.kind !== "operation-start") throw new Error("fixture");
+    const admission = {
+      kind: "follower",
+      enrollmentId: id,
+      directiveId: operationId,
+      targetSource: source,
+      targetTree: tree,
+    } as const;
+    const input = { ...reserved.request.input, admission };
+    const provisional: JonesOperationReceipt = {
+      ...input,
+      protocol: 1,
+      phase: "refused",
+      code: "unsupported",
+      updatedAt: "2026-10-27T05:01:01.000Z",
+    };
+    const retained: JonesOperationReceipt = {
+      ...receipt("completed"),
+      admission: {
+        targetTree: tree,
+        targetSource: source,
+        directiveId: operationId,
+        enrollmentId: id,
+        kind: "follower",
+      },
+      staged: { stagedHandle: "stage", sourceSha: source, sourceTree: tree, artifactId: 1 },
+    };
+    const { admission: _binding, ...unbound } = retained;
+    expect(validateReceipt(input, provisional)).toBe(true);
+    expect(operationOutstanding({ ...reserved, receipt: provisional })).toBe(true);
+    expect(
+      operationOutstanding({ ...reserved, receipt: provisional, unsupportedReceiptVerified: true }),
+    ).toBe(false);
+    expect(validateOperationEvidence(input, provisional)).toBe(false);
+    expect(validateOperationEvidence(input, provisional, { ledgerRead: true })).toBe(true);
+    expect(validateOperationEvidence(provisional, retained)).toBe(false);
+    expect(validateOperationEvidence(provisional, retained, { ledgerRead: true })).toBe(true);
+    expect(
+      validateOperationEvidence(
+        provisional,
+        { ...retained, phase: "running" },
+        { ledgerRead: true },
+      ),
+    ).toBe(true);
+    for (const different of [
+      unbound,
+      { ...retained, admission: { kind: "ordinary" as const } },
+      { ...retained, admission: { ...admission, enrollmentId: operationId } },
+      { ...retained, admission: { ...admission, directiveId: id } },
+      { ...retained, admission: { ...admission, targetSource: installed } },
+      { ...retained, admission: { ...admission, targetTree: source } },
+      { ...retained, updatedAt: "unknown" },
+      { ...retained, updatedAt: "2026-10-27T04:59:59.000Z" },
+    ])
+      expect(validateOperationEvidence(provisional, different, { ledgerRead: true })).toBe(false);
+    expect(validateReceipt(reserved.request.input, retained)).toBe(false);
+    expect(
+      validateReceipt({ ...provisional, jobId: operationId }, retained, { ledgerRead: true }),
+    ).toBe(false);
+    const conflict = { ...provisional, code: "operation-conflict" };
+    expect(validateReceipt(conflict, conflict)).toBe(true);
+    expect(validateOperationEvidence(input, conflict, { ledgerRead: true })).toBe(false);
+    expect(validateReceipt(conflict, retained, { ledgerRead: true })).toBe(false);
+    expect(validateReceipt(retained, { ...retained, phase: "running" }, { ledgerRead: true })).toBe(
+      false,
+    );
   });
 
   it("requires an exact install outcome; failure retains the reviewed stage", () => {

@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Promise driver supplies scheduling time; Date only parses native lease timestamps.
 import type { EnvironmentId } from "@t3tools/contracts";
 import type {
+  JonesInstallPlan,
   JonesInstallPlanDevice,
   JonesInstallPlanGrant,
   JonesInstallPlanHostOperation,
@@ -13,20 +14,30 @@ import type {
   JonesOperationReceipt,
   JonesOperationStartInput,
 } from "@t3tools/contracts/jones/jonesOperations";
+import type { JonesUpdatePolicy } from "@t3tools/contracts/jones/jonesUpdates";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
-import type { JonesOperationCommand, JonesUpdateObservation } from "../updates/jonesUpdates.ts";
+import {
+  isJonesOperationNotSentError,
+  type JonesOperationBeforeSend,
+  type JonesOperationCommand,
+  type JonesUpdateObservation,
+} from "../updates/jonesUpdates.ts";
 import type { FleetHostRequest } from "../fleetUpdates/hostBridge.ts";
 import {
+  allowsOperationRecovery,
+  canFenceWithUnavailableFleet,
   canReplayDirective,
   deviceActiveOperations,
   exactOperationRequest,
+  isPreacceptanceOperationConflict,
+  isProvisionalUnsupportedReceipt,
   matchPlanEnrollment,
   nextRunnerStep,
   sameDirectiveBinding,
   sameOperationBinding,
   supportsOperationReceiptReads,
   validateDirectiveEvidence,
-  validateReceipt,
+  validateOperationEvidence,
   type PlanEnrollmentMatch,
 } from "./model.ts";
 
@@ -45,8 +56,12 @@ export interface InstallPlanDriver {
   readonly authority: (device: JonesInstallPlanDevice) => {
     readonly canDispatch: boolean;
     readonly canReadReceipt: boolean;
+    readonly canReportReceipt?: boolean;
     readonly enrollment: PlanEnrollmentMatch;
     readonly fleetStatus: FleetHostStatus | null | undefined;
+    readonly reviewTarget?: JonesUpdatePolicy["reviewTarget"];
+    readonly boundAdmission?: 1;
+    readonly allowUnavailableFence?: boolean;
   };
   readonly operation: (
     environmentId: EnvironmentId,
@@ -77,15 +92,20 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
       const authority = () => driver.authority(device);
       const enrollment = matchPlanEnrollment(device, observation.state, fleetStatus);
       const step = nextRunnerStep(plan, device, observation, fleetStatus, driver.now());
-      const report = async (operationId: string, receipt: JonesOperationReceipt) => {
+      const report = async (receipt: JonesOperationReceipt, ledgerRead?: true) => {
         // Work already sent can settle after this window stops scheduling.
-        if (!authority().canReadReceipt) return;
+        const { canReadReceipt, canReportReceipt = canReadReceipt } = authority();
+        if (
+          !canReportReceipt ||
+          (receipt.staged !== undefined && receipt.staged.sourceTree !== plan.target.sourceTree)
+        )
+          return;
         await driver.desktop({
           type: "report",
           planId: plan.planId,
           environmentId: device.environmentId,
-          operationId,
-          evidence: { kind: "receipt", receipt },
+          operationId: receipt.operationId,
+          evidence: { kind: "receipt", receipt, ...(ledgerRead ? { ledgerRead } : {}) },
         });
       };
       if (step.kind === "wait") continue;
@@ -94,11 +114,14 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         prior?: JonesOperationReceipt,
       ) => {
         const status = observation.state;
+        const current = authority();
         if (
           driver.cancelled() ||
           status?.environmentId !== device.environmentId ||
           !supportsOperationReceiptReads(status.capability) ||
-          !authority().canReadReceipt
+          !current.canReadReceipt ||
+          !allowsOperationRecovery(enrollment, "read") ||
+          !allowsOperationRecovery(current.enrollment, "read")
         )
           return;
         const { operationId } = input;
@@ -106,14 +129,16 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
           action: "operationRead",
           input: { environmentId: device.environmentId, operationIds: [operationId] },
         });
-        if (!("receipts" in result)) return;
-        const receipt = result.receipts.find((r) => r.operationId === operationId)?.receipt;
+        if (!("receipts" in result) || result.receipts.length !== 1) return;
+        const exact = result.receipts[0];
+        if (exact?.operationId !== operationId) return;
+        const { receipt } = exact;
         if (
-          receipt != null &&
-          validateReceipt(input, receipt) &&
-          (prior === undefined || validateReceipt(prior, receipt))
+          receipt !== null &&
+          validateOperationEvidence(input, receipt, { ledgerRead: true }) &&
+          (prior === undefined || validateOperationEvidence(prior, receipt, { ledgerRead: true }))
         )
-          await report(operationId, receipt);
+          await report(receipt, true);
         // Null is absence, never proof of no effects or permission to send again.
       };
       const originalRequest = (operation: JonesInstallPlanHostOperation) =>
@@ -135,7 +160,8 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         continue;
       }
       if (step.kind === "report-directive") {
-        if (!authority().canReadReceipt) continue;
+        const current = authority();
+        if (!current.canReadReceipt || current.enrollment !== "match") continue;
         await driver.desktop({
           type: "report",
           planId: plan.planId,
@@ -166,23 +192,60 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
       const directive =
         reservation?.request.kind === "plan-directive" ? reservation.request.input : undefined;
       if (directive !== undefined && !canReplayDirective(directive, fleetStatus)) continue;
+      const recovery = step.kind === "claim-fence" ? "fence" : "start";
+      const allowUnavailableFence = canFenceWithUnavailableFleet(
+        device,
+        observation.state,
+        fleetStatus,
+      );
       const routeAllows = (current: ReturnType<typeof authority>) =>
-        step.kind === "claim-fence"
-          ? enrollment !== "changed" && current.enrollment !== "changed"
-          : enrollment === "match" && current.enrollment === "match";
-      const canMutate = (current: ReturnType<typeof authority>) =>
-        !driver.cancelled() &&
-        canOperate &&
-        current.canDispatch &&
-        routeAllows(current) &&
-        (step.kind === "claim-directive"
-          ? current.fleetStatus?.planDirectiveProtocol === 1 &&
+        allowsOperationRecovery(enrollment, recovery, allowUnavailableFence) &&
+        allowsOperationRecovery(
+          current.enrollment,
+          recovery,
+          current.allowUnavailableFence ??
+            (allowUnavailableFence && current.fleetStatus === undefined),
+        );
+      const canTargetBound = (current: ReturnType<typeof authority>) =>
+        observation.state?.capability.boundAdmission === 1 && current.boundAdmission === 1;
+      const canMutate = (
+        current: ReturnType<typeof authority>,
+        input: JonesOperationStartInput | undefined,
+      ) => {
+        if (
+          driver.cancelled() ||
+          !canOperate ||
+          !current.canDispatch ||
+          !routeAllows(current) ||
+          (input?.admission !== undefined && !canTargetBound(current))
+        )
+          return false;
+        if (step.kind === "claim-directive")
+          return (
+            current.fleetStatus?.planDirectiveProtocol === 1 &&
             (current.fleetStatus.follower?.planDirective?.directiveId ?? null) ===
               step.expectedDirectiveId
-          : directive === undefined || canReplayDirective(directive, current.fleetStatus));
+          );
+        if (directive !== undefined) return canReplayDirective(directive, current.fleetStatus);
+        return (
+          recovery === "fence" ||
+          (matchesForwardRoute(
+            plan,
+            device,
+            input,
+            fleetStatus,
+            observation.state?.policy?.reviewTarget,
+          ) &&
+            matchesForwardRoute(plan, device, input, current.fleetStatus, current.reviewTarget))
+        );
+      };
       const before = authority();
-      if (!canMutate(before)) {
-        if (pending !== undefined && !routeAllows(before)) await readReservation(pending);
+      if (!canMutate(before, original)) {
+        if (
+          pending !== undefined &&
+          (!routeAllows(before) || (original?.admission !== undefined && !canTargetBound(before)))
+        )
+          await readReservation(pending);
         continue;
       }
       // Reclaim through native main even for this window's own reservation: it rechecks the
@@ -215,6 +278,9 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
                   step: "download",
                   action: step.action,
                   expectedInstalledSource: step.expectedInstalledSource,
+                  ...(initial.state.view.boundAdmission === 1 && canTargetBound(before)
+                    ? { boundAdmission: 1 }
+                    : {}),
                 }
               : step.operation.request.kind === "plan-directive"
                 ? {
@@ -248,17 +314,35 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
       )
         continue;
       if (!matchesGrantRequest(grant, claim, plan.target, pending)) continue;
+      const request = grant.request;
+      const grantedInput =
+        request.kind === "operation-start" || request.kind === "operation-fence"
+          ? request.input
+          : undefined;
       const latest = authority();
-      if (!canMutate(latest)) {
-        const request = grant.request;
+      if (!canMutate(latest, grantedInput)) {
         if (
-          !routeAllows(latest) &&
-          (request.kind === "operation-start" || request.kind === "operation-fence")
+          grantedInput !== undefined &&
+          (!routeAllows(latest) ||
+            (grantedInput.admission !== undefined && !canTargetBound(latest)))
         )
-          await readReceipt(request.input);
+          await readReceipt(grantedInput);
         continue;
       }
-      await dispatchGrant(driver, grant, report);
+      const stillEligible = () =>
+        Date.parse(grant.leaseUntil) > driver.now() && canMutate(authority(), grantedInput);
+      const beforeSend: JonesOperationBeforeSend = async () => {
+        if (!stillEligible()) return false;
+        const native = await driver.desktop({ type: "read" });
+        return matchesActiveReservation(native, plan, device, grant, driver) && stillEligible();
+      };
+      try {
+        const needsLedgerRead = await dispatchGrant(driver, grant, beforeSend, report);
+        if (needsLedgerRead && grantedInput !== undefined) await readReceipt(grantedInput);
+      } catch (error) {
+        if (grantedInput?.admission !== undefined && !isJonesOperationNotSentError(error))
+          await readReceipt(grantedInput);
+      }
     } catch {
       // A later pass reconciles only the exact pending operation, under a native lease.
       // A disconnected host does not prevent other selected hosts from making progress.
@@ -268,6 +352,107 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
 
 function actionSource({ action }: JonesOperationStartInput) {
   return action.kind === "download" ? action.sourceSha : action.targetSource;
+}
+
+/** Qualifies the matched route against the plan's exact applied follower directive. */
+export function matchesForwardRoute(
+  plan: JonesInstallPlan,
+  device: JonesInstallPlanDevice,
+  input: JonesOperationStartInput | undefined,
+  status: FleetHostStatus | null | undefined,
+  reviewTarget?: JonesUpdatePolicy["reviewTarget"],
+): boolean {
+  const admission = input?.admission;
+  if (device.route === "operations") return admission?.kind !== "follower";
+  const applied = deviceActiveOperations(device).findLast(
+    (op) => op.request.kind === "plan-directive" && op.directive?.kind === "applied",
+  );
+  if (
+    applied?.request.kind !== "plan-directive" ||
+    applied.directive?.kind !== "applied" ||
+    status == null
+  )
+    return false;
+  const original = applied.request.input;
+  return (
+    original.environmentId === device.environmentId &&
+    original.enrollmentId === device.enrollmentId &&
+    original.directiveId === applied.operationId &&
+    original.directiveId === applied.directive.directive.directiveId &&
+    original.targetSource === plan.target.sourceSha &&
+    original.targetTree === plan.target.sourceTree &&
+    validateDirectiveEvidence(original, status) &&
+    (reviewTarget === undefined ||
+      (reviewTarget.directiveId === original.directiveId &&
+        reviewTarget.source === original.targetSource &&
+        reviewTarget.tree === original.targetTree)) &&
+    (admission === undefined ||
+      (admission.kind === "follower" &&
+        admission.enrollmentId === original.enrollmentId &&
+        admission.directiveId === original.directiveId &&
+        admission.targetSource === original.targetSource &&
+        admission.targetTree === original.targetTree))
+  );
+}
+
+function matchesActiveReservation(
+  native: JonesInstallPlanResult,
+  originalPlan: JonesInstallPlan,
+  originalDevice: JonesInstallPlanDevice,
+  grant: JonesInstallPlanGrant,
+  driver: Pick<InstallPlanDriver, "claimant" | "now">,
+): boolean {
+  const request = grant.request;
+  if (request.kind !== "operation-start" && request.kind !== "operation-fence") return false;
+  const plan = native.state.current;
+  if (
+    native.refused !== undefined ||
+    native.state.readOnly !== undefined ||
+    plan?.planId !== originalPlan.planId ||
+    plan.dismissedAt !== undefined ||
+    plan.supersededAt !== undefined ||
+    plan.cancelled === true ||
+    plan.target.repository !== originalPlan.target.repository ||
+    plan.target.sourceSha !== originalPlan.target.sourceSha ||
+    plan.target.sourceTree !== originalPlan.target.sourceTree
+  )
+    return false;
+  const device = plan.devices.find((d) => d.environmentId === grant.environmentId);
+  if (
+    device?.membership !== "selected" ||
+    device.abandoning === true ||
+    device.route !== originalDevice.route ||
+    device.enrollmentId !== originalDevice.enrollmentId
+  )
+    return false;
+  const operation = deviceActiveOperations(device).find(
+    (op) => op.operationId === grant.operationId,
+  );
+  const original = operation && exactOperationRequest(plan.planId, device.environmentId, operation);
+  if (
+    operation === undefined ||
+    original === undefined ||
+    operation.step !== (request.input.action.kind === "install" ? "install" : "download") ||
+    operation.receipt !== undefined ||
+    !sameOperationBinding(original, request.input)
+  )
+    return false;
+  const fence = request.kind === "operation-fence";
+  const lease = fence ? operation.fence?.lease : operation.lease;
+  if (lease?.claimant !== driver.claimant || lease.leaseUntil !== grant.leaseUntil) return false;
+  if (fence) {
+    const originalExpiry = Date.parse(operation.lease.leaseUntil);
+    return Number.isFinite(originalExpiry) && originalExpiry <= driver.now();
+  }
+  return (
+    !native.state.laptop.activationBlocked &&
+    plan.laptop.gate !== undefined &&
+    plan.laptop.gateClosed === undefined &&
+    plan.laptop.gatePause !== true &&
+    device.ended === undefined &&
+    device.verifiedElsewhere === undefined &&
+    operation.fence === undefined
+  );
 }
 
 function matchesGrantRequest(
@@ -308,16 +493,23 @@ function matchesGrantRequest(
       !sameOperationBinding(pending.request.input, input))
   )
     return false;
-  return request.kind === "operation-fence"
-    ? claim.step === "fence" && pending !== undefined
-    : claim.step === "download" && input.action.kind !== "install";
+  if (request.kind === "operation-fence") return claim.step === "fence" && pending !== undefined;
+  return (
+    claim.step === "download" &&
+    claim.action !== undefined &&
+    input.action.kind !== "install" &&
+    input.expectedInstalledSource === claim.expectedInstalledSource &&
+    sameOperationBinding(input, { ...input, action: claim.action }) &&
+    (pending !== undefined || (claim.boundAdmission === 1) === (input.admission !== undefined))
+  );
 }
 
 async function dispatchGrant(
   driver: InstallPlanDriver,
   grant: JonesInstallPlanGrant,
-  report: (operationId: string, receipt: JonesOperationReceipt) => Promise<void>,
-): Promise<void> {
+  beforeSend: JonesOperationBeforeSend,
+  report: (receipt: JonesOperationReceipt) => Promise<void>,
+): Promise<boolean> {
   const request = grant.request;
   if (request.kind === "plan-directive") {
     try {
@@ -336,20 +528,16 @@ async function dispatchGrant(
     } catch {
       // A refusal or lost reply cannot settle every captured send of this ID.
     }
-    return;
+    return false;
   }
-  if (request.kind !== "operation-start" && request.kind !== "operation-fence") return;
+  if (request.kind !== "operation-start" && request.kind !== "operation-fence") return false;
   const receipt = await driver.operation(
     grant.environmentId,
     request.kind === "operation-start"
-      ? { action: "operationStart", input: request.input }
-      : { action: "operationFence", input: request.input },
+      ? { action: "operationStart", input: request.input, beforeSend }
+      : { action: "operationFence", input: request.input, beforeSend },
   );
-  if (
-    !("receipts" in receipt) &&
-    receipt.operationId === grant.operationId &&
-    receipt.environmentId === grant.environmentId &&
-    validateReceipt(request.input, receipt)
-  )
-    await report(grant.operationId, receipt);
+  if ("receipts" in receipt) return false;
+  if (validateOperationEvidence(request.input, receipt)) await report(receipt);
+  return isProvisionalUnsupportedReceipt(receipt) || isPreacceptanceOperationConflict(receipt);
 }

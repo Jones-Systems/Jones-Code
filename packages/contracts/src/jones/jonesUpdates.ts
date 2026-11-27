@@ -86,6 +86,8 @@ export const JonesUpdateCapability = Schema.Struct({
   replaceStaged: Schema.optionalKey(Schema.Boolean),
   /** New durable operations require download and install support. */
   operations: Schema.optionalKey(Schema.Literal(1)),
+  /** This host supports the V2 start and fence routes for admission-bound operations. */
+  boundAdmission: Schema.optionalKey(Schema.Literal(1)),
   /** Exact receipts remain readable on this host while new durable operations are disabled. */
   operationReceipts: Schema.optionalKey(Schema.Literal(1)),
   recoveryPolicy: Schema.optionalKey(Schema.Literal(1)),

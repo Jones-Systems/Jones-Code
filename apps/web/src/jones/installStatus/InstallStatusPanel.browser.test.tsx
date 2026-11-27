@@ -10,6 +10,7 @@ import { startInstallPlanController } from "./InstallPlanController";
 import { startInstallStatusPoller } from "./InstallStatusPoller";
 import { bindInstallPlanServices, type InstallPlanServices } from "./services";
 import { STATUS_POLL_CADENCE } from "@t3tools/client-runtime/jones/install-plan";
+import { JonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
 import { handOffJonesTargets, routeInstallStatusPill } from "./entrypoints";
 import { createScriptedInstallPlan, FIXTURE_HOSTS } from "../updates/fixtures/install-preview-plan";
 
@@ -138,6 +139,7 @@ async function setup(
               ? options.refuseFirstInstall
               : options.refuseFirstDownload)
           ) {
+            if (!(await command.beforeSend?.())) throw new JonesOperationNotSentError({});
             calls.push({
               action: "fixture-host-operationStart",
               input: { environmentId: id, input: command.input },
@@ -554,6 +556,11 @@ describe("Install status receipt fixture", () => {
     expect(screen.container.textContent).toContain("Retry download");
     const original = fixture.snapshot().current!.devices[0]!.operations.at(-1)!;
     expect(original.receipt?.acceptedAt).toBeUndefined();
+    expect(original.request).toMatchObject({
+      kind: "operation-start",
+      input: { admission: { kind: "ordinary" } },
+    });
+    expect(original.receipt?.admission).toEqual({ kind: "ordinary" });
     const sent = () => calls.filter((call) => call.action === "fixture-host-operationStart");
     expect(sent()).toHaveLength(1);
     await click(screen, "Refresh now");

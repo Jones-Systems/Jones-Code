@@ -11,8 +11,15 @@ import {
   type JonesOperationPhase,
 } from "@t3tools/contracts/jones/jonesOperations";
 import { withQualifiedRuntimeLock } from "../../cloud/qualifiedRuntime.ts";
-import { ownedDirectory, read, replace, serialized } from "../../fleetUpdates/store.ts";
+import {
+  ownedDirectory,
+  read,
+  replace,
+  serialized,
+  syncDirectory,
+} from "../../fleetUpdates/store.ts";
 
+const SCAN_BATCH = 32;
 const isReceipt = Schema.is(JonesOperationReceipt);
 const isId = Schema.is(JonesOperationId);
 const unsettled = new Set<JonesOperationPhase>([
@@ -55,8 +62,9 @@ const sameIntent = (a: JonesOperationReceipt, b: JonesOperationStartInput) =>
   a.environmentId === b.environmentId &&
   a.expectedInstalledSource === b.expectedInstalledSource &&
   NodeUtil.isDeepStrictEqual(a.action, b.action) &&
-  NodeUtil.isDeepStrictEqual(a.correlation, b.correlation);
-export function operationReceipt(
+  NodeUtil.isDeepStrictEqual(a.correlation, b.correlation) &&
+  NodeUtil.isDeepStrictEqual(a.admission, b.admission);
+function operationReceipt(
   input: JonesOperationStartInput,
   phase: JonesOperationPhase,
 ): JonesOperationReceipt {
@@ -69,8 +77,28 @@ export function operationReceipt(
     ...(phase === "accepted" ? { acceptedAt: now } : {}),
   };
 }
-export function operationTombstone(input: JonesOperationStartInput): JonesOperationReceipt {
-  return operationReceipt(input, "fenced");
+export function replayOperationReceipt(
+  old: JonesOperationReceipt,
+  input: JonesOperationStartInput,
+) {
+  if (
+    sameIntent(old, input) ||
+    (old.phase === "fenced" && old.environmentId === input.environmentId)
+  )
+    return old;
+  return {
+    ...operationReceipt(input, "refused"),
+    code: "operation-conflict",
+    message: "This operation ID is already bound to another request.",
+  } satisfies JonesOperationReceipt;
+}
+
+export function replayOperationFence(old: JonesOperationReceipt, input: JonesOperationStartInput) {
+  if (old.environmentId !== input.environmentId)
+    throw new Error("Fence environment binding changed.");
+  if (old.phase !== "fenced" && !sameIntent(old, input))
+    throw new Error("Fence conflicts with the operation's original request.");
+  return old;
 }
 export function createOperationLedger(baseDir: string) {
   const directory = NodePath.join(baseDir, "runtime", "jones-operations");
@@ -82,7 +110,11 @@ export function createOperationLedger(baseDir: string) {
     serialized(directory, async () => {
       await ownedDirectory(NodePath.dirname(directory), false);
       await ownedDirectory(directory, true);
-      return withQualifiedRuntimeLock(baseDir, "jones-operations", f);
+      return withQualifiedRuntimeLock(baseDir, "jones-operations", async () => {
+        // Any writer may have renamed a receipt before its directory sync failed.
+        await syncDirectory(directory);
+        return f();
+      });
     });
   const load = async (id: string) => {
     const receipt = await read(path(id), isReceipt, 16 * 1024);
@@ -96,31 +128,36 @@ export function createOperationLedger(baseDir: string) {
     await replace(path(receipt.operationId), receipt);
     return receipt;
   };
-  const existing = (old: JonesOperationReceipt, input: JonesOperationStartInput) =>
-    (old.phase === "fenced" && old.environmentId === input.environmentId) || sameIntent(old, input)
-      ? old
-      : ({
-          ...operationReceipt(input, "refused"),
-          code: "operation-conflict",
-          message: "This operation ID is already bound to another request.",
-        } satisfies JonesOperationReceipt);
   const create = (input: JonesOperationStartInput, refusal?: { code: string; message: string }) =>
     locked(async () => {
       const old = await load(input.operationId);
-      if (old !== null) return { created: false, receipt: existing(old, input) };
+      if (old !== null) return { created: false, receipt: replayOperationReceipt(old, input) };
       const receipt =
         refusal === undefined
           ? operationReceipt(input, "accepted")
           : { ...operationReceipt(input, "refused"), ...refusal };
       return { created: true, receipt: await save(receipt) };
     });
+  const readMany = (ids: readonly string[]) =>
+    locked(async () => {
+      const receipts = [];
+      for (const operationId of ids)
+        receipts.push({ operationId, receipt: await load(operationId) });
+      return receipts;
+    });
   return {
     read: (id: string) => locked(() => load(id)),
+    readMany,
     accept: (input: JonesOperationStartInput) => create(input),
     refuse: (input: JonesOperationStartInput, code: string, message: string) =>
       create(input, { code, message }),
     fence: (input: JonesOperationStartInput) =>
-      locked(async () => (await load(input.operationId)) ?? save(operationTombstone(input))),
+      locked(async () => {
+        const old = await load(input.operationId);
+        return old === null
+          ? save(operationReceipt(input, "fenced"))
+          : replayOperationFence(old, input);
+      }),
     transition: (id: string, change: (old: JonesOperationReceipt) => JonesOperationReceipt) =>
       locked(async () => {
         const old = await load(id);
@@ -152,12 +189,19 @@ export function createOperationLedger(baseDir: string) {
     // Streaming validation keeps memory bounded. The history is never capped or silently pruned:
     // age/count alone cannot prove that a plan no longer references an operation ID.
     listUnsettled: async function* () {
-      await locked(async () => undefined);
-      for await (const entry of await NodeFSP.opendir(directory)) {
+      const entries = await locked(() => NodeFSP.opendir(directory));
+      let ids: string[] = [];
+      for await (const entry of entries) {
         if (!entry.name.endsWith(".json") || !isId(entry.name.slice(0, -5))) continue;
-        const receipt = await locked(() => load(entry.name.slice(0, -5)));
-        if (receipt !== null && unsettled.has(receipt.phase)) yield receipt;
+        ids.push(entry.name.slice(0, -5));
+        if (ids.length < SCAN_BATCH) continue;
+        for (const { receipt } of await readMany(ids))
+          if (receipt !== null && unsettled.has(receipt.phase)) yield receipt;
+        ids = [];
       }
+      if (ids.length > 0)
+        for (const { receipt } of await readMany(ids))
+          if (receipt !== null && unsettled.has(receipt.phase)) yield receipt;
     },
   };
 }

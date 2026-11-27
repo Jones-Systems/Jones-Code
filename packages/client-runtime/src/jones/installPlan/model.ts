@@ -55,33 +55,91 @@ function equal(left: unknown, right: unknown): boolean {
 
 const isReceipt = Schema.is(ReceiptSchema);
 
+type ReceiptEvidenceOptions = { readonly ledgerRead?: boolean };
+
+export function isProvisionalUnsupportedReceipt(receipt: JonesOperationReceipt): boolean {
+  return (
+    receipt.phase === "refused" &&
+    receipt.code === "unsupported" &&
+    receipt.acceptedAt === undefined
+  );
+}
+
+export function isPreacceptanceOperationConflict(receipt: JonesOperationReceipt): boolean {
+  return (
+    receipt.phase === "refused" &&
+    receipt.code === "operation-conflict" &&
+    receipt.acceptedAt === undefined
+  );
+}
+
+function hasExecutionEvidence(receipt: JonesOperationReceipt): boolean {
+  return (
+    receipt.jobId !== undefined ||
+    receipt.staged !== undefined ||
+    receipt.stageRetiredAt !== undefined ||
+    receipt.updateId !== undefined ||
+    receipt.outcome !== undefined ||
+    receipt.recovery !== undefined
+  );
+}
+
+/** A host conflict describes another ledger binding. Older unsupported replies need exact readback. */
+export function validateOperationEvidence(
+  prev: JonesOperationStartInput | JonesOperationReceipt,
+  next: JonesOperationReceipt,
+  options: ReceiptEvidenceOptions = {},
+): boolean {
+  return (
+    !isPreacceptanceOperationConflict(next) &&
+    (options.ledgerRead === true || !isProvisionalUnsupportedReceipt(next)) &&
+    validateReceipt(prev, next, options)
+  );
+}
+
 /** Validate against the original request first, then against the last accepted receipt. */
 export function validateReceipt(
   prev: JonesOperationStartInput | JonesOperationReceipt,
   next: JonesOperationReceipt,
+  options: ReceiptEvidenceOptions = {},
 ): boolean {
   if (!isReceipt(next)) return false;
   const updatedAt = Date.parse(next.updatedAt);
   if (!Number.isFinite(updatedAt)) return false;
-  if (!["refused", "fenced"].includes(next.phase) && next.acceptedAt === undefined) return false;
+  if (next.acceptedAt === undefined) {
+    if (!["refused", "fenced"].includes(next.phase) || hasExecutionEvidence(next)) return false;
+  } else {
+    const acceptedAt = Date.parse(next.acceptedAt);
+    if (!Number.isFinite(acceptedAt) || acceptedAt > updatedAt || next.phase === "fenced")
+      return false;
+  }
   for (const key of [
     "operationId",
     "environmentId",
     "action",
     "expectedInstalledSource",
     "correlation",
+    "admission",
   ] as const) {
     if (!equal(prev[key], next[key])) return false;
   }
   const action = next.action;
+  const source = action.kind === "download" ? action.sourceSha : action.targetSource;
+  const admission = next.admission;
+  if (
+    admission !== undefined &&
+    (next.correlation === undefined ||
+      (admission.kind === "follower" &&
+        (admission.targetSource !== source ||
+          (next.staged !== undefined && next.staged.sourceTree !== admission.targetTree))))
+  )
+    return false;
   if (
     next.staged !== undefined &&
-    (next.staged.sourceSha !==
-      (action.kind === "download" ? action.sourceSha : action.targetSource) ||
+    (next.staged.sourceSha !== source ||
       (action.kind === "download" && next.staged.artifactId !== action.artifactId))
   )
     return false;
-  if (next.phase === "fenced" && next.acceptedAt !== undefined) return false;
   if (next.phase === "completed") {
     if (action.kind === "install") {
       if (next.updateId !== next.operationId || next.outcome?.status !== "committed") return false;
@@ -99,6 +157,16 @@ export function validateReceipt(
     return false;
   if (!("phase" in prev)) return true;
   const previousUpdate = Date.parse(prev.updatedAt);
+  if (prev.protocol !== next.protocol || !Number.isFinite(previousUpdate)) return false;
+  if (
+    options.ledgerRead === true &&
+    isProvisionalUnsupportedReceipt(prev) &&
+    prev.stop === undefined &&
+    !hasExecutionEvidence(prev)
+  ) {
+    // The synthetic reply's clock does not order the durable ledger.
+    return true;
+  }
   if (updatedAt < previousUpdate) return false;
   // A stable field may first appear as work advances, but cannot be removed or rebound.
   for (const key of ["acceptedAt", "jobId", "staged", "updateId", "outcome", "recovery"] as const) {
@@ -267,36 +335,74 @@ export function supportsInstallPlanMutations(capability: JonesUpdateState["capab
   return capability.operations === 1 && capability.download && capability.install;
 }
 
-export type PlanEnrollmentMatch = "match" | "unknown" | "changed";
+export type PlanEnrollmentMatch = "match" | "unknown" | "identity-changed" | "route-changed";
 
-/** A missing fleet read is unknown. A null fleet status is evidence for the ordinary route. */
+type PlanEnrollment = Pick<JonesInstallPlanDevice, "environmentId" | "route" | "enrollmentId">;
+
+function hostIdentityChanged(
+  environmentId: EnvironmentId,
+  state: JonesUpdateState | null,
+  fleetStatus: FleetHostStatus | null | undefined,
+): boolean {
+  const statusId = state?.environmentId;
+  const fleetUpdateId = fleetStatus?.update?.environmentId;
+  const enrollment = fleetStatus?.enrollment;
+  return (
+    (statusId !== undefined && statusId !== environmentId) ||
+    (fleetStatus != null && fleetStatus.environmentId !== environmentId) ||
+    (fleetUpdateId !== undefined && fleetUpdateId !== environmentId) ||
+    (enrollment != null && enrollment.environmentId !== environmentId)
+  );
+}
+
+/** Route evidence pairs a fresh ordinary status with a fresh fleet status from the same host. */
 export function matchPlanEnrollment(
-  device: Pick<JonesInstallPlanDevice, "environmentId" | "route" | "enrollmentId">,
+  device: PlanEnrollment,
   state: JonesUpdateState | null,
   fleetStatus: FleetHostStatus | null | undefined,
 ): PlanEnrollmentMatch {
   const { environmentId, route, enrollmentId } = device;
-  const enrollment = fleetStatus?.enrollment;
-  const fleetUpdateId = fleetStatus?.update?.environmentId;
-  if (
-    (state?.environmentId !== undefined && state.environmentId !== environmentId) ||
-    (fleetStatus != null && fleetStatus.environmentId !== environmentId) ||
-    (fleetUpdateId !== undefined && fleetUpdateId !== environmentId) ||
-    (enrollment != null && enrollment.environmentId !== environmentId) ||
-    (route === "operations" &&
-      (enrollmentId !== undefined ||
-        state?.policy !== undefined ||
-        fleetStatus?.update?.policy !== undefined))
-  )
-    return "changed";
-  if (fleetStatus === undefined) return "unknown";
-  if (
+  if (hostIdentityChanged(environmentId, state, fleetStatus)) return "identity-changed";
+  if (state?.environmentId !== environmentId || fleetStatus === undefined) return "unknown";
+  if (route === "operations" && enrollmentId !== undefined) return "unknown";
+  if (route === "follower-operations" && enrollmentId === undefined) return "unknown";
+  if (fleetStatus === null)
+    return route === "operations" && state.policy === undefined ? "match" : "unknown";
+  const { enrollment } = fleetStatus;
+  const sameRoute =
     route === "operations"
-      ? enrollment?.enabled === true
-      : enrollment?.enabled !== true || enrollment.enrollmentId !== enrollmentId
-  )
-    return "changed";
-  return state?.environmentId === environmentId ? "match" : "unknown";
+      ? enrollment?.enabled !== true &&
+        state.policy === undefined &&
+        fleetStatus.update?.policy === undefined
+      : enrollment?.enabled === true && enrollment.enrollmentId === enrollmentId;
+  return sameRoute ? "match" : "route-changed";
+}
+
+/** Compatibility for automatic fences when only the fleet status read is unavailable. */
+export function canFenceWithUnavailableFleet(
+  device: PlanEnrollment,
+  state: JonesUpdateState | null,
+  fleetStatus: FleetHostStatus | null | undefined,
+): boolean {
+  return (
+    state?.environmentId === device.environmentId &&
+    fleetStatus === undefined &&
+    (device.route === "operations"
+      ? device.enrollmentId === undefined && state.policy === undefined
+      : device.enrollmentId !== undefined)
+  );
+}
+
+/** Callers separately qualify the exact operation, current host scope, and applicable lease. */
+export function allowsOperationRecovery(
+  enrollment: PlanEnrollmentMatch,
+  action: "read" | "start" | "fence" | "stop" | "cleanup",
+  allowUnavailableFence = false,
+): boolean {
+  if (enrollment === "identity-changed") return false;
+  if (enrollment === "match" || action === "read") return true;
+  if (action === "start") return false;
+  return enrollment === "route-changed" || (action === "fence" && allowUnavailableFence);
 }
 
 export function selectability(
@@ -315,11 +421,7 @@ export function selectability(
     return { selectable: false, reason: "This host has no verified environment identity." };
   if (fleetStatus === undefined)
     return { selectable: false, reason: "Waiting for fleet enrollment status." };
-  if (
-    fleetStatus !== undefined &&
-    fleetStatus !== null &&
-    fleetStatus.environmentId !== state.environmentId
-  )
+  if (hostIdentityChanged(state.environmentId, state, fleetStatus))
     return { selectable: false, reason: "The host identity changed." };
   const enrollment = fleetStatus?.enrollment;
   if (enrollment?.enabled) {
@@ -486,6 +588,27 @@ export function operationOutstanding(operation: JonesInstallPlanHostOperation): 
   return outstanding(operation);
 }
 
+export function operationHasUnverifiedUnsupported(
+  operation: JonesInstallPlanHostOperation,
+): boolean {
+  return (
+    operation.receipt !== undefined &&
+    isProvisionalUnsupportedReceipt(operation.receipt) &&
+    operation.unsupportedReceiptVerified !== true
+  );
+}
+
+export function canFenceExpiredOperation(
+  operation: JonesInstallPlanHostOperation,
+  now: number,
+): boolean {
+  return (
+    operation.request.kind === "operation-start" &&
+    (operation.receipt === undefined || operationHasUnverifiedUnsupported(operation)) &&
+    Date.parse(operation.lease.leaseUntil) <= now
+  );
+}
+
 export function hasUnconfirmedLauncherOutcome(receipt: JonesOperationReceipt | undefined): boolean {
   return receipt?.code === "launcher-unconfirmed" || receipt?.code === "launcher-unreadable";
 }
@@ -497,7 +620,9 @@ export function isSettledOperationReceipt(receipt: JonesOperationReceipt): boole
 function outstanding(operation: JonesInstallPlanHostOperation): boolean {
   return operation.step === "directive"
     ? operation.directive === undefined && operation.directiveFence === undefined
-    : operation.receipt === undefined || !isSettledOperationReceipt(operation.receipt);
+    : operation.receipt === undefined ||
+        !isSettledOperationReceipt(operation.receipt) ||
+        operationHasUnverifiedUnsupported(operation);
 }
 
 /** Recovery follows all retained work, even after visual completion or a membership change. */
@@ -575,7 +700,8 @@ export function deviceLedgerState(
       const receipt = latest.receipt;
       if (receipt === undefined)
         return Date.parse(latest.lease.leaseUntil) > now ? "reserved" : "unknown";
-      if (hasUnconfirmedLauncherOutcome(receipt)) return "unknown";
+      if (hasUnconfirmedLauncherOutcome(receipt) || operationHasUnverifiedUnsupported(latest))
+        return "unknown";
       if (receipt.phase === "held") return "held";
       if (receipt.phase === "fenced") return "fenced";
       if (receipt.phase === "stop-requested") return "stop-requested";
@@ -781,21 +907,25 @@ export function nextRunnerStep(
   const capability = state.capability;
   const mutationsSupported = supportsInstallPlanMutations(capability);
   const enrollment = matchPlanEnrollment(device, state, fleetStatus);
+  if (!allowsOperationRecovery(enrollment, "read"))
+    return wait("The selected host identity changed.");
   const operations = deviceActiveOperations(device);
   const pending = operations.find(outstanding);
   if (pending?.request.kind === "operation-start") {
     const leaseUntil = Date.parse(pending.lease.leaseUntil);
+    const leaseLive = leaseUntil > now;
+    const allowFence = canFenceWithUnavailableFleet(device, state, fleetStatus);
     if (
       pending.receipt !== undefined ||
       !mutationsSupported ||
+      (pending.request.input.admission !== undefined && capability.boundAdmission !== 1) ||
       !Number.isFinite(leaseUntil) ||
-      enrollment === "changed" ||
-      (enrollment === "unknown" && leaseUntil > now)
+      !allowsOperationRecovery(enrollment, leaseLive ? "start" : "fence", allowFence)
     )
       return supportsOperationReceiptReads(capability)
         ? { kind: "read", operation: pending }
         : wait("Fresh receipt capability is required.");
-    return leaseUntil > now
+    return leaseLive
       ? { kind: "reservation", operation: pending }
       : { kind: "claim-fence", operationId: pending.operationId };
   }
@@ -805,6 +935,7 @@ export function nextRunnerStep(
     pending.request.input.environmentId === device.environmentId &&
     pending.request.input.directiveId === pending.operationId &&
     capability.operations === 1 &&
+    enrollment === "match" &&
     fleetStatus != null &&
     validateDirectiveEvidence(pending.request.input, fleetStatus)
   )

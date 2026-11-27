@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Promise entrypoints use injected clocks for reviews and native lease admission; Date only parses/formats those clocks.
+import { mFallback, msg } from "gt-i18n";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesInstallPlanGrant,
@@ -16,12 +17,18 @@ import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import {
   jonesInstallRefusal,
   jonesUpdatePresentation,
+  isJonesOperationNotSentError,
   resolveJonesExactSourceAction,
   type JonesAction,
   type JonesExactSourceInput,
+  type JonesOperationBeforeSend,
   type JonesUpdateObservation,
 } from "./jonesUpdates.ts";
-import { validateReceipt } from "../installPlan/model.ts";
+import {
+  isPreacceptanceOperationConflict,
+  validateOperationEvidence,
+  validateReceipt,
+} from "../installPlan/model.ts";
 
 export type JonesDownloadResolution =
   | { readonly kind: "ready"; readonly action: JonesOperationAction }
@@ -88,7 +95,10 @@ export type JonesPlanGateResult =
 export interface JonesExecutorHost {
   readonly readLatest: () => JonesExecutorSnapshot;
   readonly legacy: (request: JonesAction) => Promise<JonesUpdateState | null>;
-  readonly start: (input: JonesOperationStartInput) => Promise<JonesOperationReceipt>;
+  readonly start: (
+    input: JonesOperationStartInput,
+    beforeSend?: JonesOperationBeforeSend,
+  ) => Promise<JonesOperationReceipt>;
   readonly confirm: (message: string) => Promise<boolean>;
   readonly preflight?: (input: JonesRecoveryPreflightInput) => Promise<JonesRecoveryPreflight>;
   readonly chooseRecovery?: (
@@ -432,9 +442,34 @@ export async function executeJonesAction(input: {
             };
       if (request.expectedInstalledSource !== state.installedSource.sha)
         return refused("changed", "The host changed after the native grant.");
+      if (request.admission !== undefined && state.capability.boundAdmission !== 1)
+        return refused(
+          "unsupported",
+          "The host cannot accept this bound operation. Read its exact receipt.",
+        );
+      const beforeSend = () => {
+        const current = input.host.readLatest();
+        const status = current.observation.state;
+        return (
+          !input.cancelled?.() &&
+          (grant === undefined || Date.parse(grant.leaseUntil) > (input.now ?? Date.now)()) &&
+          status?.capability.operations === 1 &&
+          (request.admission === undefined || status.capability.boundAdmission === 1) &&
+          status.installedSource?.sha === request.expectedInstalledSource &&
+          validate(current) === undefined
+        );
+      };
       dispatched = true;
-      const receipt = await input.host.start(request);
-      if (!validateReceipt(request, receipt))
+      const receipt = await input.host.start(request, beforeSend);
+      if (isPreacceptanceOperationConflict(receipt) && validateReceipt(request, receipt))
+        return {
+          kind: "unknown",
+          code: "operation-conflict",
+          message:
+            receipt.message ??
+            mFallback(msg("This operation ID is already bound to another request.")),
+        };
+      if (!validateOperationEvidence(request, receipt))
         return {
           kind: "unknown",
           code: "invalid-receipt",
@@ -496,7 +531,8 @@ export async function executeJonesAction(input: {
       state: result,
       message: "Request accepted. Install always requires a separate review.",
     };
-  } catch {
+  } catch (error) {
+    if (isJonesOperationNotSentError(error)) return refused("not-sent", "Nothing was sent.");
     return dispatched
       ? {
           kind: "unknown",

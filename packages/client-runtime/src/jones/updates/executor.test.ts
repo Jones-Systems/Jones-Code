@@ -14,6 +14,7 @@ import {
   type JonesExecutorHost,
   type JonesExecutorSnapshot,
 } from "./executor.ts";
+import { JonesOperationNotSentError } from "./jonesUpdates.ts";
 
 const env = EnvironmentId.make("executor-host");
 const source = "a".repeat(40),
@@ -268,6 +269,54 @@ describe("shared Jones action execution", () => {
       kind: "refused",
       code: "cancelled",
     });
+  });
+
+  it("keeps manual operations unbound and recognizes a local veto at dispatch", async () => {
+    const f = fixture();
+    f.host.start.mockImplementationOnce(async (input, beforeSend) => {
+      expect(input).not.toHaveProperty("admission");
+      expect(input).not.toHaveProperty("correlation");
+      expect(await beforeSend?.()).toBe(true);
+      f.host.readLatest.mockReturnValueOnce({
+        observation: { freshness: "fresh", state: f.state() },
+        canOperate: false,
+      });
+      expect(await beforeSend?.()).toBe(false);
+      throw new JonesOperationNotSentError({});
+    });
+    expect(
+      await executeJonesAction({
+        environmentId: env,
+        targetSource: source,
+        action: download,
+        operationId,
+        host: f.host,
+      }),
+    ).toMatchObject({ kind: "refused", code: "not-sent" });
+    expect(f.host.legacy).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the host's conflict message while leaving the request unresolved", async () => {
+    const f = fixture();
+    const message = "This operation ID is already bound to another request.";
+    f.host.start.mockImplementationOnce(async (input) => ({
+      ...input,
+      protocol: 1,
+      phase: "refused",
+      code: "operation-conflict",
+      message,
+      updatedAt: new Date(now).toISOString(),
+    }));
+
+    expect(
+      await executeJonesAction({
+        environmentId: env,
+        targetSource: source,
+        action: download,
+        operationId,
+        host: f.host,
+      }),
+    ).toEqual({ kind: "unknown", code: "operation-conflict", message });
   });
 
   it("retains lost legacy download results as unknown and never retries through another endpoint", async () => {

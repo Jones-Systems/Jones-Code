@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - Native coordinator supplies clocks and validates captured worker exit evidence.
 import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 import * as NodeCrypto from "node:crypto";
 import { canonicalJonesCommand } from "@t3tools/client-runtime/jones/updates/action-journal";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -18,15 +19,19 @@ import {
   type JonesInstallPlanGrant,
   type JonesInstallPlanReview,
 } from "@t3tools/contracts/jones/installPlan";
+import type { JonesOperationAdmission } from "@t3tools/contracts/jones/jonesOperations";
 import {
   startPlan,
   applyEdit,
   canSupersede,
   isPlanComplete,
   validateReceipt,
+  validateOperationEvidence,
   validateDirectiveEvidence,
   validateDirectiveFenceEvidence,
   hasUnconfirmedLauncherOutcome,
+  canFenceExpiredOperation,
+  isProvisionalUnsupportedReceipt,
   deviceHasRecoveryDuty,
   planHasLaptopRecoveryDuty,
   deviceActiveOperations,
@@ -211,16 +216,44 @@ function matchesOperationTarget(
       input.targetTree === plan.target.sourceTree
     );
   }
-  const { action, correlation, operationId } = request.input;
+  const { action, admission, correlation, operationId } = request.input;
   return (
     operationId === operation.operationId &&
     operation.step !== "directive" &&
     (operation.step === "install") === (action.kind === "install") &&
     (action.kind === "download" ? action.sourceSha : action.targetSource) ===
       plan.target.sourceSha &&
+    (admission?.kind !== "follower" ||
+      (admission.targetSource === plan.target.sourceSha &&
+        admission.targetTree === plan.target.sourceTree)) &&
     correlation?.planId === plan.planId &&
     correlation.deviceKey === device.environmentId
   );
+}
+
+function appliedFollowerAdmission(
+  plan: JonesInstallPlan,
+  device: JonesInstallPlanDevice,
+  operation: JonesInstallPlanHostOperation | undefined,
+): Extract<JonesOperationAdmission, { kind: "follower" }> | undefined {
+  if (
+    operation?.request.kind !== "plan-directive" ||
+    operation.directive?.kind !== "applied" ||
+    !matchesOperationTarget(plan, device, operation)
+  )
+    return undefined;
+  const { enrollmentId, directiveId, targetSource, targetTree } = operation.request.input;
+  const { directive } = operation.directive;
+  if (
+    enrollmentId !== device.enrollmentId ||
+    directive.directiveId !== directiveId ||
+    directive.targetSource !== targetSource ||
+    directive.targetTree !== targetTree ||
+    directive.mode !== "manual-review" ||
+    !Number.isFinite(Date.parse(directive.issuedAt))
+  )
+    return undefined;
+  return { kind: "follower", enrollmentId, directiveId, targetSource, targetTree };
 }
 
 function refreshCommands(document: PlanDocument): PlanDocument {
@@ -232,7 +265,8 @@ function refreshCommands(document: PlanDocument): PlanDocument {
         ? { ...entry.receipt, bodyHash: entry.body }
         : entry.receipt;
     if (receipt !== entry.receipt) changed = true;
-    if (receipt.outcome !== "reserved")
+    const wasUnsupported = receipt.outcome === "terminal" && receipt.code === "unsupported";
+    if (receipt.outcome !== "reserved" && !wasUnsupported)
       return receipt === entry.receipt ? entry : { ...entry, receipt };
     const plan = retainedPlans(document).find((p) => p.planId === receipt.planId);
     const { environmentId, action, targetSource, stagedHandle } = receipt.command;
@@ -255,20 +289,31 @@ function refreshCommands(document: PlanDocument): PlanDocument {
               matchesOperationTarget(plan, device, op),
           )
         : undefined;
+    const remoteReceipt =
+      remote !== undefined && remote.review?.stagedHandle === stagedHandle
+        ? remote.receipt
+        : undefined;
     const settled =
       local !== undefined
         ? !localPending(local) && local.review?.stagedHandle === stagedHandle
-        : remote?.receipt !== undefined &&
-          !outstanding(remote) &&
-          remote.review?.stagedHandle === stagedHandle;
-    if (!settled) return receipt === entry.receipt ? entry : { ...entry, receipt };
+        : remote !== undefined && remoteReceipt !== undefined && !outstanding(remote);
+    const correctedInFlight =
+      wasUnsupported &&
+      remoteReceipt !== undefined &&
+      !isProvisionalUnsupportedReceipt(remoteReceipt);
+    const code = settled ? (local?.result?.code ?? remoteReceipt?.code) : undefined;
+    if (
+      (!settled && !correctedInFlight) ||
+      (wasUnsupported && (remoteReceipt === undefined || code === receipt.code))
+    )
+      return receipt === entry.receipt ? entry : { ...entry, receipt };
     changed = true;
-    const code = local?.result?.code ?? remote?.receipt?.code;
+    const { code: _previousCode, ...binding } = receipt;
     return {
       ...entry,
       receipt: {
-        ...receipt,
-        outcome: "terminal" as const,
+        ...binding,
+        outcome: settled ? ("terminal" as const) : ("reserved" as const),
         ...(code === undefined ? {} : { code }),
       },
     };
@@ -292,6 +337,9 @@ function workerAbsent(worker: { readonly pid: number; readonly processGroup: num
 }
 
 const compiledIs1 = Schema.is(RequestSchema);
+const decodeExactHostRequest = Schema.decodeUnknownOption(RequestSchema, {
+  onExcessProperty: "error",
+});
 
 export function createInstallPlanCoordinator(options: {
   readonly store: InstallPlanStore;
@@ -355,6 +403,7 @@ export function createInstallPlanCoordinator(options: {
               recoveryHistory: 1 as const,
               directiveFence: 1 as const,
               orphanRecovery: 1 as const,
+              boundAdmission: 1 as const,
               matchRunningLaptop: 1 as const,
             }
           : {}),
@@ -1061,7 +1110,10 @@ export function createInstallPlanCoordinator(options: {
             (req.type === "abandon-device" && req.phase === "finish"));
         let plan = recoverArchived ? archived : document.current;
         const command = "command" in req ? req.command : undefined;
-        const validRequest = compiledIs1(req);
+        const validRequest =
+          req.type === "claim" || req.type === "report" || req.type === "reconcile-orphan"
+            ? Option.isSome(decodeExactHostRequest(req))
+            : compiledIs1(req);
         if (validRequest && command !== undefined) {
           const recorded = document.commands?.find(
             (entry) => entry.receipt.command.commandId === command.commandId,
@@ -1809,7 +1861,21 @@ export function createInstallPlanCoordinator(options: {
             options.now() - runningTarget.observedAt <= LEASE_MS &&
             runningTarget.build.sourceSha === plan.target.sourceSha &&
             runningTarget.build.sourceTree === plan.target.sourceTree;
-          if (device === undefined || (device.membership !== "selected" && req.type !== "report"))
+          const archivedOperationRecovery =
+            recoverArchived &&
+            req.type === "claim" &&
+            req.explicit &&
+            device?.operations.some(
+              (operation) =>
+                operation.operationId === req.operationId &&
+                operation.request.kind === "operation-start",
+            ) === true;
+          if (
+            device === undefined ||
+            (device.membership !== "selected" &&
+              req.type !== "report" &&
+              !archivedOperationRecovery)
+          )
             refuse("not-selectable", "This device is not selected.");
           else if (req.type === "abandon-device") {
             const download = deviceStagedReceipt(operations);
@@ -1952,20 +2018,33 @@ export function createInstallPlanCoordinator(options: {
             if (operation === undefined || !matchesOperationTarget(plan, device, operation))
               refuse("invalid-evidence", "No matching reservation exists.");
             else if (proof.kind === "receipt") {
+              const previous = operation.receipt;
+              const validation = { ledgerRead: proof.ledgerRead === true };
+              const transition = {
+                ledgerRead: validation.ledgerRead && operation.unsupportedReceiptVerified !== true,
+              };
+              const confirmUnsupported =
+                validation.ledgerRead && isProvisionalUnsupportedReceipt(proof.receipt);
               if (
                 operation.request.kind !== "operation-start" ||
-                !validateReceipt(operation.request.input, proof.receipt) ||
-                (operation.receipt !== undefined &&
-                  !validateReceipt(operation.receipt, proof.receipt)) ||
-                !preservesHeldReason(operation.receipt, proof.receipt) ||
-                !receiptDetailsFit(operation.receipt, proof.receipt) ||
+                !validateOperationEvidence(operation.request.input, proof.receipt, validation) ||
+                (previous !== undefined && !validateReceipt(previous, proof.receipt, transition)) ||
+                !preservesHeldReason(previous, proof.receipt) ||
+                !receiptDetailsFit(previous, proof.receipt) ||
                 (proof.receipt.staged !== undefined &&
                   proof.receipt.staged.sourceTree !== plan!.target.sourceTree)
               )
                 refuse("invalid-evidence", "The target receipt does not match this operation.");
               // The target owns its Stop receipt. The local Stop lease remains separate.
-              else if (!same(operation.receipt, proof.receipt))
-                replaceOperation(deviceIndex, index, { ...operation, receipt: proof.receipt });
+              else if (
+                !same(previous, proof.receipt) ||
+                (confirmUnsupported && operation.unsupportedReceiptVerified !== true)
+              )
+                replaceOperation(deviceIndex, index, {
+                  ...operation,
+                  receipt: proof.receipt,
+                  ...(confirmUnsupported ? { unsupportedReceiptVerified: true } : {}),
+                });
             } else if (operation.request.kind !== "plan-directive")
               refuse("invalid-evidence", "A directive cannot settle an operation.");
             else if (proof.kind === "directive-fence") {
@@ -2017,6 +2096,7 @@ export function createInstallPlanCoordinator(options: {
               if (
                 proof.status.enrollment?.environmentId !== device.environmentId ||
                 !validateDirectiveEvidence(operation.request.input, proof.status) ||
+                !Number.isFinite(Date.parse(proof.status.follower!.planDirective!.issuedAt)) ||
                 Buffer.byteLength(JSON.stringify(proof.status.follower!.planDirective!.issuedAt)) >
                   1024
               )
@@ -2088,7 +2168,7 @@ export function createInstallPlanCoordinator(options: {
               if (
                 targeted === undefined ||
                 (targeted.request.kind !== "operation-start" && !directiveFence) ||
-                !operations.includes(targeted) ||
+                (!archivedOperationRecovery && !operations.includes(targeted)) ||
                 !matchesOperationTarget(plan, device, targeted) ||
                 (req.enrollmentId !== undefined && req.enrollmentId !== device.enrollmentId) ||
                 (directiveFence &&
@@ -2154,9 +2234,8 @@ export function createInstallPlanCoordinator(options: {
                 } else if (
                   directiveFence
                     ? !outstanding(targeted)
-                    : targeted.receipt !== undefined ||
-                      !Number.isFinite(Date.parse(targeted.lease.leaseUntil)) ||
-                      Date.parse(targeted.lease.leaseUntil) > options.now()
+                    : !canFenceExpiredOperation(targeted, options.now()) ||
+                      (targeted.receipt !== undefined && !archivedOperationRecovery)
                 )
                   refuse(
                     "outstanding-operation",
@@ -2292,18 +2371,34 @@ export function createInstallPlanCoordinator(options: {
               const action = req.action;
               const source = action?.kind === "download" ? action.sourceSha : action?.targetSource;
               const downloaded = operations.findLast((operation) => operation.step === "download");
+              const followerAdmission =
+                device.route === "follower-operations"
+                  ? appliedFollowerAdmission(
+                      plan,
+                      device,
+                      operations.findLast((operation) => operation.step === "directive"),
+                    )
+                  : undefined;
+              const admission =
+                req.boundAdmission === 1
+                  ? device.route === "operations"
+                    ? { kind: "ordinary" as const }
+                    : followerAdmission
+                  : undefined;
               if (
                 action === undefined ||
                 req.expectedInstalledSource === undefined ||
                 (req.enrollmentId !== undefined && req.enrollmentId !== device.enrollmentId) ||
+                (admission?.kind === "ordinary" && device.enrollmentId !== undefined) ||
                 source !== plan.target.sourceSha ||
                 (req.step === "install") !== (action.kind === "install")
               )
                 refuse("invalid-evidence", "The action must match this plan's target.");
               else if (
                 device.route === "follower-operations" &&
-                req.expectedInstalledSource !== plan.target.sourceSha &&
-                !operations.some((operation) => operation.directive?.kind === "applied")
+                (req.boundAdmission === 1 ||
+                  req.expectedInstalledSource !== plan.target.sourceSha) &&
+                followerAdmission === undefined
               )
                 refuse("directive-required", "Apply the manual-review directive first.");
               else if (
@@ -2329,6 +2424,7 @@ export function createInstallPlanCoordinator(options: {
                   req.review === undefined ||
                   action.kind !== "install" ||
                   downloaded?.receipt?.phase !== "completed" ||
+                  !matchesOperationTarget(plan, device, downloaded) ||
                   downloaded.receipt.stageRetiredAt !== undefined ||
                   downloaded.receipt.staged?.stagedHandle !== action.stagedHandle ||
                   downloaded.receipt.staged.sourceSha !== plan.target.sourceSha ||
@@ -2364,6 +2460,7 @@ export function createInstallPlanCoordinator(options: {
                       expectedInstalledSource: req.expectedInstalledSource,
                       action,
                       correlation: { planId: plan.planId, deviceKey: device.environmentId },
+                      ...(admission === undefined ? {} : { admission }),
                     },
                   },
                 };
@@ -2425,7 +2522,7 @@ export function createInstallPlanCoordinator(options: {
         if (document !== beforeAdmission && (forwardMutation || command !== undefined)) {
           const admitted = admitPlanWork(
             document,
-            req.type === "start" && snapshot.document.schema === 2 && extras.refused === undefined,
+            req.type === "start" && snapshot.document.schema !== 1 && extras.refused === undefined,
           );
           if (admitted !== undefined) document = admitted;
           else {

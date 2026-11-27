@@ -16,10 +16,16 @@ import {
   type JonesReviewedInstall,
 } from "@t3tools/client-runtime/jones/updates/executor";
 import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/target-status";
-import { validateReceipt } from "@t3tools/client-runtime/jones/install-plan/model";
+import {
+  isSettledOperationReceipt,
+  validateOperationEvidence,
+} from "@t3tools/client-runtime/jones/install-plan/model";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesActionJournal } from "@t3tools/client-runtime/jones/updates/action-journal";
-import { validateJonesStopReceipt } from "@t3tools/client-runtime/jones/updates/action-journal";
+import {
+  sameRetainedJonesReceipt,
+  validateJonesStopReceipt,
+} from "@t3tools/client-runtime/jones/updates/action-journal";
 import { mobileJonesJournal } from "./actionJournal";
 import type {
   JonesOperationReceipt,
@@ -163,18 +169,29 @@ function createSession(environmentId: EnvironmentId, journal: JonesActionJournal
   };
   journal.subscribe(sync);
   void journal.load().then(sync).catch(sync);
-  const reconcile = async (receipt: JonesOperationReceipt) => {
+  const reconcile = async (
+    receipt: JonesOperationReceipt,
+    options: { readonly ledgerRead?: true } = {},
+  ) => {
+    const verifiedUnsupported = journal
+      .getSnapshot()
+      .history.some(
+        (d) => d.operationId === receipt.operationId && d.unsupportedReceiptVerified === true,
+      );
     if (state.request === undefined && state.receipt === undefined) return false;
-    if (state.request !== undefined && !validateReceipt(state.request, receipt)) return false;
+    if (state.request !== undefined && !validateOperationEvidence(state.request, receipt, options))
+      return false;
     if (
       state.receipt !== undefined &&
-      !(state.stopId === undefined
-        ? validateReceipt(state.receipt, receipt)
-        : validateJonesStopReceipt(state.receipt, receipt))
+      !(state.stopId !== undefined
+        ? validateJonesStopReceipt(state.receipt, receipt)
+        : verifiedUnsupported
+          ? options.ledgerRead === true && sameRetainedJonesReceipt(state.receipt, receipt)
+          : validateOperationEvidence(state.receipt, receipt, options))
     )
       return false;
     if (state.stopId !== undefined && receipt.stop?.stopId !== state.stopId) return false;
-    await journal.reconcileReceipt(receipt);
+    await journal.reconcileReceipt(receipt, options);
     patch({ receipt });
     return true;
   };
@@ -231,12 +248,27 @@ export interface MobileJonesTransport {
   readonly stop: (input: JonesOperationStopInput) => Promise<JonesOperationReceipt>;
 }
 
+function observedSettlement(observation: JonesUpdateObservation, retained: JonesOperationReceipt) {
+  const receipt = observation.state?.operation;
+  return observation.freshness === "fresh" &&
+    receipt !== undefined &&
+    isSettledOperationReceipt(receipt) &&
+    validateOperationEvidence(retained, receipt)
+    ? receipt
+    : undefined;
+}
+
 export function mobileJonesObservation(
   observation: JonesUpdateObservation,
   session: MobileJonesSessionState,
 ): JonesUpdateObservation {
   const retained = session.receipt;
-  if (observation.state === null || retained === undefined) return observation;
+  if (
+    observation.state === null ||
+    retained === undefined ||
+    observedSettlement(observation, retained) !== undefined
+  )
+    return observation;
   const operation =
     !terminal.has(retained.phase) ||
     retained.code === "launcher-unconfirmed" ||
@@ -549,15 +581,27 @@ function buildMobileJonesActions(
       session.patch({ reading: true });
       try {
         const result = await transport.read(operationId);
-        const receipt = result.receipts.find((entry) => entry.operationId === operationId)?.receipt;
-        if (receipt == null || !(await session.reconcile(receipt))) {
+        const answer = result.receipts[0];
+        const receipt = answer?.operationId === operationId ? answer.receipt : null;
+        if (
+          result.receipts.length !== 1 ||
+          receipt == null ||
+          receipt.environmentId !== environmentId ||
+          receipt.operationId !== operationId ||
+          !(await session.reconcile(receipt, { ledgerRead: true }))
+        ) {
           session.patch({
             message: "The exact operation is still not confirmed. Nothing will be resent.",
           });
-        } else
+        } else {
+          const settled = observedSettlement(readLatest().observation, receipt);
+          if (settled !== undefined) await session.reconcile(settled);
+          const current = session.getSnapshot().receipt ?? receipt;
           session.patch({
-            message: receipt.message ?? `Operation ${operationId}: ${receipt.phase}.`,
+            // oxlint-disable-next-line t3code/no-untranslated-copy -- The fallback describes the raw receipt ID and phase, as in the Stop response below.
+            message: current.message ?? `Operation ${operationId}: ${current.phase}.`,
           });
+        }
       } catch {
         session.patch({ message: "Operation status is unavailable. Nothing will be resent." });
       } finally {
@@ -596,7 +640,7 @@ function buildMobileJonesActions(
               ? receipt.action.sourceSha
               : receipt.action.targetSource,
         });
-        if (!effective().canOperate) {
+        if (!status().actions.stop) {
           await journal.notSent(stopId);
           session.patch({
             stopId: undefined,

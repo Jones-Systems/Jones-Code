@@ -120,6 +120,7 @@ export const JonesInstallPlanHostOperation = Schema.Struct({
   ),
   fence: Schema.optionalKey(Schema.Struct({ lease: JonesInstallPlanLease })),
   receipt: Schema.optionalKey(JonesOperationReceipt), // latest validated target receipt
+  unsupportedReceiptVerified: Schema.optionalKey(Schema.Literal(true)),
   directive: Schema.optionalKey(
     Schema.Union([
       Schema.Struct({
@@ -421,6 +422,7 @@ export const JonesInstallPlanState = Schema.Struct({
     recoveryHistory: Schema.optionalKey(Schema.Literal(1)),
     directiveFence: Schema.optionalKey(Schema.Literal(1)),
     orphanRecovery: Schema.optionalKey(Schema.Literal(1)),
+    boundAdmission: Schema.optionalKey(Schema.Literal(1)),
     matchRunningLaptop: Schema.optionalKey(Schema.Literal(1)),
     manualClose: Schema.optionalKey(
       Schema.Struct({
@@ -437,7 +439,12 @@ export const JonesInstallPlanState = Schema.Struct({
 export type JonesInstallPlanState = typeof JonesInstallPlanState.Type;
 
 const Evidence = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("receipt"), receipt: JonesOperationReceipt }),
+  Schema.Struct({
+    kind: Schema.Literal("receipt"),
+    receipt: JonesOperationReceipt,
+    /** Set only for an exact, non-null receipt returned by operationRead. */
+    ledgerRead: Schema.optionalKey(Schema.Literal(true)),
+  }),
   Schema.Struct({ kind: Schema.Literal("directive"), status: FleetHostStatus }),
   Schema.Struct({
     kind: Schema.Literal("directive-fence"),
@@ -508,6 +515,7 @@ export const JonesInstallPlanRequest = Schema.Union([
     operationId: Schema.optionalKey(JonesOperationId), // Stop, fence or exact forward reservation replay.
     action: Schema.optionalKey(JonesOperationAction),
     expectedInstalledSource: Schema.optionalKey(JonesSourceSha), // download/install: plan-target action and fresh installed source
+    boundAdmission: Schema.optionalKey(Schema.Literal(1)), // The target advertised bound admission.
     enrollmentId: Schema.optionalKey(FleetOperationId), // directive: fresh fleet status
     expectedDirectiveId: Schema.optionalKey(Schema.NullOr(FleetOperationId)),
     review: Schema.optionalKey(JonesInstallPlanReview),

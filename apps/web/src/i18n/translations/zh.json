@@ -13089,5 +13089,15 @@
   "229baaf2eb401d7c": "Approve authority",
   "51d78514e4664564": "Stop following",
   "a7d7fa7a1b3460e8": "Remove from sync",
-  "f3d1031f09f48cc3": "Use authority’s version"
+  "f3d1031f09f48cc3": "Use authority’s version",
+  "29ae6d3bd5b4ce16": "This operation ID is already bound to another request.",
+  "c6decc287ad1de8d": "Check the exact operation receipt to confirm what the host recorded.",
+  "fc7103d68f6bbf61": "Read permission is required to check the exact receipt on {label}.",
+  "61a0431d10b66648": "This device's update enrollment or setup changed. Check the original request in Install status before reviewing a new plan.",
+  "8ce21fe9ef39c4e9": "Check the original request in Install status. Use current versions of Laptop and this host when reviewing a new plan for this enrollment.",
+  "eb3f427a2c326d28": "Fresh control authority and the selected device's enrollment are required.",
+  "26f58319308650a1": "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
+  "7fd7bc99180bcfad": "This plan's exact reservation changed or expired. Check the original operation.",
+  "096cbc9bd8370186": "The reviewed stage changed. Check the original operation and review again.",
+  "08ff07123c656e31": "The control changed before Stop was sent."
 }

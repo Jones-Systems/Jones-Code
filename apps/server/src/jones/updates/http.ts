@@ -34,6 +34,13 @@ export const jonesUpdatesHttpApiLayer = HttpApiBuilder.group(
             return yield* updates.operationStart(payload);
           }),
         )
+        .handle("operationStartBound", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* updates.operationStartBound(payload);
+          }),
+        )
         .handle("operationStop", ({ payload }) =>
           Effect.gen(function* () {
             yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
@@ -46,6 +53,13 @@ export const jonesUpdatesHttpApiLayer = HttpApiBuilder.group(
             yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
             yield* noStore;
             return yield* updates.operationFence(payload);
+          }),
+        )
+        .handle("operationFenceBound", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* updates.operationFenceBound(payload);
           }),
         )
         .handle("operationRead", ({ payload }) =>

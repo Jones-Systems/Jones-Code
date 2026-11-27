@@ -83,7 +83,14 @@ late confirmation. If offered, **Fence original setup** lets the host confirm
 what happened or prevent that exact pending setup from applying. For a download
 or install request with an expired reservation and no receipt, **Fence original
 request** asks the reachable host to prevent it from starting or return its
-existing receipt.
+existing receipt. You can fence the original request after enrollment changes
+when the same host is reachable and you still have permission. Fleet setup
+requests still require their original enrollment for this recovery.
+
+If the host reports that enrollment changed before it accepted the download
+or install, check the original attempt in **Recovery history**. Once it is
+settled, review the device under its current enrollment in a new plan.
+The host returns the receipt for any attempt it already accepted.
 
 An older Laptop journal may retain a command after its plan is gone. Open
 **Recovery for commands from missing plans** and use **Check retained receipt**

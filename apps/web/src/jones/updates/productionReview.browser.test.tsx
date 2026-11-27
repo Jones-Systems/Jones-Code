@@ -1,11 +1,15 @@
 import { act, render, stubGlobal, type Screen } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
-import { EnvironmentId } from "@t3tools/contracts";
-import type {
-  JonesUpdateObservation,
-  JonesOperationCommand,
+import * as Cause from "effect/Cause";
+import { AuthOrchestrationReadScope, EnvironmentId } from "@t3tools/contracts";
+import {
+  JonesOperationNotSentError,
+  type JonesStopCommand,
+  type JonesUpdateObservation,
+  type JonesOperationCommand,
 } from "@t3tools/client-runtime/jones/updates";
+import { JONES_ACTION_JOURNAL_KEY } from "@t3tools/client-runtime/jones/updates/action-journal";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type {
   JonesOperationReceipt,
@@ -18,6 +22,8 @@ import "../../index.css";
 const h = vi.hoisted(() => ({
   observations: new Map<string, JonesUpdateObservation>(),
   permissions: new Map<string, boolean>(),
+  canRead: new Set<string>(),
+  checking: new Set<string>(),
   confirmations: [] as Array<(value: boolean) => void>,
   recoveries: [] as Array<(policy: JonesRecoveryPolicy | null) => void>,
   disk: new Map<string, string>(),
@@ -60,6 +66,10 @@ vi.mock("./jonesUpdates", () => ({
 }));
 vi.mock("../../state/session", () => ({
   environmentSession: { sessionStateAtom: (env: string) => ({ kind: "session", env }) },
+  readEnvironmentScopeAccess: (env: string, scope: string) => ({
+    status:
+      scope === AuthOrchestrationReadScope && h.canRead.has(env) ? "granted" : "scope_missing",
+  }),
 }));
 vi.mock("@effect/atom-react", async (original) => {
   const actual = await original<typeof import("@effect/atom-react")>();
@@ -85,6 +95,7 @@ vi.mock("../../rpc/atomRegistry", () => ({
         ? h.observations.get(atom.env)
         : {
             _tag: "Success",
+            waiting: h.checking.has(atom.env),
             value: {
               authenticated: true,
               permissions: h.permissions.get(atom.env) ? ["orchestration:operate"] : [],
@@ -443,6 +454,138 @@ describe("production web review authority", () => {
     expect(h.native).not.toHaveBeenCalled();
   });
 
+  it.each(["running", "already settled"] as const)(
+    "reconciles legacy unsupported in Connections with a %s download",
+    async (outcome) => {
+      await using _fixture = await fixture();
+      const { a } = hosts();
+      const ordinal = outcome === "running" ? "7777777" : "7777778";
+      const operationId = `${ordinal}7-1111-4111-8111-111111111111`;
+      const request: JonesOperationStartInput = {
+        operationId,
+        environmentId: a,
+        expectedInstalledSource: old,
+        action: { kind: "download-exact", targetSource: source },
+      };
+      const updatedAt = "2026-10-27T04:00:00Z";
+      const running: JonesOperationReceipt = {
+        ...request,
+        protocol: 1,
+        phase: "running",
+        acceptedAt: updatedAt,
+        updatedAt,
+      };
+      const otherId = `${ordinal}6-1111-4111-8111-111111111111`;
+      const otherRequest = { ...request, operationId: otherId };
+      const { duties, history } = webJonesJournal.getSnapshot();
+      h.disk.set(
+        JONES_ACTION_JOURNAL_KEY,
+        JSON.stringify({
+          schema: 1,
+          duties,
+          history: [
+            ...history,
+            {
+              kind: "operation",
+              action: "download-exact",
+              id: otherId,
+              operationId: otherId,
+              environmentId: a,
+              targetSource: source,
+              request: otherRequest,
+              receipt: {
+                ...otherRequest,
+                protocol: 1,
+                phase: "refused",
+                code: "unsupported",
+                updatedAt,
+              },
+            },
+            {
+              kind: "operation",
+              action: "download-exact",
+              id: operationId,
+              operationId,
+              environmentId: a,
+              targetSource: source,
+              request,
+              receipt: {
+                ...request,
+                protocol: 1,
+                phase: "refused",
+                code: "unsupported",
+                updatedAt,
+              },
+            },
+          ],
+        }),
+      );
+      await act(() => webJonesJournal.notSent(operationId));
+      const stopped: JonesOperationReceipt = {
+        ...running,
+        phase: "stopped",
+        updatedAt: "2026-10-27T04:01:00Z",
+      };
+      h.observations.set(a, {
+        state: {
+          ...state(a, true),
+          phase: outcome === "running" ? "downloading" : "available",
+          operation: outcome === "running" ? running : stopped,
+        },
+        freshness: "fresh",
+      });
+      h.canRead.add(a);
+      h.operation.mockResolvedValue(success({ receipts: [{ operationId, receipt: running }] }));
+
+      await draw("connections", a);
+      expect(container.textContent).not.toContain("Stop download");
+      h.operation.mockResolvedValueOnce(
+        success({
+          receipts: [{ operationId, receipt: { ...running, operationId: otherId } }],
+        }),
+      );
+      await click("Read operation status");
+      expect(webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a)).toEqual([]);
+      expect(container.textContent).not.toContain("Stop download");
+      h.operation.mockClear();
+      await click("Read operation status");
+      expect(h.operation).toHaveBeenCalledExactlyOnceWith({
+        environmentId: a,
+        input: {
+          action: "operationRead",
+          input: { environmentId: a, operationIds: [operationId] },
+        },
+      });
+      if (outcome === "already settled") {
+        expect(container.textContent).not.toContain("Stop download");
+        expect(
+          webJonesJournal.getSnapshot().history.find((d) => d.id === operationId)?.receipt,
+        ).toEqual(stopped);
+        return;
+      }
+      expect(
+        webJonesJournal.getSnapshot().duties.find((d) => d.id === operationId)?.receipt,
+      ).toEqual(running);
+
+      const send = vi.fn();
+      h.stop.mockImplementation(async ({ input }: { input: JonesStopCommand }) => {
+        h.checking.add(a);
+        if (!(await input.beforeSend?.())) {
+          return { _tag: "Failure", cause: Cause.fail(new JonesOperationNotSentError({})) };
+        }
+        send(input.input);
+        return { _tag: "Failure", cause: Cause.fail(new Error("Stop reply lost")) };
+      });
+      await click("Stop download");
+      expect(h.stop).toHaveBeenCalledOnce();
+      expect(send).not.toHaveBeenCalled();
+      expect(
+        webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a),
+      ).toMatchObject([{ id: operationId, receipt: running }]);
+      h.checking.delete(a);
+    },
+  );
+
   it("keeps one Stop through pointer/keyboard, remount, wrong proofs and a late start response", async () => {
     await using _fixture = await fixture();
     const { a } = hosts();
@@ -483,6 +626,10 @@ describe("production web review authority", () => {
     h.operation.mockImplementation(async () =>
       success({ receipts: [{ operationId: running.operationId, receipt: answer }] }),
     );
+    const callsBeforeRead = h.operation.mock.calls.length;
+    await click("Read operation status");
+    expect(h.operation.mock.calls).toHaveLength(callsBeforeRead);
+    h.canRead.add(a);
     await click("Read operation status");
     expect(container.textContent).toContain("Read operation status");
     answer = {
@@ -496,6 +643,14 @@ describe("production web review authority", () => {
     await click("Read operation status");
     expect(container.textContent).toContain("Read operation status");
     answer = { ...answer, stop: { ...answer.stop!, stopId } };
+    const exact = success({ receipts: [{ operationId: running.operationId, receipt: answer }] });
+    const readReply = Promise.withResolvers<typeof exact>();
+    h.operation.mockImplementationOnce(() => readReply.promise);
+    await click("Read operation status");
+    h.canRead.delete(a);
+    await act(async () => readReply.resolve(exact));
+    expect(webJonesJournal.getSnapshot().duties.some((d) => d.id === stopId)).toBe(true);
+    h.canRead.add(a);
     await click("Read operation status");
     expect(webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a)).toEqual([]);
     const stopped = () =>

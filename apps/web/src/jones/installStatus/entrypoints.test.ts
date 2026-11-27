@@ -11,8 +11,14 @@ import type {
   JonesOperationReceipt,
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
-import { advanceInstallPlan, startPlan } from "@t3tools/client-runtime/jones/install-plan";
+import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
+import {
+  advanceInstallPlan,
+  startPlan,
+  STATUS_POLL_CADENCE,
+} from "@t3tools/client-runtime/jones/install-plan";
 import type { JonesUpdateObservation } from "@t3tools/client-runtime/jones/updates";
+import { JonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
 import {
   describeUpdateEverything,
   updateEverythingRowHasWork,
@@ -29,6 +35,7 @@ import {
 } from "./entrypoints";
 import {
   fencePanelOperation,
+  inspectPanelCleanup,
   performPanelAction,
   refreshDeviceEvidence,
   stopPanelDownload,
@@ -39,9 +46,11 @@ import {
   confirmClosedPlan,
   currentPlanHostAuthority,
   installPlanServices,
+  requestInstallPlan,
   type InstallPlanServices,
 } from "./services";
 import { abandonDevice, deviceAbandonTarget } from "./abandonDevice";
+import { startInstallStatusPoller } from "./InstallStatusPoller";
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -275,6 +284,22 @@ describe("bound Install status actions", () => {
     phase: "stop-requested",
     stop: { stopId: hostStopId, requestedAt: at },
   };
+  const ordinaryFleet: FleetHostStatus = {
+    environmentId: hostId,
+    operationProtocol: 1,
+    enrollment: null,
+    update: null,
+    operation: null,
+  };
+  const enrolledFleet: FleetHostStatus = {
+    ...ordinaryFleet,
+    enrollment: {
+      environmentId: hostId,
+      enrollmentId: earlierOperationId,
+      enabled: true,
+      continueRunningThreads: false,
+    },
+  };
   function bindFixture(initialGrant: JonesInstallPlanGrant = grant) {
     const state = native({
       ...plan,
@@ -308,17 +333,44 @@ describe("bound Install status actions", () => {
         },
       ],
     });
+    let saved = state;
     const installPlan = vi.fn(
-      async (request: JonesInstallPlanRequest): Promise<JonesInstallPlanResult> => ({
-        state,
-        ...(request.type === "claim" ? { grant: initialGrant } : {}),
-      }),
+      async (request: JonesInstallPlanRequest): Promise<JonesInstallPlanResult> => {
+        if (request.type !== "claim") return { state: saved };
+        const member = state.current!.devices[0]!;
+        if (initialGrant.request.kind === "operation-stop")
+          saved = {
+            ...state,
+            current: {
+              ...state.current!,
+              devices: [
+                {
+                  ...member,
+                  operations: [
+                    {
+                      ...member.operations[0]!,
+                      stop: {
+                        stopId: initialGrant.request.input.stopId,
+                        lease: {
+                          claimant: request.claimant,
+                          reservedAt: at,
+                          leaseUntil: initialGrant.leaseUntil,
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          };
+        return { state: saved, grant: initialGrant };
+      },
     );
     const device: InstallStatusDevice = {
       environmentId: hostId,
       label: "Stop host",
       canOperate: true,
-      fleetStatus: null,
+      fleetStatus: ordinaryFleet,
       observation: {
         freshness: "fresh",
         state: {
@@ -364,6 +416,7 @@ describe("bound Install status actions", () => {
     "new failed read",
     "changed route",
     "lost read scope",
+    "unbound after dispatch",
     "fence with unknown fleet status",
     "fence with a retained contradiction",
   ] as const)(
@@ -379,10 +432,24 @@ describe("bound Install status actions", () => {
       const reservation = fencing
         ? { ...pending, lease: { ...pending.lease, leaseUntil: at } }
         : pending;
-      const state: JonesInstallPlanState = {
+      let state: JonesInstallPlanState = {
         ...f.state,
         view: { ...f.state.view, recoveryHistory: 1 },
-        current: { ...current, devices: [{ ...member, operations: [reservation] }] },
+        current: {
+          ...current,
+          devices: [{ ...member, operations: [reservation] }],
+          laptop: {
+            ...current.laptop,
+            gate: {
+              openedAt: at,
+              basis: "plan-install",
+              transactionId: "fixture",
+              activeGeneration: "fixture",
+              activeSource: source,
+              activeTree: target.sourceTree,
+            },
+          },
+        },
       };
       let latest = fencing ? withoutFleet : observed;
       let projection: InstallStatusDevice = withoutFleet;
@@ -409,6 +476,30 @@ describe("bound Install status actions", () => {
         if (request.type !== "claim") return { state };
         arrived.resolve();
         await reply.promise;
+        if (fencing)
+          state = {
+            ...state,
+            current: {
+              ...state.current!,
+              devices: [
+                {
+                  ...member,
+                  operations: [
+                    {
+                      ...reservation,
+                      fence: {
+                        lease: {
+                          claimant: request.claimant,
+                          reservedAt: at,
+                          leaseUntil: grant.leaseUntil,
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          };
         return {
           state,
           grant: {
@@ -429,17 +520,21 @@ describe("bound Install status actions", () => {
       );
       const binding = installPlanServices()!;
       const operation = vi.fn<Parameters<typeof advanceInstallPlan>[0]["operation"]>(
-        async (_, request) =>
-          request.action !== "operationRead"
-            ? running
-            : { receipts: [{ operationId: hostOperationId, receipt: running }] },
+        async (_, request) => {
+          if (request.action === "operationRead")
+            return { receipts: [{ operationId: hostOperationId, receipt: running }] };
+          if (!("beforeSend" in request) || !(await request.beforeSend?.()))
+            throw new JonesOperationNotSentError({});
+          if (scenario === "unbound after dispatch") unbind();
+          return running;
+        },
       );
       try {
         const pass = advanceInstallPlan({
           claimant: "window:a",
           now: binding.services.now,
-          cancelled: () => false,
-          desktop: f.installPlan,
+          cancelled: () => installPlanServices() !== binding,
+          desktop: (request) => requestInstallPlan(request, binding),
           observe: binding.services.observe,
           authority: (device) => currentPlanHostAuthority(binding, device),
           operation,
@@ -471,13 +566,15 @@ describe("bound Install status actions", () => {
           expect(operation).not.toHaveBeenCalled();
           expect(f.installPlan.mock.calls.map(([r]) => r.type)).toEqual(["read", "claim"]);
         } else {
+          const starts = scenario === "same route" || scenario === "unbound after dispatch";
+          const sends = starts || scenario === "fence with unknown fleet status";
           expect(operation.mock.calls).toEqual([
             [
               hostId,
-              scenario === "same route"
-                ? { action: "operationStart", input }
+              starts
+                ? { action: "operationStart", input, beforeSend: expect.any(Function) }
                 : scenario === "fence with unknown fleet status"
-                  ? { action: "operationFence", input }
+                  ? { action: "operationFence", input, beforeSend: expect.any(Function) }
                   : {
                       action: "operationRead",
                       input: { environmentId: hostId, operationIds: [hostOperationId] },
@@ -487,8 +584,16 @@ describe("bound Install status actions", () => {
           expect(f.installPlan.mock.calls.map(([r]) => r.type)).toEqual([
             "read",
             "claim",
+            ...(sends ? ["read"] : []),
             "report",
           ]);
+          expect(f.installPlan).toHaveBeenLastCalledWith({
+            type: "report",
+            planId: current.planId,
+            environmentId: hostId,
+            operationId: hostOperationId,
+            evidence: { kind: "receipt", receipt: running, ...(sends ? {} : { ledgerRead: true }) },
+          });
         }
       } finally {
         reply.resolve();
@@ -600,9 +705,10 @@ describe("bound Install status actions", () => {
       });
       expect(f.stop).toHaveBeenCalledExactlyOnceWith(hostId, {
         action: "operationStop",
+        beforeSend: expect.any(Function),
         input: { environmentId: hostId, operationId: hostOperationId, stopId: localStopId },
       });
-      expect(f.installPlan.mock.calls[2]?.[0]).toEqual({
+      expect(f.installPlan.mock.calls.at(-1)?.[0]).toEqual({
         type: "report",
         planId: plan.planId,
         environmentId: hostId,
@@ -613,6 +719,120 @@ describe("bound Install status actions", () => {
       f.unbind();
     }
   });
+
+  it.each(["changed enrollment", "different host", "expired in queue"] as const)(
+    "qualifies exact archived Stop with %s",
+    async (scope) => {
+      const sameHost = scope !== "different host";
+      let now = Date.parse(at);
+      const f = bindFixture();
+      let closed = { ...f.state.current!, dismissedAt: at };
+      const state = {
+        ...native(null, closed),
+        view: { complete: false, recoveryHistory: 1 as const },
+      };
+      f.installPlan.mockImplementation(async (request) => {
+        if (request.type === "claim") {
+          const member = closed.devices[0]!;
+          closed = {
+            ...closed,
+            revision: closed.revision + 1,
+            devices: [
+              {
+                ...member,
+                operations: [
+                  {
+                    ...member.operations[0]!,
+                    stop: {
+                      stopId: localStopId,
+                      lease: {
+                        claimant: request.claimant,
+                        reservedAt: at,
+                        leaseUntil: grant.leaseUntil,
+                      },
+                    },
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        if (request.type === "report") {
+          const member = closed.devices[0]!;
+          closed = {
+            ...closed,
+            revision: closed.revision + 1,
+            devices: [
+              { ...member, operations: [{ ...member.operations[0]!, receipt: hostReceipt }] },
+            ],
+          };
+        }
+        return {
+          state: { ...state, last: closed },
+          ...(request.type === "read-history" ? { historyPlan: closed } : {}),
+          ...(request.type === "claim" ? { grant } : {}),
+        };
+      });
+      const observed = {
+        ...(await f.services.observe(hostId)),
+        fleetStatus: sameHost ? enrolledFleet : { ...enrolledFleet, environmentId },
+      };
+      const sent = vi.fn();
+      f.stop.mockImplementation(async (_id, command) => {
+        if (scope === "expired in queue") now = Date.parse(grant.leaseUntil);
+        if (!(await command.beforeSend?.())) throw new JonesOperationNotSentError({});
+        sent(command.input);
+        return hostReceipt;
+      });
+      const unbind = bindInstallPlanServices(
+        {
+          ...f.services,
+          devices: () => [observed],
+          observe: async () => observed,
+          now: () => now,
+        },
+        f.store,
+      );
+      f.store.update({ native: state });
+      const stop = () =>
+        stopPanelDownload({
+          kind: "device",
+          archived: true,
+          planId: closed.planId,
+          expectedRevision: closed.revision,
+          environmentId: hostId,
+          operationId: hostOperationId,
+        });
+      try {
+        if (scope === "expired in queue") {
+          await expect(stop()).rejects.toBeInstanceOf(JonesOperationNotSentError);
+          expect(f.installPlan.mock.calls.some(([request]) => request.type === "report")).toBe(
+            false,
+          );
+          expect(sent).not.toHaveBeenCalled();
+        } else if (sameHost) {
+          await stop();
+          expect(sent).toHaveBeenCalledTimes(1);
+          expect(f.stop).toHaveBeenCalledExactlyOnceWith(hostId, {
+            action: "operationStop",
+            beforeSend: expect.any(Function),
+            input: { operationId: hostOperationId, environmentId: hostId, stopId: localStopId },
+          });
+        } else {
+          await expect(stop()).rejects.toThrow(
+            "Fresh authorized operation capability is required.",
+          );
+          expect(f.stop).not.toHaveBeenCalled();
+          expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual([
+            "read-history",
+          ]);
+        }
+      } finally {
+        unbind();
+        f.unbind();
+      }
+    },
+  );
 
   it.each(["remove", "end", "download", "install"] as const)(
     "refuses a displayed plan A %s when native now reads plan B",
@@ -894,86 +1114,211 @@ describe("bound Install status actions", () => {
     }
   });
 
-  it.each([true, false])(
-    "validates the original archived Fence grant body (matching %s)",
-    async (matching) => {
-      const f = bindFixture();
-      const current = f.state.current!;
-      const device = current.devices[0]!;
-      const { receipt: _receipt, ...pending } = device.operations[0]!;
-      let closed: JonesInstallPlan = {
-        ...current,
-        revision: 7,
-        dismissedAt: at,
-        cancelled: true as const,
-        devices: [
-          { ...device, operations: [{ ...pending, lease: { ...pending.lease, leaseUntil: at } }] },
-        ],
-      };
-      const state = {
-        ...f.state,
-        current: { ...plan, planId: earlierOperationId },
-        last: closed,
-        documentRevision: 2,
-        view: { complete: false, recoveryHistory: 1 as const },
-      };
-      const accepted = { ...running, phase: "accepted" as const };
-      f.installPlan.mockImplementation(async (request) => {
-        if (request.type === "report") {
-          const recorded = closed.devices[0]!;
-          closed = {
-            ...closed,
-            revision: closed.revision + 1,
-            devices: [
-              { ...recorded, operations: [{ ...recorded.operations[0]!, receipt: accepted }] },
-            ],
-          };
-        }
-        return {
-          state: { ...state, last: closed },
-          ...(request.type === "read-history" ? { historyPlan: closed } : {}),
-          ...(request.type === "claim"
-            ? {
-                grant: {
-                  ...grant,
-                  step: "fence",
-                  request: {
-                    kind: "operation-fence",
-                    input: matching ? input : { ...input, expectedInstalledSource: "e".repeat(40) },
+  it.each([
+    "matching",
+    "changed enrollment",
+    "unknown enrollment",
+    "different host",
+    "mismatched grant",
+    "expired in queue",
+    "legacy unsupported",
+    "fence replaces provisional",
+    "provisional read-back missing",
+    "verified unsupported",
+  ] as const)("qualifies the exact archived Fence with %s", async (scenario) => {
+    const f = bindFixture();
+    const current = f.state.current!;
+    const device =
+      scenario === "unknown enrollment"
+        ? {
+            ...current.devices[0]!,
+            route: "follower-operations" as const,
+            enrollmentId: earlierOperationId,
+          }
+        : current.devices[0]!;
+    const { receipt: _receipt, ...pending } = device.operations[0]!;
+    const unsupported = {
+      ...input,
+      protocol: 1,
+      phase: "refused",
+      code: "unsupported",
+      updatedAt: at,
+    } as const;
+    const tombstone = { ...input, protocol: 1, phase: "fenced", updatedAt: at } as const;
+    const provisional =
+      scenario === "fence replaces provisional" ||
+      scenario === "provisional read-back missing" ||
+      scenario === "verified unsupported";
+    let closed: JonesInstallPlan = {
+      ...current,
+      revision: 7,
+      dismissedAt: at,
+      cancelled: true as const,
+      devices: [
+        {
+          ...device,
+          operations: [
+            {
+              ...pending,
+              lease: { ...pending.lease, leaseUntil: at },
+              ...(provisional ? { receipt: unsupported } : {}),
+              ...(scenario === "verified unsupported"
+                ? { unsupportedReceiptVerified: true as const }
+                : {}),
+            },
+          ],
+        },
+      ],
+    };
+    const state = {
+      ...f.state,
+      current: { ...plan, planId: earlierOperationId },
+      last: closed,
+      documentRevision: 2,
+      view: { complete: false, recoveryHistory: 1 as const },
+    };
+    const accepted = { ...running, phase: "accepted" as const };
+    let now = Date.parse(at);
+    f.installPlan.mockImplementation(async (request) => {
+      if (request.type === "claim") {
+        const member = closed.devices[0]!;
+        closed = {
+          ...closed,
+          revision: closed.revision + 1,
+          devices: [
+            {
+              ...member,
+              operations: [
+                {
+                  ...member.operations[0]!,
+                  fence: {
+                    lease: {
+                      claimant: request.claimant,
+                      reservedAt: at,
+                      leaseUntil: grant.leaseUntil,
+                    },
                   },
                 },
-              }
-            : {}),
+              ],
+            },
+          ],
         };
+      }
+      if (request.type === "report" && request.evidence.kind === "receipt") {
+        const recorded = closed.devices[0]!;
+        closed = {
+          ...closed,
+          revision: closed.revision + 1,
+          devices: [
+            {
+              ...recorded,
+              operations: [{ ...recorded.operations[0]!, receipt: request.evidence.receipt }],
+            },
+          ],
+        };
+      }
+      return {
+        state: { ...state, last: closed },
+        ...(request.type === "read-history" ? { historyPlan: closed } : {}),
+        ...(request.type === "claim"
+          ? {
+              grant: {
+                ...grant,
+                step: "fence",
+                request: {
+                  kind: "operation-fence",
+                  input:
+                    scenario === "mismatched grant"
+                      ? { ...input, expectedInstalledSource: "e".repeat(40) }
+                      : input,
+                },
+              },
+            }
+          : {}),
+      };
+    });
+    const sent = vi.fn();
+    const operation = vi.fn<InstallPlanServices["operation"]>(async (id, request) => {
+      if (request.action === "operationRead") {
+        expect(request.input).toEqual({ environmentId: hostId, operationIds: [hostOperationId] });
+        return {
+          receipts: [
+            {
+              operationId: hostOperationId,
+              receipt: scenario === "fence replaces provisional" ? tombstone : null,
+            },
+          ],
+        };
+      }
+      if (request.action !== "operationFence") throw new Error("Unexpected host command.");
+      if (scenario === "expired in queue") now = Date.parse(grant.leaseUntil);
+      if (!(await request.beforeSend?.())) throw new JonesOperationNotSentError({});
+      sent(id, request.input);
+      if (scenario === "legacy unsupported") return unsupported;
+      return provisional ? tombstone : accepted;
+    });
+    const observed = await f.services.observe(hostId);
+    const host = {
+      ...observed,
+      fleetStatus:
+        scenario === "changed enrollment"
+          ? enrolledFleet
+          : scenario === "different host"
+            ? { ...enrolledFleet, environmentId }
+            : scenario === "unknown enrollment"
+              ? null
+              : ordinaryFleet,
+    };
+    const unbind = bindInstallPlanServices(
+      {
+        ...f.services,
+        operation,
+        now: () => now,
+        devices: () => [host],
+        observe: async () => host,
+      },
+      f.store,
+    );
+    f.store.update({ native: state });
+    try {
+      const action = fencePanelOperation({
+        planId: closed.planId,
+        environmentId: hostId,
+        operationId: hostOperationId,
+        expectedRevision: closed.revision,
+        archived: true,
       });
-      const operation = vi.fn(async () => accepted);
-      const unbind = bindInstallPlanServices({ ...f.services, operation }, f.store);
-      f.store.update({ native: state });
-      try {
-        const action = fencePanelOperation({
+      if (
+        scenario === "matching" ||
+        scenario === "changed enrollment" ||
+        scenario === "fence replaces provisional"
+      ) {
+        await action;
+        expect(sent).toHaveBeenCalledExactlyOnceWith(hostId, input);
+        expect(f.installPlan).toHaveBeenCalledWith({
+          type: "report",
           planId: closed.planId,
           environmentId: hostId,
           operationId: hostOperationId,
-          expectedRevision: closed.revision,
-          archived: true,
+          evidence:
+            scenario === "fence replaces provisional"
+              ? { kind: "receipt", receipt: tombstone, ledgerRead: true }
+              : { kind: "receipt", receipt: accepted },
         });
-        if (matching) {
-          await action;
-          expect(operation).toHaveBeenCalledExactlyOnceWith(hostId, {
-            action: "operationFence",
-            input,
-          });
-          expect(f.installPlan).toHaveBeenCalledWith({
-            type: "report",
-            planId: closed.planId,
-            environmentId: hostId,
-            operationId: hostOperationId,
-            evidence: { kind: "receipt", receipt: accepted },
-          });
-        } else {
-          await expect(action).rejects.toThrow("does not match the original operation");
-          expect(operation).not.toHaveBeenCalled();
-        }
+      } else {
+        await expect(action).rejects.toThrow();
+        expect(sent).toHaveBeenCalledTimes(
+          scenario === "legacy unsupported" || scenario === "provisional read-back missing" ? 1 : 0,
+        );
+        expect(f.installPlan.mock.calls.some(([request]) => request.type === "report")).toBe(false);
+      }
+      if (
+        scenario === "different host" ||
+        scenario === "unknown enrollment" ||
+        scenario === "verified unsupported"
+      ) {
+        expect(f.installPlan.mock.calls.some(([request]) => request.type === "claim")).toBe(false);
+      } else
         expect(f.installPlan).toHaveBeenCalledWith({
           type: "claim",
           step: "fence",
@@ -984,7 +1329,87 @@ describe("bound Install status actions", () => {
           expectedRevision: 7,
           claimant: expect.any(String),
         });
-        expect(f.store.get().native?.current?.planId).toBe(earlierOperationId);
+      expect(f.store.get().native?.current?.planId).toBe(earlierOperationId);
+    } finally {
+      unbind();
+      f.unbind();
+    }
+  });
+
+  it.each(["changed enrollment", "different host"] as const)(
+    "checks an exact archived cleanup hold with %s",
+    async (scope) => {
+      const f = bindFixture();
+      const current = f.state.current!;
+      const device = current.devices[0]!;
+      const jobId = earlierOperationId;
+      const receipt = {
+        ...running,
+        phase: "held",
+        code: "cleanup-unconfirmed",
+        jobId,
+      } as const;
+      const closed = {
+        ...current,
+        dismissedAt: at,
+        cancelled: true as const,
+        devices: [
+          {
+            ...device,
+            operations: [{ ...device.operations[0]!, receipt }],
+          },
+        ],
+      };
+      const state = {
+        ...f.state,
+        current: null,
+        last: closed,
+        view: { complete: false, recoveryHistory: 1 as const },
+      };
+      f.installPlan.mockResolvedValue({ state, historyPlan: closed });
+      const observation = await f.services.observe(hostId);
+      const host = {
+        ...observation,
+        fleetStatus:
+          scope === "changed enrollment" ? enrolledFleet : { ...enrolledFleet, environmentId },
+      };
+      const inspection = {
+        operationId: hostOperationId,
+        status: "eligible" as const,
+        recoveryToken: localStopId,
+      };
+      const operation = vi.fn<InstallPlanServices["operation"]>(async () => ({
+        receipts: [{ operationId: hostOperationId, receipt }],
+        cleanupInspection: inspection,
+      }));
+      const unbind = bindInstallPlanServices(
+        { ...f.services, operation, devices: () => [host], observe: async () => host },
+        f.store,
+      );
+      f.store.update({ native: state });
+      try {
+        const result = await inspectPanelCleanup({
+          planId: closed.planId,
+          environmentId: hostId,
+          operationId: hostOperationId,
+          archived: true,
+          expectedRevision: closed.revision,
+          jobId,
+        });
+        if (scope === "different host") {
+          expect(result).toEqual({ status: "unproved" });
+          expect(operation).not.toHaveBeenCalled();
+        } else {
+          expect(result).toEqual(inspection);
+          expect(operation).toHaveBeenCalledExactlyOnceWith(hostId, {
+            action: "operationRead",
+            input: {
+              environmentId: hostId,
+              operationIds: [hostOperationId],
+              inspectCleanup: hostOperationId,
+            },
+          });
+        }
       } finally {
         unbind();
         f.unbind();
@@ -1164,73 +1589,131 @@ describe("bound Install status actions", () => {
     }
   });
 
-  it("reads and records an exact archived operation receipt after re-enrollment", async () => {
-    const f = bindFixture();
-    const current = f.state.current!;
-    const device = current.devices[0]!;
-    const receipt = { ...running, phase: "failed" as const };
-    const closed = {
-      ...current,
-      dismissedAt: at,
-      devices: [
-        {
-          ...device,
-          route: "follower-operations" as const,
-          enrollmentId: earlierOperationId,
-        },
-      ],
-    };
-    const observed = await f.services.observe(hostId);
-    const changed = {
-      ...observed,
-      fleetStatus: {
-        environmentId: hostId,
-        operationProtocol: 1 as const,
-        operation: null,
-        update: observed.observation.state,
-        enrollment: {
+  it.each(["Check", "poll"] as const)(
+    "recovers an archived ledger receipt after legacy unsupported through %s",
+    async (method) => {
+      const f = bindFixture();
+      const current = f.state.current!;
+      const device = current.devices[0]!;
+      const receipt = { ...running, phase: "failed" as const };
+      const unsupported: JonesOperationReceipt = {
+        ...input,
+        protocol: 1,
+        phase: "refused",
+        code: "unsupported",
+        updatedAt: "2026-10-27T04:01:00.000Z",
+      };
+      const closed = {
+        ...current,
+        dismissedAt: at,
+        devices: [
+          {
+            ...device,
+            route: "follower-operations" as const,
+            enrollmentId: earlierOperationId,
+            operations: [{ ...device.operations[0]!, receipt: unsupported }],
+          },
+        ],
+      };
+      const observed = await f.services.observe(hostId);
+      const changed = {
+        ...observed,
+        canOperate: false,
+        fleetStatus: {
           environmentId: hostId,
-          enrollmentId: localStopId,
-          enabled: true,
-          continueRunningThreads: false,
+          operationProtocol: 1 as const,
+          operation: null,
+          update: observed.observation.state,
+          enrollment: {
+            environmentId: hostId,
+            enrollmentId: localStopId,
+            enabled: true,
+            continueRunningThreads: false,
+          },
         },
-      },
-    };
-    const operation = vi.fn<InstallPlanServices["operation"]>(async () => ({
-      receipts: [{ operationId: hostOperationId, receipt }],
-    }));
-    f.installPlan.mockResolvedValue({
-      state: native(null, closed),
-      historyPlan: {
-        ...closed,
-        devices: [{ ...closed.devices[0]!, operations: [{ ...device.operations[0]!, receipt }] }],
-      },
-    });
-    const unbind = bindInstallPlanServices(
-      { ...f.services, devices: () => [changed], operation },
-      f.store,
-    );
-    try {
-      await refreshDeviceEvidence(installPlanServices()!, hostId, closed, changed, {
-        archived: true,
-        refreshInstallOutcome: true,
+      };
+      const operation = vi.fn<InstallPlanServices["operation"]>(async () => ({
+        receipts: [{ operationId: hostOperationId, receipt }],
+      }));
+      let archived = closed;
+      const state = {
+        ...native(null, closed),
+        view: { complete: false, recoveryHistory: 1 as const },
+      };
+      f.installPlan.mockImplementation(async (request) => {
+        if (request.type === "report")
+          archived = {
+            ...closed,
+            revision: closed.revision + 1,
+            devices: [
+              { ...closed.devices[0]!, operations: [{ ...device.operations[0]!, receipt }] },
+            ],
+          };
+        return { state: { ...state, last: archived }, historyPlan: archived };
       });
-      expect(operation).toHaveBeenCalledExactlyOnceWith(hostId, {
-        action: "operationRead",
-        input: { environmentId: hostId, operationIds: [hostOperationId] },
-      });
-      expect(f.installPlan).toHaveBeenCalledWith({
-        type: "report",
-        planId: closed.planId,
-        environmentId: hostId,
-        operationId: hostOperationId,
-        evidence: { kind: "receipt", receipt },
-      });
-    } finally {
-      unbind();
-      f.unbind();
-    }
-  });
+      let canRead = false;
+      let now = Date.parse(at);
+      const unbind = bindInstallPlanServices(
+        {
+          ...f.services,
+          devices: () => [changed],
+          observe: async () => changed,
+          operation,
+          canReadReceipts: () => canRead,
+          now: () => now,
+        },
+        f.store,
+      );
+      f.store.update({ native: state, devices: [changed] });
+      f.store.open(true, closed.planId);
+      const binding = installPlanServices()!;
+      const status =
+        method === "poll"
+          ? startInstallStatusPoller(binding.services, { store: f.store })
+          : undefined;
+      const refresh = async () => {
+        if (status === undefined) {
+          await performPanelAction(
+            hostId,
+            "check",
+            { planId: closed.planId, archived: true, operationId: hostOperationId },
+            binding,
+          );
+          return;
+        }
+        now += STATUS_POLL_CADENCE.regainedAfterMs + 1;
+        status.poller.regained();
+        await vi.waitFor(() => expect(status.poller.health(hostId)?.lastSuccessAt).toBe(now));
+      };
+      try {
+        await refresh();
+        expect(operation).not.toHaveBeenCalled();
+        canRead = true;
+        await refresh();
+        expect(operation).toHaveBeenCalledExactlyOnceWith(hostId, {
+          action: "operationRead",
+          input: { environmentId: hostId, operationIds: [hostOperationId] },
+        });
+        expect(f.installPlan).toHaveBeenCalledWith({
+          type: "report",
+          planId: closed.planId,
+          environmentId: hostId,
+          operationId: hostOperationId,
+          evidence: { kind: "receipt", receipt, ledgerRead: true },
+        });
+        expect(archived.devices[0]?.operations[0]?.receipt).toEqual(receipt);
+        expect(
+          f.installPlan.mock.calls.every(([request]) =>
+            ["read", "read-history", "report"].includes(request.type),
+          ),
+        ).toBe(true);
+      } finally {
+        status?.close();
+        unbind();
+        f.unbind();
+      }
+    },
+  );
 
   it.each(["operationReceipts", "operations"] as const)(
     "%s supports exact readback with disabled updates and requires current scope for explicit refresh",
@@ -1313,7 +1796,7 @@ describe("bound Install status actions", () => {
           planId: plan.planId,
           environmentId: hostId,
           operationId: hostOperationId,
-          evidence: { kind: "receipt", receipt },
+          evidence: { kind: "receipt", receipt, ledgerRead: true },
         });
         const directlyRead = {
           ...authorized,

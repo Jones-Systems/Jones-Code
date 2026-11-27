@@ -21,9 +21,11 @@ import {
   planHasLaptopRecoveryDuty,
   startPlan,
   validateDirectiveEvidence,
+  validateOperationEvidence,
   validateReceipt,
   deviceState,
 } from "@t3tools/client-runtime/jones/install-plan";
+import { JonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
 import {
   JonesInstallPlan as PlanSchema,
   JonesInstallPlanState as PlanStateSchema,
@@ -143,6 +145,7 @@ export function createScriptedInstallPlan(input: {
           install: true,
           exactSource: true,
           operations: 1 as const,
+          boundAdmission: 1 as const,
         },
       },
     ]),
@@ -236,6 +239,7 @@ export function createScriptedInstallPlan(input: {
       view: {
         ...native.view,
         complete: native.current !== null && isPlanComplete(native.current),
+        boundAdmission: 1,
         ...(native.current === null ? {} : { cancelPlan: 1 }),
         ...(input.recoveryHistory ? { recoveryHistory: 1 } : {}),
       },
@@ -608,8 +612,8 @@ export function createScriptedInstallPlan(input: {
       const receipt = evidence.receipt;
       if (
         op?.request.kind !== "operation-start" ||
-        !validateReceipt(op.request.input, receipt) ||
-        (op.receipt !== undefined && !validateReceipt(op.receipt, receipt))
+        !validateOperationEvidence(op.request.input, receipt, evidence) ||
+        (op.receipt !== undefined && !validateReceipt(op.receipt, receipt, evidence))
       )
         return refuse("invalid-evidence", "Receipt binding failed.");
       if (op.receipt !== undefined && JSON.stringify(op.receipt) === JSON.stringify(receipt))
@@ -643,6 +647,17 @@ export function createScriptedInstallPlan(input: {
           (historical !== undefined && !request.explicit))
       )
         return refuse("outstanding-operation", "Only the exact expired reservation can be fenced.");
+      const stopId = request.step === "stop" ? (op.stop?.stopId ?? uuid()) : undefined;
+      const reserved =
+        stopId === undefined ? { ...op, fence: { lease } } : { ...op, stop: { stopId, lease } };
+      revise({
+        ...plan,
+        devices: plan.devices.map((d) =>
+          d === device
+            ? { ...d, operations: d.operations.map((o) => (o === op ? reserved : o)) }
+            : d,
+        ),
+      });
       const grant: JonesInstallPlanGrant = {
         planId: plan.planId,
         environmentId: device.environmentId,
@@ -650,12 +665,12 @@ export function createScriptedInstallPlan(input: {
         step: request.step,
         leaseUntil: lease.leaseUntil,
         request:
-          request.step === "stop"
+          stopId !== undefined
             ? {
                 kind: "operation-stop",
                 input: {
                   operationId: op.operationId,
-                  stopId: op.stop?.stopId ?? uuid(),
+                  stopId,
                   environmentId: device.environmentId,
                 },
               }
@@ -697,6 +712,27 @@ export function createScriptedInstallPlan(input: {
       return refuse("invalid-evidence", "A bound action is required.");
     if (request.step === "install" && (!request.explicit || request.review === undefined))
       return refuse("invalid-evidence", "Every install needs review.");
+    let admission: JonesOperationStartInput["admission"];
+    if (request.boundAdmission === 1) {
+      if (device.route === "operations") admission = { kind: "ordinary" };
+      else {
+        const directive = device.operations.findLast(
+          (op) => op.directive?.kind === "applied",
+        )?.directive;
+        if (directive?.kind !== "applied" || device.enrollmentId === undefined)
+          return refuse(
+            "directive-required",
+            "The fixture needs the exact applied setup directive.",
+          );
+        admission = {
+          kind: "follower",
+          enrollmentId: device.enrollmentId,
+          directiveId: directive.directive.directiveId,
+          targetSource: plan.target.sourceSha,
+          targetTree: plan.target.sourceTree,
+        };
+      }
+    }
     const operationId = uuid();
     const start: JonesOperationStartInput = {
       operationId,
@@ -704,6 +740,7 @@ export function createScriptedInstallPlan(input: {
       expectedInstalledSource: request.expectedInstalledSource,
       action: request.action,
       correlation: { planId: plan.planId, deviceKey: device.environmentId },
+      ...(admission === undefined ? {} : { admission }),
     };
     const op = {
       operationId,
@@ -796,6 +833,12 @@ export function createScriptedInstallPlan(input: {
       throw new Error("Fixture host effects require operations.");
     },
     operation: async (id, command) => {
+      if (
+        (command.action === "operationStart" || command.action === "operationFence") &&
+        command.beforeSend !== undefined &&
+        !(await command.beforeSend())
+      )
+        throw new JonesOperationNotSentError({});
       input.record(`fixture-host-${command.action}`, { environmentId: id, input: command.input });
       if (command.action === "operationRead") {
         if (reachability.get(id)?.freshness === "stale")
