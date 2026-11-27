@@ -13092,5 +13092,12 @@
   "26f58319308650a1": "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
   "7fd7bc99180bcfad": "This plan's exact reservation changed or expired. Check the original operation.",
   "096cbc9bd8370186": "The reviewed stage changed. Check the original operation and review again.",
-  "08ff07123c656e31": "The control changed before Stop was sent."
+  "08ff07123c656e31": "The control changed before Stop was sent.",
+  "c60ae06b56e701c9": "Batchen stoppades vid arbetsträd {position} av {total}. {detail}",
+  "8a1e289ad6985b8e": "Tar bort arbetsträd {position} av {total}…",
+  "a89a98450e7df820": "Kontrollera den sparade rapporten innan du försöker igen.",
+  "49829788d8614e93": "Ta bort {count} arbetsträd på {machine}?",
+  "a1a73f4937a67b5c": "Jones Code kontrollerar varje arbetskopia på nytt innan den tas bort. Grenar och återställningsreferenser behålls.\n\nDu godkänner att de listade arbetskopiorna och de exakt angivna sökvägarna tas bort, inklusive tillägg i de angivna katalogerna.",
+  "65b5658a44e3a780": "Inget lokalt innehåll valt.",
+  "da46c14b50a74119": "Ta bort alla"
 }

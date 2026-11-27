@@ -132,9 +132,10 @@ worktrees were removed or kept and why, plus any failures.
 Results also list folders in the worktree folder that no thread uses, with their sizes; cleanup never removes them, so remove them manually if you want.
 
 On a server that supports it, **Propose retirements** reviews settled checkouts without deleting
-anything and opens **Last run**. Checkouts listed under **Ready to retire** have a **Retire**
-button; the confirmation lists the exact paths it authorizes, and the summary reports about how
-much space was recovered. If the server stops part-way through a retirement, the next **Retire**
+anything and opens **Last run**. Use **Retire** for one checkout or **Retire all** for every checkout
+under a machine's **Ready to retire** group, including rows beyond the first page. The confirmation
+lists the exact paths, and Jones Code rechecks each checkout before removing it. The summary reports
+how much space was recovered. If the server stops part-way through a retirement, the next **Retire**
 of that checkout first confirms the earlier server process has ended, then retries a checkout that
 was left untouched; a partly removed checkout stays held. If that checkout was already fully
 removed, **Propose retirements** lists it under **Ready to retire**, and **Retire** records it as

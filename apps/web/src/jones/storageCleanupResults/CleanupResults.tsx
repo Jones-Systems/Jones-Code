@@ -1,4 +1,5 @@
 import type { StorageCleanupReport, TimestampFormat } from "@t3tools/contracts";
+import { T } from "gt-react";
 import { useId, useState } from "react";
 import { SettingsRow } from "../../components/settings/settingsLayout";
 import { Button, InlineButton } from "../../components/ui/button";
@@ -16,6 +17,8 @@ type CleanupReport = {
   timestampFormat?: TimestampFormat;
   nowMs?: number;
   onRetire?: (entry: StorageCleanupReport["entries"][number]) => void;
+  onRetireAll?: (entries: readonly CleanupEntry[]) => void;
+  retirementPending?: boolean;
 };
 
 export function CleanupResults({
@@ -192,17 +195,31 @@ function ResultCategory({
   const [expanded, setExpanded] = useState(initiallyOpen);
   const [visibleCount, setVisibleCount] = useState(5);
   const shown = Math.min(visibleCount, entries.length);
+  const retireAll = category === "Ready to retire" && entries.length > 1 && props.onRetireAll;
   return (
     <section aria-label={`${props.environmentLabel}: ${category}`}>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium sm:px-4"
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <span aria-hidden="true">{expanded ? "▾" : "▸"}</span>
-        {category} <span className="text-muted-foreground">{entries.length.toLocaleString()}</span>
-      </button>
+      <div className="flex items-center pr-3 sm:pr-4">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          className="flex flex-1 items-center gap-2 px-3 py-2 text-left text-xs font-medium sm:px-4"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <span aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+          {category}{" "}
+          <span className="text-muted-foreground">{entries.length.toLocaleString()}</span>
+        </button>
+        {retireAll && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={props.retirementPending}
+            onClick={() => retireAll(entries)}
+          >
+            <T>Retire all</T>
+          </Button>
+        )}
+      </div>
       {expanded && (
         <>
           <CleanupReportRows {...props} entries={entries.slice(0, shown)} />
@@ -257,11 +274,13 @@ function CleanupReportRows({
   entries,
   environmentLabel,
   onRetire,
+  retirementPending,
 }: {
   report: StorageCleanupReport;
   entries: StorageCleanupReport["entries"];
   environmentLabel: string;
   onRetire?: (entry: StorageCleanupReport["entries"][number]) => void;
+  retirementPending?: boolean;
 }) {
   return (
     <>
@@ -321,7 +340,12 @@ function CleanupReportRows({
             control={
               <>
                 {onRetire && canRetire(entry) && (
-                  <Button variant="outline" size="sm" onClick={() => onRetire(entry)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={retirementPending}
+                    onClick={() => onRetire(entry)}
+                  >
                     Retire
                   </Button>
                 )}

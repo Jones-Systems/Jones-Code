@@ -305,43 +305,43 @@
         },
         {
           "path": "apps/web/src/i18n/translations/de.json",
-          "sha256": "c0f90e20af22e19c3392c8c18ab8053fe12dfadfc46878cb60796103bdd9d039"
+          "sha256": "6b69f39aa96033a269034ddb0ae76adb89ff1536ad07478de21d8bba7394dbbd"
         },
         {
           "path": "apps/web/src/i18n/translations/en.json",
-          "sha256": "addfec7596a46ee9b897a838b2069766c177e8b7232399e2187cbc8ca02f0a91"
+          "sha256": "a19bb5baa088a821b6811a74256623eb79b9ab6c367a46764bf8d76791c83d94"
         },
         {
           "path": "apps/web/src/i18n/translations/es.json",
-          "sha256": "5fbb9cc6ee98edf8c40b78ec6b92cbc1a3ff052f6ab63647679d2085c29f1d8d"
+          "sha256": "ac6c73951ba98bc0159b8ab203ca044b79ee3b3bfa011d0de5a9519dc0f3f981"
         },
         {
           "path": "apps/web/src/i18n/translations/fr.json",
-          "sha256": "6177b069abd1f0b4da7a3e03e6f0c544a9f2f22591cc561f0b81f8dbb3bbf794"
+          "sha256": "ba784dcca6a52d8e364e6e52d5adc72aad7f88d0de481c566181be957fd124ed"
         },
         {
           "path": "apps/web/src/i18n/translations/ja.json",
-          "sha256": "3726e0cec31d1169ae81da2bb90b2dc2139479059ea29c6bbf56cb6af502c6e1"
+          "sha256": "b10a085311634464a88ab8677b1dc1c81d11155efcc616a28b1f8495c3a63397"
         },
         {
           "path": "apps/web/src/i18n/translations/ko.json",
-          "sha256": "f48dc7c733e0c6ffcf348e184d9961e0edb0e8a7e106a5c7f487a92e1a31c4e3"
+          "sha256": "416346328ec27ce08e78ad43ba15fcb78cdaca9ed21545b2958fdc7dedf69d65"
         },
         {
           "path": "apps/web/src/i18n/translations/pt-BR.json",
-          "sha256": "7cd50c3559797120acab9f4493b97888f25d36378fe7f93b50519479d30f7b83"
+          "sha256": "fea2fd949ba99d5b0c9f04524025b4019e6e31e00c4eeb9e65794cc00522882d"
         },
         {
           "path": "apps/web/src/i18n/translations/ru.json",
-          "sha256": "3ff016f54674ef8271bde2bec97232f8ff035a5ddb02f77cb6cffd6d2d7a178c"
+          "sha256": "a5b63986f9154f5aa75a9b6e086b44d6a4f2de095d1565512073816781c79732"
         },
         {
           "path": "apps/web/src/i18n/translations/sv.json",
-          "sha256": "3b0a1d0ac0fe407b4d6e6053aa169f6637fb3bfb41fab71b064f178572e635b0"
+          "sha256": "c5f818d8c2d0b42284ea0712dbee00e654bfb7ceeb672758aa177629e071a4dc"
         },
         {
           "path": "apps/web/src/i18n/translations/zh.json",
-          "sha256": "009823ee6b5eaa36453a32cf4c65fc6585067366392f6f5856296488439a9ee7"
+          "sha256": "a1b783e3bed3873a0328d166333c76e2841f22177ff799274ddcf5956413752f"
         }
       ],
       "targets": [
