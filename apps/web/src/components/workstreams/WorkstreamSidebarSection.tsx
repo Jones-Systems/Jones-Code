@@ -606,6 +606,7 @@ export function WorkstreamSidebarSection({
   controller,
   nameIconProjects = [],
   newThreadAction,
+  drafts,
   renderMembers,
   onOpenHistoryThread,
   summaries,
@@ -619,6 +620,7 @@ export function WorkstreamSidebarSection({
   controller: PersonalWorkstreamsController;
   nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
   newThreadAction?: ((workstream: PersonalWorkstreamView) => WorkstreamThreadAction) | undefined;
+  drafts?: ReactNode;
   dropTargetId?: string | null | undefined;
   snoozedIds?: ReadonlySet<string>;
   onOpenHistoryThread?: ((thread: PersonalThreadRef) => void) | undefined;
@@ -847,6 +849,11 @@ export function WorkstreamSidebarSection({
           onStatusFilterChange={sharedStatus.setFilter}
           controlsId={namedGroupsId}
         />
+      ) : null}
+      {drafts ? (
+        <ul role="presentation" className="flex flex-col gap-px">
+          {drafts}
+        </ul>
       ) : null}
       <div data-workstream-group-slot className="relative py-1">
         <section
