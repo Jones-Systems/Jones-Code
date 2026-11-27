@@ -29,12 +29,7 @@ export interface ShellDestination {
 }
 
 function normalizeLabel(label: string): string {
-  return label
-    .normalize("NFKC")
-    .replace(/[‘’ʼ]/gu, "'")
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/gu, " ");
+  return label.normalize("NFKC").replace(/[‘’ʼ]/gu, "'").toLowerCase().trim().replace(/\s+/gu, " ");
 }
 
 export function resolveShellDestination(

@@ -7,6 +7,10 @@
   "allowedImports": [
     {
       "from": "apps/server/src/testUtils/weightedShardSequencer.ts",
+      "to": "scripts/jones/server-shard-weights/capture.ts"
+    },
+    {
+      "from": "apps/server/src/testUtils/weightedShardSequencer.ts",
       "to": "scripts/jones/server-shard-weights/envelope.ts"
     }
   ]

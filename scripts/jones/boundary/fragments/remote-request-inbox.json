@@ -18,6 +18,18 @@
       "to": "apps/server/src/jones/peerTransport/LinkedRequestContext.ts"
     },
     {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/RequestManagement.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/requestManagementMcp.ts"
+    },
+    {
+      "from": "apps/server/src/binCli.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/requestManagementCli.ts"
+    },
+    {
       "from": "apps/server/src/peer/PeerForwarding.ts",
       "to": "apps/server/src/jones/peerTransport/RequestContextSender.ts"
     }

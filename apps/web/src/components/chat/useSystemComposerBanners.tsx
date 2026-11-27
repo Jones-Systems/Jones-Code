@@ -38,6 +38,9 @@ import {
   resolveServerSelfUpdateCapability,
   supportsDesktopAppUpdate,
 } from "../../versionSkew";
+import { useGT, useMessages, msg, T } from "gt-react";
+import { m } from "~/i18n/messages";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 
 export type EnvironmentUnavailableState = {
   readonly environmentId: EnvironmentId;
@@ -72,6 +75,8 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
     automaticEnvironment,
     autoUpdateEnvironments,
   } = input;
+  const gt = useGT();
+  const messages = useMessages();
   const navigate = useNavigate();
   const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
   const setEnvironmentEnabled = useAtomCommand(environmentCatalog.setEnabled, {
@@ -100,8 +105,8 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not reconnect environment",
-          description: error instanceof Error ? error.message : "Failed to reconnect.",
+          title: m(msg("Could not reconnect environment")),
+          description: thrownErrorMessage(error, m) ?? m(msg("Failed to reconnect.")),
         }),
       );
     }
@@ -128,8 +133,8 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Could not disconnect server",
-            description: error instanceof Error ? error.message : "Failed to disconnect.",
+            title: m(msg("Could not disconnect server")),
+            description: thrownErrorMessage(error, m) ?? m(msg("Failed to disconnect.")),
           }),
         );
       }
@@ -149,11 +154,15 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
     automaticEnvironment,
     eligibleEnvironments: autoUpdateEnvironments,
   });
-  const versionMismatch = resolveServerConfigVersionMismatch(serverConfig);
-  const versionMismatchServerLabel =
+  const versionMismatch = resolveServerConfigVersionMismatch(serverConfig, messages);
+  const versionMismatchServerName =
     hasMultipleRegisteredEnvironments && activeThreadEnvironmentId !== null
-      ? `${activeEnvironment?.label ?? serverConfig?.environment.label ?? activeThreadEnvironmentId} server`
-      : "server";
+      ? (activeEnvironment?.label ?? serverConfig?.environment.label ?? activeThreadEnvironmentId)
+      : null;
+  const versionMismatchServerLabel =
+    versionMismatchServerName !== null
+      ? gt("{environment} server", { environment: versionMismatchServerName })
+      : gt("server", { $context: "noun, the T3 Code server" });
   const serverUpdateEnvironmentId = activeThreadEnvironmentId;
   const versionMismatchSelfUpdate = resolveServerSelfUpdateCapability(serverConfig);
   const versionMismatchInstallation = serverConfig?.environment.capabilities.serverInstallation;
@@ -177,14 +186,14 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
           size="xs"
           variant="ghost"
           disabled={disconnectingEnvironment}
-          title="Hide this server's threads. Switch it on again in Environments."
+          title={gt("Hide this server's threads. Switch it on again in Environments.")}
           onClick={() =>
             void handleDisconnectActiveEnvironmentStable(
               activeEnvironmentUnavailableState.environmentId,
             )
           }
         >
-          Disconnect server
+          <T>Disconnect server</T>
         </Button>
       ) : undefined;
     const environmentReconnecting =
@@ -207,8 +216,16 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
         group: "environment",
         icon: <WifiOffIcon />,
         title: awaitingApproval
-          ? `${activeEnvironmentUnavailableState.label} is waiting to approve this device`
-          : `${activeEnvironmentUnavailableState.label} is ${environmentReconnecting ? "reconnecting" : "offline"}`,
+          ? gt("{environment} is waiting to approve this device", {
+              environment: activeEnvironmentUnavailableState.label,
+            })
+          : environmentReconnecting
+            ? gt("{environment} is reconnecting", {
+                environment: activeEnvironmentUnavailableState.label,
+              })
+            : gt("{environment} is offline", {
+                environment: activeEnvironmentUnavailableState.label,
+              }),
         description: awaitingApproval ? (
           (unavailableConnection.error ?? undefined)
         ) : activeEnvironment ? (
@@ -226,7 +243,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
                   )
                 }
               >
-                {environmentReconnecting ? "Retry now" : "Reconnect"}
+                {environmentReconnecting ? gt("Retry now") : gt("Reconnect")}
               </Button>
             ) : null}
             {disconnectAction}
@@ -248,7 +265,16 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
         variant: updateFailed ? "error" : "default",
         group: "environment",
         icon: <ComposerServerUpdateIcon status={serverUpdateState.status} />,
-        title: `${updateFailed ? "Could not update" : "Updating"} ${versionMismatchServerLabel}`,
+        title:
+          versionMismatchServerName !== null
+            ? updateFailed
+              ? gt("Could not update {environment} server", {
+                  environment: versionMismatchServerName,
+                })
+              : gt("Updating {environment} server", { environment: versionMismatchServerName })
+            : updateFailed
+              ? gt("Could not update server")
+              : gt("Updating server"),
         description:
           serverUpdateState.status === "failed" ? (
             <>
@@ -275,13 +301,13 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
             installation={versionMismatchInstallation}
             desktopAppUpdate={versionMismatchDesktopAppUpdate}
             targetVersion={versionMismatch.clientVersion}
-            label="Retry"
+            label={gt("Retry", { $context: "verb, retries the server update" })}
             variant="ghost"
           />
         ),
         ...(updateFailed
           ? {
-              dismissLabel: "Dismiss update notice",
+              dismissLabel: gt("Dismiss update notice"),
               onDismiss: () => {
                 dismissServerUpdateFailure(serverUpdateState);
                 setDismissedServerUpdateState(serverUpdateState);

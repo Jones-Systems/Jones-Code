@@ -13,6 +13,7 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
+  hasCompletedRun: true,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -104,6 +105,7 @@ describe("buildThreadActionMenuItems", () => {
       const items = buildThreadActionMenuItems({
         ...baseState,
         canOperate: false,
+        canTriage: false,
         isPinned: reversed,
         isSettled: reversed,
         isSnoozed: reversed,
@@ -139,6 +141,33 @@ describe("buildThreadActionMenuItems", () => {
     },
   );
 
+  it.each([false, true])(
+    "allows offline triage without a live operate grant (reversed: %s)",
+    (reversed) => {
+      const items = buildThreadActionMenuItems({
+        ...baseState,
+        canOperate: false,
+        canTriage: true,
+        isPinned: reversed,
+        isSettled: reversed,
+        isSnoozed: reversed,
+      });
+      const enabled = items.filter((item) => !item.disabled).map((item) => item.id);
+      expect(enabled).toEqual(
+        expect.arrayContaining(reversed ? ["unsettle", "unsnooze"] : ["settle", "snooze"]),
+      );
+      expect(enabled).not.toContain(reversed ? "unpin" : "pin");
+      expect(enabled).not.toContain("delete");
+      if (!reversed) {
+        const snooze = items.find((item) => item.id === "snooze");
+        expect(snooze?.children?.filter((item) => !item.disabled).map((item) => item.id)).toEqual([
+          "snooze:hour",
+          "snooze:custom",
+        ]);
+      }
+    },
+  );
+
   it("disables archive and turning into a project while the thread is running", () => {
     const items = buildThreadActionMenuItems({
       ...baseState,
@@ -147,5 +176,18 @@ describe("buildThreadActionMenuItems", () => {
     });
     expect(items.find((item) => item.id === "archive")?.disabled).toBe(true);
     expect(items.find((item) => item.id === "turn-into-project")?.disabled).toBe(true);
+  });
+
+  it.each([
+    ["while the thread is running", { isRunning: true }],
+    ["before any run has completed", { hasCompletedRun: false }],
+  ])("omits mark unread %s", (_, overrides) => {
+    const items = buildThreadActionMenuItems({ ...baseState, ...overrides });
+    expect(items.map((item) => item.id)).not.toContain("mark-unread");
+  });
+
+  it("disables only rename where no inline title editor exists", () => {
+    const items = buildThreadActionMenuItems({ ...baseState, canRename: false });
+    expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(["rename"]);
   });
 });

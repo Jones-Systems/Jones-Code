@@ -1,6 +1,6 @@
 import type { StorageCleanupReport, TimestampFormat } from "@t3tools/contracts";
 import { formatBytes } from "../../lib/formatBytes.ts";
-import { formatDayAwareTimestamp, resolveHour12 } from "../../timestampFormat.ts";
+import { formatDayAwareTimestamp, resolveHour12 } from "../../lib/timestampClock.ts";
 
 export type CleanupOperation = NonNullable<StorageCleanupReport["operation"]>;
 export type CleanupRequest = {

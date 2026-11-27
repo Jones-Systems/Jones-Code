@@ -71,7 +71,8 @@ export function resolveNavigationAttentionPill(
     thread.runtime?.status === "running" &&
     thread.blockedOnThreadWait === true
       ? "Waiting"
-      : (attention === null || attention === "Completed") && hasUnseenRunFailure(thread)
+      : (attention === null || attention === "Completed" || attention === "Waiting") &&
+          hasUnseenRunFailure(thread)
         ? "Failed"
         : attention;
   return label === null ? null : { label, ...THREAD_PILL_STYLES[label] };

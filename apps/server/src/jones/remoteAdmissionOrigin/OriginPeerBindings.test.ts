@@ -38,13 +38,16 @@ function fixture() {
   const links = Layer.succeed(PeerLinks.PeerLinks, {
     enabled: Effect.succeed(true),
     list: Effect.succeed([]),
+    names: Effect.succeed([]),
     currentGeneration: () => Effect.sync(() => Option.fromNullishOr(generation)),
     link: unused,
+    linkUnlessLinked: unused,
     describe: unused,
     get: unused,
     unlink: unused,
     resolve: unused,
     recordOutcome: unused,
+    recordExpiry: unused,
   });
   const peers = Layer.succeed(PeerMcpClient.PeerMcpClient, {
     call: (input) =>

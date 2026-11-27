@@ -1,11 +1,21 @@
 import type { JonesInstallPlanState } from "@t3tools/contracts/jones/installPlan";
 import { isPlanComplete, planCompletion } from "@t3tools/client-runtime/jones/install-plan";
-import { installPlanServices, requestInstallPlan } from "./services";
+import {
+  confirmClosedPlan,
+  installPlanServices,
+  readWritableTarget,
+  requestInstallPlan,
+  requireWritablePlan,
+} from "./services";
 
 /** Each click reconciles first. A lost response stops this sequence without a resend. */
-export async function finishPlan(planId: string) {
-  const binding = installPlanServices();
+export async function finishPlan(
+  planId: string,
+  expectedRevision?: number,
+  binding = installPlanServices(),
+) {
   if (binding === undefined) throw new Error("Install status is not connected.");
+  const selection = binding.store.historySelection();
   const current = (state: JonesInstallPlanState) => {
     if (installPlanServices() !== binding) throw new Error("Install status connection changed.");
     if (state.readOnly !== undefined) throw new Error(state.readOnly.message);
@@ -13,12 +23,15 @@ export async function finishPlan(planId: string) {
       throw new Error("The update plan changed. Read status again.");
     return state.current;
   };
-  const read = await requestInstallPlan({ type: "read" }, binding);
-  if (read.refused !== undefined) throw new Error(read.refused.message);
-  let plan = current(read.state);
+  const read = await readWritableTarget(binding, {
+    planId,
+    ...(expectedRevision === undefined ? {} : { expectedRevision }),
+  });
+  let plan = read.plan;
   const supportsDeviceRecovery = read.state.view.deviceRecovery === 1;
   const identity = plan.target;
   const unchanged = () => {
+    requireWritablePlan(binding);
     const native = binding.store.get().native;
     if (native === null) throw new Error("Install status is unavailable.");
     const observed = current(native);
@@ -102,14 +115,21 @@ export async function finishPlan(planId: string) {
   const result = await requestInstallPlan(
     { type: "dismiss", planId, expectedRevision: plan.revision },
     binding,
+  ).catch(() => undefined);
+  await confirmClosedPlan(
+    binding,
+    planId,
+    (closed) =>
+      closed.dismissedAt !== undefined &&
+      closed.cancelled !== true &&
+      closed.manualClosure === undefined,
+    result,
   );
-  if (result.refused !== undefined) throw new Error(result.refused.message);
-  if (
-    installPlanServices() !== binding ||
-    result.state.current !== null ||
-    result.state.last?.planId !== planId ||
-    result.state.last.dismissedAt === undefined
-  )
-    throw new Error("Plan dismissal was not confirmed. Read status before continuing.");
-  binding.store.update({ open: false, showLast: true, previewSelection: [] });
+  if (binding.store.historySelection() === selection)
+    binding.store.update({
+      open: false,
+      showLast: true,
+      historyPlanId: planId,
+      previewSelection: [],
+    });
 }

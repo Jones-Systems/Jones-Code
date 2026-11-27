@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
-  type ModelSelection,
   MessageId,
+  type ModelSelection,
   NodeId,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ThreadProjection,
@@ -27,6 +27,7 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as EventSink from "./EventSink.ts";
 import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -248,109 +249,22 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         rollbackThread: () => Effect.die("unused rollbackThread"),
         forkThread: () => Effect.die("unused forkThread"),
       };
-      const layerProjection = Layer.succeed(
-        ProjectionStore.ProjectionStoreV2,
-        ProjectionStore.ProjectionStoreV2.of({
-          apply: () => Effect.void,
-          getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
-          getLimitRecoveryWakeAt: () => Effect.die("unused getLimitRecoveryWakeAt"),
-          getOpenRemoteDelegatedTasks: Effect.die("unused getOpenRemoteDelegatedTasks"),
-          getAgentAwarenessSnapshot: () => Effect.die("unused awareness snapshot"),
-          getShellSnapshot: () => Effect.die("unused getShellSnapshot"),
-          listActiveSubagentThreadIds: () => Effect.die("unused listActiveSubagentThreadIds"),
-          countThreads: () => Effect.die("unused countThreads"),
-          listActiveShellIndex: () => Effect.die("unused listActiveShellIndex"),
-          listActiveThreads: () => Effect.die("unused listActiveThreads"),
-          listOlderSettledThreads: () => Effect.die("unused listOlderSettledThreads"),
-          readShellSnapshot: () => Effect.die("unused readShellSnapshot"),
-          getThreadShell: () => Effect.die("unused getThreadShell"),
-          getThreadTitles: () => Effect.die("unused getThreadTitles"),
-          getThreadLinkMetadata: () => Effect.die("unused getThreadLinkMetadata"),
-          findGuestShareThreadId: () => Effect.die("unused findGuestShareThreadId"),
-          getThread: () => Ref.get(projection).pipe(Effect.map((state) => state.thread)),
-          getSettlementCandidates: () => Effect.die("unused getSettlementCandidates"),
-          getThreadsWithPullRequests: () => Effect.die("unused getThreadsWithPullRequests"),
-          getThreadWorktreePaths: () => Effect.die("unused getThreadWorktreePaths"),
-          getThreadProjection: () => Effect.die("control effects must not load transcript"),
-          getTurnStartContext: () => Effect.die("unused"),
-          getTurnStartHistory: () => Effect.die("unused"),
-          getRuntimeRecoveryProjection: () => Effect.die("unused getRuntimeRecoveryProjection"),
-          getPlan: () => Effect.die("unused"),
-          hasUnpairedRunInterruptRequest: () => Effect.die("unused interrupt read"),
-          hasRunInterruptRequest: () => Effect.die("unused stop read"),
-          getRunProviderRecords: () => Effect.die("unused run provider read"),
-          getThreadAttachmentIds: () => Effect.die("Unused attachment lookup"),
-          searchThread: () => Effect.die("unused"),
-          searchThreadStream: () => Stream.empty,
-          getThreadHistoryPage: () => Effect.die("unused"),
-          getTimelinePage: () => Effect.die("Unused timeline read"),
-          getTimelinePages: () => Effect.die("Unused timeline pages read"),
-          getMessageCount: () => Effect.die("unused message count"),
-          getTranscriptByteFloor: () => Effect.die("unused transcript byte floor"),
-          hasPendingDelegatedCompletion: () => Effect.die("unused hasPendingDelegatedCompletion"),
-          getSubagentCount: () => Effect.die("unused subagent count"),
-          listAppOwnedChildThreadIds: () => Effect.die("unused listAppOwnedChildThreadIds"),
-          getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
-          getTurnItem: () => Effect.die("unused turn item read"),
-          getMessagesById: () => Effect.die("unused getMessagesById"),
-          getThreadRecords: () => Effect.die("unused record read"),
-          getRuntimeRequest: () => Effect.die("unused getRuntimeRequest"),
-          getRunningTurnContext: () => Effect.die("unused getRunningTurnContext"),
-          getThreadProviderContext: () => Effect.die("unused getThreadProviderContext"),
-          getRuntimeResponseContext: () => Effect.die("unused getRuntimeResponseContext"),
-          getPendingNativeUserInputs: () => Effect.die("unused getPendingNativeUserInputs"),
-          getProviderControlContext: (_threadId, target) =>
-            Ref.get(projection).pipe(
-              Effect.map((current) => ({
-                providerThread: current.providerThreads.find(
-                  (thread) => thread.id === target.providerThreadId,
-                ),
-                providerTurn: current.providerTurns.find(
-                  (turn) => turn.id === target.providerTurnId,
-                ),
-                attempt: current.attempts.find((attempt) => attempt.id === target.attemptId),
-                message: undefined,
-                run: undefined,
-              })),
+      const layerProjection = layerProjectionStore((_threadId, target) =>
+        Ref.get(projection).pipe(
+          Effect.map((current) => ({
+            providerThread: current.providerThreads.find(
+              (thread) => thread.id === target.providerThreadId,
             ),
-          getCheckpointContext: () => Effect.die("not used"),
-          getCheckpointRollbackContext: () => Effect.die("unused rollback context"),
-          getCheckpointCaptureContext: () => Effect.die("not used"),
-          getRunMessage: () => Effect.die("not used"),
-          getRun: () => Effect.die("not used"),
-          isNodeStored: () => Effect.die("not used"),
-          canStartQueuedRun: () => Effect.die("not used"),
-          getHeldQueuedRuns: () => Effect.die("not used"),
-          getRecoveryThreadIds: () => Effect.die("unused getRecoveryThreadIds"),
-          getUnreadableThreadIds: () => Effect.die("unused getUnreadableThreadIds"),
-          getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
-          getThreadSnapshotWindow: () => Effect.die("unused getThreadSnapshotWindow"),
-          getPullRequestSnapshot: () => Effect.die("unused getPullRequestSnapshot"),
-          hasQueuedToolBoundaryWork: () => Effect.die("unused queued tool-boundary read"),
-          getQueuedToolBoundaryContext: () => Effect.die("unused queued tool-boundary context"),
-        }),
+            providerTurn: current.providerTurns.find((turn) => turn.id === target.providerTurnId),
+            attempt: current.attempts.find((attempt) => attempt.id === target.attemptId),
+            message: undefined,
+            run: undefined,
+          })),
+        ),
       );
-      const layerSessionManager = Layer.succeed(
-        ProviderSessionManager.ProviderSessionManagerV2,
-        ProviderSessionManager.ProviderSessionManagerV2.of({
-          shutdown: Effect.void,
-          isMcpCallerAttached: () => Effect.die("unused MCP attachment proof"),
-          open: () => Effect.die("unused open"),
-          get: (providerSessionId) =>
-            Effect.succeed(
-              providerSessionId === oldSessionId ? Option.some(runtime) : Option.none(),
-            ),
-          isLive: (providerSessionId) => Effect.succeed(providerSessionId === oldSessionId),
-          close: () => Effect.void,
-          closeInstance: () => Effect.void,
-          release: () => Effect.void,
-          detach: () => Effect.void,
-          otherWorkingThreads: () => Effect.succeed([]),
-          releaseUnlessBusy: () => Effect.succeed(true),
-          subscribePromptSuggestion: () => Stream.empty,
-        }),
-      );
+      const layerSessionManager = layerSessions(oldSessionId, runtime);
       const layerControl = ProviderTurnControlService.layer.pipe(
+        Layer.provide(McpAppModelContext.layerEmpty),
         Layer.provide(
           Layer.mergeAll(
             layerProjection,
@@ -472,6 +386,7 @@ it.effect.each([
   "batch_changed",
   "runtime_replaced",
   "stop_during_reads",
+  "captured_stop_before_native",
   "goal_changed",
   "delivery_unknown",
   "not_delivered",
@@ -546,10 +461,16 @@ it.effect.each([
         }),
     } as ProviderAdapter.ProviderAdapterV2SessionRuntime;
     const layer = ProviderTurnControlService.layer.pipe(
+      Layer.provide(McpAppModelContext.layerEmpty),
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(EventSink.EventSinkV2)({
             supersededTerminalTrace: SupersededTerminalTrace.make(),
+            hasAttributedRuntimeStop: (candidateThread, candidateRun) => {
+              assert.equal(candidateThread, threadId);
+              assert.equal(candidateRun, runId);
+              return Effect.succeed(scenario === "captured_stop_before_native");
+            },
           }),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
             get: () =>
@@ -693,6 +614,7 @@ const makeStopFixture = (
       forkThread: () => Effect.die("unused forkThread"),
     };
     const layer = ProviderTurnControlService.layer.pipe(
+      Layer.provide(McpAppModelContext.layerEmpty),
       Layer.provide(
         Layer.mock(EventSink.EventSinkV2)({
           supersededTerminalTrace: SupersededTerminalTrace.make(),
@@ -727,6 +649,22 @@ const makeStopFixture = (
     );
     return { layer, threadId, sessionId, providerThreadId, providerTurnId, attemptId };
   });
+
+function layerProjectionStore(
+  getProviderControlContext: ProjectionStore.ProjectionStoreV2["Service"]["getProviderControlContext"],
+) {
+  return Layer.mock(ProjectionStore.ProjectionStoreV2)({ getProviderControlContext });
+}
+
+function layerSessions(
+  liveSessionId: ProviderSessionId,
+  runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+) {
+  return Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+    get: (providerSessionId) =>
+      Effect.succeed(providerSessionId === liveSessionId ? Option.some(runtime) : Option.none()),
+  });
+}
 
 it.effect(
   "hands the adapter the child budget and reports an adapter stop timeout as unresponsive",

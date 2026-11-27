@@ -12,10 +12,12 @@ import type * as FileSystem from "effect/FileSystem";
 import type { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
+import type * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 
 import type { SourceControlDefinition } from "../shared/definition.ts";
 
 import type { SourceControlProviderDiscoverySpec } from "./discovery.ts";
+import type { IssueTrackerApi } from "./IssueTracker.ts";
 import type { PullRequestProviderApi, PullRequestProviderError } from "./PullRequestProvider.ts";
 import type * as SourceControlHost from "./SourceControlHost.ts";
 import type * as SourceControlProvider from "./SourceControlProvider.ts";
@@ -75,6 +77,8 @@ export interface SourceControlDriverInstance {
   readonly discovery: SourceControlProviderDiscoverySpec;
   /** Null for a host whose pull requests this build cannot read. */
   readonly pullRequests: PullRequestProviderApi | null;
+  /** Absent for a host whose issues this build cannot read. */
+  readonly issues?: IssueTrackerApi;
   /** Uses the driver's existing verified credential and shared request budget. */
   readonly ci?: SourceControlCiReader;
   /**
@@ -101,7 +105,8 @@ export type SourceControlDriverServices =
   | SourceControlRateLimit.SourceControlRateLimit
   | HttpClient.HttpClient
   | FileSystem.FileSystem
-  | Digest.Digest;
+  | Digest.Digest
+  | FeatureFlags.FeatureFlags;
 
 export interface SourceControlDriver {
   readonly kind: SourceControlProviderKind;

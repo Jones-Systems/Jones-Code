@@ -319,8 +319,9 @@ NodeTest.test(
         encoding: "utf8",
         timeout: 20000,
       });
-      NodeAssert.notEqual(result.status, 0);
-      await NodeAssert.rejects(NodeFSP.stat(f.calls), { code: "ENOENT" });
+      if (scenario === "ref") NodeAssert.equal(result.status, 2, "invalid checkout SHA");
+      else NodeAssert.notEqual(result.status, 0, scenario);
+      await NodeAssert.rejects(NodeFSP.stat(f.calls), { code: "ENOENT" }, scenario);
       await NodeAssert.rejects(NodeFSP.stat(NodePath.join(f.workspace, ".git")), {
         code: "ENOENT",
       });

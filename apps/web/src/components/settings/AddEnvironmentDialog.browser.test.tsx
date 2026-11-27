@@ -9,6 +9,9 @@ import { render, stubGlobal } from "../../../test/render";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 
 const mocks = vi.hoisted(() => ({
+  connectPairing: vi.fn<() => Promise<AtomCommandResult<void, Error>>>(async () =>
+    AsyncResult.success(undefined),
+  ),
   connectSshEnvironment: vi.fn<() => Promise<AtomCommandResult<void, Error>>>(async () =>
     AsyncResult.success(undefined),
   ),
@@ -21,6 +24,7 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
 }));
 vi.mock(import("~/connection/onboarding"), async (original) => ({
   ...(await original()),
+  connectPairing: mocks.connectPairing as never,
   connectSshEnvironment: mocks.connectSshEnvironment as never,
 }));
 vi.mock(import("~/state/query"), async (original) => ({
@@ -61,6 +65,7 @@ function Owner() {
 }
 
 function setup() {
+  mocks.connectPairing.mockClear();
   mocks.connectSshEnvironment.mockClear();
   return stubGlobal("desktopBridge", {});
 }
@@ -83,6 +88,43 @@ async function expectDefaultModeAfterReopen() {
 }
 
 describe("AddEnvironmentDialog", () => {
+  it("submits a pairing URL entered one character at a time", async () => {
+    using _bridge = setup();
+    await using _screen = await render(<Owner />);
+
+    await userEvent.click(page.getByRole("button", { name: "Add environment" }));
+    const host = page.getByRole("textbox", { name: "Host", exact: true });
+    await userEvent.type(host, "https://devbox.example.com/pair#token=SYNTHETIC");
+    await userEvent.click(
+      page.getByRole("dialog").getByRole("button", { name: "Add environment" }),
+    );
+
+    expect(mocks.connectPairing).toHaveBeenCalledExactlyOnceWith({
+      host: "https://devbox.example.com",
+      pairingCode: "SYNTHETIC",
+    });
+  });
+
+  it("splits a pasted pairing URL into host and code fields", async () => {
+    using _bridge = setup();
+    await using _screen = await render(<Owner />);
+
+    await userEvent.click(page.getByRole("button", { name: "Add environment" }));
+    const host = page.getByRole("textbox", { name: "Host", exact: true });
+    const clipboardData = new DataTransfer();
+    clipboardData.setData("text/plain", "https://devbox.example.com/pair#token=SYNTHETIC");
+    host
+      .element()
+      .dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+      );
+
+    await expect.element(host).toHaveValue("https://devbox.example.com");
+    await expect
+      .element(page.getByRole("textbox", { name: "Pairing code" }))
+      .toHaveValue("SYNTHETIC");
+  });
+
   it("reopens on Remote link after adding an SSH environment", async () => {
     using _bridge = setup();
     await using _screen = await render(<Owner />);

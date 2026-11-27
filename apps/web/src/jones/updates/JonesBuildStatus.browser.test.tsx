@@ -558,8 +558,7 @@ describe("Jones build status", () => {
           policy: { role: "follower", leaderSource: installedSha },
         },
       },
-      reason:
-        "This host follows its laptop and installs only the laptop's installed source d994dd4.",
+      reason: "This host follows its laptop and uses the last laptop source it recorded: d994dd4.",
     },
     {
       name: "failed update",
@@ -673,22 +672,22 @@ describe("a host that follows its laptop", () => {
       policy: { role: "follower", leaderSource },
     }) as JonesUpdateState;
 
-  it("offers Install only for the laptop's installed build", async () => {
+  it("offers Install for the last reported laptop source", async () => {
     await using screen = await renderStatus({ state: staged(offeredSha, offeredSha) });
     const { container } = screen;
     expect(buttonNamed(container, "Install").disabled).toBe(false);
     expect(container.textContent).not.toContain("Follows its laptop");
     await act(async () => buttonNamed(container, "Details").click());
-    expect(container.textContent).toContain("Follows its laptop · takes only source 0368cbb");
+    expect(container.textContent).toContain("Follows its laptop · last reported source 0368cbb");
 
     await screen.rerender(statusUi({ state: staged(offeredSha, installedSha) }));
     expect(buttonNamed(container, "Install").disabled).toBe(true);
     expect(container.textContent).toContain(
-      "Downloaded build is not the laptop's, so it will not install",
+      "Downloaded build differs from the last laptop source this host recorded",
     );
 
     await screen.rerender(statusUi({ state: staged(offeredSha, null) }));
     expect(buttonNamed(container, "Install").disabled).toBe(true);
-    expect(container.textContent).toContain("Waiting for the laptop's installed build");
+    expect(container.textContent).toContain("Waiting for the laptop to report its build");
   });
 });

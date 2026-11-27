@@ -20,6 +20,7 @@ import {
   aggregateServerShardCaptures,
   parseCapture,
 } from "./server-shard-weights/aggregate.ts";
+import { DISCOVERED_SERVER_SPECS } from "./server-shard-weights/capture.ts";
 import {
   TIMINGS_PATH_ENV,
   WEIGHTS_DIGEST_ENV,
@@ -82,9 +83,15 @@ interface SetupOptions {
   capture?: boolean;
   config?: Record<string, unknown>;
   filenamePattern?: string[];
+  discovery?: boolean;
 }
 
-function setup({ capture = true, config = {}, filenamePattern }: SetupOptions = {}) {
+function setup({
+  capture = true,
+  config = {},
+  filenamePattern,
+  discovery = true,
+}: SetupOptions = {}) {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-timing-reporter-"));
   roots.push(root);
   const path = NodePath.join(root, "server-timings.ndjson");
@@ -104,30 +111,33 @@ function setup({ capture = true, config = {}, filenamePattern }: SetupOptions = 
   vi.stubEnv("ImageVersion", "20261014.1");
   const log = vi.fn<(line: string) => void>();
   const reporter = new CiTestProgressReporter();
-  reporter.onInit({
-    logger: { log },
-    version: "5.0.1",
-    filenamePattern,
-    config: { shard: { index: 1, count: 1 }, project: [], changed: false, ...config },
-  } as unknown as Vitest);
   const specs = ["src/second.test.ts", "src/first.test.ts"].map((file) => ({
     moduleId: NodePath.join(serverRoot, file),
     project: { config: { maxWorkers: 1 } },
   })) as unknown as TestSpecification[];
+  reporter.onInit({
+    logger: { log },
+    version: "5.1.1",
+    filenamePattern,
+    config: { shard: { index: 1, count: 1 }, project: [], changed: false, ...config },
+    [DISCOVERED_SERVER_SPECS]: discovery ? specs : undefined,
+  } as unknown as Vitest);
   return { root, path, log, reporter, specs };
 }
 
 function runPassingShard(reporter: CiTestProgressReporter, specs: TestSpecification[]) {
-  const first = testModule("src/first.test.ts");
-  const second = testModule("src/second.test.ts");
+  const modules = specs
+    .map((spec) => NodePath.relative(serverRoot, spec.moduleId))
+    .toSorted()
+    .map((path) => testModule(path));
   reporter.onTestRunStart(specs);
-  for (const file of [first, second]) {
+  for (const file of modules) {
     reporter.onTestModuleQueued(file);
     reporter.onTestModuleCollected(file);
     reporter.onTestModuleStart(file);
     reporter.onTestModuleEnd(file);
   }
-  reporter.onTestRunEnd([first, second], [], "passed");
+  reporter.onTestRunEnd(modules, [], "passed");
 }
 
 const lines = (path: string) =>
@@ -200,6 +210,25 @@ describe("CI progress reporter", () => {
       shardCount: 1,
     });
     expect(Object.keys(envelope.weights)).toEqual(["src/first.test.ts", "src/second.test.ts"]);
+  });
+
+  it("aggregates the full discovery list when each reporter receives only its shard", () => {
+    const captures = [1, 2].map((index) => {
+      const { path, reporter, specs } = setup({ config: { shard: { index, count: 2 } } });
+      runPassingShard(reporter, [specs[index - 1]!]);
+      return NodeFS.readFileSync(path, "utf8");
+    });
+
+    const { envelope, overhead } = aggregateServerShardCaptures(captures, { shardCount: 2 });
+    expect(Object.keys(envelope.weights)).toEqual(["src/first.test.ts", "src/second.test.ts"]);
+    expect(overhead.map((shard) => shard.files)).toEqual([1, 1]);
+  });
+
+  it("refuses timing evidence when pre-shard discovery is absent", () => {
+    const { reporter, root, specs } = setup({ discovery: false });
+
+    expect(() => reporter.onTestRunStart(specs)).toThrow(/full discovery list/);
+    expect(NodeFS.readdirSync(root)).toEqual([]);
   });
 
   it("records the runtime weights the shard was given", () => {

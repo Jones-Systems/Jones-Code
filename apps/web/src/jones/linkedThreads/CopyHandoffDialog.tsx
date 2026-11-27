@@ -15,7 +15,7 @@ import {
   DialogPanel,
   DialogFooter,
 } from "../../components/ui/dialog";
-import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
+import { namedClipboardTarget, writeTextToClipboard } from "../../hooks/useCopyToClipboard";
 import { toastManager } from "../../components/ui/toast";
 
 function parseHandoffSources(text: string): LinkedThreadHandoff["sourceRefs"] {
@@ -78,7 +78,7 @@ export function CopyHandoffDialog(props: {
     setBusy(true);
     await (async () => {
       try {
-        if (await writeTextToClipboard(text, "handoff text")) {
+        if (await writeTextToClipboard(text, namedClipboardTarget("handoff text"))) {
           toastManager.add({ type: "success", title: "Handoff text copied" });
           props.onClose();
         } else toastManager.add({ type: "error", title: "Could not copy handoff text" });

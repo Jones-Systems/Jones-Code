@@ -1,5 +1,6 @@
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  ORCHESTRATION_V2_WORKSPACE_PREPARATION_RECONCILIATION_CODE,
   RunId,
   ThreadId,
   TurnItemId,
@@ -92,5 +93,14 @@ describe("workspacePreparationRetryRunIds", () => {
         [preparationFailure("failed", "provider_crashed")],
       ).size,
     ).toBe(0);
+  });
+
+  it("leaves a task folder reconciliation failure visible without offering Retry", () => {
+    const failure = preparationFailure(
+      "failed",
+      ORCHESTRATION_V2_WORKSPACE_PREPARATION_RECONCILIATION_CODE,
+    );
+    expect(workspacePreparationRetryRunIds([run("failed", worktree)], [failure]).size).toBe(0);
+    expect(turnItemIsWorkspacePreparation(failure)).toBe(false);
   });
 });

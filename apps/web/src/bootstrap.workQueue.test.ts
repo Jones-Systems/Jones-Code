@@ -26,20 +26,23 @@ describe("standalone work queue startup", () => {
       vi.stubEnv("VITE_HOSTED_APP_CHANNEL", "");
       vi.stubEnv("VITE_HTTP_URL", "");
       vi.stubEnv("VITE_WS_URL", "");
-      vi.stubGlobal("window", {
-        location: new URL(
-          path,
-          hosted ? "https://preview.example.com" : "https://local.example.com",
-        ),
-        ...(electron ? { desktopBridge: {} } : {}),
-      });
+      vi.stubGlobal(
+        "window",
+        Object.assign(new EventTarget(), {
+          location: new URL(
+            path,
+            hosted ? "https://preview.example.com" : "https://local.example.com",
+          ),
+          ...(electron ? { desktopBridge: {} } : {}),
+        }),
+      );
       const loadMain = vi.fn(() => ({ startup: Promise.resolve() }));
       const loadPreview = vi.fn(() => ({}));
       vi.doMock("./main", loadMain);
       vi.doMock("./workQueuePreview", loadPreview);
 
-      await import("./bootstrap");
-      await vi.dynamicImportSettled();
+      const { boot } = await import("./bootstrap");
+      await boot;
 
       expect(loadPreview).toHaveBeenCalledTimes(preview ? 1 : 0);
       expect(loadMain).toHaveBeenCalledTimes(preview ? 0 : 1);

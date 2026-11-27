@@ -35,7 +35,9 @@ describe("persistent Undo settle production entry points", () => {
     expect(detail).toMatch(
       /await undoSettleThread\(\{\s*environmentId: props.environmentId,\s*id: props.selectedThread.id,?\s*\}\)/,
     );
-    expect(detail).toContain('text: "Undo settle", onPress: () => void runUndoSettle()');
-    expect(detail).toContain('text: "Un-settle", onPress: () => void runStatusAction("unsettle")');
+    expect(detail).toMatch(/text: gt\("Undo settle"\),\s*onPress: \(\) => void runUndoSettle\(\)/);
+    expect(detail).toMatch(
+      /text: gt\("Un-settle", \{ \$context: "verb, thread action" \}\),\s*onPress: \(\) => void runStatusAction\("unsettle"\)/,
+    );
   });
 });

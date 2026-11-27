@@ -1,19 +1,30 @@
 import { useRef, useState } from "react";
-import { operationOutstanding } from "@t3tools/client-runtime/jones/install-plan";
+import {
+  deviceHasRecoveryDuty,
+  planHasLaptopRecoveryDuty,
+} from "@t3tools/client-runtime/jones/install-plan";
 import type {
   JonesInstallPlan,
   JonesInstallPlanRequest,
+  JonesInstallPlanState,
 } from "@t3tools/contracts/jones/installPlan";
 import { Button } from "../../components/ui/button";
-import { refreshDeviceEvidence } from "./actions";
 import type { InstallStatusStore } from "./panelUi";
-import { installPlanServices, requestInstallPlan } from "./services";
+import {
+  confirmClosedPlan,
+  hasPlanEnrollment,
+  installPlanServices,
+  readWritableTarget,
+  requestInstallPlan,
+  type InstallPlanBinding,
+} from "./services";
 import { useInstallPlan } from "./useInstallPlan";
 
 type ManualCloseRequest = Extract<JonesInstallPlanRequest, { type: "close-after-manual-install" }>;
 type DeviceObservation = ManualCloseRequest["devices"][number];
 const REVIEW_LIFETIME_MS = 2 * 60_000;
 const STATUS_BATCH_SIZE = 4;
+type LaptopReview = NonNullable<JonesInstallPlanState["view"]["manualClose"]>;
 
 function selectedDevices(plan: JonesInstallPlan) {
   return plan.devices.filter((device) => device.membership === "selected");
@@ -31,47 +42,58 @@ function buildDescription(observation: DeviceObservation) {
     : `${build} · follower review for ${observation.directive.targetSource.slice(0, 7)}`;
 }
 
-async function reviewAndClose(planId: string) {
-  const binding = installPlanServices();
+async function reviewAndClose(
+  binding: InstallPlanBinding | undefined,
+  displayed: JonesInstallPlan,
+  proof: LaptopReview,
+) {
+  const planId = displayed.planId;
   const readStatus = binding?.services.readStatus;
   if (binding === undefined || readStatus === undefined)
     throw new Error("Manual install status is unavailable.");
   const { services, store } = binding;
+  const selection = store.historySelection();
   const readCurrent = async () => {
-    if (installPlanServices() !== binding) throw new Error("Install status connection changed.");
-    const { state, refused } = await requestInstallPlan({ type: "read" }, binding);
-    if (refused !== undefined) throw new Error(refused.message);
-    if (state.readOnly !== undefined) throw new Error(state.readOnly.message);
-    if (state.current?.planId !== planId || state.view.manualClose === undefined)
+    const { state, plan } = await readWritableTarget(binding, {
+      planId,
+      expectedRevision: displayed.revision,
+    });
+    const latest = state.view.manualClose;
+    if (
+      latest === undefined ||
+      state.laptop.environmentId !== displayed.laptop.environmentId ||
+      latest.activeGeneration !== proof.activeGeneration ||
+      latest.laptop.version !== proof.laptop.version ||
+      latest.laptop.sourceSha !== proof.laptop.sourceSha ||
+      latest.laptop.sourceTree !== proof.laptop.sourceTree
+    )
       throw new Error("This plan or the running Laptop build changed. Check Install status again.");
-    return { plan: state.current, proof: state.view.manualClose };
+    return plan;
   };
 
   const initial = await readCurrent();
-  const selected = selectedDevices(initial.plan);
+  if (planHasLaptopRecoveryDuty(initial) || initial.devices.some(deviceHasRecoveryDuty))
+    throw new Error(
+      "This plan still has outstanding work. Check the affected device before closing.",
+    );
+  const selected = selectedDevices(initial);
   const startedAt = services.now();
   const readDevice = async (
     device: JonesInstallPlan["devices"][number],
   ): Promise<DeviceObservation> => {
     const { environmentId } = device;
-    const needsReconciliation = device.operations.some(operationOutstanding);
     const observed =
-      needsReconciliation || device.route === "follower-operations"
+      device.route === "follower-operations"
         ? await services.observe(environmentId).catch(() => undefined)
         : undefined;
-    if (needsReconciliation && observed !== undefined) {
-      await refreshDeviceEvidence(binding, environmentId, initial.plan, observed, {
-        refreshInstallOutcome: true,
-      }).catch(() => undefined);
-    }
     const observedAt = services.now();
     const status = await readStatus(environmentId).catch(() => null);
     const source = status?.installedSource;
     const version = status?.currentVersion?.trim();
     const fleetStatus = observed?.fleetStatus;
     const directive =
-      fleetStatus?.environmentId === environmentId
-        ? fleetStatus.follower?.planDirective
+      observed?.observation.freshness === "fresh" && hasPlanEnrollment(device, observed)
+        ? fleetStatus?.follower?.planDirective
         : undefined;
     const sample = {
       environmentId,
@@ -99,26 +121,7 @@ async function reviewAndClose(planId: string) {
   }
 
   const review = await readCurrent();
-  if (
-    review.proof.activeGeneration !== initial.proof.activeGeneration ||
-    selectedDevices(review.plan)
-      .map((device) => device.environmentId)
-      .join() !== selected.map((device) => device.environmentId).join()
-  )
-    throw new Error("Laptop or the selected devices changed. Check the devices again.");
-  if (
-    review.plan.laptop.operations.some(
-      (operation) =>
-        operation.result === undefined ||
-        ["running", "stop-requested", "held"].includes(operation.result.status),
-    ) ||
-    review.plan.devices.some((device) => device.operations.some(operationOutstanding))
-  )
-    throw new Error(
-      "This plan still has outstanding work. Check the affected device before closing.",
-    );
-
-  const { laptop, activeGeneration } = review.proof;
+  const { laptop, activeGeneration } = proof;
   const versions = devices.map(
     (observation, index) => `${selected[index]!.label}: ${buildDescription(observation)}`,
   );
@@ -127,7 +130,7 @@ async function reviewAndClose(planId: string) {
       [
         "Close this update plan after your manual install?",
         "",
-        `Plan target: ${review.plan.target.version} (${review.plan.target.sourceSha.slice(0, 7)})`,
+        `Plan target: ${review.target.version} (${review.target.sourceSha.slice(0, 7)})`,
         `Laptop: ${laptop.version} (${laptop.sourceSha.slice(0, 7)})`,
         ...versions,
         "",
@@ -139,29 +142,30 @@ async function reviewAndClose(planId: string) {
 
   if (installPlanServices() !== binding || services.now() - startedAt > REVIEW_LIFETIME_MS)
     throw new Error("The review expired. Check the devices again.");
-  const closed = (state: Awaited<ReturnType<typeof requestInstallPlan>>["state"]) =>
-    state.current === null &&
-    state.last?.planId === planId &&
-    state.last.manualClosure !== undefined;
+  await readCurrent();
   const result = await requestInstallPlan(
     {
       type: "close-after-manual-install",
       planId,
-      expectedRevision: review.plan.revision,
+      expectedRevision: review.revision,
       laptop,
       activeGeneration,
       devices,
     },
     binding,
-  ).catch(async () => {
-    if (installPlanServices() !== binding) throw new Error("Install status connection changed.");
-    return requestInstallPlan({ type: "read" }, binding);
-  });
-  if (!closed(result.state) && result.refused !== undefined)
-    throw new Error(result.refused.message);
-  if (installPlanServices() !== binding || !closed(result.state))
-    throw new Error("Closing this plan was not confirmed. Check Install status again.");
-  store.update({ open: false, showLast: true, previewSelection: [] });
+  ).catch(() => undefined);
+  await confirmClosedPlan(
+    binding,
+    planId,
+    (closed) =>
+      closed.manualClosure?.activeGeneration === activeGeneration &&
+      closed.manualClosure.laptop.sourceSha === laptop.sourceSha &&
+      closed.manualClosure.laptop.sourceTree === laptop.sourceTree &&
+      closed.manualClosure.laptop.version === laptop.version,
+    result,
+  );
+  if (store.historySelection() === selection)
+    store.update({ open: false, showLast: true, historyPlanId: planId, previewSelection: [] });
 }
 
 export function ManualInstallClosure({
@@ -202,6 +206,7 @@ export function ManualInstallClosure({
     snapshot.native.view.manualClose === undefined
   )
     return null;
+  const proof = snapshot.native.view.manualClose;
   return (
     <div className="flex min-h-7 items-center px-2 pb-1">
       <Button
@@ -213,7 +218,8 @@ export function ManualInstallClosure({
           running.current = true;
           setChecking(true);
           store.update({ error: null });
-          void reviewAndClose(plan.planId)
+          const binding = installPlanServices();
+          void reviewAndClose(binding?.store === store ? binding : undefined, plan, proof)
             .catch((error: unknown) =>
               store.update({
                 error:

@@ -9,6 +9,7 @@
     "apps/server/src/jones/runtime/RuntimeStop.ts",
     "apps/server/src/jones/runtime/RuntimeStop.test.ts",
     "apps/server/src/jones/runtime/RuntimeStopSqlite.ts",
+    "apps/server/src/jones/runtime/RuntimeStartDispatch.ts",
     "apps/server/src/jones/provider/stopBudgets.ts",
     "apps/server/src/jones/provider/stopBudgets.test.ts",
     "apps/server/src/jones/provider/CapturedRuntimeStop.ts",
@@ -17,12 +18,15 @@
   "hookPaths": [
     "apps/server/src/auth/RpcAuthorization.ts",
     "apps/server/src/environment/ServerEnvironment.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
     "apps/server/src/relay/AgentAwarenessRelay.ts",
     "apps/server/src/ws.ts",
     "apps/web/src/components/CommandPalette.tsx",
     "packages/client-runtime/src/operations/index.ts",
     "packages/client-runtime/src/state/orchestrationV2Projection.ts",
     "packages/client-runtime/src/state/threadCommands.ts",
+    "packages/client-runtime/src/state/threadWorkflows.test.ts",
+    "packages/client-runtime/src/state/threadWorkflows.ts",
     "packages/contracts/src/environment.ts",
     "packages/contracts/src/rpc.ts"
   ],
@@ -45,8 +49,20 @@
       "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStartDispatch.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/EventSink.ts",
       "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/orchestration/QueuedActionBasis.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/QueuedActionBasis.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
@@ -54,6 +70,14 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
       "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
     },
     {

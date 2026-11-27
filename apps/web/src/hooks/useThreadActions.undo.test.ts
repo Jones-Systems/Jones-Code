@@ -39,6 +39,22 @@ vi.mock("../state/session", async (original) => ({
   ...(await original<typeof import("../state/session")>()),
   readEnvironmentScope: () => true,
 }));
+const exactSettle = vi.hoisted(() => ({
+  connected: false,
+  supported: false,
+  restore: vi.fn(),
+}));
+vi.mock("../state/environments", async (original) => ({
+  ...(await original<typeof import("../state/environments")>()),
+  readEnvironment: () => ({
+    connection: { phase: exactSettle.connected ? "connected" : "offline" },
+  }),
+}));
+vi.mock("../jones/settlementRestore/settlementRestore", async (original) => ({
+  ...(await original<typeof import("../jones/settlementRestore/settlementRestore")>()),
+  readEnvironmentSupportsSettlementRestore: () => exactSettle.supported,
+  restoreObservedSettlement: exactSettle.restore,
+}));
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
   useCallback: (callback: unknown) => callback,
@@ -135,6 +151,9 @@ beforeEach(() => {
   threadShell.unsettledAt = null;
   threadShell.snoozedUntil = null;
   shellLoaded.current = true;
+  exactSettle.connected = false;
+  exactSettle.supported = false;
+  exactSettle.restore.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
 });
 afterEach(() => {
   vi.runAllTimers();
@@ -295,6 +314,31 @@ describe("delete navigation", () => {
 });
 
 describe("settle and snooze Undo", () => {
+  it("uses local Undo when the restore capability is cached while offline", async () => {
+    exactSettle.supported = true;
+    await useThreadActions().settleThread(target);
+    expect(commands.settle).toHaveBeenCalledExactlyOnceWith({
+      environmentId: target.environmentId,
+      input: { threadId: target.threadId },
+    });
+    await currentUndo()();
+    expect(commands.unsettle).toHaveBeenCalledOnce();
+    expect(exactSettle.restore).not.toHaveBeenCalled();
+  });
+
+  it("uses the accepted command identity when online", async () => {
+    exactSettle.connected = true;
+    exactSettle.supported = true;
+    await useThreadActions().settleThread(target);
+    const commandId = commands.settle.mock.calls[0]?.[0].input.commandId;
+    expect(commandId).toEqual(expect.any(String));
+    await currentUndo()();
+    expect(exactSettle.restore).toHaveBeenCalledExactlyOnceWith(target, commandId, {
+      settleWasNoop: false,
+    });
+    expect(commands.unsettle).not.toHaveBeenCalled();
+  });
+
   it("un-settles from the notice and expires the Undo after a manual un-settle", async () => {
     const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
     const actions = useThreadActions();
@@ -313,6 +357,10 @@ describe("settle and snooze Undo", () => {
     threadShell.snoozedUntil = snoozedUntil;
     const actions = useThreadActions();
     await actions.settleThread(target);
+    expect(commands.settle).toHaveBeenCalledExactlyOnceWith({
+      environmentId: target.environmentId,
+      input: { threadId: target.threadId },
+    });
     await currentUndo()();
     expect(commands.unsettle).toHaveBeenCalledOnce();
     expect(commands.pin).toHaveBeenCalledExactlyOnceWith({

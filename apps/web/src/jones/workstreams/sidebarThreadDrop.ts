@@ -26,12 +26,18 @@ export function dropPinnedThreadOnWorkstream(input: {
   readonly onError: (cause: unknown) => void;
 }): boolean {
   if (!input.point || input.thread.pinnedAt == null) return false;
-  const assignment = input.bridge?.dropExternal(input.point, input.thread);
-  if (!assignment) return false;
-  void assignment
-    .then(async (committed) => {
-      if (committed) await input.unpin();
-    })
-    .catch(input.onError);
+  const placement = input.bridge?.dropExternal(input.point, input.thread, {
+    unpin: async () => {
+      try {
+        await input.unpin();
+        return true;
+      } catch (cause) {
+        input.onError(cause);
+        return false;
+      }
+    },
+  });
+  if (!placement) return false;
+  void placement.catch(input.onError);
   return true;
 }

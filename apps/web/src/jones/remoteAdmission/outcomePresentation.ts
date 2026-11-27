@@ -1,6 +1,5 @@
 import type { Item } from "@t3tools/client-runtime/jones/remoteAdmission/controller";
 import { admissionStatus } from "./presentation";
-import { requestHref } from "./navigation";
 
 export function requestOutcomeLabel(item: Item) {
   const result = item.launchResult;
@@ -35,13 +34,13 @@ export function requestOutcomeLabel(item: Item) {
 export const requestOutcomeReason = (item: Item) =>
   item.launchResult?.reasonCode ?? item.reason ?? item.record.reason;
 
-export function recoveryDetailsText(receiver: string, item: Item, baseUrl: string) {
+export function recoveryDetailsText(receiver: string, item: Item, requestUrl: string) {
   return [
     "Jones Code recovery details",
     `Receiver environment ID: ${receiver}`,
     `Admission ID: ${item.record.id}`,
     `Binding digest: ${item.record.bindingDigest}`,
-    `Requests URL: ${new URL(requestHref(receiver, item.record.id, item.record.bindingDigest), baseUrl).href}`,
+    `Requests URL: ${requestUrl}`,
     `Observed outcome: ${requestOutcomeLabel(item)}`,
     `Reason: ${requestOutcomeReason(item) ?? "Not reported"}`,
     `Recorded launch result: ${JSON.stringify(item.launchResult ?? null)}`,

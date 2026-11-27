@@ -238,6 +238,31 @@ export const makeShellPublicationHarness = Effect.fn("TestShellPublication.make"
       emissions: 0,
       publications: 0,
     };
+    const startOptimisticRenames = Effect.fn("Fixture.startOptimisticRenames")(function* (
+      environmentId: EnvironmentId,
+      threadIds: ReadonlyArray<ThreadId>,
+    ) {
+      const replies = yield* Effect.forEach(threadIds, () =>
+        Deferred.make<{ sequence: number }, string>(),
+      );
+      const replyByThread = new Map(threadIds.map((id, index) => [id, replies[index]!]));
+      const command = lifecycle.wrap<
+        { readonly threadId: ThreadId; readonly title: string },
+        string
+      >(
+        {
+          label: "synthetic rename",
+          run: (_registry, { input }) => Deferred.await(replyByThread.get(input.threadId)!),
+        },
+        (thread, input) => ({ ...thread, title: input.title }),
+      );
+      const pending = yield* Effect.forEach(threadIds, (threadId, index) =>
+        command
+          .run(registry, { environmentId, input: { threadId, title: `Optimistic ${index}` } })
+          .pipe(Effect.forkScoped({ startImmediately: true })),
+      );
+      return { pending, replies };
+    });
     if (options.instrument) {
       const read = threads.quietThreadShellsAtom.read;
       Object.defineProperty(threads.quietThreadShellsAtom, "read", {
@@ -388,7 +413,7 @@ export const makeShellPublicationHarness = Effect.fn("TestShellPublication.make"
       shell,
       stateAtom,
       snapshots,
-      lifecycle,
+      startOptimisticRenames,
       threads,
       catalog,
       ids,

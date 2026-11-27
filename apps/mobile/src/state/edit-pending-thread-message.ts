@@ -22,18 +22,20 @@ import {
   waitForComposerDraftsLoaded,
 } from "./use-composer-drafts";
 import {
-  dispatchingQueuedMessageIdAtom,
+  dispatchingQueuedMessageIdsAtom,
   editingQueuedMessageIdsAtom,
   holdEditingQueuedMessage,
   releaseEditingQueuedMessage,
 } from "./use-thread-outbox";
+import { m } from "../i18n/messages";
+import { msg } from "gt-react-native";
 
 /** Take delivery ownership before any await; the durable draft then takes ownership of the files. */
 export async function editPendingThreadMessage(message: QueuedThreadMessage): Promise<boolean> {
   if (
     message.creation ||
     !canRestoreQueuedThreadMessage(message) ||
-    appAtomRegistry.get(dispatchingQueuedMessageIdAtom) === message.messageId ||
+    appAtomRegistry.get(dispatchingQueuedMessageIdsAtom)[message.messageId] ||
     appAtomRegistry.get(editingQueuedMessageIdsAtom)[message.messageId]
   ) {
     return false;
@@ -44,7 +46,7 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
   const canTransfer = () =>
     canRestoreQueuedThreadMessage(message) &&
     threadOutboxRevision(message.messageId) === revision &&
-    appAtomRegistry.get(dispatchingQueuedMessageIdAtom) !== message.messageId;
+    !appAtomRegistry.get(dispatchingQueuedMessageIdsAtom)[message.messageId];
   const releaseSelectionTracking = trackComposerModelSelectionInteractions(draftKey);
   let rollback: {
     snapshot: ReturnType<typeof getComposerDraftSnapshot>;
@@ -58,7 +60,7 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
     const attachmentIds = new Set(snapshot.attachments.map((attachment) => attachment.id));
     for (const attachment of message.attachments) attachmentIds.add(attachment.id);
     if (attachmentIds.size > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-      throw new Error("Remove attachments from the composer before editing this message.");
+      throw new Error(m(msg("Remove attachments from the composer before editing this message.")));
     }
     let mergedDraft = snapshot;
     await mergeComposerDraftContent(draftKey, message, {

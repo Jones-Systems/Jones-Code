@@ -92,6 +92,9 @@ import JonesMigration0161 from "./Migrations/161_JonesWorkstreamNameIcons.ts";
 import JonesMigration0162 from "./Migrations/162_JonesOrdinaryPreparation.ts";
 import JonesMigration0163 from "./Migrations/163_JonesRemoteSendReceipts.ts";
 import JonesMigration0164 from "./Migrations/164_JonesLegacyBootstrap.ts";
+import JonesMigration0165 from "./Migrations/165_JonesRequestManagement.ts";
+import JonesMigration0166 from "./Migrations/166_JonesTaskFolderTeardown.ts";
+import JonesMigration0167 from "./Migrations/167_JonesWorkflowAgentJournal.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -159,6 +162,9 @@ export const jonesMigrationEntries = [
   [162, "OrdinaryPreparation", JonesMigration0162],
   [163, "RemoteSendReceipts", JonesMigration0163],
   [164, "LegacyBootstrap", JonesMigration0164],
+  [165, "RequestManagement", JonesMigration0165],
+  [166, "TaskFolderTeardown", JonesMigration0166],
+  [167, "WorkflowAgentJournal", JonesMigration0167],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {

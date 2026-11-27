@@ -1,3 +1,5 @@
+import { msg } from "gt-react";
+import { m } from "../../i18n/messages";
 import { randomUUID } from "../../lib/utils";
 import type {
   DesktopBridge,
@@ -9,9 +11,14 @@ import type {
   JonesInstallPlanOrigin,
   JonesInstallPlanReview,
   JonesInstallPlanSelection,
+  JonesInstallPlanState,
   JonesInstallPlanTarget,
 } from "@t3tools/contracts/jones/installPlan";
-import type { JonesOperationAction } from "@t3tools/contracts/jones/jonesOperations";
+import { verifiedRunningLaptop } from "@t3tools/contracts/jones/installPlan";
+import type {
+  JonesOperationAction,
+  JonesOperationStartInput,
+} from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateProvenance } from "@t3tools/contracts/jones/jonesUpdates";
 import type {
   JonesExecutorHost,
@@ -23,13 +30,28 @@ import {
   isNativeJonesInstallReview,
 } from "@t3tools/client-runtime/jones/updates/executor";
 import type { NativeJonesDispatch } from "./executionJournal";
-import { selectability } from "@t3tools/client-runtime/jones/install-plan";
+import {
+  deviceHasRecoveryDuty,
+  planHasLaptopRecoveryDuty,
+  selectability,
+  supportsInstallPlanMutations,
+} from "@t3tools/client-runtime/jones/install-plan";
 import {
   installStatusStore,
   type InstallStatusDevice,
   type InstallStatusSnapshot,
 } from "./panelUi";
-import { installPlanServices, requestInstallPlan } from "./services";
+import {
+  authorizedUpdateStatus,
+  currentPlanHostAuthority,
+  hasPlanEnrollment,
+  installPlanServices,
+  nativePlanIssue,
+  requireWritablePlan,
+  requestInstallPlan,
+  revisionFor,
+  type InstallPlanBinding,
+} from "./services";
 
 export function openInstallStatus(last = false) {
   (installPlanServices()?.store ?? installStatusStore).open(last);
@@ -88,6 +110,8 @@ export function canOpenInstallStatusPill(
   return (
     native?.current != null ||
     native?.readOnly !== undefined ||
+    (native?.recoveryHistory?.length ?? 0) > 0 ||
+    (native?.orphanedCommands?.length ?? 0) > 0 ||
     (!hasOtherUpdates && (native?.last != null || desktopCanPreviewInstallPlan(desktop)))
   );
 }
@@ -99,10 +123,14 @@ export async function routeInstallStatusPill(
   hasOtherUpdates: boolean,
 ): Promise<"opened" | "last-and-check" | "legacy"> {
   if (bridge?.installPlan === undefined) return "legacy";
-  const result = await bridge.installPlan({ type: "read" });
-  const store = installPlanServices()?.store ?? installStatusStore;
-  store.update({ native: result.state, desktop });
-  if (result.state.current !== null || result.state.readOnly !== undefined) {
+  const { result, store } = await readNativeBridge(bridge, desktop);
+  const native = store.get().native ?? result.state;
+  if (
+    native.current !== null ||
+    native.readOnly !== undefined ||
+    (native.orphanedCommands?.length ?? 0) > 0 ||
+    nativePlanIssue(result) !== undefined
+  ) {
     store.open();
     return "opened";
   }
@@ -113,12 +141,55 @@ export async function routeInstallStatusPill(
     store.open();
     return "opened";
   }
+  const history = native.recoveryHistory?.[0];
+  if (history !== undefined) {
+    store.open(true, history.planId);
+    return "opened";
+  }
   if (hasOtherUpdates) return "legacy";
-  if (result.state.last !== null) {
+  if (native.last !== null) {
     store.open(true);
     return "last-and-check";
   }
   return "legacy";
+}
+
+type LaptopRouteTarget = {
+  readonly planId: string | null;
+  readonly environmentId: EnvironmentId | undefined;
+  readonly expectedRevision?: number | undefined;
+  readonly binding?: InstallPlanBinding;
+};
+
+async function readNativeBridge(
+  bridge: Pick<DesktopBridge, "installPlan">,
+  desktop: DesktopUpdateState | null,
+) {
+  if (bridge.installPlan === undefined) throw new Error("Install plans are unsupported.");
+  const binding = installPlanServices();
+  const store = binding?.store ?? installStatusStore;
+  if (binding?.services.bridge.installPlan === bridge.installPlan) {
+    const result = await requestInstallPlan({ type: "read" }, binding);
+    if (installPlanServices() === binding) store.update({ desktop });
+    return { result, store, binding };
+  }
+  const result = await bridge.installPlan({ type: "read" });
+  if (binding === undefined && installPlanServices() === undefined) {
+    store.bindDesk(bridge.installPlan);
+    store.update({ native: result.state, nativeRefusal: result.refused?.message ?? null, desktop });
+  }
+  return { result, store, binding: undefined };
+}
+
+function assertLaptopRoute(state: JonesInstallPlanState, target: LaptopRouteTarget | undefined) {
+  if (target === undefined) return;
+  if (
+    (target.binding !== undefined && target.binding !== installPlanServices()) ||
+    (state.current?.planId ?? null) !== target.planId ||
+    state.laptop.environmentId !== target.environmentId ||
+    (target.expectedRevision !== undefined && state.current?.revision !== target.expectedRevision)
+  )
+    throw new Error("The displayed Laptop plan changed. Review it again.");
 }
 
 async function routeLaptop(
@@ -128,20 +199,33 @@ async function routeLaptop(
   review?: JonesInstallPlanReview,
   origin: JonesInstallPlanOrigin = "settings",
   dispatch?: NativeJonesDispatch,
+  expected?: LaptopRouteTarget,
 ): Promise<void> {
   if (bridge.installPlan === undefined) throw new Error("Install plans are unsupported.");
   const target = targetForDesktop(desktop);
   if (target === undefined) throw new Error("Check for a qualified Laptop build first.");
-  const read = await bridge.installPlan({ type: "read" });
-  const store = installPlanServices()?.store ?? installStatusStore;
-  store.update({ native: read.state, desktop });
+  const { result: read, store, binding } = await readNativeBridge(bridge, desktop);
+  const problem = nativePlanIssue(read);
+  if (problem !== undefined) throw new Error(problem);
+  if (binding !== undefined) requireWritablePlan(binding, read);
+  assertLaptopRoute(read.state, expected);
   const current = read.state.current;
+  if (current?.target.sourceSha !== target.sourceSha) {
+    const overlap =
+      retainedRecoveryIssue(read.state, read.state.laptop.environmentId) ??
+      store
+        .get()
+        .previewSelection.map((device) => retainedRecoveryIssue(read.state, device.environmentId))
+        .find((issue) => issue !== undefined);
+    if (overlap !== undefined) throw new Error(overlap);
+  }
   const request =
     current?.target.sourceSha === target.sourceSha
       ? {
           type: "laptop" as const,
           planId: current.planId,
           action,
+          ...revisionFor(read.state, current),
           ...(review === undefined ? {} : { review }),
         }
       : {
@@ -152,7 +236,9 @@ async function routeLaptop(
           laptop: { action, ...(review === undefined ? {} : { review }) },
         };
   const result = await (dispatch === undefined
-    ? bridge.installPlan(request)
+    ? binding === undefined
+      ? bridge.installPlan(request)
+      : requestInstallPlan(request, binding)
     : dispatch(request, read.state));
   store.update({
     native: result.state,
@@ -161,14 +247,16 @@ async function routeLaptop(
     ...(result.refused === undefined ? { previewSelection: [] } : {}),
   });
   store.open();
-  if (result.refused !== undefined) throw new Error(result.refused.message);
+  const issue = nativePlanIssue(result);
+  if (issue !== undefined) throw new Error(issue);
 }
 export async function routeLaptopDownload(
   bridge: Pick<DesktopBridge, "installPlan">,
   state: DesktopUpdateState,
   dispatch?: NativeJonesDispatch,
+  expected?: LaptopRouteTarget,
 ) {
-  await routeLaptop(bridge, state, "download", undefined, "settings", dispatch);
+  await routeLaptop(bridge, state, "download", undefined, "settings", dispatch, expected);
   return { accepted: true, completed: false, state } satisfies DesktopUpdateActionResult;
 }
 export async function routeLaptopInstall(
@@ -176,6 +264,7 @@ export async function routeLaptopInstall(
   state: DesktopUpdateState,
   review?: JonesReviewedInstall,
   dispatch?: NativeJonesDispatch,
+  expected?: LaptopRouteTarget,
 ) {
   let reviewed = review;
   if (reviewed === undefined) {
@@ -183,11 +272,22 @@ export async function routeLaptopInstall(
     if (binding === undefined || bridge.installPlan === undefined)
       throw new Error("The install review is unavailable. Open Install status.");
     const native = await requestInstallPlan({ type: "read" }, binding);
+    requireWritablePlan(binding, native);
+    assertLaptopRoute(native.state, expected);
     const environmentId = native.state.laptop.environmentId;
     const target = targetForDesktop(state);
     if (environmentId === undefined || target === undefined)
       throw new Error("Fresh Laptop identity is required for review.");
+    expected ??= {
+      binding,
+      planId: native.state.current?.planId ?? null,
+      environmentId,
+      expectedRevision: native.state.current?.revision,
+    };
+    const reviewedStage = state.jones?.stagedHandle;
     let latest = await binding.services.bridge.getUpdateState();
+    if (latest.jones?.stagedHandle !== reviewedStage)
+      throw new Error("The Laptop staged build changed. Review it again.");
     const host: JonesExecutorHost = {
       readLatest: () => ({
         observation: {
@@ -217,6 +317,9 @@ export async function routeLaptopInstall(
         return confirmed;
       },
       preflight: async (input) => {
+        const read = await requestInstallPlan({ type: "read" }, binding);
+        requireWritablePlan(binding, read);
+        assertLaptopRoute(read.state, expected);
         const result = await requestInstallPlan({ type: "recovery-preflight", input }, binding);
         if (result.preflight === undefined)
           throw new Error(result.refused?.message ?? "Recovery preflight is unavailable.");
@@ -236,7 +339,7 @@ export async function routeLaptopInstall(
   }
   if (!isNativeJonesInstallReview(reviewed))
     throw new Error("A native Laptop install requires its full native review.");
-  await routeLaptop(bridge, state, "install", reviewed, "settings", dispatch);
+  await routeLaptop(bridge, state, "install", reviewed, "settings", dispatch, expected);
   return { accepted: true, completed: false, state } satisfies DesktopUpdateActionResult;
 }
 
@@ -261,6 +364,11 @@ export async function handOffJonesTargets(
   targets: readonly JonesHandoffTarget[],
   dispatch?: NativeJonesDispatch,
   reviewedBuild?: JonesUpdateProvenance,
+  match?: {
+    readonly sourceSha: string;
+    readonly generation: string;
+    readonly requireFollower?: boolean;
+  },
 ): Promise<readonly JonesHandoffResult[]> {
   const binding = installPlanServices();
   if (binding?.services.bridge.installPlan === undefined) {
@@ -272,15 +380,50 @@ export async function handOffJonesTargets(
     }));
   }
   const read = await requestInstallPlan({ type: "read" }, binding);
-  const desktop = await binding.services.bridge.getUpdateState();
-  const target = read.state.current?.target ?? targetForDesktop(desktop);
+  const issue = nativePlanIssue(read);
+  if (issue !== undefined) {
+    if (reviewedBuild !== undefined) throw new Error(issue);
+    return targets.map((target) => ({ ...target, handedOff: false, message: issue }));
+  }
+  requireWritablePlan(binding, read);
+  const current = read.state.current;
+  const desktop = match === undefined ? await binding.services.bridge.getUpdateState() : null;
+  const running =
+    match === undefined
+      ? undefined
+      : verifiedRunningLaptop(
+          read.state.laptop,
+          read.state.laptop.environmentId,
+          binding.services.now(),
+        );
+  if (match !== undefined) {
+    const refused = (message: string) =>
+      targets.map((target) => ({ ...target, handedOff: false, message }));
+    if (
+      read.state.view.matchRunningLaptop !== 1 ||
+      running?.target.sourceSha !== match.sourceSha ||
+      running.generation !== match.generation
+    )
+      return refused("The Laptop's verified running build changed or is unavailable. Check again.");
+    if (
+      current !== null &&
+      (current.target.sourceSha !== running.target.sourceSha ||
+        current.target.sourceTree !== running.target.sourceTree ||
+        current.laptop.gate?.activeGeneration !== running.generation ||
+        current.laptop.gateClosed !== undefined)
+    )
+      return refused(
+        "Review the current Laptop plan in Install status before matching this build.",
+      );
+  }
+  const target = current?.target ?? running?.target ?? targetForDesktop(desktop);
   if (
     reviewedBuild !== undefined &&
-    (read.state.current !== null ||
+    (current !== null ||
       target?.sourceSha !== reviewedBuild.sourceSha ||
       target.sourceTree !== reviewedBuild.sourceTree ||
       target.version !== reviewedBuild.version ||
-      desktop.jones?.provenance?.artifactId !== reviewedBuild.artifactId ||
+      desktop?.jones?.provenance?.artifactId !== reviewedBuild.artifactId ||
       desktop.jones.phase !== "available" ||
       !desktop.jones.capability.download)
   )
@@ -298,14 +441,25 @@ export async function handOffJonesTargets(
   );
   for (const [index, entry] of targets.entries()) {
     try {
+      const overlap = retainedRecoveryIssue(read.state, entry.environmentId);
+      if (overlap !== undefined) {
+        results.push({ ...entry, handedOff: false, message: overlap });
+        continue;
+      }
       const observed = observations[index];
       if (observed?.status !== "fulfilled") throw new Error("Fresh host status unavailable.");
       const device = observed.value;
+      if (device.environmentId !== entry.environmentId)
+        throw new Error("The observed host does not match this device.");
       if (
         device.observation.freshness === "fresh" &&
         device.observation.state?.installedSource?.sha === target.sourceSha
       ) {
-        results.push({ ...entry, handedOff: false, message: `Already on ${target.version}` });
+        results.push({
+          ...entry,
+          handedOff: false,
+          message: `Already on source ${target.sourceSha.slice(0, 8)}.`,
+        });
         continue;
       }
       const selection = selectionFor(device);
@@ -315,6 +469,14 @@ export async function handOffJonesTargets(
           ...entry,
           handedOff: false,
           message: `Update from Connections after Laptop is verified: ${!device.canOperate ? "no permission" : route.selectable ? "unavailable" : route.reason}`,
+        });
+      } else if (match?.requireFollower && selection.route !== "follower-operations") {
+        results.push({
+          ...entry,
+          handedOff: false,
+          message: m(
+            msg("This host’s Auto-update enrollment changed. Check its status and try again."),
+          ),
         });
       } else {
         selections.push(selection);
@@ -328,8 +490,12 @@ export async function handOffJonesTargets(
       });
     }
   }
-  const current = read.state.current;
   if (selections.length === 0 && reviewedBuild === undefined) return results;
+  requireWritablePlan(binding, read);
+  if (current === null) {
+    const overlap = retainedRecoveryIssue(read.state, read.state.laptop.environmentId);
+    if (overlap !== undefined) throw new Error(overlap);
+  }
   const request =
     current !== null
       ? {
@@ -341,26 +507,27 @@ export async function handOffJonesTargets(
         }
       : {
           type: "start" as const,
-          origin: "update-everything" as const,
+          origin: match === undefined ? ("update-everything" as const) : ("connections" as const),
           target:
             reviewedBuild === undefined
               ? target
               : { ...target, laptopArtifactId: reviewedBuild.artifactId },
           select: selections,
-          ...(desktop.jones?.phase === "available" && desktop.jones.capability.download
+          ...(match === undefined ? {} : { expectedRunningGeneration: match.generation }),
+          ...(desktop?.jones?.phase === "available" && desktop.jones.capability.download
             ? { laptop: { action: "download" as const } }
             : {}),
         };
   const result = await (dispatch === undefined
     ? requestInstallPlan(request, binding)
     : dispatch(request, read.state));
-  if (reviewedBuild !== undefined && result.refused !== undefined)
-    throw new Error(result.refused.message);
+  const nativeIssue = nativePlanIssue(result);
+  if (reviewedBuild !== undefined && nativeIssue !== undefined) throw new Error(nativeIssue);
   binding.store.open();
   return results.map((entry) => {
     const applied = result.applied?.find((a) => a.environmentId === entry.environmentId);
     const refusal =
-      result.refused?.message ??
+      nativeIssue ??
       (applied?.result === "not-selectable"
         ? (applied.reason ?? "Can't join this plan.")
         : undefined);
@@ -374,13 +541,90 @@ export async function handOffJonesTargets(
   });
 }
 
+function retainedRecoveryIssue(
+  state: JonesInstallPlanState,
+  environmentId: EnvironmentId | undefined,
+) {
+  if (environmentId === undefined) return undefined;
+  const laptop = state.laptop.environmentId === environmentId;
+  const older = state.last;
+  const pending =
+    state.orphanedCommands?.some(({ command }) => command.environmentId === environmentId) ||
+    state.recoveryHistory?.some((entry) =>
+      laptop
+        ? entry.pendingLaptop
+        : entry.pendingDevices.some((d) => d.environmentId === environmentId),
+    ) ||
+    (older !== null &&
+      (laptop
+        ? older.laptop.environmentId === environmentId && planHasLaptopRecoveryDuty(older)
+        : older.devices.some(
+            (d) => d.environmentId === environmentId && deviceHasRecoveryDuty(d),
+          )));
+  return pending
+    ? "Review this device's outstanding work in Install status recovery history first."
+    : undefined;
+}
+
 /** Legacy desktop hosts stay in Connections; the native gate read supplies their prerequisite. */
-export async function legacyConnectionsGate(targetSource: string): Promise<string | null> {
+export type LegacyConnectionsAuthority =
+  | { readonly kind: "without-native-plan" }
+  | {
+      readonly kind: "verified-running";
+      readonly binding: InstallPlanBinding;
+      readonly evidence: NonNullable<ReturnType<typeof verifiedRunningLaptop>>;
+    }
+  | {
+      readonly kind: "verified-plan";
+      readonly binding: InstallPlanBinding;
+      readonly planId: string;
+      readonly revision: number;
+    };
+
+export async function readLegacyConnectionsAuthority(
+  targetSource: string,
+  environmentId: EnvironmentId,
+  matchRunningGeneration?: string,
+): Promise<LegacyConnectionsAuthority | string> {
   const binding = installPlanServices();
-  if (typeof window === "undefined" || window.desktopBridge?.installPlan === undefined) return null;
+  if (typeof window === "undefined" || window.desktopBridge?.installPlan === undefined)
+    return matchRunningGeneration === undefined
+      ? { kind: "without-native-plan" }
+      : m(msg("The Laptop's native verification is unavailable. Check again."));
   if (binding === undefined) return "Open Install status on Laptop first.";
   const result = await requestInstallPlan({ type: "read" }, binding);
-  const plan = result.state.current ?? result.state.last;
+  const problem = nativePlanIssue(result);
+  if (problem !== undefined) return problem;
+  try {
+    requireWritablePlan(binding, result);
+  } catch (error) {
+    return error instanceof Error ? error.message : "Install status is unavailable.";
+  }
+  const overlap = retainedRecoveryIssue(result.state, environmentId);
+  if (overlap !== undefined) return overlap;
+  const { current, laptop } = result.state;
+  if (matchRunningGeneration !== undefined) {
+    const running = verifiedRunningLaptop(laptop, laptop.environmentId, binding.services.now());
+    if (
+      result.state.view.matchRunningLaptop !== 1 ||
+      running === undefined ||
+      running.environmentId === environmentId ||
+      running.target.sourceSha !== targetSource ||
+      running.generation !== matchRunningGeneration
+    )
+      return m(msg("The Laptop's verified running build changed or is unavailable. Check again."));
+    const laptopOverlap = retainedRecoveryIssue(result.state, running.environmentId);
+    if (laptopOverlap !== undefined) return laptopOverlap;
+    if (current === null) return { kind: "verified-running", binding, evidence: running };
+    if (
+      planHasLaptopRecoveryDuty(current) ||
+      current.devices.some(
+        (device) => device.environmentId === environmentId && deviceHasRecoveryDuty(device),
+      )
+    )
+      return m(msg("Review this device's outstanding work in Install status first."));
+  }
+  const plan = current ?? result.state.last;
   return plan?.target.sourceSha === targetSource &&
     plan.laptop.gate !== undefined &&
     plan.laptop.gateClosed === undefined &&
@@ -407,22 +651,57 @@ export async function legacyConnectionsGate(targetSource: string): Promise<strin
       : result.state.laptop.ordinaryRecovery === undefined &&
         plan.laptop.gate.ordinaryRecovery === undefined &&
         result.state.laptop.committedTransactionId === plan.laptop.gate.transactionId)
-    ? null
+    ? { kind: "verified-plan", binding, planId: plan.planId, revision: plan.revision }
     : "Update from Connections after Laptop is updated and verified for this source.";
 }
-export function planGateFor(
+
+export async function legacyConnectionsGate(
+  targetSource: string,
+  environmentId: EnvironmentId,
+): Promise<string | null> {
+  const authority = await readLegacyConnectionsAuthority(targetSource, environmentId);
+  return typeof authority === "string" ? authority : null;
+}
+export function connectionsPlanDispatch(
+  binding: ReturnType<typeof installPlanServices>,
   action: JonesOperationAction,
-  review?: JonesReviewedInstall,
-  dispatch?: NativeJonesDispatch,
-  canOperate = () => true,
-): NonNullable<JonesExecutorHost["planGate"]> {
-  return async (environmentId, targetSource): Promise<JonesPlanGateResult> => {
-    const binding = installPlanServices();
-    if (binding === undefined)
+  review: JonesReviewedInstall | undefined,
+  dispatch: (canClaim?: () => boolean) => NativeJonesDispatch,
+  canOperate: () => boolean,
+  matchRunningGeneration?: string,
+  requireFollower?: boolean,
+) {
+  let canStart = (_request: JonesOperationStartInput): boolean => false;
+  const planGate: NonNullable<JonesExecutorHost["planGate"]> = async (
+    environmentId,
+    targetSource,
+  ) => {
+    if (binding === undefined || installPlanServices() !== binding)
       return { kind: "refused", message: "Open Install status on Laptop first." };
+    if (action.kind !== "install" && matchRunningGeneration !== undefined) {
+      const device = binding.services.devices().find((d) => d.environmentId === environmentId);
+      const [result] = await handOffJonesTargets(
+        [{ environmentId, label: device?.label ?? "Device" }],
+        dispatch(canOperate),
+        undefined,
+        {
+          sourceSha: targetSource,
+          generation: matchRunningGeneration,
+          ...(requireFollower ? { requireFollower } : {}),
+        },
+      );
+      return result?.handedOff
+        ? { kind: "handled", message: result.message }
+        : { kind: "refused", message: result?.message ?? "The plan handoff was refused." };
+    }
     const active = await requestInstallPlan({ type: "read" }, binding);
-    const desktopTarget = targetForDesktop(await binding.services.bridge.getUpdateState());
-    if ((active.state.current?.target.sourceSha ?? desktopTarget?.sourceSha) !== targetSource)
+    const issue = nativePlanIssue(active) ?? retainedRecoveryIssue(active.state, environmentId);
+    if (issue !== undefined) return { kind: "refused", message: issue };
+    requireWritablePlan(binding, active);
+    const target =
+      active.state.current?.target.sourceSha ??
+      targetForDesktop(await binding.services.bridge.getUpdateState())?.sourceSha;
+    if (target !== targetSource)
       return {
         kind: "refused",
         message:
@@ -432,44 +711,96 @@ export function planGateFor(
       const device = binding.services.devices().find((d) => d.environmentId === environmentId);
       const results = await handOffJonesTargets(
         [{ environmentId, label: device?.label ?? "Device" }],
-        dispatch,
+        dispatch(),
       );
       return results[0]?.handedOff
         ? { kind: "handled", message: results[0].message }
         : { kind: "refused", message: results[0]?.message ?? "The plan handoff was refused." };
     }
-    const read = await requestInstallPlan({ type: "read" }, binding);
-    if (read.state.current?.target.sourceSha !== targetSource)
+    const current = active.state.current;
+    if (current?.target.sourceSha !== targetSource)
       return {
         kind: "refused",
         message: "Open this source's current plan to review installation.",
       };
-    const observed = await binding.services.observe(environmentId);
-    if (!canOperate() || review === undefined || !isNativeJonesInstallReview(review))
+    const device = current.devices.find((candidate) => candidate.environmentId === environmentId);
+    if (
+      device?.membership !== "selected" ||
+      review === undefined ||
+      !isNativeJonesInstallReview(review)
+    )
       return {
         kind: "refused",
         message: "Fresh control authority and a native install review are required.",
       };
+    const observed = await binding.services.observe(environmentId);
+    const directStatus = authorizedUpdateStatus(observed, environmentId);
+    const canDispatch = (expectedRevision?: number) => {
+      const plan = binding.store.get().native?.current;
+      const member = plan?.devices.find((candidate) => candidate.environmentId === environmentId);
+      const latest = currentPlanHostAuthority(binding, device);
+      return (
+        canOperate() &&
+        plan?.planId === current.planId &&
+        plan.target.repository === current.target.repository &&
+        plan.target.sourceSha === current.target.sourceSha &&
+        plan.target.sourceTree === current.target.sourceTree &&
+        (expectedRevision === undefined || plan.revision === expectedRevision) &&
+        member?.membership === "selected" &&
+        member.route === device.route &&
+        member.enrollmentId === device.enrollmentId &&
+        !member.abandoning &&
+        latest.canDispatch &&
+        latest.enrollment === "match" &&
+        latest.status?.installedSource?.sha === review.expectedInstalledSource &&
+        latest.status?.stagedHandle === review.stagedHandle
+      );
+    };
+    const canClaim = () => canDispatch(current.revision);
+    requireWritablePlan(binding, active);
+    if (
+      directStatus === undefined ||
+      !supportsInstallPlanMutations(directStatus.capability) ||
+      directStatus.installedSource?.sha !== review.expectedInstalledSource ||
+      directStatus.stagedHandle !== review.stagedHandle ||
+      !hasPlanEnrollment(device, observed) ||
+      !canClaim()
+    )
+      return {
+        kind: "refused",
+        message: "Fresh control authority and the selected device's enrollment are required.",
+      };
     const request = {
       type: "claim" as const,
-      planId: read.state.current.planId,
+      planId: current.planId,
       environmentId,
       claimant: `window:${claimantId()}`,
       step: "install" as const,
       explicit: true,
       action,
-      ...(review === undefined ? {} : { review }),
-      ...(observed.observation.state?.installedSource === undefined
-        ? {}
-        : { expectedInstalledSource: observed.observation.state.installedSource.sha }),
+      review,
+      ...revisionFor(active.state, current),
+      expectedInstalledSource: review.expectedInstalledSource,
     };
-    const result = await (dispatch === undefined
-      ? requestInstallPlan(request, binding)
-      : dispatch(request, read.state));
-    return result.grant === undefined
-      ? { kind: "refused", message: result.refused?.message ?? "Install was not granted." }
-      : { kind: "grant", grant: result.grant };
+    const result = await dispatch(canClaim)(request, active.state);
+    const refusal = nativePlanIssue(result);
+    const grant = result.grant;
+    if (
+      refusal !== undefined ||
+      grant?.planId !== current.planId ||
+      grant.environmentId !== environmentId ||
+      grant.step !== "install" ||
+      grant.request.kind !== "operation-start" ||
+      grant.request.input.correlation?.planId !== current.planId ||
+      grant.request.input.correlation.deviceKey !== environmentId
+    )
+      return { kind: "refused", message: refusal ?? "Install was not granted." };
+    const granted = grant.request.input;
+    canStart = (input) =>
+      input === granted && Date.parse(grant.leaseUntil) > binding.services.now() && canDispatch();
+    return { kind: "grant", grant };
   };
+  return { planGate, canStart: (request: JonesOperationStartInput) => canStart(request) };
 }
 let claimant: string | undefined;
 export function claimantId() {
@@ -488,6 +819,9 @@ export async function routeNativeLaptopAction(
   const binding = installPlanServices();
   if (binding?.services.bridge.installPlan === undefined) return undefined;
   const result = await requestInstallPlan({ type: "read" }, binding);
+  const issue = nativePlanIssue(result) ?? retainedRecoveryIssue(result.state, environmentId);
+  if (issue !== undefined) return { kind: "refused", message: issue };
+  requireWritablePlan(binding, result);
   if (result.state.laptop.environmentId !== environmentId) return undefined;
   const desktop = await binding.services.bridge.getUpdateState();
   if (targetForDesktop(desktop)?.sourceSha !== targetSource)
@@ -497,14 +831,20 @@ export async function routeNativeLaptopAction(
     };
   if (!canOperate())
     return { kind: "refused", message: "This control no longer authorizes the action." };
+  const expected = {
+    binding,
+    planId: result.state.current?.planId ?? null,
+    environmentId,
+    expectedRevision: result.state.current?.revision,
+  };
   if (action.kind === "install") {
     if (review === undefined || !isNativeJonesInstallReview(review))
       return {
         kind: "refused",
         message: "A native Laptop install requires its full native review.",
       };
-    await routeLaptopInstall(binding.services.bridge, desktop, review, dispatch);
-  } else await routeLaptopDownload(binding.services.bridge, desktop, dispatch);
+    await routeLaptopInstall(binding.services.bridge, desktop, review, dispatch, expected);
+  } else await routeLaptopDownload(binding.services.bridge, desktop, dispatch, expected);
   return {
     kind: "handled",
     message: "Handed to Install status on Laptop. Every install requires review.",

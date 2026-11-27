@@ -1,5 +1,9 @@
 import { type CommandId, type ExecutionEnvironmentCapabilities } from "@t3tools/contracts";
-import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
+import {
+  blocksQueuedSteerIntoRun,
+  isQueuedSteerControlMessage,
+  planQueuedSteerBatch,
+} from "@t3tools/shared/jones/queuedSteerBatch";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
 import type { ThreadStructure } from "../../state/models.ts";
@@ -31,7 +35,12 @@ export function deriveQueuedSteerBatch(input: {
     (session.driver === "codex" || session.driver === "claudeAgent");
 
   const activeMessage = projection.messages.find((message) => message.id === active?.userMessageId);
-  const specialCommand = (text: string) => /^\/(?:compact|logout|goal)(?:\s|$)/iu.test(text.trim());
+  const supportsExpandedBatch = (input.capability.version ?? 1) >= 2;
+  const activeCommandBlocksBatch =
+    activeMessage !== undefined &&
+    (supportsExpandedBatch
+      ? blocksQueuedSteerIntoRun(activeMessage)
+      : isQueuedSteerControlMessage(activeMessage));
   const candidates = workflow.queuedRuns.map(({ run }) => {
     const message = projection.messages.find((item) => item.id === run.userMessageId);
     return {
@@ -40,7 +49,9 @@ export function deriveQueuedSteerBatch(input: {
       eligible:
         message !== undefined &&
         active !== null &&
-        !specialCommand(message.text) &&
+        !isQueuedSteerControlMessage(message) &&
+        run.freshContext !== true &&
+        run.outputSchema === undefined &&
         run.sourcePlanRef === undefined &&
         run.restartContinuationOfRunId === undefined &&
         projection.nodes.some((node) => node.id === run.rootNodeId) &&
@@ -75,22 +86,31 @@ export function deriveQueuedSteerBatch(input: {
           ? "Resolve the pending approval or question first."
           : projection.thread.archivedAt !== null || projection.thread.deletedAt !== null
             ? "This thread is no longer active."
-            : !workflow.canPromoteToSteer || active?.status !== "running"
+            : active?.status !== "running"
               ? "There is no active provider turn to steer."
               : !supportsActiveBatch || !session || !["ready", "running"].includes(session.status)
                 ? "Batch steering requires an active Codex or Claude steering session."
-                : active.rootNodeId === null ||
-                    projection.thread.activeProviderThreadId !== providerThread?.id ||
-                    projection.thread.providerInstanceId !== active.providerInstanceId ||
-                    !modelSelectionsEqual(projection.thread.modelSelection, active.modelSelection)
-                  ? "The active provider changed. Wait for the thread to synchronize."
-                  : activeMessage && specialCommand(activeMessage.text)
-                    ? "Wait for the current maintenance command to finish."
-                    : plan.count === 0
-                      ? plan.reason === "first_member_over_budget"
-                        ? "The first message exceeds the batch limit. Edit it or use its individual Steer action."
-                        : "The first queued message needs its own turn. Use its individual action."
-                      : null;
+                : !workflow.canPromoteToSteer
+                  ? "There is no active provider turn to steer."
+                  : active.rootNodeId === null ||
+                      projection.thread.activeProviderThreadId !== providerThread?.id ||
+                      projection.thread.providerInstanceId !== active.providerInstanceId ||
+                      projection.thread.modelSelection.instanceId !==
+                        active.modelSelection.instanceId
+                    ? "The active provider changed. Wait for the thread to synchronize."
+                    : !supportsExpandedBatch &&
+                        !modelSelectionsEqual(
+                          projection.thread.modelSelection,
+                          active.modelSelection,
+                        )
+                      ? "This server requires the saved model settings to match the running turn."
+                      : activeCommandBlocksBatch
+                        ? "Wait for the current command to finish."
+                        : plan.count === 0
+                          ? plan.reason === "first_member_over_budget"
+                            ? "The first message exceeds the batch limit. Edit it or use its individual Steer action."
+                            : "The first queued message needs its own turn. Use its individual action."
+                          : null;
   const detail =
     plan.remainingCount > 0
       ? `${plan.remainingCount} still queued. ${plan.reason === "ineligible" ? "The next message needs its own turn" : "Batch size limit"}.`

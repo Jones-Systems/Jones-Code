@@ -1,13 +1,21 @@
 // @effect-diagnostics globalDate:off - Fixed timestamps and injected clocks exercise receipt, lease and review behavior.
 import { expect, it } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
-import type { JonesInstallPlanState } from "@t3tools/contracts/jones/installPlan";
+import type {
+  JonesInstallPlan,
+  JonesInstallPlanHostOperation,
+  JonesInstallPlanState,
+} from "@t3tools/contracts/jones/installPlan";
 import type {
   JonesOperationReceipt,
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
 import { startPlan } from "./model.ts";
-import { installPlanPresentation, recoveryPreflightPresentation } from "./presentation.ts";
+import {
+  installPlanPresentation,
+  recoveryPreflightPresentation,
+  type InstallPlanDeviceObservation,
+} from "./presentation.ts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 
 const now = "2026-10-27T05:00:00Z",
@@ -15,6 +23,255 @@ const now = "2026-10-27T05:00:00Z",
   tree = "b".repeat(40);
 const env = EnvironmentId.make("laptop"),
   planId = "11111111-1111-4111-8111-111111111111";
+
+function rollout() {
+  const host = EnvironmentId.make("mini");
+  const base = startPlan({
+    planId,
+    now,
+    origin: "update-button",
+    laptopEnvironmentId: env,
+    select: [{ environmentId: host, label: "Mini", route: "operations" }],
+    target: {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: source,
+      sourceTree: tree,
+      version: "new",
+    },
+    from: { version: "old" },
+  });
+  const opened: JonesInstallPlan = {
+    ...base,
+    laptop: {
+      ...base.laptop,
+      gate: {
+        openedAt: now,
+        transactionId: "tx",
+        activeGeneration: "gen",
+        basis: "plan-install",
+        activeSource: source,
+        activeTree: tree,
+      },
+    },
+  };
+  const state: JonesUpdateState = {
+    source: "jones-actions",
+    channel: "jones-main",
+    environmentId: host,
+    phase: "no-new",
+    currentVersion: "old",
+    installedSource: { repository: base.target.repository, sha: "c".repeat(40), tree },
+    capability: { check: true, download: true, install: true, exactSource: true, operations: 1 },
+  };
+  const row = (
+    plan: JonesInstallPlan,
+    observed?: InstallPlanDeviceObservation,
+    readOnly?: JonesInstallPlanState["readOnly"],
+  ) => {
+    const closed = plan.dismissedAt !== undefined;
+    return installPlanPresentation(
+      {
+        schema: 1,
+        current: closed ? null : plan,
+        last: closed ? plan : null,
+        view: { complete: false, recoveryHistory: 1 },
+        laptop: { observedAt: now, activationBlocked: false },
+        ...(readOnly === undefined ? {} : { readOnly }),
+      },
+      {
+        now: Date.parse(now),
+        ...(observed === undefined ? {} : { devices: new Map([[host, observed]]) }),
+      },
+    ).rows[0]!;
+  };
+  return { host, base, opened, state, row };
+}
+
+it("shows post-gate scheduling evidence and keeps unconfirmed setup visible after closure", () => {
+  const { host, base, opened, state, row } = rollout();
+  const ready: InstallPlanDeviceObservation = {
+    observation: { freshness: "fresh", state },
+    canOperate: true,
+    fleetStatus: null,
+  };
+  expect(row(base, ready)).toMatchObject({ phase: "queued", text: "Waits for Laptop" });
+  expect(row(opened, ready)).toMatchObject({
+    phase: "queued",
+    text: "Queued for download",
+    queueReason: "Queued for download",
+    actions: { download: false, install: false },
+  });
+  expect(row(opened, { ...ready, canOperate: false }).queueReason).toBe(
+    "Update permission is unavailable for this device.",
+  );
+  expect(
+    row(opened, {
+      ...ready,
+      observation: { freshness: "fresh", state: { ...state, stagedHandle: "existing" } },
+    }).queueReason,
+  ).toBe("The host has existing work or a stage to review.");
+  expect(row(opened, { ...ready, observation: { freshness: "stale", state } }).queueReason).toBe(
+    "Fresh matching update status is required.",
+  );
+  expect(
+    row(opened, ready, { code: "invalid", message: "Plan journal is unavailable." }),
+  ).toMatchObject({
+    text: "Scheduling unavailable",
+    actions: { remove: false, download: false, install: false, stop: false },
+  });
+  expect(row({ ...opened, dismissedAt: now }, ready)).toMatchObject({
+    phase: "queued",
+    text: "Not started · scheduling closed",
+    queueReason: undefined,
+    hasRecoveryDuty: false,
+  });
+
+  const directiveId = "22222222-2222-4222-8222-222222222222";
+  const enrollmentId = "33333333-3333-4333-8333-333333333333";
+  const operation: JonesInstallPlanHostOperation = {
+    step: "directive",
+    operationId: directiveId,
+    lease: { claimant: "window:a", reservedAt: now, leaseUntil: now },
+    request: {
+      kind: "plan-directive",
+      input: {
+        environmentId: host,
+        enrollmentId,
+        directiveId,
+        expectedDirectiveId: null,
+        repository: opened.target.repository,
+        targetSource: source,
+        targetTree: tree,
+      },
+    },
+  };
+  const pending: JonesInstallPlan = {
+    ...opened,
+    devices: [
+      {
+        ...opened.devices[0]!,
+        route: "follower-operations",
+        enrollmentId,
+        operations: [operation],
+      },
+    ],
+  };
+  for (const plan of [pending, { ...pending, dismissedAt: now }])
+    expect(row(plan, ready)).toMatchObject({
+      operationId: directiveId,
+      phase: "unknown",
+      text: "Update setup unconfirmed",
+      setupUnconfirmed: true,
+      hasRecoveryDuty: true,
+      actions: { install: false, download: false },
+    });
+});
+
+it("keeps recorded running-source proof beside an exact late launcher receipt in history", () => {
+  const { host, opened, row, state } = rollout();
+  const operationId = "22222222-2222-4222-8222-222222222222";
+  const input = {
+    operationId,
+    environmentId: host,
+    expectedInstalledSource: "c".repeat(40),
+    action: {
+      kind: "install" as const,
+      stagedHandle: "stage",
+      currentVersion: "old",
+      targetSource: source,
+    },
+    correlation: { planId, deviceKey: host },
+  };
+  const pending: JonesOperationReceipt = {
+    ...input,
+    protocol: 1,
+    phase: "running",
+    acceptedAt: now,
+    updatedAt: now,
+    code: "launcher-unconfirmed",
+  };
+  const archive = (receipt: JonesOperationReceipt): JonesInstallPlan => ({
+    ...opened,
+    dismissedAt: now,
+    devices: [
+      {
+        ...opened.devices[0]!,
+        verifiedElsewhere: {
+          version: opened.target.version,
+          observedAt: Date.parse(now) - 60_000,
+        },
+        operations: [
+          {
+            step: "install",
+            operationId,
+            lease: { claimant: "window:a", reservedAt: now, leaseUntil: now },
+            request: { kind: "operation-start", input },
+            receipt,
+          },
+        ],
+      },
+    ],
+  });
+  expect(row(archive(pending))).toMatchObject({
+    operationId,
+    phase: "updated-elsewhere",
+    text: "Verified running the selected source",
+    attemptText: "This plan’s launcher outcome remains unconfirmed.",
+    launcherOutcomeUnconfirmed: true,
+    hasRecoveryDuty: true,
+  });
+  const failed: JonesOperationReceipt = {
+    ...pending,
+    phase: "failed",
+    code: "install-failed",
+    updatedAt: "2026-10-27T05:01:00Z",
+  };
+  expect(row(archive(failed))).toMatchObject({
+    operationId,
+    phase: "updated-elsewhere",
+    text: "Verified running the selected source",
+    attemptText: "This plan's attempt: Install didn't finish · install-failed",
+    launcherOutcomeUnconfirmed: false,
+    hasRecoveryDuty: false,
+    actions: { install: false, download: false, stop: false },
+  });
+  const rolledBack: JonesOperationReceipt = {
+    ...failed,
+    phase: "rolled-back",
+    code: "launcher-rolled-back",
+    updateId: operationId,
+    outcome: { status: "rolled-back", fromVersion: "old", targetVersion: opened.target.version },
+  };
+  const runningTarget = {
+    ...state,
+    installedSource: { repository: opened.target.repository, sha: source, tree },
+  };
+  const cached: InstallPlanDeviceObservation = {
+    observation: { freshness: "stale", state: runningTarget, heardAt: Date.parse(now) - 60_000 },
+    canOperate: true,
+  };
+  const previous: InstallPlanDeviceObservation = {
+    observation: { freshness: "fresh", state },
+    canOperate: true,
+  };
+  for (const observation of [undefined, cached, previous])
+    expect(row(archive(rolledBack), observation)).toMatchObject({
+      operationId,
+      phase: "rolled-back",
+      text: "Rolled back",
+      sourceText: "Last confirmed running the selected source · 1m ago",
+      hasRecoveryDuty: false,
+    });
+  expect(
+    row(archive(rolledBack), {
+      observation: { freshness: "fresh", state: runningTarget },
+      canOperate: true,
+    }),
+  ).toMatchObject({
+    text: "Rolled back",
+    sourceText: "Updated · running the selected source",
+  });
+});
 
 it("offers a fresh reviewed retry for settled install failures without releasing native holds", () => {
   const plan = startPlan({
@@ -477,21 +734,23 @@ it.each([
   expect(row(running).attemptText).toContain("This plan's attempt:");
   const cached = row({ ...running, progress }, "stale", Date.parse(now) - 5 * 60_000);
   expect(cached).toMatchObject({
-    text: "Last confirmed running the selected source · 5m ago",
+    text:
+      phase === "completed" ? "Downloaded · install when ready" : "Not updated · cleanup-recovered",
+    sourceText: "Last confirmed running the selected source · 5m ago",
     phase: phase === "completed" ? "staged" : "not-updated",
     settled: phase !== "completed",
     targetBuildRunning: false,
     actions: { download: false, install: false, end: false },
   });
-  expect(cached.attemptText).toContain("This plan's attempt:");
-  expect(row({ ...running, environmentId: env }, "stale", 0).text).not.toContain("Last confirmed");
+  expect(cached.attemptText).toBeUndefined();
+  expect(row({ ...running, environmentId: env }, "stale", 0).sourceText).toBeUndefined();
   expect(
     row(
       { ...running, installedSource: { ...running.installedSource!, tree: "c".repeat(40) } },
       "stale",
       0,
-    ).text,
-  ).not.toContain("Last confirmed");
+    ).sourceText,
+  ).toBeUndefined();
   for (const [receiptPhase, code, expectedPhase, text] of [
     ["held", "cleanup-unconfirmed", "held", "Cleanup unconfirmed"],
     ["running", "launcher-unconfirmed", "unknown", "Not confirmed"],

@@ -730,6 +730,12 @@ it("shows legacy unavailable attachments and removes them without changing the t
   );
 });
 
+function isContentRequest([input, init]: Parameters<typeof fetch>): boolean {
+  const url = new URL(input instanceof Request ? input.url : input, location.href);
+  const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+  return method !== "GET" || url.pathname !== "/.well-known/t3/environment";
+}
+
 it.each(["question-test", "foreign-environment"])(
   "pastes a %s thread with bounded source context without exporting or uploading files",
   async (source) => {
@@ -778,7 +784,7 @@ it.each(["question-test", "foreign-environment"])(
     });
     expect(answerDraft?.files ?? []).toEqual([]);
     expect(answerField().value).toBe(formatInlineContextReference(threadContextReference(record)));
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchSpy.mock.calls.filter(isContentRequest)).toEqual([]);
     fetchSpy.mockRestore();
     await act(async () => button("Send").click());
     const sentAnswer = JSON.parse(output("answer")!) as { approach: string };
@@ -933,7 +939,8 @@ it.each(["question-test", "foreign-environment"])(
     expect(answerField().value).toBe(
       formatInlineContextReference(threadContextReference(record)) + " ",
     );
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchSpy.mock.calls.filter(isContentRequest)).toEqual([]);
+    fetchSpy.mockRestore();
   },
 );
 

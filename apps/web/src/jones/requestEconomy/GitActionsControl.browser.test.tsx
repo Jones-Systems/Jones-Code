@@ -183,6 +183,7 @@ function control(thread = "thread", cwd = "/repo") {
   return (
     <MemoGitActionsControl
       gitCwd={cwd}
+      name={thread}
       activeThreadRef={{
         environmentId: EnvironmentId.make("environment"),
         threadId: ThreadId.make(thread),

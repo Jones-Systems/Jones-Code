@@ -1,5 +1,13 @@
+import { CommandId, type RunId } from "@t3tools/contracts";
 import { findSqliteReaderAdmissionFailure } from "@t3tools/shared/jones/sqliteReaders/admissionFailure";
 import * as Effect from "effect/Effect";
+
+// A run's original task-folder progress remains identifiable even if its tracked list changes.
+export const taskFolderProgressId = (runId: RunId) =>
+  CommandId.make(`${runId}:task-folder:worktree`);
+
+export const TASK_FOLDER_RECONCILIATION_MESSAGE =
+  "Task folder preparation needs reconciliation before it can be retried.";
 
 export const retryWorkspacePreparationRead =
   (commandType: string) =>

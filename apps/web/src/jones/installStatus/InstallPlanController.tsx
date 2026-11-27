@@ -1,17 +1,18 @@
 import { useEffect, useRef } from "react";
+import { AuthOrchestrationReadScope } from "@t3tools/contracts";
 import {
   advanceInstallPlan,
-  supportsInstallPlanMutations,
   type InstallPlanDriver,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { useEnvironments } from "../../state/environments";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
-import { environmentSession } from "../../state/session";
+import { environmentSession, readEnvironmentScopeAccess } from "../../state/session";
 import { jonesUpdates } from "../updates/jonesUpdates";
 import { installStatusStore, type InstallStatusStore, type InstallStatusDevice } from "./panelUi";
 import {
   bindInstallPlanServices,
-  currentAuthorizedUpdateStatus,
+  currentPlanHostAuthority,
+  installPlanServices,
   requestInstallPlan,
   type InstallPlanServices,
 } from "./services";
@@ -23,12 +24,13 @@ import { webJonesJournal, reconcileNativeJonesDuty } from "./executionJournal";
 
 /** One pass per wakeup. Native leases arbitrate windows; this loop never retries a mutation. */
 export function startInstallPlanController(
-  services: InstallPlanServices,
+  source: InstallPlanServices,
   store: InstallStatusStore = installStatusStore,
 ) {
-  if (services.bridge.installPlan === undefined) return { wake: () => {}, close: () => {} };
-  const binding = { services, store };
-  const unbind = bindInstallPlanServices(services, store);
+  if (source.bridge.installPlan === undefined) return { wake: () => {}, close: () => {} };
+  const unbind = bindInstallPlanServices(source, store);
+  const binding = installPlanServices()!;
+  const { services } = binding;
   let cancelled = false;
   let running = false;
   let dirty = false;
@@ -42,7 +44,7 @@ export function startInstallPlanController(
     desktop: async (request) => {
       const firstRead = store.get().native === null;
       const result = await requestInstallPlan(request, binding);
-      if (!cancelled && firstRead && result.state.current !== null) openInstallStatus();
+      if (!cancelled && firstRead && store.get().native?.current != null) openInstallStatus();
       return result;
     },
     observe: async (id) => {
@@ -53,10 +55,7 @@ export function startInstallPlanController(
         });
       return observed;
     },
-    canDispatch: (id) => {
-      const status = currentAuthorizedUpdateStatus(services, id);
-      return status !== undefined && supportsInstallPlanMutations(status.capability);
-    },
+    authority: (device) => currentPlanHostAuthority(binding, device),
     operation: async (id, request) => {
       const result = await services.operation(id, request);
       if ("binding" in result || "recoveredCleanup" in result || "receipt" in result)
@@ -126,10 +125,11 @@ export function startInstallPlanController(
   const stopPlan = services.bridge.onInstallPlan?.((native) => {
     if (!cancelled) {
       const previous = store.get().native;
+      if (!store.update({ native })) return;
+      const accepted = store.get().native;
       const changed =
-        previous?.current?.planId !== native.current?.planId ||
-        previous?.current?.revision !== native.current?.revision;
-      store.update({ native });
+        previous?.current?.planId !== accepted?.current?.planId ||
+        previous?.current?.revision !== accepted?.current?.revision;
       if (running && changed) dirty = true;
       // A repeated read broadcast must not turn the bounded runner into a spin loop.
       if (!running && changed) wake();
@@ -167,10 +167,13 @@ export function InstallPlanController() {
   useEffect(() => {
     const bridge = window.desktopBridge;
     if (bridge?.installPlan === undefined) return;
-    const services = productionInstallPlanServices(bridge, () => current.current);
-    const controller = startInstallPlanController(services);
+    const controller = startInstallPlanController({
+      ...productionInstallPlanServices(bridge, () => current.current),
+      canReadReceipts: (id) =>
+        readEnvironmentScopeAccess(id, AuthOrchestrationReadScope).status === "granted",
+    });
     // Status refresh is separate from the plan runner's pass: it only reads hosts.
-    const poller = startInstallStatusPoller(services);
+    const poller = startInstallStatusPoller(installPlanServices()!.services);
     const subscribedIds: readonly string[] = JSON.parse(ids);
     const stops = current.current
       .filter(({ environmentId }) => subscribedIds.includes(environmentId))

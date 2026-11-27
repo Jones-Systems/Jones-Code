@@ -147,6 +147,24 @@ describe("Codex late start admission recovery", () => {
     expect(later.nativeTurnId).toBeUndefined();
   });
 
+  it("retains acknowledged steer context until a newer start supersedes it", () => {
+    const ledger = makeCodexLateStartRecovery<string>();
+    const original = ledger.begin(binding, []);
+    ledger.acknowledge(original, binding.runtimeGeneration, "first", "original");
+    const steer = ledger.prepareContextUpdate(
+      binding.nativeThreadId,
+      (context) => `${context}+note`,
+    );
+    expect(ledger.acceptedContext(binding.nativeThreadId)).toBe("original");
+    steer();
+    expect(ledger.acceptedContext(binding.nativeThreadId)).toBe("original+note");
+    const delayedSteer = ledger.prepareContextUpdate(binding.nativeThreadId, () => "stale");
+    const next = ledger.begin(binding, []);
+    ledger.acknowledge(next, binding.runtimeGeneration, "second", "new start");
+    delayedSteer();
+    expect(ledger.acceptedContext(binding.nativeThreadId)).toBe("new start");
+  });
+
   it("clears only the dispatch resolved by its original rejection", () => {
     const ledger = makeCodexLateStartRecovery();
     const dispatch = ledger.begin(binding, ["previous-turn"]);

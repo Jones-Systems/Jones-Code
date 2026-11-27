@@ -1,3 +1,4 @@
+import { T, Var, useGT } from "gt-react";
 import { useId, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
@@ -50,6 +51,7 @@ export function FleetEnrollmentStatus({
   readonly onToggle: () => void;
   readonly onRefresh: () => void;
 }) {
+  const gt = useGT();
   const [aboutOpen, setAboutOpen] = useState(false);
   const aboutId = useId();
   const hint = enrolled && readiness !== "unavailable" ? null : READINESS_HINT[readiness];
@@ -79,7 +81,7 @@ export function FleetEnrollmentStatus({
             <div className="min-w-0">
               <p className="text-sm font-medium text-foreground">Automatic updates</p>
               <p className="text-muted-foreground">
-                {hint === null ? "Install this laptop's build after each laptop update." : hint}
+                {hint === null ? gt("Follow verified builds reported by this laptop.") : hint}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-1">
@@ -97,7 +99,9 @@ export function FleetEnrollmentStatus({
                 >
                   <RefreshIcon refreshing={busy} />
                 </TooltipTrigger>
-                <TooltipPopup side="top">Refresh status</TooltipPopup>
+                <TooltipPopup side="top">
+                  {enrolled ? "Refresh laptop report and host status" : "Refresh status"}
+                </TooltipPopup>
               </Tooltip>
               <Switch
                 size="sm"
@@ -134,8 +138,12 @@ export function FleetEnrollmentStatus({
           {aboutOpen ? (
             <div id={aboutId} className={DETAIL_PANEL_CLASSNAME}>
               <p>
-                Turning this on enrolls only {label}’s qualified service. It installs a build after
-                this laptop commits the same source; an offline host updates when it reconnects.
+                <T>
+                  Turning this on enrolls only <Var>{label}</Var>’s qualified service. The host
+                  follows the latest eligible build this laptop reports. For a build installed
+                  through Install status, select the host in that plan or use Match laptop. These
+                  installs require review.
+                </T>
               </p>
               <p>
                 A host that updates itself prepares this laptop’s installed build as soon as it

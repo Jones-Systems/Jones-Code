@@ -17,6 +17,7 @@ import {
   atomicJson,
   redact,
   scenarioFromPrompt,
+  writeVerifierScenario,
   createMilestoneChannel,
   publishMilestone,
   awaitMilestoneRelease,
@@ -38,8 +39,10 @@ import {
   scenarioSteps,
   rendererSteps,
   indexedDbBrowserProof,
+  verifierRunEvidence,
   waitInactive,
   waitProviderReady,
+  waitForVerifierReport,
   openRpc,
   waitForFixtureStartup,
   issueFixturePairing,
@@ -229,22 +232,26 @@ NodeTest.test("fixture pairing refuses another base before spawning", async () =
 
 NodeTest.test(
   "native ACP framing retains the exact scenario through T3's instruction wrapper",
-  () => {
-    const scenario = { mode: "active", steps: [{ action: "wait", text: "Jones main" }] };
-    const marker = `JONES_PREVIEW_SCENARIO:${Buffer.from(JSON.stringify(scenario)).toString("base64")}`;
-    NodeAssert.deepEqual(
-      scenarioFromPrompt([
+  async () => {
+    await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      const report = NodePath.join(root, "report.json");
+      const scenario = { mode: "active", steps: [{ action: "wait", text: "A".repeat(128_000) }] };
+      const marker = await writeVerifierScenario(report, scenario);
+      NodeAssert.ok(marker.length < 100);
+      const prompt = [
         {
           type: "text",
           text: `<t3_code_instructions>\nNative context\n</t3_code_instructions>\n\n<user_request>\n${marker}\n</user_request>`,
         },
-      ]),
-      scenario,
-    );
-    NodeAssert.throws(
-      () => scenarioFromPrompt([{ type: "text", text: JSON.stringify(scenario) }]),
-      /scenario marker/,
-    );
+      ];
+      NodeAssert.deepEqual(await scenarioFromPrompt(prompt, report), scenario);
+      await NodeAssert.rejects(
+        scenarioFromPrompt([{ type: "text", text: JSON.stringify(scenario) }], report),
+        /scenario marker/,
+      );
+      await writeVerifierScenario(report, { ...scenario, mode: "browser-disabled" });
+      await NodeAssert.rejects(scenarioFromPrompt(prompt, report), /differs from the ACP prompt/);
+    });
   },
 );
 
@@ -459,6 +466,90 @@ NodeTest.test(
     NodeAssert.equal((await waiting).thread.activeRunId, null);
   },
 );
+
+NodeTest.test("the verifier report wait fails promptly for the exact failed run", async () => {
+  const fixture = shellSubscriptionFixture();
+  let milestoneSignal;
+  const report = waitForVerifierReport({
+    rpc: fixture.rpc,
+    threadId: "owned-thread",
+    runId: "run:verifier",
+    channel: {
+      wait(names, signal) {
+        NodeAssert.deepEqual(names, ["report", "final"]);
+        milestoneSignal = signal;
+        return new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        );
+      },
+    },
+    signal: AbortSignal.timeout(1_000),
+  });
+  const observed = NodeAssert.rejects(report, /verifier run failed before reporting/);
+  const failed = { id: "owned-thread", activeRunId: null, status: "failed" };
+  fixture.snapshot({ ...failed, latestRunId: "run:earlier" });
+  fixture.update({ ...failed, latestRunId: "run:verifier", status: "completed" });
+  fixture.update({ ...failed, latestRunId: "run:verifier", id: "other-thread" });
+  await Promise.resolve();
+  NodeAssert.equal(fixture.interrupts, 0);
+  fixture.update({ ...failed, latestRunId: "run:verifier" });
+  await Promise.resolve();
+  fixture.acknowledgeInterrupt();
+  await observed;
+  NodeAssert.equal(milestoneSignal.aborted, true);
+});
+
+NodeTest.test("an acknowledged verifier report releases the shell subscription", async () => {
+  const fixture = shellSubscriptionFixture();
+  const receipt = { name: "report", sha256: "fixture-digest" };
+  let finished = false;
+  const report = waitForVerifierReport({
+    rpc: fixture.rpc,
+    threadId: "owned-thread",
+    runId: "run:verifier",
+    channel: { wait: async () => receipt },
+    signal: AbortSignal.timeout(1_000),
+  }).then((value) => {
+    finished = true;
+    return value;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  NodeAssert.equal(fixture.interrupts, 1);
+  NodeAssert.equal(finished, false);
+  fixture.acknowledgeInterrupt();
+  NodeAssert.equal(await report, receipt);
+});
+
+NodeTest.test("verifier evidence records fixed stage labels for the exact run", () => {
+  const runId = "run:verifier";
+  const projection = {
+    runs: [
+      { id: runId, status: "failed", activeAttemptId: "attempt", startedAt: null, completedAt: 1 },
+    ],
+    attempts: [
+      { runId, status: "failed" },
+      { runId: "run:other", status: "running" },
+    ],
+    providerTurns: [{ runAttemptId: "other", status: "completed" }],
+    turnItems: [
+      { runId, type: "error", title: "Provider start could not verify its run state" },
+      { runId, type: "error", title: "synthetic untrusted content" },
+      { runId: "run:other", type: "error", title: "Turn failed to start" },
+    ],
+  };
+  NodeAssert.deepEqual(verifierRunEvidence(projection, runId), {
+    outcome: "observed",
+    runId,
+    status: "failed",
+    started: false,
+    completed: true,
+    attemptStates: ["failed"],
+    nativeTurnStates: [],
+    failureStages: ["run-state-unavailable", "other"],
+  });
+});
 
 NodeTest.test(
   "missing, inherited and invalid activeRunId never count as native inactivity",
@@ -962,7 +1053,14 @@ NodeTest.test(
     const seededHold = at("Hold the saved Off current-version catalog connection");
     NodeAssert.ok(hold < seed && seed < seededHold && seededHold < checkpoint);
     NodeAssert.deepEqual(steps[seed + 2], { action: "navigate", path: "/settings/connections" });
-    NodeAssert.equal(steps.filter((step) => step.action === "navigate").length, 3);
+    const navigations = steps.flatMap((step, index) => (step.action === "navigate" ? [index] : []));
+    NodeAssert.equal(navigations.length, 3);
+    for (const navigation of navigations) {
+      NodeAssert.deepEqual(steps[navigation + 1], {
+        action: "click",
+        locator: '[aria-label="Show environments as"] >> button:text-is("List")',
+      });
+    }
     NodeAssert.ok(steps.some((step) => step.name === "saved-connection-reload"));
   },
 );
@@ -1955,7 +2053,7 @@ NodeTest.test(
         await NodeFSP.mkdir(NodePath.dirname(descriptorPath), { recursive: true });
         await atomicJson(descriptorPath, {
           label: "Unmanaged fixture origin",
-          capabilities: { serverBrowser: true },
+          capabilities: { serverBrowser: true, accessTokenRenewal: true },
           orchestrationProtocolVersion: 42,
         });
         const upstream = await serveRendererFixture(root);
@@ -2465,12 +2563,10 @@ NodeTest.test(
         });
         NodeAssert.equal(initialized.result.protocolVersion, 1);
         const created = await request("session/new", { cwd: root, mcpServers: [] });
-        const scenario = Buffer.from(JSON.stringify({ mode: "active", steps: [] })).toString(
-          "base64",
-        );
+        const marker = await writeVerifierScenario(report, { mode: "active", steps: [] });
         const result = await request("session/prompt", {
           sessionId: created.result.sessionId,
-          prompt: [{ type: "text", text: `JONES_PREVIEW_SCENARIO:${scenario}` }],
+          prompt: [{ type: "text", text: marker }],
         });
         NodeAssert.match(result.error.message, /Normal T3 MCP injection is required/);
         const final = await readAcknowledgedMilestone(

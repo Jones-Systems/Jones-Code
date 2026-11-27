@@ -18,6 +18,30 @@ import { Receipts, layer } from "./Receipts.ts";
 import * as Recovery from "./SettlementRecovery.ts";
 import { TargetObservation } from "./TargetPresence.ts";
 
+it.effect("deleting a thread cancels its never-issued settlement script", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* Effect.gen(function* () {
+        yield* f.seed;
+        yield* f.dispatch({ type: "thread.settle", commandId: CommandId.make("settle"), threadId });
+        const store = yield* Receipts.pipe(Effect.provide(layer));
+        const [intent] = yield* store.recoveryBatch(0);
+        expect(intent?.script_state).toBe("pending");
+        yield* f.dispatch({ type: "thread.delete", commandId: CommandId.make("delete"), threadId });
+        expect(yield* store.startScript(intent!.event_id)).toBe(false);
+        const sql = yield* SqlClient.SqlClient;
+        expect(
+          yield* sql`SELECT script_state FROM jones_workspace_retirement_intents WHERE event_id=${intent!.event_id}`,
+        ).toEqual([{ script_state: "cancelled" }]);
+        expect((yield* store.claims(f.linked)).map((claim) => claim.claim_id)).not.toContain(
+          `settlement-intent:${intent!.event_id}`,
+        );
+      }).pipe(Effect.provide(f.layer));
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
 it.effect.each(["pending", "completed", "failed", "cancelled", "running"] as const)(
   "absence reconciles %s truthfully and idempotently without replay or retirement receipts",
   (state) =>

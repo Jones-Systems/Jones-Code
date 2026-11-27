@@ -1,6 +1,6 @@
 import { ReviewPage } from "./ReviewPage";
 import { useReviewController } from "./reviewRuntime";
-import { LAPTOP_RECEIVER } from "./navigation";
+import { LAPTOP_RECEIVER, type RequestsSearch } from "./navigation";
 import { Link } from "@tanstack/react-router";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { WorkspacePageContainer } from "../../components/WorkspacePageContainer";
@@ -13,7 +13,7 @@ import { useAdmission } from "./useAdmission";
 import { ownerLoadMessage } from "./availability";
 import { UnavailableControl } from "./UnavailableControl";
 
-export function RequestsPage() {
+export function RequestsPage({ search }: { search?: RequestsSearch | undefined }) {
   const { environments, isReady } = useEnvironments();
   return (
     <main className="h-full overflow-y-auto">
@@ -56,6 +56,7 @@ export function RequestsPage() {
               key={environment.environmentId}
               environmentId={environment.environmentId}
               label={environment.displayLabel}
+              search={search?.receiver === environment.environmentId ? search : undefined}
             />
           ))}
       </WorkspacePageContainer>
@@ -66,29 +67,45 @@ export function RequestsPage() {
 export function EnvironmentRequests({
   environmentId,
   label,
+  search,
 }: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
+  readonly search?: RequestsSearch | undefined;
 }) {
   const controller = useReviewController(environmentId);
   return controller ? (
-    <ReviewPage environmentId={environmentId} label={label} />
+    <ReviewPage environmentId={environmentId} label={label} search={search} />
   ) : (
-    <LegacyEnvironmentRequests environmentId={environmentId} label={label} />
+    <LegacyEnvironmentRequests environmentId={environmentId} label={label} search={search} />
   );
 }
 
 function LegacyEnvironmentRequests({
   environmentId,
   label,
+  search,
 }: {
   environmentId: EnvironmentId;
   label: string;
+  search?: RequestsSearch | undefined;
 }) {
   const state = useAdmission(environmentId);
   const { snapshot, store, loadFailed, loadFailure, loading, error } = state;
   const terminal = loadFailure === "unauthorized" || loadFailure === "unsupported";
-  const groups = groupAdmissions(snapshot?.pending ?? []);
+  const records = snapshot?.pending ?? [];
+  // V1 can only recover records present in its bounded owner snapshot.
+  const exact =
+    search?.request && !search.access
+      ? records.filter(
+          (record) =>
+            record.id === search.request &&
+            (search.binding === undefined || record.bindingDigest === search.binding),
+        )
+      : null;
+  const groups = groupAdmissions(
+    search?.access ? [] : exact === null ? records : exact.length === 1 ? exact : [],
+  );
   const held = actionableAdmissions(state).length;
   return (
     <section className="min-w-0 space-y-3" aria-label={`Requests on ${label}`}>
@@ -143,6 +160,14 @@ function LegacyEnvironmentRequests({
         <p role="status" className="text-sm text-muted-foreground">
           Loading requests…
         </p>
+      ) : search?.access ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          Exact access review is unsupported on this receiver.
+        </p>
+      ) : exact !== null && exact.length !== 1 ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          Exact request unavailable in this receiver’s request list.
+        </p>
       ) : snapshot.pending.length === 0 ? (
         <p className="text-sm text-muted-foreground">No pending requests on this environment.</p>
       ) : null}
@@ -170,11 +195,12 @@ function LegacyEnvironmentRequests({
           ) : null}
           {group.records.map((record) => (
             <RequestReviewRow
-              key={admissionBindingKey(record)}
+              key={JSON.stringify([exact !== null, admissionBindingKey(record)])}
               environmentId={environmentId}
               record={record}
               policyRevision={snapshot!.policy.revision}
               blocked={requestBlockedReason(state, admissionBindingKey(record))}
+              initiallyExpanded={exact !== null}
               onDecide={(input) => {
                 void store.decide(input);
               }}

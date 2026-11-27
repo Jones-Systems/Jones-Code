@@ -13,12 +13,14 @@ export function RequestReviewRow({
   record,
   policyRevision,
   blocked,
+  initiallyExpanded,
   onDecide,
 }: {
   readonly environmentId: EnvironmentId;
   readonly record: RemoteAdmissionRecord;
   readonly policyRevision: string;
   readonly blocked: string | null;
+  readonly initiallyExpanded?: boolean | undefined;
   readonly onDecide: (input: RemoteAdmissionDecision) => void;
 }) {
   const target = useRequestTarget(environmentId, record);
@@ -31,6 +33,7 @@ export function RequestReviewRow({
       timestampFormat={timestampFormat}
       policyRevision={policyRevision}
       blocked={blocked}
+      initiallyExpanded={initiallyExpanded}
       onDecide={onDecide}
     />
   );

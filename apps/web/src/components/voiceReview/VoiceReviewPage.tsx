@@ -554,6 +554,10 @@ function PendingPromptDetail({
   const readonly = unavailable || !view?.canType;
   const routing = routingStateLabel(draft.routing_state, draft.routing_target, draft.dependencies);
   const legacyRouting = sendOptions?.kind === "unsupported";
+  const sendDestination = displayText(
+    legacyRouting && workstreamId === null ? draft.routing_target : selectedWorkstream?.name,
+    "",
+  );
   const routingDetail =
     !legacyRouting && draft.routing_state === "owner_required"
       ? null
@@ -614,7 +618,7 @@ function PendingPromptDetail({
               </PromptAction>
             ) : null}
             <PromptAction
-              label={`Send prompt to ${destination} now`}
+              label={sendDestination ? `Send now to ${sendDestination}` : "Send now"}
               variant="default"
               reason={sendReason}
               reasonId={sendReason === blockedReason ? reasonId : sendReasonId}

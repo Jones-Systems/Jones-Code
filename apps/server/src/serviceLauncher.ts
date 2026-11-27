@@ -92,6 +92,8 @@ import {
 import { assertStageNotRevoked, retireNativeStage } from "./jones/updates/stageRevocation.ts";
 import * as NodeUtil from "node:util";
 import { acquireServiceSelectionLock } from "./cloud/serviceSelectionLock.ts";
+import { RESTORE_OOMD_WATCH_SCRIPT } from "./cloud/userManagerOom.ts";
+import { windowsSystem32Path } from "@t3tools/shared/windowsSystem";
 import { isNoCopyOnWrite, markNoCopyOnWrite } from "./noCopyOnWrite.ts";
 
 import type {
@@ -108,7 +110,9 @@ import {
   decodeServiceLauncherChildMessage,
   isExactServiceVersion,
   parseLegacyServiceState,
+  decodeServiceUnit,
   disabledServiceTask,
+  encodeServiceTask,
   parseServiceState,
   serviceTaskIsDisabled,
   serviceUnitBaseDirOf,
@@ -231,6 +235,42 @@ const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
   args: ["serve"],
 });
 
+function isRegularFile(fd: number): boolean {
+  try {
+    return NodeFS.fstatSync(fd).isFile();
+  } catch {
+    return false;
+  }
+}
+
+const MAX_PENDING_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Node writes to a regular file synchronously, so a server whose output is the log file freezes
+ * while the filesystem stalls one append. It gets a pipe instead, drained here without backpressure;
+ * output beyond the cap is dropped while a write is stuck.
+ */
+function appendOutput(source: NodeJS.ReadableStream, fd: number): void {
+  let pending: Array<Buffer> = [];
+  let pendingBytes = 0;
+  let writing = false;
+  const flush = (): void => {
+    writing = pending.length > 0;
+    if (!writing) return;
+    const chunk = Buffer.concat(pending, pendingBytes);
+    pending = [];
+    pendingBytes = 0;
+    // Best effort, like the launcher's own diagnostics: a failed append drops that output.
+    NodeFS.write(fd, chunk, flush);
+  };
+  source.on("data", (chunk: Buffer) => {
+    if (pendingBytes + chunk.length > MAX_PENDING_OUTPUT_BYTES) return;
+    pending.push(chunk);
+    pendingBytes += chunk.length;
+    if (!writing) flush();
+  });
+}
+
 /**
  * The unit or launch agent that `t3 service install` wrote. Its program names
  * the runtime that ran the install, and a remote update never replaces it, so
@@ -243,8 +283,10 @@ export interface ServiceUnit {
   readonly reload: () => Promise<void>;
 }
 
+const SCHTASKS = () => windowsSystem32Path(process.env, "schtasks.exe");
+
 const runSchtasks = (...args: ReadonlyArray<string>) =>
-  NodeUtil.promisify(NodeChildProcess.execFile)("schtasks", args, {
+  NodeUtil.promisify(NodeChildProcess.execFile)(SCHTASKS(), args, {
     windowsHide: true,
     timeout: 30_000,
   });
@@ -266,8 +308,8 @@ export async function registerServiceTask(
   }
   const disabledPath = `${unitPath}.${process.pid}.disabled`;
   try {
-    const unit = await NodeFSP.readFile(unitPath, "utf8");
-    await NodeFSP.writeFile(disabledPath, disabledServiceTask(unit));
+    const unit = decodeServiceUnit(await NodeFSP.readFile(unitPath));
+    await NodeFSP.writeFile(disabledPath, encodeServiceTask(disabledServiceTask(unit)));
     await register(disabledPath);
   } finally {
     await NodeFSP.rm(disabledPath, { force: true });
@@ -331,8 +373,8 @@ async function serviceUnitFromEnvironment(
     );
   return {
     path: NodePath.join(unitDir, unitName),
-    reload: () =>
-      new Promise((resolve, reject) => {
+    reload: async () => {
+      await new Promise<void>((resolve, reject) => {
         NodeChildProcess.spawn("systemctl", ["--user", "daemon-reload"], {
           stdio: "ignore",
           timeout: 30_000,
@@ -343,7 +385,16 @@ async function serviceUnitFromEnvironment(
               ? resolve()
               : reject(new Error(`systemctl --user daemon-reload exited with ${code ?? signal}`)),
           );
-      }),
+      });
+      await new Promise<void>((resolve) => {
+        NodeChildProcess.spawn("/bin/sh", ["-c", RESTORE_OOMD_WATCH_SCRIPT], {
+          stdio: "ignore",
+          timeout: 30_000,
+        })
+          .once("error", () => resolve())
+          .once("exit", () => resolve());
+      });
+    },
   };
 }
 
@@ -406,7 +457,9 @@ async function serviceLogPath(
 ): Promise<string | undefined> {
   if (options.logFile !== undefined) return options.logFile;
   if (serviceUnit === undefined) return undefined;
-  const contents = await NodeFSP.readFile(serviceUnit.path, "utf8").catch(() => undefined);
+  const contents = await NodeFSP.readFile(serviceUnit.path)
+    .then(decodeServiceUnit)
+    .catch(() => undefined);
   return contents === undefined ? undefined : serviceUnitLogPathOf(contents);
 }
 
@@ -1059,7 +1112,7 @@ export async function writeServiceState(filePath: string, state: ServiceState): 
   await replaceFileDurably(filePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 
-async function replaceFileDurably(filePath: string, contents: string): Promise<void> {
+async function replaceFileDurably(filePath: string, contents: string | Uint8Array): Promise<void> {
   const directory = NodePath.dirname(filePath);
   const tempPath = NodePath.join(
     directory,
@@ -1068,7 +1121,7 @@ async function replaceFileDurably(filePath: string, contents: string): Promise<v
   let handle: NodeFSP.FileHandle | undefined;
   try {
     handle = await NodeFSP.open(tempPath, "wx", 0o600);
-    await handle.writeFile(contents, "utf8");
+    await handle.writeFile(contents);
     await handle.sync();
     await handle.close();
     handle = undefined;
@@ -1231,7 +1284,7 @@ export async function stateDirOwned(baseDir: string): Promise<boolean> {
   if (!Number.isFinite(recordedAt)) return true;
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
   const platform = process.platform;
-  const { command, args, env } = legacyOwnerStartTimeCommand(pid, platform);
+  const { command, args, env } = legacyOwnerStartTimeCommand(pid, platform, process.env);
   const output = await new Promise<string | undefined>((resolve) =>
     NodeChildProcess.execFile(
       command,
@@ -1994,6 +2047,8 @@ export class Launcher {
       ...(update === undefined ? {} : { update }),
     };
     const spawnArguments = runtimeSpawnArguments(paths);
+    const appendStdout = this.#output === undefined && isRegularFile(1);
+    const appendStderr = this.#output === undefined && isRegularFile(2);
     const child = NodeChildProcess.spawn(spawnArguments.command, spawnArguments.args, {
       env: {
         ...this.#environment,
@@ -2002,9 +2057,11 @@ export class Launcher {
       },
       stdio:
         this.#output === undefined
-          ? ["inherit", "inherit", "inherit", "ipc"]
+          ? ["inherit", appendStdout ? "pipe" : "inherit", appendStderr ? "pipe" : "inherit", "ipc"]
           : ["ignore", this.#output, this.#output, "ipc"],
     });
+    if (child.stdout !== null) appendOutput(child.stdout, 1);
+    if (child.stderr !== null) appendOutput(child.stderr, 2);
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => reject(error);
       child.once("error", onError);
@@ -2871,11 +2928,12 @@ export class Launcher {
         ) {
           return;
         }
-        const contents = await NodeFSP.readFile(unit.path, "utf8");
+        const contents = decodeServiceUnit(await NodeFSP.readFile(unit.path));
         const installedBaseDir = serviceUnitBaseDirOf(contents);
+        const real = (dir: string) => NodeFSP.realpath(dir).catch(() => NodePath.resolve(dir));
         if (
           installedBaseDir === undefined ||
-          NodePath.resolve(installedBaseDir) !== NodePath.resolve(this.#baseDir)
+          (await real(installedBaseDir)) !== (await real(this.#baseDir))
         ) {
           return;
         }
@@ -3161,7 +3219,7 @@ export async function main(options: LauncherOptions = {}): Promise<void> {
     // lets the next repeating trigger start the service again.
     if (windows && options.serviceUnit !== undefined) {
       const taskName = serviceTaskName(process.env.USERDOMAIN ?? "", process.env.USERNAME ?? "");
-      NodeChildProcess.spawnSync("schtasks", ["/End", "/TN", taskName], {
+      NodeChildProcess.spawnSync(SCHTASKS(), ["/End", "/TN", taskName], {
         stdio: "ignore",
         windowsHide: true,
       });

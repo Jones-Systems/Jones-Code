@@ -315,15 +315,17 @@ it.effect(
     Effect.scoped(
       Effect.gen(function* () {
         const next = cursor(1);
-        const grep = vi.fn<FileFinder["grep"]>((_query, options) => {
+        const grep = vi.fn<FileFinder["grep"]>((query, options) => {
+          expect(query).toBe(String.raw`(?-u)\bneedle\b`);
+          expect(options?.mode).toBe("regex");
           expect(options?.pageSize).toBe(100);
           expect(options?.maxMatchesPerFile).toBe(100);
           return {
             ok: true,
             value:
               options?.cursor === null
-                ? page([match("needleSuffix")], next)
-                : page([match()], null),
+                ? page([match("éneedle", [[2, 8]])], next)
+                : page([match("needle, needle")], null),
           };
         });
         const { index } = makeIndex(grep);
@@ -332,10 +334,62 @@ it.effect(
 
         expect(grep).toHaveBeenCalledTimes(2);
         expect(grep.mock.calls[1]?.[1]?.cursor).toBe(next);
-        expect(result.matches.map((item) => item.lineContent)).toEqual(["needle"]);
+        expect(result.matches).toMatchObject([
+          {
+            lineContent: "needle, needle",
+            matchRanges: [
+              { start: 0, end: 6 },
+              { start: 8, end: 14 },
+            ],
+          },
+        ]);
         expect(result.truncated).toBe(false);
       }),
     ),
+);
+
+it.effect("retries a failed internal whole-word prefilter at the current cursor", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const next = cursor(1);
+      const grep = vi.fn<FileFinder["grep"]>((_query, options) => ({
+        ok: true,
+        value:
+          options?.cursor === null
+            ? page([match("éneedle", [[2, 8]])], next)
+            : options?.mode === "regex"
+              ? { ...page([], cursor(2)), regexFallbackError: "unsupported prefilter" }
+              : page([match()], null),
+      }));
+      const { index } = makeIndex(grep);
+      const searchIndex = yield* index;
+      const result = yield* searchIndex.searchContents({ ...input, wholeWord: true });
+
+      expect(grep).toHaveBeenCalledTimes(3);
+      expect(grep).toHaveBeenNthCalledWith(
+        2,
+        String.raw`(?-u)\bneedle\b`,
+        expect.objectContaining({ mode: "regex", cursor: next, enforceTimeBudget: true }),
+      );
+      expect(grep).toHaveBeenNthCalledWith(
+        3,
+        "needle",
+        expect.objectContaining({ mode: "plain", cursor: next, enforceTimeBudget: true }),
+      );
+      expect(grep.mock.calls[2]?.[1]?.cursor).toBe(next);
+      expect(result).toEqual({
+        matches: [
+          {
+            path: "src/words.ts",
+            lineNumber: 1,
+            lineContent: "needle",
+            matchRanges: [{ start: 0, end: 6 }],
+          },
+        ],
+        truncated: false,
+      });
+    }),
+  ),
 );
 
 it.effect("applies the deadline after a raw match even if whole-word filtering removes it", () =>

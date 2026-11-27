@@ -542,7 +542,7 @@ it("copies a portable handoff with the shared envelope", async () => {
   await page.getByRole("button", { name: "Copy handoff text", exact: true }).click();
   expect(state.copy).toHaveBeenCalledWith(
     expect.stringContaining("**Thread handoff** (t3.thread-handoff/v1)"),
-    "handoff text",
+    expect.objectContaining({ target: "handoff text" }),
   );
   const copied = state.copy.mock.calls[0]?.[0] as string;
   expect(copied).toContain("not assigned (portable)");

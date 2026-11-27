@@ -383,7 +383,9 @@ const make = Effect.gen(function* () {
             // Launch verifies the persisted payload hash, and the worker deduplicates the release ID.
             return { sequence: launched.legacyReleaseSequence, observeAutoRoute: true };
           }
-          const result = yield* Intake.dispatchCommand(command).pipe(Effect.provide(context));
+          const result = yield* Intake.dispatchCommand(command, { managesProviders: false }).pipe(
+            Effect.provide(context),
+          );
           return { sequence: result.sequence, observeAutoRoute: result.replayed !== true };
         });
         return yield* send.pipe(

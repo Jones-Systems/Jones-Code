@@ -35,7 +35,12 @@ export function ProductionExactSourceUpdateAction(target: ExactSourceTarget) {
   const authority = useWebReviewAuthority(
     environmentId,
     operate,
-    JSON.stringify([target.targetSource, target.allowInstall, target.allowReplace]),
+    JSON.stringify([
+      target.targetSource,
+      target.matchRunningGeneration,
+      target.allowInstall,
+      target.allowReplace,
+    ]),
   );
   const run = useAtomCommand(jonesUpdates.action, { reportFailure: false });
   const host: ExactSourceHost = {

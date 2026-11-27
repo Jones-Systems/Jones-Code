@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "browser-test-discovery",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/testing/syntheticDiscoveryLog.test.ts",
+    "apps/web/src/jones/testing/syntheticDiscoveryLog.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/test/browserSetup.ts",
+      "to": "apps/web/src/jones/testing/syntheticDiscoveryLog.ts"
+    }
+  ]
+}

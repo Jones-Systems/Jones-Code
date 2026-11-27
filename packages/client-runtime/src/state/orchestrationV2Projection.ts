@@ -145,6 +145,14 @@ const UNFINISHED_RUN_STATUSES: ReadonlySet<OrchestrationV2Run["status"]> = new S
   "waiting",
 ]);
 
+function isCapturedRuntimeStopRun(run: OrchestrationV2Run): boolean {
+  return (
+    run.completedAt === null &&
+    run.activeAttemptId !== null &&
+    (run.status === "starting" || run.status === "running" || run.status === "waiting")
+  );
+}
+
 function shouldDropMissingPartialTurnItem(
   projection: OrchestrationV2ThreadProjection,
   item: OrchestrationV2TurnItem,
@@ -335,6 +343,7 @@ export function applyOrchestrationV2ProjectionEvent(
     case "thread.active-reordered":
     case "thread.metadata-updated":
     case "thread.pull-request-synced":
+    case "thread.issue-synced":
     case "thread.runtime-mode-updated":
     case "thread.interaction-mode-updated":
     case "thread.model-selection-updated":
@@ -353,11 +362,35 @@ export function applyOrchestrationV2ProjectionEvent(
       };
     case "run.created":
     case "run.updated": {
-      const next = { ...base, runs: upsertEntity(base.runs, event.payload) };
+      // Lifecycle updates carry the run as it was when the turn started. What the run returned
+      // is written by its own event, and an update without it must not take it away.
+      const known = base.runs.find((run) => run.id === event.payload.id);
+      const run = {
+        ...event.payload,
+        ...(known?.output === undefined ? {} : { output: known.output }),
+        ...(event.payload.explicitQueue === undefined && known?.explicitQueue !== undefined
+          ? { explicitQueue: known.explicitQueue }
+          : {}),
+        ...(event.payload.queuedToolBoundaryEligible === undefined &&
+        known?.queuedToolBoundaryEligible !== undefined
+          ? { queuedToolBoundaryEligible: known.queuedToolBoundaryEligible }
+          : {}),
+        ...(event.payload.queuedToolBoundaryFollowUpOfRunId === undefined &&
+        known?.queuedToolBoundaryFollowUpOfRunId !== undefined
+          ? { queuedToolBoundaryFollowUpOfRunId: known.queuedToolBoundaryFollowUpOfRunId }
+          : {}),
+      };
+      const next = { ...base, runs: upsertEntity(base.runs, run) };
+      if (
+        next.capturedRuntimeStopRunId === run.id &&
+        (!isCapturedRuntimeStopRun(run) ||
+          run.providerInstanceId !== known?.providerInstanceId ||
+          run.providerThreadId !== known?.providerThreadId)
+      ) {
+        delete next.capturedRuntimeStopRunId;
+      }
       const visible = { ...next, visibleTurnItems: activeVisibleTurnItems(next) };
-      const wasQueued = base.runs.some(
-        (run) => run.id === event.payload.id && run.status === "queued",
-      );
+      const wasQueued = known?.status === "queued";
       return wasQueued && event.payload.status !== "queued"
         ? { ...visible, visibleTurnItems: restoreQueuedUserItems(visible, event.payload.id) }
         : visible;
@@ -372,6 +405,13 @@ export function applyOrchestrationV2ProjectionEvent(
                 restartCancelledBackgroundWork: event.payload.restartCancelledBackgroundWork,
               }
             : run,
+        ),
+      };
+    case "run.output-submitted":
+      return {
+        ...base,
+        runs: base.runs.map((run) =>
+          run.id === event.payload.runId ? { ...run, output: event.payload.output } : run,
         ),
       };
     case "run-attempt.created":
@@ -398,8 +438,18 @@ export function applyOrchestrationV2ProjectionEvent(
         ...base,
         providerSessions: upsertEntity(base.providerSessions, event.payload),
       };
-    case "provider-session.detach-requested":
-      return projection;
+    case "provider-session.detach-requested": {
+      // The publishing server attributes the event to a run only after proving its binding.
+      const { runId } = event;
+      if (runId === undefined || runId === projection.capturedRuntimeStopRunId) {
+        return projection;
+      }
+      const run = projection.runs.find((candidate) => candidate.id === runId);
+      if (run === undefined || !isCapturedRuntimeStopRun(run)) {
+        return projection;
+      }
+      return { ...projection, capturedRuntimeStopRunId: runId };
+    }
     case "provider-session.detached":
       return {
         ...base,

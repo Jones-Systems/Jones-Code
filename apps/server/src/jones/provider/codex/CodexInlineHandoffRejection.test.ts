@@ -39,7 +39,7 @@ import {
   makeCodexReplayTranscript,
   makeCodexReplayTurn,
   producerCompletion,
-  withConfigReads,
+  withCodexSetup,
   withReplayRequestId,
 } from "../../../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
 import { withInlineContext } from "../../../orchestration-v2/ContextHandoffDelivery.ts";
@@ -55,6 +55,7 @@ const CODEX_TEST_MODEL_SELECTION = {
   instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
   model: "gpt-5.4",
 };
+const threadTitle = "Late context refusal";
 const CODEX_TEST_RUNTIME_POLICY = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
   runtimeMode: "full-access",
   interactionMode: "default",
@@ -95,6 +96,7 @@ describe("Codex inline handoff rejection recovery", () => {
     { code: null, late: true, recovery: "late ACK and terminal" },
     { code: null, late: true, recovery: "late terminal before ACK" },
     { code: null, late: true, recovery: "late ACK without a terminal" },
+    { code: null, late: true, recovery: "late ACK and interrupted prompt without input" },
     { code: null, late: true, recovery: "late ACK with a different terminal" },
     { code: null, late: true, recovery: "late acceptance after newer identical marker" },
     { code: null, late: true, recovery: "late acceptance after binding replacement" },
@@ -115,6 +117,7 @@ describe("Codex inline handoff rejection recovery", () => {
       const terminalFirst = recovery === "late terminal before ACK";
       const ackOnly = recovery === "late ACK without a terminal";
       const wrongTerminal = recovery === "late ACK with a different terminal";
+      const interruptedWithoutInput = recovery === "late ACK and interrupted prompt without input";
       const restartReadback = recovery === "readback of restart after COMMIT contradiction";
       const commitsInline = recovery === "on-time ACK and terminal";
       const lostAfterCommit = recovery === "process loss after late receipt commits";
@@ -289,7 +292,7 @@ describe("Codex inline handoff rejection recovery", () => {
             threadId: nativeThreadId,
             turn: makeCodexReplayTurn({
               id: wrongTerminal ? "different-native-turn" : originalNativeTurnId,
-              status: "completed",
+              status: interruptedWithoutInput ? "interrupted" : "completed",
             }),
           },
         },
@@ -406,7 +409,7 @@ describe("Codex inline handoff rejection recovery", () => {
           });
         }),
       ).pipe(Layer.provide(database));
-      const effectiveTranscript = withConfigReads(transcript);
+      const effectiveTranscript = withCodexSetup(transcript, threadTitle);
       const driver = yield* CodexReplay.makeReplayDriver(effectiveTranscript, {
         beforeEmitInbound: (entry) =>
           entry.label === "first prompt response" || entry.label === "history request rejection"
@@ -426,7 +429,7 @@ describe("Codex inline handoff rejection recovery", () => {
           commandId: CommandId.make(`create-${scenario}`),
           threadId,
           projectId: ProjectId.make(scenario),
-          title: "Late context refusal",
+          title: threadTitle,
           modelSelection: CODEX_TEST_MODEL_SELECTION,
           runtimeMode: "full-access",
           interactionMode: "default",
@@ -622,7 +625,7 @@ describe("Codex inline handoff rejection recovery", () => {
                   (event) =>
                     event.type === "run.updated" &&
                     event.runId === run.id &&
-                    event.payload.status === "waiting",
+                    event.payload.status === "completed",
                 ),
                 Stream.runHead,
                 Effect.forkChild({ startImmediately: true }),
@@ -765,13 +768,13 @@ describe("Codex inline handoff rejection recovery", () => {
         }
         assert.equal((yield* getProjection()).contextHandoffs[0]?.delivery?.status, "injected");
 
-        const waiting = yield* orchestrator.streamDomainEvents.pipe(
+        const completed = yield* orchestrator.streamDomainEvents.pipe(
           Stream.filter(
             (event) =>
               event.type === "run.updated" &&
               event.threadId === threadId &&
               event.payload.id !== run.id &&
-              event.payload.status === "waiting",
+              event.payload.status === "completed",
           ),
           Stream.runHead,
           Effect.forkChild({ startImmediately: true }),
@@ -781,7 +784,7 @@ describe("Codex inline handoff rejection recovery", () => {
         const replay = yield* Ref.get(driver.state);
         assert.isNull(replay.failure, String(replay.failure));
         assert.notEqual((yield* getProjection()).runs.at(-1)?.status, "failed");
-        yield* Fiber.join(waiting);
+        yield* Fiber.join(completed);
         yield* worker.drain();
         const after = yield* getProjection();
         assert.deepEqual(
@@ -865,7 +868,7 @@ describe("Codex inline handoff rejection recovery", () => {
             ]
           : [],
       });
-      const effectiveRestart = withConfigReads(restartTranscript);
+      const effectiveRestart = withCodexSetup(restartTranscript, threadTitle);
       const restartDriver = yield* CodexReplay.makeReplayDriver(effectiveRestart);
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -876,14 +879,14 @@ describe("Codex inline handoff rejection recovery", () => {
         assert.deepEqual(reopened.runs, retained.runs);
         assert.deepEqual(reopened.attempts, retained.attempts);
         assert.deepEqual(reopened.providerTurns, retained.providerTurns);
-        const waiting = commitsInline
+        const completed = commitsInline
           ? yield* orchestrator.streamDomainEvents.pipe(
               Stream.filter(
                 (event) =>
                   event.type === "run.updated" &&
                   event.threadId === threadId &&
                   event.runId !== originalRunId &&
-                  event.payload.status === "waiting",
+                  event.payload.status === "completed",
               ),
               Stream.runHead,
               Effect.forkChild({ startImmediately: true }),
@@ -891,9 +894,9 @@ describe("Codex inline handoff rejection recovery", () => {
           : undefined;
         yield* send(orchestrator, threadId, "after-restart", "Authorized after a restart");
         yield* worker.drain();
-        if (waiting !== undefined) {
+        if (completed !== undefined) {
           assert.isNull((yield* Ref.get(restartDriver.state)).failure);
-          yield* Fiber.join(waiting);
+          yield* Fiber.join(completed);
           yield* worker.drain();
         }
         const after = yield* read();

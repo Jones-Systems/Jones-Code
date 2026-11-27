@@ -7,12 +7,6 @@ const MIGRATIONS_DIR = "apps/server/src/jones/persistence/Migrations";
 const UPSTREAM_MANIFEST = "apps/server/src/persistence/Migrations.ts";
 const UPSTREAM_MIGRATIONS_DIR = "apps/server/src/persistence/Migrations";
 
-// New Jones IDs start at 100. IDs 1-6 are the released legacy identities, kept in the
-// separate jones_sql_migrations ledger, so their numeric overlap with upstream 1-6 is
-// by design. IDs 7-99 belong to known foreign histories; parseManifest refuses them.
-const JONES_FIRST_ALLOCATED_ID = 100;
-const LEGACY_JONES_IDS = new Set([1, 2, 3, 4, 5, 6]);
-
 // Released Jones IDs 140-145 were allocated after their module files were created
 // as 125-130, so these filenames intentionally differ from their IDs. This table is
 // a closed list: any other prefix that differs from its ID is refused.
@@ -134,15 +128,15 @@ function checkLedger(root) {
   const upstreamPrefixes = moduleFiles(join(root, UPSTREAM_MIGRATIONS_DIR)).map((file) =>
     Number(file.split("_")[0]),
   );
-  const upstream = new Set([...upstreamIds, ...upstreamPrefixes]);
-  for (const id of upstream)
-    if (id >= JONES_FIRST_ALLOCATED_ID)
-      errors.push(
-        `Upstream migration number ${id} entered the Jones range from ${JONES_FIRST_ALLOCATED_ID}`,
-      );
-  for (const id of jonesIds)
-    if (!LEGACY_JONES_IDS.has(id) && upstream.has(id))
-      errors.push(`Jones migration ID ${id} collides with an upstream migration number`);
+  // Each migrator skips earlier IDs within its own tracking table. The two tables can
+  // contain the same numbers with different names, including released Jones IDs >= 100.
+  if (
+    upstreamIds.some(
+      (id, index) => !Number.isSafeInteger(id) || id <= (upstreamIds[index - 1] ?? 0),
+    )
+  ) {
+    errors.push("Upstream migration IDs must be positive, unique and ascending");
+  }
 
   return {
     errors,
@@ -151,7 +145,7 @@ function checkLedger(root) {
       jonesMaximum: Math.max(...jonesIds),
       modulesOnDisk: onDisk.size,
       upstreamEntries: upstreamIds.length,
-      upstreamMaximum: Math.max(...upstream),
+      upstreamMaximum: Math.max(...upstreamIds, ...upstreamPrefixes),
     },
   };
 }

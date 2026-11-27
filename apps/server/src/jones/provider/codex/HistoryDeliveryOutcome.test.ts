@@ -153,106 +153,122 @@ const persistenceLayer = EventSink.layer.pipe(
 );
 
 describe("definitively unsent history restoration", () => {
-  it.effect.each(["latest marker", "statement rollback", "superseded after rollback", "pruned"])(
-    "compares the exact receipt for %s",
-    (scenario) =>
-      Effect.gen(function* () {
-        const sink = yield* EventSink.EventSinkV2;
-        const sql = yield* SqlClient.SqlClient;
-        const now = yield* DateTime.now;
-        const threadId = ThreadId.make("unsent-history");
-        const runId = RunId.make("unsent-attempt-run");
-        const original: OrchestrationV2ContextHandoff = {
-          id: ContextHandoffId.make("unsent-handoff"),
-          threadId,
-          targetRunId: runId,
-          fromProviderThreadIds: [],
-          toProviderThreadId: ProviderThreadId.make("unsent-provider-thread"),
-          coveredRunOrdinals: { from: 1, to: 1 },
-          strategy: "full_thread_summary",
-          status: "ready",
-          summaryMessageId: null,
-          summaryText: "Synthetic history",
-          createdByProviderInstanceId: null,
-          createdAt: now,
-          updatedAt: now,
-        };
-        const pending = {
-          ...original,
-          delivery: { nativeThreadId: "known-conversation", status: "pending", itemIds: [] },
-        } satisfies OrchestrationV2ContextHandoff;
-        let id = 0;
-        const write = (payload: OrchestrationV2ContextHandoff) =>
-          Effect.suspend(() =>
-            sink.write({
-              events: [
-                {
-                  id: EventId.make(`history-write-${++id}`),
-                  type: "context-handoff.updated",
-                  threadId,
-                  runId,
-                  occurredAt: now,
-                  payload,
-                },
-              ],
-            }),
-          );
-        const latest = sql<{ readonly sequence: number; readonly payload: string }>`
+  it.effect.each([
+    "latest marker",
+    "statement rollback",
+    "superseded after rollback",
+    "pruned",
+    "dropped inline",
+    "superseded dropped inline",
+  ])("compares the exact receipt for %s", (scenario) =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("unsent-history");
+      const runId = RunId.make("unsent-attempt-run");
+      const original: OrchestrationV2ContextHandoff = {
+        id: ContextHandoffId.make("unsent-handoff"),
+        threadId,
+        targetRunId: runId,
+        fromProviderThreadIds: [],
+        toProviderThreadId: ProviderThreadId.make("unsent-provider-thread"),
+        coveredRunOrdinals: { from: 1, to: 1 },
+        strategy: "full_thread_summary",
+        status: "ready",
+        summaryMessageId: null,
+        summaryText: "Synthetic history",
+        createdByProviderInstanceId: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const pending = {
+        ...original,
+        delivery: { nativeThreadId: "known-conversation", status: "pending", itemIds: [] },
+      } satisfies OrchestrationV2ContextHandoff;
+      let id = 0;
+      const write = (payload: OrchestrationV2ContextHandoff) =>
+        Effect.suspend(() =>
+          sink.write({
+            events: [
+              {
+                id: EventId.make(`history-write-${++id}`),
+                type: "context-handoff.updated",
+                threadId,
+                runId,
+                occurredAt: now,
+                payload,
+              },
+            ],
+          }),
+        );
+      const latest = sql<{ readonly sequence: number; readonly payload: string }>`
           SELECT sequence, payload_json AS payload FROM orchestration_events
           WHERE event_type = 'context-handoff.updated' ORDER BY sequence DESC LIMIT 1
         `.pipe(Effect.map(([row]) => row!));
-        let rollbacks = 0;
-        let batches = 0;
-        const retryingBatch: EventSink.EventSinkV2Shape["withProviderBatch"] = (body) =>
-          Effect.sync(() => {
-            batches += 1;
-          }).pipe(
-            Effect.andThen(sink.withProviderBatch(body)),
-            Effect.tapError(() =>
-              Effect.gen(function* () {
-                rollbacks += 1;
-                yield* sql`DROP TRIGGER fail_unsent_restore`.pipe(Effect.orDie);
-                if (scenario === "superseded after rollback")
-                  yield* write(pending).pipe(Effect.orDie);
-              }),
-            ),
-          );
-        const older = makeCodexHistoryDeliveryPersistence(write, sink.withProviderBatch);
-        const owner = makeCodexHistoryDeliveryPersistence(write, retryingBatch);
-        yield* write(original);
-        yield* older.persist(pending);
-        const olderMarker = yield* latest;
-        yield* owner.persist(pending);
-        const ownedMarker = yield* latest;
-        assert.equal(ownedMarker.payload, olderMarker.payload);
-        assert.isAbove(ownedMarker.sequence, olderMarker.sequence);
-        yield* older.restore(original);
-        assert.deepEqual(yield* latest, ownedMarker);
+      let rollbacks = 0;
+      let batches = 0;
+      const retryingBatch: EventSink.EventSinkV2Shape["withProviderBatch"] = (body) =>
+        Effect.sync(() => {
+          batches += 1;
+        }).pipe(
+          Effect.andThen(sink.withProviderBatch(body)),
+          Effect.tapError(() =>
+            Effect.gen(function* () {
+              rollbacks += 1;
+              yield* sql`DROP TRIGGER fail_unsent_restore`.pipe(Effect.orDie);
+              if (scenario === "superseded after rollback")
+                yield* write(pending).pipe(Effect.orDie);
+            }),
+          ),
+        );
+      const older = makeCodexHistoryDeliveryPersistence(write, sink.withProviderBatch);
+      const owner = makeCodexHistoryDeliveryPersistence(write, retryingBatch);
+      yield* write(original);
+      yield* older.persist(pending);
+      const olderMarker = yield* latest;
+      yield* owner.persist(pending);
+      const ownedMarker = yield* latest;
+      assert.equal(ownedMarker.payload, olderMarker.payload);
+      assert.isAbove(ownedMarker.sequence, olderMarker.sequence);
+      yield* older.restore(original);
+      assert.deepEqual(yield* latest, ownedMarker);
 
-        const withRollback =
-          scenario === "statement rollback" || scenario === "superseded after rollback";
-        if (withRollback) {
-          yield* sql`CREATE TEMP TRIGGER fail_unsent_restore BEFORE INSERT ON orchestration_events
+      const withRollback =
+        scenario === "statement rollback" || scenario === "superseded after rollback";
+      if (withRollback) {
+        yield* sql`CREATE TEMP TRIGGER fail_unsent_restore BEFORE INSERT ON orchestration_events
             WHEN NEW.event_type = 'context-handoff.updated'
               AND json_extract(NEW.payload_json, '$.delivery') IS NULL
             BEGIN SELECT RAISE(ABORT, 'synthetic restore failure'); END`;
-        }
-        if (scenario === "pruned") {
-          yield* sql`INSERT INTO orchestration_v2_projection_metadata
+      }
+      if (scenario === "pruned") {
+        yield* sql`INSERT INTO orchestration_v2_projection_metadata
             (projection_name, schema_version, last_sequence, updated_at)
             VALUES (${EVENT_LOG_PRUNED_THROUGH_PROJECTION}, 1, ${ownedMarker.sequence}, ${DateTime.formatIso(now)})`;
-        }
-        yield* owner.restore(original);
-        const finalMarker = yield* latest;
-        assert.equal(rollbacks, withRollback ? 1 : 0);
-        assert.equal(batches, withRollback ? 2 : 1);
-        if (scenario === "pruned") assert.deepEqual(finalMarker, ownedMarker);
-        else {
-          assert.isAbove(finalMarker.sequence, ownedMarker.sequence);
-          if (scenario === "superseded after rollback")
-            assert.equal(finalMarker.payload, ownedMarker.payload);
-          else assert.notProperty(JSON.parse(finalMarker.payload), "delivery");
-        }
-      }).pipe(Effect.provide(persistenceLayer)),
+      }
+      const dropped = scenario.endsWith("dropped inline");
+      const superseded = scenario === "superseded dropped inline";
+      if (dropped) {
+        const delivered = {
+          ...pending,
+          delivery: { ...pending.delivery, status: "inline" as const },
+        };
+        yield* owner.persist(delivered);
+        if (superseded) yield* write(delivered);
+      }
+      const beforeRestore = yield* latest;
+      yield* dropped ? owner.restoreDropped(original) : owner.restore(original);
+      const finalMarker = yield* latest;
+      assert.equal(rollbacks, withRollback ? 1 : 0);
+      assert.equal(batches, withRollback || dropped ? 2 : 1);
+      if (scenario === "pruned" || superseded) assert.deepEqual(finalMarker, beforeRestore);
+      else {
+        assert.isAbove(finalMarker.sequence, beforeRestore.sequence);
+        if (scenario === "superseded after rollback")
+          assert.equal(finalMarker.payload, ownedMarker.payload);
+        else assert.notProperty(JSON.parse(finalMarker.payload), "delivery");
+      }
+    }).pipe(Effect.provide(persistenceLayer)),
   );
 });

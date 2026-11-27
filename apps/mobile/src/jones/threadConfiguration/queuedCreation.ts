@@ -47,6 +47,10 @@ export function buildQueuedThreadCreationStartTurnInput(input: {
     ...(input.serverSupportsRepoFreshness && creation.baseFreshness !== undefined
       ? { baseFreshness: creation.baseFreshness }
       : {}),
+    ...(creation.repositories === undefined ? {} : { worktreeRepositories: creation.repositories }),
+    ...(creation.startsFromRepositoryDefaults === undefined
+      ? {}
+      : { startsFromRepositoryDefaults: creation.startsFromRepositoryDefaults }),
     serverResolvesWorktreeBase: input.serverResolvesWorktreeBase,
     worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
   });

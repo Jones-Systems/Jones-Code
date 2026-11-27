@@ -42,6 +42,22 @@ const readers: ReadonlyArray<Reader> = [
       "startRefusal/Orchestrator.integration.test.ts (upstream-like pruning after crash before reservation); startRefusal/Store.test.ts (missing settlement proof)",
   },
   {
+    file: "runtime/RuntimeStop.ts",
+    classification: "tolerate",
+    after:
+      "Missing start, attempt or binding evidence prevents settlement as undelivered. The physical Stop and its existing fences remain eligible.",
+    proof:
+      "runtime/RuntimeStop.test.ts (unclaimed and predispatch starts, unknown claims, different generation, and missing preparation birth and scope)",
+  },
+  {
+    file: "runtime/RuntimeStopSqlite.ts",
+    classification: "tolerate",
+    after:
+      "A prepared release needs its original retained admission above the pruning watermark. Missing evidence leaves its start unresolved while physical Stop remains eligible.",
+    proof:
+      "runtime/RuntimeStop.test.ts (accepted warm release and missing original provider birth)",
+  },
+  {
     file: "goals/GoalControl.ts",
     classification: "tolerate",
     after:

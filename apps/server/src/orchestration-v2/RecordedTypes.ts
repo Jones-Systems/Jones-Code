@@ -597,9 +597,14 @@ export const RecordedEvent = Schema.Union([RecordedLifecycleEvent, Orchestration
 export type RecordedEvent = typeof RecordedEvent.Type;
 export const RecordedEventJson = Schema.Union([
   RecordedLifecycleEventJson,
-  ...OrchestrationV2PrivateEvent.members.map((event) =>
-    event.mapFields((fields) => ({ ...fields, occurredAt: Schema.DateTimeUtcFromString })),
-  ),
+  OrchestrationV2PrivateEvent.members[0].mapFields((fields) => ({
+    ...fields,
+    occurredAt: Schema.DateTimeUtcFromString,
+  })),
+  OrchestrationV2PrivateEvent.members[1].mapFields((fields) => ({
+    ...fields,
+    occurredAt: Schema.DateTimeUtcFromString,
+  })),
 ]);
 export type RecordedEventJson = typeof RecordedEventJson.Type;
 

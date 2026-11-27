@@ -7,6 +7,7 @@ import type {
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
+import { msg } from "gt-react";
 
 import { APP_BUILD_STARTED_AT, APP_SOURCE_SHA, APP_VERSION } from "./branding";
 import {
@@ -18,6 +19,7 @@ import {
   type JonesSourceCurrency,
 } from "./jones/fleetUpdates/sourceCurrency";
 import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "./hooks/useLocalStorage";
+import { type MessageResolver, m } from "./i18n/messages";
 
 export interface VersionMismatch {
   readonly clientVersion: string;
@@ -64,6 +66,10 @@ function versionCore(version: string): string {
   return version.replace(/[-+].*$/, "");
 }
 
+const versionMismatchHint = msg(
+  "Version mismatch. Try syncing the client and server to the same T3 Code version.",
+);
+
 export function resolveVersionMismatch(
   serverVersion: string | null | undefined,
   clientVersion: string = APP_VERSION,
@@ -104,7 +110,7 @@ export function resolveVersionMismatch(
   return {
     clientVersion: normalizedClientVersion,
     serverVersion: normalizedServerVersion,
-    hint: "Version mismatch. Try syncing the client and server to the same T3 Code version.",
+    hint: m(versionMismatchHint),
   };
 }
 
@@ -132,6 +138,7 @@ export function resolveServerConfigClientUpdateNotice(
 
 export function resolveServerConfigVersionMismatch(
   serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
+  resolve: MessageResolver = m,
 ): VersionMismatch | null {
   const mismatch = resolveVersionMismatch(
     serverConfig?.environment.serverVersion,
@@ -145,6 +152,7 @@ export function resolveServerConfigVersionMismatch(
     ? null
     : {
         ...mismatch,
+        hint: resolve(versionMismatchHint),
         clientBuildStartedAt: APP_BUILD_STARTED_AT,
         serverBuildStartedAt: serverConfig?.environment.jonesBuildStartedAt,
         clientSourceSha: APP_SOURCE_SHA,

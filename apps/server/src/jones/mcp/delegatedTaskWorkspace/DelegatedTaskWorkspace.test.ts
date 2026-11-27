@@ -49,6 +49,7 @@ import * as TerminalManager from "../../../terminal/Manager.ts";
 import * as CheckpointStore from "../../../checkpointing/CheckpointStore.ts";
 import * as TextGeneration from "../../../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
+import * as TaskFolders from "../../../workspace/TaskFolders.ts";
 import {
   resolveDelegatedTaskProject,
   resolveExplicitDelegatedTaskWorkspace,
@@ -405,6 +406,11 @@ function makeHarness(
       Deferred.succeed(terminalClosed, undefined).pipe(Effect.asVoid),
   );
   const externalServices = Layer.mergeAll(
+    Layer.mock(TaskFolders.TaskFolders)({
+      plan: () => Effect.succeed(null),
+      find: () => Effect.succeed(null),
+      removeForProjectFolder: (input) => removeWorktree(input),
+    }),
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: closeTerminal }),

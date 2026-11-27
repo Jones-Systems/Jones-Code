@@ -2,8 +2,8 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { VisitThreadInput } from "@t3tools/client-runtime/operations";
 import { claimThreadOpen } from "@t3tools/client-runtime/state/thread-search";
 import { suppressThreadReadDwell } from "@t3tools/client-runtime/jones/thread-read-dwell";
-import * as Cause from "effect/Cause";
-import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import * as Effect from "effect/Effect";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { createMobileThreadVisitTracker } from "./tracker";
 
@@ -33,12 +33,13 @@ function fixture(name: string) {
     sessionGenerationAtom: () => sessionGeneration,
     visit: {
       label: "mobile-dwell-test",
-      run: async (_registry, input) => {
-        attempts.push(input.input);
-        if (!online) return AsyncResult.failure(Cause.fail("disconnected"));
-        visits.push(input.input);
-        return AsyncResult.success(undefined);
-      },
+      run: (_registry, { input }) =>
+        Effect.suspend(() => {
+          attempts.push(input);
+          if (!online) return Effect.fail("disconnected");
+          visits.push(input);
+          return Effect.void;
+        }),
     },
   });
   const registry = AtomRegistry.make();

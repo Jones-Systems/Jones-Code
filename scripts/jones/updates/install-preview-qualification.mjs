@@ -16,6 +16,7 @@ import {
   readAcknowledgedMilestone,
   redact,
   processIdentity,
+  writeVerifierScenario,
 } from "./install-preview-agent.mjs";
 
 const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
@@ -665,8 +666,9 @@ export async function fixtureProxy(upstream, sourceIdentity) {
         descriptor.label = "Synthetic incompatible Jones host";
         descriptor.serverVersion = "0.0.45-preview.20261011.1.1";
         descriptor.orchestrationProtocolVersion = 0;
-        // Model an older supervised host; the update response still requires qualified bootstrap.
+        // This older supervised host predates DPoP renewal. Pair against the real bearer route.
         descriptor.capabilities = { ...descriptor.capabilities, serverSelfUpdate: "boot-service" };
+        delete descriptor.capabilities.accessTokenRenewal;
         descriptor.jonesSource = { ...sourceIdentity, ...(checks ? { sha: "0".repeat(40) } : {}) };
         bytes = Buffer.from(JSON.stringify(descriptor));
       }
@@ -698,7 +700,7 @@ export async function fixtureProxy(upstream, sourceIdentity) {
       websocketAttempts,
       checks,
       fixtureBoundary:
-        "Real T3 pairing/auth; synthetic older boot-service descriptor and bootstrap-blocked update responses; no installation",
+        "Real T3 bearer pairing/auth; synthetic older boot-service descriptor and bootstrap-blocked update responses; no installation",
     }),
     close: () =>
       new Promise((resolve, reject) => {
@@ -1046,6 +1048,10 @@ function indexedDbStep(phase, label, expected, syntheticOrigin) {
 }
 
 export function scenarioSteps(remotePairing) {
+  const openConnectionsList = [
+    { action: "navigate", path: "/settings/connections" },
+    { action: "click", locator: '[aria-label="Show environments as"] >> button:text-is("List")' },
+  ];
   const disabledPreference = {
     action: "assert-evaluate",
     label: "Update access must preserve the saved disabled host",
@@ -1054,7 +1060,7 @@ export function scenarioSteps(remotePairing) {
     expected: { present: true, checked: "false", disabled: true },
   };
   return [
-    { action: "navigate", path: "/settings/connections" },
+    ...openConnectionsList,
     { action: "wait", text: "Add environment" },
     { action: "capture", name: "connections-before", contains: ["Add environment"] },
     indexedDbStep("upgrade-control", "Native IndexedDB detects the legacy upgrade hazard", {
@@ -1087,7 +1093,7 @@ export function scenarioSteps(remotePairing) {
       "Release the initial legacy handle before loading the saved Off fixture",
       { legacyProofReleased: true },
     ),
-    { action: "navigate", path: "/settings/connections" },
+    ...openConnectionsList,
     { action: "wait", text: "Synthetic incompatible Jones host" },
     { action: "wait", text: "Source matches this app." },
     disabledPreference,
@@ -1125,7 +1131,7 @@ export function scenarioSteps(remotePairing) {
     indexedDbStep("close", "Release the legacy catalog handle before hard reload", {
       legacyProofReleased: true,
     }),
-    { action: "navigate", path: "/settings/connections" },
+    ...openConnectionsList,
     { action: "wait", text: "Source relationship has not been verified." },
     {
       action: "capture",
@@ -1316,6 +1322,8 @@ export function rendererSteps(origin, sourceSha, runId) {
   // The same production controls with the negotiated native plan bridge enabled.
   const panel = "[data-install-status]";
   const panelButton = (name) => click(`${panel} >> role=button[name="${name}"]`);
+  const deviceEditButton = (name) =>
+    click(`${panel} [data-install-gate] >> role=button[name="${name}"]`);
   const planCheck = (label, expression) => check(label, expression);
   begin("build-review", "build-review", true);
   wait("available");
@@ -1369,9 +1377,10 @@ export function rendererSteps(origin, sourceSha, runId) {
   );
   sidebar();
   steps.push({ action: "wait", text: "After Laptop is verified" });
-  panelButton("Edit");
+  deviceEditButton("Edit");
   click(`${panel} >> role=checkbox[name="Include VPS"]`);
-  panelButton("Done");
+  deviceEditButton("Done");
+  capture("plan-selection", ["Install status", "VPS", "Download on Laptop"]);
   panelButton("Download on Laptop");
   wait("downloading");
   planCheck(
@@ -1902,7 +1911,8 @@ export async function waitProviderReady(rpc, instanceId) {
   }
 }
 
-export async function waitInactive(rpc, threadId) {
+export async function waitInactive(rpc, threadId, { signal, failedRunId } = {}) {
+  signal?.throwIfAborted();
   let resolveInactive, rejectInactive;
   const inactive = new Promise((resolve, reject) => {
     resolveInactive = resolve;
@@ -1921,7 +1931,12 @@ export async function waitInactive(rpc, threadId) {
       rejectInactive(new Error("Native thread shell is missing a valid activeRunId"));
       return;
     }
-    if (thread.activeRunId === null) resolveInactive({ thread });
+    if (
+      thread.activeRunId === null &&
+      (failedRunId === undefined ||
+        (thread.latestRunId === failedRunId && thread.status === "failed"))
+    )
+      resolveInactive({ thread });
   };
   const subscription = rpc.call("orchestration.subscribeShell", {}, (item) => {
     if (finished) return;
@@ -1941,6 +1956,9 @@ export async function waitInactive(rpc, threadId) {
       return { error };
     },
   );
+  const abort = () => rejectInactive(signal.reason);
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
   let failure;
   try {
     return await inactive;
@@ -1949,6 +1967,7 @@ export async function waitInactive(rpc, threadId) {
     throw error;
   } finally {
     finished = true;
+    signal?.removeEventListener("abort", abort);
     try {
       subscription.interrupt();
       // Do not leave a pending RPC/timer behind or accept a failed native finalizer.
@@ -1963,6 +1982,96 @@ export async function waitInactive(rpc, threadId) {
         );
       throw cleanupError;
     }
+  }
+}
+
+const verifierFailureStages = new Map([
+  ["Provider start admission refused", "admission"],
+  ["Provider work is held", "control-held"],
+  ["Provider restart is held", "restart-held"],
+  ["Continuity check unavailable", "continuity-unavailable"],
+  ["Goal continuity requires attention", "continuity-held"],
+  ["Provider start could not verify its run state", "run-state-unavailable"],
+  ["Provider selection changed before opening", "selection-changed"],
+  ["Message is too long", "message-size"],
+  ["Workspace preparation failed", "workspace-preparation"],
+  ["Checkout unavailable", "checkout-unavailable"],
+  ["Couldn't recreate thread workspace", "workspace-recovery"],
+  ["Couldn't set up restored workspace", "restored-workspace-setup"],
+  ["Previous provider writer could not retire", "writer-retirement"],
+  ["Previous provider is still releasing this conversation", "writer-retirement-held"],
+  ["Thread mode is above the policy limit", "runtime-policy"],
+  ["Queued provider could not start", "queued-start"],
+  ["Provider session failed to open", "session-open"],
+  ["Provider turn failed to start", "turn-start"],
+  ["Turn failed to start", "start-retry-exhausted"],
+]);
+
+export async function waitForVerifierReport({ rpc, threadId, runId, channel, signal }) {
+  if (runId === undefined) return channel.wait(["report", "final"], signal);
+  const cancel = new AbortController();
+  const waitSignal = AbortSignal.any([signal, cancel.signal]);
+  const report = channel.wait(["report", "final"], waitSignal);
+  const observation = waitInactive(rpc, threadId, { signal: waitSignal, failedRunId: runId });
+  const failure = observation.then(() => {
+    throw new Error("Native Preview verifier run failed before reporting");
+  });
+  let primary;
+  try {
+    return await Promise.race([report, failure]);
+  } catch (error) {
+    primary = error;
+    throw error;
+  } finally {
+    cancel.abort();
+    await observation.catch((error) => {
+      if (error === waitSignal.reason || error === primary) return;
+      if (primary)
+        throw new AggregateError([primary, error], "Native verifier report and cleanup failed");
+      throw error;
+    });
+  }
+}
+
+export function verifierRunEvidence(projection, runId) {
+  const run = projection?.runs.find((candidate) => candidate.id === runId);
+  return run === undefined
+    ? { outcome: "run-missing" }
+    : {
+        outcome: "observed",
+        runId: run.id,
+        status: run.status,
+        started: run.startedAt !== null,
+        completed: run.completedAt !== null,
+        attemptStates: projection.attempts
+          .filter((attempt) => attempt.runId === run.id)
+          .map((attempt) => attempt.status),
+        nativeTurnStates: projection.providerTurns
+          .filter((turn) => turn.runAttemptId === run.activeAttemptId)
+          .map((turn) => turn.status),
+        failureStages: projection.turnItems
+          .filter((item) => item.runId === run.id && item.type === "error")
+          .map((item) => verifierFailureStages.get(item.title) ?? "other"),
+      };
+}
+
+async function readVerifierRunEvidence(rpc, threadId, runId) {
+  if (runId === undefined) return { outcome: "launch-run-unattributed" };
+  let request;
+  let timer;
+  try {
+    request = rpc.call("orchestration.getThreadProjection", { threadId });
+    return await Promise.race([
+      request.result.then((projection) => verifierRunEvidence(projection, runId)),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ outcome: "readback-timed-out" }), 5_000);
+      }),
+    ]);
+  } catch {
+    return { outcome: "readback-unavailable" };
+  } finally {
+    clearTimeout(timer);
+    request?.interrupt();
   }
 }
 
@@ -2044,6 +2153,7 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
     build: expected,
     outcome: "running",
     scenarios: [],
+    verifierRuns: [],
     boundaries: [
       "Shared web renderer through native T3 Preview",
       "Synthetic remote descriptor/update responses; real authentication",
@@ -2163,9 +2273,11 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
               ...(renderer ? rendererSteps(renderer.origin, expected.sourceSha, id()) : []),
             ],
           };
+          const scenarioPrompt = await writeVerifierScenario(reportFile, scenario);
           // Settings persistence acknowledges before the provider registry finishes hydration.
           await waitProviderReady(primary.rpc, instanceId);
-          await primary.rpc.call("orchestration.launchThread", {
+          const messageId = id();
+          const launch = await primary.rpc.call("orchestration.launchThread", {
             commandId: id(),
             projectId,
             threadId,
@@ -2176,12 +2288,28 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
             interactionMode: "default",
             workspaceStrategy: { type: "root" },
             initialMessage: {
-              messageId: id(),
-              text: `JONES_PREVIEW_SCENARIO:${Buffer.from(JSON.stringify(scenario)).toString("base64")}`,
+              messageId,
+              text: scenarioPrompt,
               attachments: [],
             },
           }).result;
-          const acknowledged = await channel.wait(["report", "final"], deadline(signal));
+          const runId = launch.projection.runs.find((run) => run.userMessageId === messageId)?.id;
+          const accepted = verifierRunEvidence(launch.projection, runId);
+          let acknowledged;
+          try {
+            acknowledged = await waitForVerifierReport({
+              rpc: primary.rpc,
+              threadId,
+              runId,
+              channel,
+              signal: deadline(signal),
+            });
+          } catch (error) {
+            const readback = await readVerifierRunEvidence(primary.rpc, threadId, runId);
+            evidence.verifierRuns.push({ mode, threadId, accepted, readback });
+            throw error;
+          }
+          evidence.verifierRuns.push({ mode, threadId, accepted });
           const preliminary = await readAcknowledgedMilestone(
             files[acknowledged.name],
             acknowledged,

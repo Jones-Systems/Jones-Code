@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "task-folder-teardown",
+  "jonesOwnedPaths": ["apps/server/src/jones/taskFolderTeardown/"],
+  "hookPaths": ["apps/server/src/workspace/TaskFolderStore.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/workspace/TaskFolderStore.ts",
+      "to": "apps/server/src/jones/taskFolderTeardown/ReceiptStore.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/TaskFolders.ts",
+      "to": "apps/server/src/jones/taskFolderTeardown/Teardown.ts"
+    }
+  ]
+}

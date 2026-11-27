@@ -76,3 +76,21 @@ it("distinguishes auto source choices in client launch request identity", () => 
     ),
   );
 });
+
+it("binds new launch choices without changing legacy request digests", () => {
+  const projectId = ProjectId.make("project");
+  const request = { clientRequestId: "launch-key", title: "Inspect source", message: "Inspect it" };
+  const digest = clientLaunchDigest(request, projectId);
+  expect(clientLaunchDigest({ ...request, generateTitle: false }, projectId)).toBe(digest);
+  expect(clientLaunchDigest({ ...request, generateTitle: true }, projectId)).not.toBe(digest);
+  expect(clientLaunchDigest({ ...request, outputSchema: { type: "object" } }, projectId)).not.toBe(
+    digest,
+  );
+  const worktree = { ...request, workspaceStrategy: { type: "worktree" as const } };
+  expect(
+    clientLaunchDigest(
+      { ...worktree, workspaceStrategy: { type: "worktree", repositories: [] } },
+      projectId,
+    ),
+  ).not.toBe(clientLaunchDigest(worktree, projectId));
+});

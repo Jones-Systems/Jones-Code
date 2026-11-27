@@ -2,6 +2,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { ChildProcessSpawner } from "effect/process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { ServerCompute } from "../serverCompute/ServerCompute.ts";
@@ -66,9 +67,14 @@ export const nativeWorkspaceTestLayer = Layer.effect(
         | Runtime["refreshContent"]
       >
     >;
+    // Each finder must finalize with its index lease, independent of the fixture's lifetime.
     const nativeContext = yield* Effect.context<
       FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
-    >();
+    >().pipe(
+      Effect.map(
+        Context.pick(FileSystem.FileSystem, Path.Path, ChildProcessSpawner.ChildProcessSpawner),
+      ),
+    );
     const indexes = new Map<string, Runtime>();
     let id = 0;
     return ServerCompute.of({

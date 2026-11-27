@@ -66,9 +66,10 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
     model: driver === "codex" ? "gpt-5.4" : "claude-sonnet-4-6",
   };
   const observed: Array<{ method: string; cwd: string | null; mcp: boolean; resume: boolean }> = [];
+  const nativeThreadId = "native-c9";
   const nativeThread = (cwd: string) => ({
-    id: "native-c9",
-    sessionId: "native-c9",
+    id: nativeThreadId,
+    sessionId: nativeThreadId,
     cliVersion: "synthetic",
     cwd,
     createdAt: 1,
@@ -112,6 +113,7 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
         };
       }
       if (method === "config/read") return { config: {}, origins: {} };
+      if (method === "thread/name/set" && input.threadId === nativeThreadId) return {};
       if (method === "turn/start") {
         observed.push({ method, cwd: input.cwd ?? null, mcp: true, resume: false });
         return {
@@ -201,6 +203,9 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
                   renameSession: () => Effect.void,
                   backgroundTasks: () => Effect.succeed(false),
                   mcpServerStatus: Effect.succeed([]),
+                  mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
+                  mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
+                  reconnectMcpServer: () => Effect.die("unexpected MCP sign-in"),
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),

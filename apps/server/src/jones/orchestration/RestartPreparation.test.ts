@@ -665,10 +665,11 @@ it.effect.each([undefined, ...SupersededTerminalTrace.reasons])(
       );
       if (reason !== undefined) f.sink.supersededTerminalTrace!.record(f.target, reason);
       const calls: string[] = [];
+      const observing = yield* Deferred.make<void>();
       const fiber = yield* f.preparation
         .run({
           effect: f.effect,
-          interrupt: awaitOld(),
+          interrupt: Deferred.succeed(observing, undefined).pipe(Effect.andThen(awaitOld())),
           detach: Effect.sync(() => {
             calls.push("detach");
           }),
@@ -693,6 +694,7 @@ it.effect.each([undefined, ...SupersededTerminalTrace.reasons])(
           ),
         );
       }
+      yield* Deferred.await(observing);
       yield* TestClock.adjust(RestartPreparation.RESTART_TERMINAL_TIMEOUT_MS);
       const result = yield* Fiber.join(fiber);
       assert.isTrue(Exit.isFailure(result));

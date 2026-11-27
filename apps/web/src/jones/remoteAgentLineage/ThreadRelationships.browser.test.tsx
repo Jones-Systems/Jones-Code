@@ -1,4 +1,5 @@
 import { cloneElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { act, render as renderTest, type Screen } from "../../../test/render";
 import {
   EnvironmentId,
@@ -665,9 +666,11 @@ it("keeps a long remote title ellipsized and full on hover beside unknown enviro
   expect(getComputedStyle(label).textOverflow).toBe("ellipsis");
   expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
   expect(textNodes(" ").replace(/\s+/g, " ")).toContain("on Other host");
-  expect(buttons().find((button) => button.textContent?.includes("Other host"))?.disabled).toBe(
-    true,
-  );
+  const row = byLabel(`${title} on Other host`);
+  expect(row.getAttribute("aria-disabled")).toBe("true");
+  expect(row.getAttribute("aria-description")).toContain("Connect to it to open the thread");
+  await click(row);
+  expect(state.navigate).not.toHaveBeenCalled();
 });
 
 it("hides the client-local location for tasks delegated back from another server", async () => {
@@ -685,11 +688,13 @@ it("hides the client-local location for tasks delegated back from another server
     providerInstanceId: "codex",
     remoteChild: { environmentId: "laptop", threadId: "child", label: "Laptop" },
   } as ComponentProps<typeof RemoteSubagentRow>["agent"];
-  await render(<RemoteSubagentRow agent={agent} provider={undefined} />);
+  const parentRef = scopeThreadRef(EnvironmentId.make("test"), ThreadId.make("parent"));
+  await render(<RemoteSubagentRow agent={agent} parentRef={parentRef} provider={undefined} />);
   expect(byLabel("Local destination").querySelector("[data-provider-shortcut-label]")).toBeNull();
   await render(
     <RemoteSubagentRow
       agent={agent}
+      parentRef={parentRef}
       provider={{
         driver: ProviderDriverKind.make("claudeAgent"),
         instanceId: ProviderInstanceId.make("codex"),

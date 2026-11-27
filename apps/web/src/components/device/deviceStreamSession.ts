@@ -10,6 +10,7 @@ import type { DeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAcc
 import type { DevicePlatform, EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
+import { m } from "~/i18n/messages";
 import { refreshDeviceHubAccess } from "~/state/device";
 
 export interface DeviceStreamState {
@@ -143,6 +144,7 @@ export const deviceStreamSessionAtom = Atom.family((key: DeviceStreamKey) =>
           update({ input: { connected, ...(detail ? { detail } : {}) } });
         },
       },
+      m,
     );
     session = {
       stream: client,

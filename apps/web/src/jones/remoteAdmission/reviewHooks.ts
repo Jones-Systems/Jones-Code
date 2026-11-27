@@ -1,7 +1,7 @@
 import { useEffect, useState, useSyncExternalStore, type FocusEvent } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { ReviewState } from "@t3tools/client-runtime/jones/remoteAdmission/controller";
-import { reviewControllerFor, useReviewController } from "./reviewRuntime";
+import { retainedReviewControllerFor, useReviewController } from "./reviewRuntime";
 
 const noSubscription = () => () => {};
 const noSnapshot = () => null;
@@ -15,7 +15,8 @@ export function useOptionalReviewState(receiver: EnvironmentId) {
 }
 
 export function useReview(receiver: EnvironmentId) {
-  const controller = reviewControllerFor(receiver);
+  // Toasts can still render during their close transition after a protocol downgrade.
+  const controller = retainedReviewControllerFor(receiver);
   if (!controller) throw new Error("Review client is not installed");
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Mount the selected owner controller read alongside its useSyncExternalStore subscription; all rendered snapshots remain controller-owned.

@@ -57,6 +57,7 @@ import * as RuntimePolicy from "../../orchestration-v2/RuntimePolicy.ts";
 import * as ThreadFork from "../../orchestration-v2/ThreadForkService.ts";
 import * as ThreadCommands from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as TurnItemPositions from "../../orchestration-v2/TurnItemPositionStore.ts";
+import * as TaskFolderStore from "../../workspace/TaskFolderStore.ts";
 import { workModeFixture } from "./Fixtures.testkit.ts";
 import {
   workModeCandidate,
@@ -94,14 +95,23 @@ const stores = Layer.mergeAll(
   CommandReceipts.layer,
   EffectOutbox.layer,
   TurnItemPositions.layer,
+  TaskFolderStore.layer.pipe(Layer.provide(NodeServices.layer)),
 ).pipe(Layer.provideMerge(database));
 const sink = EventSink.layerFromStores.pipe(Layer.provide(stores));
 const dependencies = Layer.mergeAll(
   stores,
   sink,
+  ThreadCommands.layer,
   IdAllocator.layer,
   CommandPolicy.layer,
-  RuntimePolicy.layer,
+  Layer.succeed(RuntimePolicy.RuntimePolicyV2, {
+    resolve: ({ thread }) =>
+      Effect.succeed({
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+        cwd: thread.worktreePath,
+      }),
+  }),
   ServerSettings.layerTest({ workModeEnabled: true }).pipe(Layer.orDie),
   Layer.mock(ContextHandoff.ContextHandoffServiceV2)({}),
   Layer.mock(ProviderSwitch.ProviderSwitchServiceV2)({}),
@@ -143,7 +153,7 @@ const testLayer = WorkMode.layer.pipe(Layer.provideMerge(orchestratorLayer));
 // post-restart one. Production has one orchestrator, and it always has planned continuity,
 // so this test's original orchestrator shares the continuity the restarted one uses.
 const plannedContinuityLayer = PlannedUpdateContinuity.layer.pipe(
-  Layer.provide(ThreadCommands.layer),
+  Layer.provideMerge(ThreadCommands.layer),
   Layer.provide(dependencies),
 );
 const plannedTestLayer = WorkMode.layer.pipe(
@@ -416,6 +426,8 @@ function completeLatestRun<E = never, R = never>(
         capturedAt: input.capturedAt,
       });
       const nativeCheckpoint = Layer.mock(CheckpointService.CheckpointServiceV2)({
+        repositoryScopes: () => Effect.succeed([]),
+        capturesSoFar: () => Effect.succeed(0),
         capture: (input) => Effect.succeed(materialize(input)),
         materializeBaselineCheckpoint: (input) =>
           Effect.succeed(
@@ -1113,7 +1125,7 @@ it.effect.each([
         const continued = (yield* projections.getThreadProjection(threadId)).runs.find(
           (run) => run.restartContinuationOfRunId === source.id,
         )!;
-        assert.equal(continued.status, "completed");
+        assert.equal(continued.status, stop ? "interrupted" : "completed");
         assert.isTrue(
           Option.isSome(
             yield* receipts.getByCommandId(

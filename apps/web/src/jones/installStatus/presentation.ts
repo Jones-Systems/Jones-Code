@@ -8,20 +8,32 @@ import {
 import type { JonesInstallPlanState } from "@t3tools/contracts/jones/installPlan";
 import { targetForDesktop } from "./entrypoints";
 import type { InstallStatusDevice, InstallStatusSnapshot } from "./panelUi";
+import { selectedHistoryPlan } from "./panelUi";
 import { lastHeardLabel, updateCheckFailedLabel } from "./copy";
 
 export function panelPresentation(snapshot: InstallStatusSnapshot, now: number) {
   const native = snapshot.native;
   if (native === null) return null;
-  let state: JonesInstallPlanState = snapshot.showLast ? { ...native, current: null } : native;
+  const archived =
+    snapshot.showLast ||
+    (native.current === null &&
+      targetForDesktop(snapshot.desktop) === undefined &&
+      native.last !== null);
+  const deskReadOnly = native.readOnly !== undefined || snapshot.nativeRefusal !== null;
+  let state: JonesInstallPlanState = archived
+    ? { ...native, current: null, last: selectedHistoryPlan(snapshot) }
+    : native;
+  if (snapshot.nativeRefusal !== null && state.readOnly === undefined) {
+    state = { ...state, readOnly: { code: "invalid", message: snapshot.nativeRefusal } };
+  }
   let preview = false;
-  if (state.current === null && !snapshot.showLast) {
+  if (state.current === null && !archived) {
     const target = targetForDesktop(snapshot.desktop);
     const environmentId = native.laptop.environmentId;
     if (target === undefined || environmentId === undefined) return null;
     preview = true;
     state = {
-      ...native,
+      ...state,
       current: startPlan({
         planId: snapshot.previewId,
         origin: "update-button",
@@ -50,6 +62,8 @@ export function panelPresentation(snapshot: InstallStatusSnapshot, now: number) 
         ? "Laptop only"
         : presentation.summary,
     preview,
+    archived,
+    deskReadOnly,
     headerDoneVisible: !preview && presentation.headerDoneVisible,
   };
 }

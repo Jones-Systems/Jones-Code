@@ -146,19 +146,19 @@ const hasSqlCause = (error: unknown): boolean => {
 };
 
 /** Run inside the same EventSink writer batch as the restoration. */
-const ownsPendingHistoryDelivery = Effect.fn("HistoryDeliveryOutcome.ownsPendingDelivery")(
-  function* (marker: OrchestrationV2StoredEvent) {
-    const { event, sequence } = marker;
-    if (event.type !== "context-handoff.updated" || event.payload.delivery?.status !== "pending")
-      return false;
-    // EventSink supplies the writer client and transaction to the batch.
-    const database = yield* Effect.serviceOption(SqlClient.SqlClient);
-    if (Option.isNone(database)) return false;
-    const sql = database.value;
-    if (Option.isNone(yield* Effect.serviceOption(sql.transactionService))) return false;
-    if (sequence <= (yield* readEventLogPrunedThrough(sql))) return false;
-    // The event sequence distinguishes otherwise identical writes at the same time.
-    const rows = yield* sql<{ readonly sequence: number }>`
+const ownsHistoryDeliveryMarker = Effect.fn("HistoryDeliveryOutcome.ownsDeliveryMarker")(function* (
+  marker: OrchestrationV2StoredEvent,
+) {
+  const { event, sequence } = marker;
+  if (event.type !== "context-handoff.updated") return false;
+  // EventSink supplies the writer client and transaction to the batch.
+  const database = yield* Effect.serviceOption(SqlClient.SqlClient);
+  if (Option.isNone(database)) return false;
+  const sql = database.value;
+  if (Option.isNone(yield* Effect.serviceOption(sql.transactionService))) return false;
+  if (sequence <= (yield* readEventLogPrunedThrough(sql))) return false;
+  // The event sequence distinguishes otherwise identical writes at the same time.
+  const rows = yield* sql<{ readonly sequence: number }>`
       SELECT marker.sequence
       FROM orchestration_events AS marker
       JOIN orchestration_v2_projection_context_handoffs AS handoff
@@ -175,9 +175,8 @@ const ownsPendingHistoryDelivery = Effect.fn("HistoryDeliveryOutcome.ownsPending
             AND json_extract(newer.payload_json, '$.id') = ${event.payload.id}
         )
     `;
-    return rows.length === 1;
-  },
-);
+  return rows.length === 1;
+});
 
 // The provider turn records native input acceptance independently of the app run's outcome.
 const ownsLateInlineTurn = Effect.fn("HistoryDeliveryOutcome.ownsLateInlineTurn")(function* (
@@ -235,10 +234,11 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
     OrchestrationV2ContextHandoff["id"],
     OrchestrationV2StoredEvent | undefined
   >();
+  const inline = new Map<OrchestrationV2ContextHandoff["id"], OrchestrationV2StoredEvent>();
   const restore = Effect.fn("HistoryDeliveryOutcome.restoreUnsent")(function* (
     handoff: OrchestrationV2ContextHandoff,
+    marker: OrchestrationV2StoredEvent | undefined,
   ) {
-    const marker = pending.get(handoff.id);
     if (marker === undefined) return;
     const database = yield* Effect.serviceOption(SqlClient.SqlClient);
     const inTransaction =
@@ -246,7 +246,7 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
       Option.isSome(yield* Effect.serviceOption(database.value.transactionService));
     const attempt = withProviderBatch(
       Effect.gen(function* () {
-        if (yield* ownsPendingHistoryDelivery(marker)) yield* write(handoff);
+        if (yield* ownsHistoryDeliveryMarker(marker)) yield* write(handoff);
       }).pipe(
         Effect.mapError((cause) =>
           hasSqlCause(cause) ? new InlineRestorationSqlFailure({ cause }) : cause,
@@ -273,8 +273,13 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
         ? withProviderBatch(
             Effect.gen(function* () {
               const marker = pending.get(handoff.id);
-              if (marker !== undefined && (yield* ownsPendingHistoryDelivery(marker)))
-                yield* write(handoff);
+              if (marker === undefined || !(yield* ownsHistoryDeliveryMarker(marker))) return;
+              const [accepted] = yield* write(handoff);
+              return accepted;
+            }),
+          ).pipe(
+            Effect.map((accepted) => {
+              if (accepted !== undefined) inline.set(handoff.id, accepted);
             }),
           )
         : write(handoff).pipe(
@@ -282,7 +287,10 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
               if (handoff.delivery?.status === "pending") pending.set(handoff.id, stored);
             }),
           ),
-    restore,
+    restore: (handoff: OrchestrationV2ContextHandoff) => restore(handoff, pending.get(handoff.id)),
+    // An attributable dropped terminal may restore the exact inline write or its pending marker.
+    restoreDropped: (handoff: OrchestrationV2ContextHandoff) =>
+      restore(handoff, inline.get(handoff.id) ?? pending.get(handoff.id)),
     trackInlineStart(
       sink: EventSinkV2Shape["write"],
       idAllocator: IdAllocatorV2["Service"],
@@ -305,7 +313,8 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
             event.payload.status !== "ready" ||
             event.payload.toProviderThreadId !== binding.providerThreadId ||
             event.payload.delivery?.nativeThreadId !== binding.nativeThreadId ||
-            !(yield* ownsPendingHistoryDelivery(marker))
+            event.payload.delivery.status !== "pending" ||
+            !(yield* ownsHistoryDeliveryMarker(marker))
           )
             return false;
         }

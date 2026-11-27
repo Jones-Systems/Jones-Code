@@ -110,10 +110,11 @@ export const expoThreadOutboxStorage: ThreadOutboxStorage = {
   write: async (message) => {
     const fileName = messageFileName(message.messageId);
     try {
+      const contents = JSON.stringify(encodeQueuedThreadMessage(message));
       await trackInFlightWrite(
         (async () => {
           const file = await getMessageFile(message.messageId);
-          await writeFileAtomically(file, JSON.stringify(encodeQueuedThreadMessage(message)));
+          await writeFileAtomically(file, contents);
         })(),
       );
     } catch (cause) {

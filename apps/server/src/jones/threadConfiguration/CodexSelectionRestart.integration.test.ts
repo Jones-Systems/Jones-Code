@@ -50,15 +50,17 @@ it.live(
         );
         const firstText = firstStart.frame.params.input[0].text;
         const nativeThread = firstStart.frame.params.threadId;
+        const title = raw.entries.find(
+          (entry: { type: string; label?: string }) =>
+            entry.type === "expect_outbound" && entry.label === "thread/name/set",
+        ).frame.params.name;
         const startResult = raw.entries.find(
-          (entry: { type: string; frame?: { id?: number } }) =>
-            entry.type === "emit_inbound" && entry.frame?.id === 2,
+          (entry: { type: string; label?: string }) =>
+            entry.type === "emit_inbound" && entry.label === "thread/start",
         ).frame.result;
-        const secondIndex = queued.entries.findIndex(
-          (entry: { type: string; frame?: { id?: number; method?: string } }) =>
-            entry.type === "expect_outbound" &&
-            entry.frame?.method === "turn/start" &&
-            entry.frame.id === 6,
+        const secondIndex = queued.entries.findLastIndex(
+          (entry: { type: string; label?: string }) =>
+            entry.type === "expect_outbound" && entry.label === "turn/start",
         );
         const secondEntries = JSON.parse(
           JSON.stringify(queued.entries.slice(secondIndex)).replaceAll(
@@ -66,8 +68,12 @@ it.live(
             nativeThread,
           ),
         );
-        secondEntries[0].frame.id = 8;
-        secondEntries[1].frame.id = 8;
+        const recordedStartId = secondEntries[0].frame.id;
+        for (const entry of secondEntries) {
+          if (entry.label === "turn/start" && entry.frame?.id === recordedStartId) {
+            entry.frame.id = 11;
+          }
+        }
         const secondText = secondEntries[0].frame.params.input[0].text;
         for (const [entry, model] of [
           [firstStart, initial.model],
@@ -85,9 +91,14 @@ it.live(
         raw.entries.push(
           {
             type: "expect_outbound",
+            frame: { id: 8, method: "config/read", params: { cwd, includeLayers: false } },
+          },
+          { type: "emit_inbound", frame: { id: 8, result: { config: {}, origins: {} } } },
+          {
+            type: "expect_outbound",
             label: "replacement/resume",
             frame: {
-              id: 6,
+              id: 9,
               method: "thread/resume",
               params: {
                 threadId: nativeThread,
@@ -105,17 +116,17 @@ it.live(
           {
             type: "emit_inbound",
             label: "replacement/resume",
-            frame: { id: 6, result: startResult },
+            frame: { id: 9, result: startResult },
           },
           {
             type: "expect_outbound",
             label: "replacement/config",
-            frame: { id: 7, method: "config/read", params: { cwd, includeLayers: false } },
+            frame: { id: 10, method: "config/read", params: { cwd, includeLayers: false } },
           },
           {
             type: "emit_inbound",
             label: "replacement/config",
-            frame: { id: 7, result: { config: {}, origins: {} } },
+            frame: { id: 10, result: { config: {}, origins: {} } },
           },
           ...secondEntries,
         );
@@ -255,7 +266,7 @@ it.live(
             commandId: CommandId.make("restart:create"),
             threadId,
             projectId: ProjectId.make("test"),
-            title: "Codex restart",
+            title,
             modelSelection: initial,
             runtimeMode: "full-access",
             interactionMode: "default",

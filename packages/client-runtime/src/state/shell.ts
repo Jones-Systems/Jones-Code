@@ -1,3 +1,5 @@
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 import {
   ORCHESTRATION_V2_WS_METHODS,
   type EnvironmentId,
@@ -11,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -24,6 +27,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { AsyncResult, Atom } from "effect/reactivity";
 
+import { observeServerTime } from "../clock.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import { connectionProjectionPhase, type PreparedConnection } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
@@ -97,7 +101,12 @@ function withoutDeferredPullRequests(value: DeferredShellSnapshot): Orchestratio
   return snapshot;
 }
 
-const SHELL_SYNCHRONIZATION_ERROR_MESSAGE = "Could not synchronize environment data.";
+const SHELL_SYNCHRONIZATION_ERROR_MESSAGE = msg("Could not synchronize environment data.");
+
+/** @public The shell's sync error in the active language; other messages stay as they are. */
+export function shellErrorText(error: string, resolve: MFunctionType = mFallback): string {
+  return error === SHELL_SYNCHRONIZATION_ERROR_MESSAGE ? resolve(error) : error;
+}
 
 /**
  * Replay does not refresh the older-settled cut, rows that left the newest window, or
@@ -336,6 +345,12 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     yield* SubscriptionRef.modify(state, (initial) => {
       if (!canCommit()) return [undefined, initial] as const;
       let waiting = Ref.getUnsafe(awaitingCompletion);
+      const observeLiveThreadTime = (thread: OrchestrationV2ThreadShell) => {
+        // Replayed rows can predate a backward host clock correction.
+        if (!waiting && !fromHttp) {
+          observeServerTime(environmentId, DateTime.toEpochMillis(thread.updatedAt), now);
+        }
+      };
       let snapshotRequired = false;
       let changed: OrchestrationV2ShellSnapshot | undefined;
       let nextOrigin = Ref.getUnsafe(origin);
@@ -377,6 +392,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
                 delta.kind === "project.updated" ||
                 delta.kind === "project.removed")
             ) {
+              if (delta.kind === "thread.updated") observeLiveThreadTime(delta.thread);
               if (
                 delta.kind === "thread.removed" ||
                 (delta.kind === "thread.updated" && delta.location === "archive")
@@ -431,6 +447,14 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
               });
         if (nextSnapshot === null) continue;
         receivedAuthoritativeSnapshot ||= authoritative;
+        const replayBehindRefresh =
+          item.kind !== "snapshot" && isThreadReplayBehindRefresh(item, refreshedAt);
+        const advancesCursor =
+          item.kind !== "snapshot" &&
+          Option.exists(next.snapshot, (snapshot) => item.sequence > snapshot.snapshotSequence);
+        if (item.kind === "thread.updated" && advancesCursor && !replayBehindRefresh) {
+          observeLiveThreadTime(item.thread);
+        }
         const omission =
           item.kind !== "snapshot" && Option.isSome(next.snapshot)
             ? threadOmissionRemoval(next.snapshot.value, item, next.removedAt, refreshedAt)
@@ -439,8 +463,8 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           omission ??
           ((item.kind === "thread.removed" ||
             (item.kind === "thread.updated" && item.location === "archive")) &&
-          !isThreadReplayBehindRefresh(item, refreshedAt) &&
-          Option.exists(next.snapshot, (snapshot) => item.sequence > snapshot.snapshotSequence)
+          !replayBehindRefresh &&
+          advancesCursor
             ? {
                 threadId: item.kind === "thread.removed" ? item.threadId : item.thread.id,
                 sequence: item.sequence,

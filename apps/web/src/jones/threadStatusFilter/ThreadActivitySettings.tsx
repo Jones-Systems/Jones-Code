@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { SettingsRow, SettingsSection } from "../../components/settings/settingsLayout";
-import { searchableSetting } from "../../components/settings/settingsSearch";
+import { useSearchableSetting } from "../../components/settings/settingsSearch";
 import { Input } from "../../components/ui/input";
 import { Switch } from "../../components/ui/switch";
 import {
@@ -15,6 +15,7 @@ import { persistClientSettingsPatch, useClientSettings } from "../../hooks/useSe
 const units = ["minutes", "hours", "days", "weeks"] as const;
 
 export function ThreadActivitySettings() {
+  const searchableSetting = useSearchableSetting();
   const enabled = useClientSettings((settings) => settings.threadActivityWindowEnabled);
   const amount = useClientSettings((settings) => settings.threadActivityWindowAmount);
   const unit = useClientSettings((settings) => settings.threadActivityWindowUnit);

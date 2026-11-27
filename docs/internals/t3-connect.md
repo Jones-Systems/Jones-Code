@@ -38,8 +38,8 @@ read-once bodies of up to 1 MiB that need per-link order, caps, and retry
 timing. Queues cap messages at 128 KB and cannot hold one link's requests back
 while its environment is away.
 
-Clerk, deployment, and native authentication setup live in the
-[Connect setup runbook](../operations/connect-setup.md).
+The [upstream Connect setup runbook](../operations/02_connect-setup.md) covers Clerk,
+deployment and native authentication.
 
 ## The relay is a trusted broker
 

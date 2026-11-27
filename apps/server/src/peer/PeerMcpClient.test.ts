@@ -71,6 +71,7 @@ const probeThrough = Effect.fn(function* (http: HttpClient.HttpClient) {
                 url: "https://peer.example",
                 token: "fixture",
                 generation: "fixture-generation",
+                capabilities: box.capabilities,
               }),
             // Every call checks that the link it resolved is still the current one.
             currentGeneration: () => Effect.succeedSome("fixture-generation"),
@@ -293,7 +294,10 @@ it.effect(
               status,
               headers:
                 index === 0
-                  ? { "mcp-session-id": "old" }
+                  ? {
+                      "mcp-session-id": "old",
+                      [McpInvocationContext.LINK_EXPIRES_AT_HEADER]: "1970-01-02T00:00:00.000Z",
+                    }
                   : index === 3
                     ? { "mcp-session-id": "renewed" }
                     : {},
@@ -323,6 +327,7 @@ it.effect(
                     url: "https://peer.example",
                     token: "fixture",
                     generation: "fixture-generation",
+                    capabilities: box.capabilities,
                   }),
                 currentGeneration: () => Effect.succeedSome("fixture-generation"),
                 recordOutcome: (_environmentId, generation, outcome) =>

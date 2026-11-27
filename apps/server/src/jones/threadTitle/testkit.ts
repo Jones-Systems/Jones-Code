@@ -79,6 +79,7 @@ export function makeHarness(
               faviconPath: null,
               projectIcon: null,
               scripts: [],
+              trackedFolders: [],
               createdAt: "2026-06-20T00:00:00.000Z",
               updatedAt: "2026-06-20T00:00:00.000Z",
               deletedAt: null,

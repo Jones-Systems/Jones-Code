@@ -49,6 +49,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import { layerNoTaskFolders } from "../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "../../orchestration-v2/ThreadTitleRegenerationService.ts";
 import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -145,6 +146,7 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   const externalServices = Layer.mergeAll(
     WorktreeSetupTracker.layer,
+    layerNoTaskFolders,
     options.repoFreshness === undefined
       ? Layer.empty
       : Layer.succeed(RepoFreshness.RepoFreshness, options.repoFreshness),
@@ -251,6 +253,7 @@ function makeHarness(options: HarnessOptions = {}) {
               faviconPath: null,
               projectIcon: null,
               scripts: project.scripts,
+              trackedFolders: [],
               createdAt: project.createdAt,
               updatedAt: project.updatedAt,
               deletedAt: project.deletedAt,
@@ -1380,8 +1383,19 @@ it.live(
     Effect.gen(function* () {
       const generation = yield* Deferred.make<void>();
       const allowGeneration = yield* Deferred.make<void>();
+      const createdWorktree = yield* Deferred.make<string>();
       const discoveryDone = yield* Deferred.make<void>();
       const harness = makeHarness({
+        createWorktree: (input) => {
+          if (input.newRefName === undefined || input.newRefName === null)
+            return Effect.die("Expected a reserved launch branch");
+          const refName = input.newRefName;
+          return Deferred.succeed(createdWorktree, refName).pipe(
+            Effect.as({
+              worktree: { path: "/repo-worktrees/feature", refName, headSha: "abc" },
+            }),
+          );
+        },
         generateBranchName: () =>
           Deferred.succeed(generation, undefined).pipe(
             Effect.andThen(Deferred.await(allowGeneration)),
@@ -1438,9 +1452,7 @@ it.live(
         });
         yield* launches.launch(input);
         yield* Deferred.await(generation);
-        const createdBranch = harness.createWorktree.mock.calls[0]![0].newRefName;
-        assert.isDefined(createdBranch);
-        oldBranch = createdBranch;
+        oldBranch = yield* Deferred.await(createdWorktree);
         yield* create(child);
         yield* create(archived);
         yield* threads.dispatch({

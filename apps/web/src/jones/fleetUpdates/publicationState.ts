@@ -1,9 +1,9 @@
-import type {
-  FleetCommittedSource,
-  FleetPublicationReport,
-} from "@t3tools/client-runtime/jones/fleet-updates";
+import type { FleetPublicationReport } from "@t3tools/client-runtime/jones/fleet-updates";
 import { Atom } from "effect/reactivity";
+import type { JonesInstallPlanLaptopEvidence } from "@t3tools/contracts/jones/installPlan";
 
-export const fleetPublication = Atom.make<FleetPublicationReport | null>(null);
-/** Label evidence only; this never supplies a publication grant. */
-export const fleetInstalledSource = Atom.make<FleetCommittedSource | null>(null);
+interface FleetPublicationView extends FleetPublicationReport {
+  readonly laptop: JonesInstallPlanLaptopEvidence | undefined;
+}
+
+export const fleetPublication = Atom.make<FleetPublicationView | null>(null);

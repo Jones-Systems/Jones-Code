@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type { ProjectSearchContentsInput } from "@t3tools/contracts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import type { FinderToken } from "../serverParallelism/computeContract.ts";
 import { isKey, type Bootstrap, type Operation } from "../serverCompute/protocol.ts";
@@ -147,6 +148,7 @@ export function probeCommand(
   input: SearchGitProbeInput,
   cwd: string,
   remainingMs: number,
+  wholeWord = false,
 ): VcsProcess.VcsProcessInput {
   validateInput(input);
   const prefix = [
@@ -186,6 +188,7 @@ export function probeCommand(
               "100",
               ...(input.onlyMatching ? ["-o", "--column"] : []),
               ...(input.ignoreCase ? ["-i"] : []),
+              ...(wholeWord && !input.regexMode && /^\w+$/.test(input.pattern) ? ["-w"] : []),
               input.regexMode ? "-P" : "-F",
               "-e",
               input.pattern,
@@ -563,8 +566,19 @@ export const make = Effect.gen(function* () {
         const actual = yield* fs.realPath(cwd);
         if (actual !== cwd || (actual !== root && !actual.startsWith(`${root}${path.sep}`)))
           return yield* Effect.fail(probeFailure("protocol"));
+        // Use the parent-owned request to select the bounded Git prefilter. The
+        // worker descriptor still carries the exact original query and regex mode.
+        const search =
+          c.lease.operation === "searchContents"
+            ? (c.lease.input as Omit<ProjectSearchContentsInput, "cwd">)
+            : undefined;
         const command = yield* trySync(() =>
-          probeCommand(input, actual, c.lease.deadline - now() - L.cancelReserveMs),
+          probeCommand(
+            input,
+            actual,
+            c.lease.deadline - now() - L.cancelReserveMs,
+            search?.wholeWord === true && search.useRegex === false,
+          ),
         );
         const result = yield* vcs.run({
           ...command,

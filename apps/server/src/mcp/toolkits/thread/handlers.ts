@@ -26,10 +26,14 @@ import {
   readThread,
   unavailable,
 } from "../../threadAccess.ts";
+import { providerOptionDescriptors, refuseAgentModePick } from "../../delegatedTaskModes.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import type * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
+import { rejectionText } from "../../../orchestration-v2/runOutput.ts";
 import { ThreadToolkit } from "./tools.ts";
 
 function queueEntry(
@@ -68,18 +72,10 @@ const readMessageWritableThread = Effect.fn("mcp.readMessageWritableThread")(fun
 const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
   threadId: ThreadId | undefined,
   command: (common: { commandId: CommandId; threadId: ThreadId }) => OrchestrationV2Command,
-  contentMutation = false,
 ) {
-  const { threads, projection, caller } = yield* contentMutation
-    ? readMessageWritableThread(threadId)
-    : readThread(threadId);
-  const requested = command({ commandId: yield* newCommandId(), threadId: projection.thread.id });
+  const { threads, projection } = yield* readThread(threadId);
   const result = yield* threads
-    .dispatch(
-      requested.type === "queued-run.edit" && caller !== undefined
-        ? { ...requested, senderThreadId: caller.id }
-        : requested,
-    )
+    .dispatch(command({ commandId: yield* newCommandId(), threadId: projection.thread.id }))
     .pipe(Effect.mapError(dispatchFailure));
   return { sequence: result.sequence };
 });
@@ -289,6 +285,18 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             message:
               "Use t3_thread_self_configure with the revision and execution precondition from reading t3_thread_configure to safely change your own thread.",
           });
+        const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
+        yield* refuseAgentModePick({
+          callerRuntimeMode: (yield* readCaller()).limits.runtimeMode,
+          picked: modelSelection.options,
+          descriptors: providerOptionDescriptors(
+            providers.find((provider) => provider.instanceId === modelSelection.instanceId),
+          ),
+          held:
+            thread.modelSelection.instanceId === modelSelection.instanceId
+              ? thread.modelSelection.options
+              : undefined,
+        });
         const type = modelSelectionCommandType(thread.providerInstanceId, modelSelection);
         const result = yield* threads
           .dispatch({ type, threadId: thread.id, commandId: yield* newCommandId(), modelSelection })
@@ -339,6 +347,29 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       }),
     ),
   ),
+  t3_submit_output: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const { scope, threads } = yield* readCaller();
+      if (scope.thread === undefined) return yield* unavailable();
+      return yield* threads
+        .submitRunOutput({
+          threadId: scope.thread.threadId,
+          commandId: yield* newCommandId(),
+          json: input.json,
+        })
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "ThreadManagementRunOutputRejectedError"
+              ? new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  // The agent wrote the value, so it is told what in it did not fit.
+                  message: rejectionText(error),
+                })
+              : unavailable(),
+          ),
+        );
+    }),
+  ),
   t3_queue: McpToolAccess.either(
     (input) => input.action === "list" || input.action === "read",
     McpToolAccess.reads((input) =>
@@ -381,16 +412,28 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         switch (input.action) {
           case "edit": {
             const text = yield* required(input.text, "text");
-            return yield* dispatch(
+            const { threads, projection, caller } = yield* readMessageWritableThread(
               input.threadId,
-              (common) => ({
-                ...common,
-                type: "queued-run.edit",
-                runId,
-                text,
-              }),
-              true,
             );
+            const command = yield* ThreadMessageIntake.withQueuedAttachmentsOnSignOutText({
+              type: "queued-run.edit",
+              commandId: yield* newCommandId(),
+              threadId: projection.thread.id,
+              runId,
+              text,
+              ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+            }).pipe(
+              Effect.mapError((error) =>
+                error._tag === "EnvironmentAuthorizationError"
+                  ? new OrchestratorMcpFailure({
+                      code: "invalid_request",
+                      message: "A queued message cannot be edited into a provider sign-out.",
+                    })
+                  : dispatchFailure(error),
+              ),
+            );
+            const result = yield* threads.dispatch(command).pipe(Effect.mapError(dispatchFailure));
+            return { sequence: result.sequence };
           }
           case "reorder": {
             const beforeRunId = yield* required(input.beforeRunId, "beforeRunId");

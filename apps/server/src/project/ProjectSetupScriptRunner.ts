@@ -2,6 +2,7 @@ import * as ConversationPolicy from "../jones/conversationWorkspace/Conversation
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
 import type { TerminalError, TerminalSessionSnapshot } from "@t3tools/contracts";
 import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
+import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
 import {
   projectScriptRuntimeEnv,
   projectScriptTerminalInput,
@@ -394,7 +395,14 @@ export const make = Effect.gen(function* () {
           ) {
             return Effect.void;
           }
-          return input.onOutputLine(cleaned.slice(0, OUTPUT_LINE_MAX_LENGTH));
+          return input.onOutputLine(
+            cleaned.slice(
+              0,
+              splitsSurrogatePair(cleaned, OUTPUT_LINE_MAX_LENGTH)
+                ? OUTPUT_LINE_MAX_LENGTH - 1
+                : OUTPUT_LINE_MAX_LENGTH,
+            ),
+          );
         });
 
       const unsubscribe = yield* terminalManager.subscribe((event) => {
@@ -408,7 +416,10 @@ export const make = Effect.gen(function* () {
           lineBuffer = lines.pop() ?? "";
           // Bound newline-free output; the sentinel has its own line, so retaining the tail is safe.
           if (lineBuffer.length > PARTIAL_LINE_MAX_LENGTH) {
-            lineBuffer = lineBuffer.slice(-PARTIAL_LINE_MAX_LENGTH);
+            const start = lineBuffer.length - PARTIAL_LINE_MAX_LENGTH;
+            lineBuffer = lineBuffer.slice(
+              splitsSurrogatePair(lineBuffer, start) ? start + 1 : start,
+            );
           }
           return Effect.forEach(lines, handleLine, { discard: true }).pipe(
             Effect.andThen(
@@ -485,7 +496,7 @@ export const make = Effect.gen(function* () {
           const seen = activity;
           yield* Effect.sleep(SHELL_QUIET_FALLBACK);
           if (activity !== seen) continue;
-          if (!busy) return "ready" as const;
+          if (!busy) return "quiet" as const;
           yield* input.onStartupPrompt;
         }
       });
@@ -681,6 +692,8 @@ export const make = Effect.gen(function* () {
       }),
       // Before client attachment, truecolor probes wait for terminal replies nobody can send.
       COLORTERM: "",
+      // Project scripts keep the default shell; the preference is for interactive terminals only.
+      T3CODE_TERMINAL_SHELL: "",
     };
     const observeRequested =
       input.observeCompletion !== undefined || legacy !== undefined || native !== undefined;
@@ -918,34 +931,44 @@ export const make = Effect.gen(function* () {
       }
     }
     echoedWrapperLines.push(...commandLine.split("\r").filter((line) => line.length > 0));
-    const write = Effect.suspend(() => {
-      const writeInput = {
-        threadId: input.threadId,
-        terminalId,
-        data: projectScriptTerminalInput(commandLine),
-      };
-      const action: Effect.Effect<
-        void,
-        | TerminalError
-        | TerminalManager.LegacyTerminalControlError
-        | NativeSetup.NativeSetupControlError
-      > =
-        native !== undefined
-          ? terminalManager.writeNativeSetup!(
-              writeInput,
-              native.control,
-              native.beforeWrite({ control: native.control, data: writeInput.data }),
-            )
-          : legacy === undefined
-            ? terminalManager.write(writeInput)
-            : terminalManager.write(writeInput, {
-                legacyOwnedControl: legacy.binding,
-                beforeWrite: legacy.beforeWrite,
-                afterWrite: legacy.afterWrite,
-              });
+    const write = (shell: "ready" | "quiet") =>
+      Effect.suspend(() => {
+        // Keep the captured bytes for owned setup. A ready interactive POSIX
+        // shell can receive ordinary multiline setup as a single bracketed paste.
+        const command =
+          !owned &&
+          shell === "ready" &&
+          selectedCompletionShell === "posix" &&
+          commandLine.includes("\r")
+            ? `\x1b[200~${commandLine.replaceAll("\r", "\n")}\x1b[201~`
+            : commandLine;
+        const writeInput = {
+          threadId: input.threadId,
+          terminalId,
+          data: projectScriptTerminalInput(command),
+        };
+        const action: Effect.Effect<
+          void,
+          | TerminalError
+          | TerminalManager.LegacyTerminalControlError
+          | NativeSetup.NativeSetupControlError
+        > =
+          native !== undefined
+            ? terminalManager.writeNativeSetup!(
+                writeInput,
+                native.control,
+                native.beforeWrite({ control: native.control, data: writeInput.data }),
+              )
+            : legacy === undefined
+              ? terminalManager.write(writeInput)
+              : terminalManager.write(writeInput, {
+                  legacyOwnedControl: legacy.binding,
+                  beforeWrite: legacy.beforeWrite,
+                  afterWrite: legacy.afterWrite,
+                });
 
-      return action;
-    });
+        return action;
+      });
 
     const cleanupObservation = (observed?.abandon ?? Effect.void).pipe(
       Effect.andThen(
@@ -975,7 +998,9 @@ export const make = Effect.gen(function* () {
           | TerminalManager.LegacyTerminalControlError
           | NativeSetup.NativeSetupControlError
         > =>
-          shell === "exited" ? Effect.fail(new ProjectSetupScriptTerminalExitedError()) : write,
+          shell === "exited"
+            ? Effect.fail(new ProjectSetupScriptTerminalExitedError())
+            : write(shell),
       ),
       Effect.mapError(
         (cause) =>
@@ -1051,7 +1076,7 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-    const completion =
+    const trackedCompletion =
       observedCompletion === undefined
         ? undefined
         : yield* Effect.cached(
@@ -1062,11 +1087,15 @@ export const make = Effect.gen(function* () {
                 )
               : observedCompletion,
           );
-    if (!owned && completion)
-      yield* completion.pipe(
+    if (!owned && trackedCompletion)
+      yield* trackedCompletion.pipe(
         Effect.catchCause(() => Effect.void),
         Effect.forkIn(lifetime),
       );
+    const completion =
+      !owned && observeRequested
+        ? trackedCompletion?.pipe(Effect.onInterrupt(() => cancelPendingWrite))
+        : trackedCompletion;
 
     return {
       status: "started",

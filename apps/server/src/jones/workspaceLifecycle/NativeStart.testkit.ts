@@ -252,6 +252,7 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
             revoke: () => Effect.succeed(false),
             revokeAllExcept: () => Effect.succeed([]),
             setLastConnectedAt: () => Effect.void,
+            extend: () => Effect.succeed(false),
             // The synthetic bearer session binds no proof key.
             getProofKeyThumbprint: () => Effect.succeedNone,
             revokeByProofKey: () => Effect.succeed([]),

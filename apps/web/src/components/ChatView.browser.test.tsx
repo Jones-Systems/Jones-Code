@@ -2,11 +2,13 @@ import { createMemoryHistory } from "@tanstack/react-router";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   EnvironmentId,
+  IssueTrackerKind,
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
   ThreadId,
   T3_PROJECT_FILE_NAME,
   WS_METHODS,
+  type HostStatusSnapshot,
   type ProjectReadFileInput,
 } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
@@ -24,9 +26,10 @@ import { AppRoot } from "~/AppRoot";
 // The route loads ChatView lazily, and its first transform (React Compiler over ~4k lines)
 // takes 6-11s; importing it here keeps that out of the test's timeout.
 import "~/components/ChatView";
-import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
+import { DraftId, composerTargetKey, useComposerDraftStore } from "~/composerDraftStore";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "~/diffPanelStore";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
+import stylesheet from "~/index.css?inline";
 import { environmentContextRecord } from "~/lib/composerContextRecords";
 import { startWorkspaceFocus } from "~/lib/workspaceFocus";
 import { usePromptStashStore } from "~/promptStashStore";
@@ -34,22 +37,26 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { getRouter } from "~/router";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { environmentThreadDetails } from "~/state/threads";
+import { cancelPreparingComposerImages } from "./chat/preparingComposerImages";
 import {
   ENVIRONMENT_ID,
   PROJECT_ID,
   answerAssetUrls,
   answerRpc,
   assistantItem,
+  deferFakeSends,
   dispatchedCommands,
   emitThreadEvent,
   hasPendingAssetUrl,
   installFakeEnvironment,
+  refreshFakeShell,
   rejectPendingCommand,
   threadWithHistory,
   threadWithQuestion,
   type FakeDriver,
 } from "../../test/fakeEnvironment";
 import { act, fakeTimers, render } from "../../test/render";
+import type { IssueRef, ThreadIssueLink, IssueDetail } from "@t3tools/contracts";
 
 async function chatViewport(width = 1400, height = 900) {
   const previous = { width: window.innerWidth, height: window.innerHeight };
@@ -96,21 +103,24 @@ function acceptAttachmentUploads(): Disposable {
   };
 }
 
-/** Holds every call to `method` until `release`, then ends it with `end`, until disposed. */
-function holdRpc<Input>(method: string, end: Effect.Effect<never, Error>) {
-  let release = () => {};
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const calls: Input[] = [];
-  const answer = answerRpc(method, (input: Input) => {
-    calls.push(input);
-    return Effect.promise(() => held).pipe(Effect.andThen(end));
-  });
-  return { calls, release, [Symbol.dispose]: () => answer[Symbol.dispose]() };
+// One input event, where typing a key at a time takes seconds on a loaded CI runner.
+const insertText = (text: string) => cdp().send("Input.insertText", { text });
+
+function noProjectWorkspaceDefault(): Disposable {
+  return answerRpc(WS_METHODS.projectsReadFile, (input: ProjectReadFileInput) =>
+    input.relativePath === T3_PROJECT_FILE_NAME && input.allowMissing === true
+      ? Effect.succeed({
+          relativePath: input.relativePath,
+          contents: "",
+          byteLength: 0,
+          truncated: false,
+          exists: false,
+        })
+      : Effect.never,
+  );
 }
 
-// The socket is the only fake layer; see test/appScenarios.renders.tsx.
+// The socket is the only fake layer.
 vi.mock("../../../../packages/client-runtime/src/connection/driver.ts", async (importOriginal) => {
   const [actual, { fakeDriver }, Layer] = await Promise.all([
     importOriginal<{ readonly ConnectionDriver: Context.Key<unknown, FakeDriver> }>(),
@@ -120,10 +130,183 @@ vi.mock("../../../../packages/client-runtime/src/connection/driver.ts", async (i
   return { ...actual, layer: Layer.succeed(actual.ConnectionDriver, fakeDriver) };
 });
 
+// Null runs the real compression; a test sets it to hold an image in preparation.
+const compression = vi.hoisted(() => ({ gate: null as Promise<void> | null }));
+vi.mock(import("~/lib/imageCompression"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    prepareImageForAttachment: async (...args) => {
+      await compression.gate;
+      return actual.prepareImageForAttachment(...args);
+    },
+  };
+});
+
 vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
   ...(await original()),
   trackRpcRequestSent: () => {},
 }));
+
+it("opens a linked Linear issue from an inactive thread's sidebar badge", async () => {
+  const style = document.createElement("style");
+  style.textContent = stylesheet;
+  document.head.append(style);
+  using _style = { [Symbol.dispose]: () => style.remove() };
+  const first = threadWithHistory("issue-first", 1);
+  const linked = threadWithHistory("issue-linked", 1);
+  const issueRef = {
+    projectId: PROJECT_ID,
+    tracker: IssueTrackerKind.make("linear"),
+    host: "linear.app",
+    scope: "WEB",
+    key: "WEB-123",
+  } satisfies IssueRef;
+  const issue: ThreadIssueLink = {
+    ...issueRef,
+    url: "https://linear.app/example/issue/WEB-123/add-keyboard-support",
+    source: "manual",
+    linkedAt: "2026-01-01T00:00:00.000Z",
+    displayKey: "#123",
+    title: "Add keyboard support",
+  };
+  const completed = {
+    ...issue,
+    key: "WEB-124",
+    displayKey: "WEB-124",
+    url: "https://linear.app/example/issue/WEB-124/keep-tabs-visible",
+    title: "Keep tabs visible",
+  };
+  const grouped = threadWithHistory("issue-grouped", 1);
+  using _environment = installFakeEnvironment([
+    first,
+    {
+      ...linked,
+      issues: [issue],
+      pullRequests: [
+        {
+          host: "github.com",
+          repository: "pingdotgg/t3code",
+          number: 124,
+          url: "https://github.com/pingdotgg/t3code/pull/124",
+          source: "manual",
+          linkedAt: "2026-01-01T00:00:00.000Z",
+          snapshot: null,
+          stack: null,
+        },
+      ],
+    },
+    { ...grouped, issues: [completed, issue] },
+  ]);
+  const liveTitle = "Add keyboard shortcuts to the sidebar";
+  using _detail = answerRpc(WS_METHODS.issuesDetail, (input: IssueRef) => {
+    const isCompleted = input.key === completed.key;
+    expect(input).toEqual({ ...issueRef, key: isCompleted ? completed.key : issue.key });
+    return Effect.succeed({
+      ...(isCompleted ? completed : issue),
+      title: isCompleted ? completed.title : liveTitle,
+      author: { login: "sam", name: null, avatarUrl: null },
+      state: isCompleted
+        ? { category: "closed", closeReason: "completed", name: "Done" }
+        : { category: "open", name: "Open" },
+      createdAt: issue.linkedAt,
+      updatedAt: issue.linkedAt,
+      closedAt: null,
+      assignees: [],
+      labels: [],
+      commentCount: 3,
+      projectTitle: "render",
+      writable: false,
+      capabilities: {
+        create: false,
+        edit: false,
+        comment: false,
+        labels: false,
+        assignees: false,
+        reactions: false,
+        templates: false,
+        linkedPullRequests: false,
+        events: false,
+        search: false,
+      },
+      viewerPermissions: {
+        setState: false,
+        comment: false,
+        edit: false,
+        labels: false,
+        assignees: false,
+      },
+      states: [],
+      viewer: null,
+      body: "",
+      comments: [],
+      commentsCursor: null,
+      events: [],
+      linkedPullRequests: [],
+    } satisfies IssueDetail);
+  });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  await page.viewport(1400, 900);
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${first.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const badge = page.getByRole("button", {
+    name: `Issue ${issue.displayKey}: ${issue.title}, Open`,
+  });
+  await expect.element(badge).toBeVisible();
+  expect(badge.element().querySelector("span")).toHaveClass(/text-emerald-600/);
+  expect(badge.element()).toHaveTextContent("123");
+  expect(badge.element()).not.toHaveTextContent("#");
+  const prBadge = page.getByRole("link", { name: "PR #124, status pending" });
+  await expect.element(prBadge).toHaveTextContent("124");
+  for (const control of [badge, prBadge]) {
+    expect(control.element().querySelector("span")).toHaveClass(
+      "contents",
+      "text-xs",
+      "tabular-nums",
+    );
+  }
+  const groupedBadge = page.getByRole("button", { name: "2 linked issues" });
+  await vi.waitFor(() =>
+    expect(groupedBadge.element().querySelector("span")).toHaveClass(/text-emerald-600/),
+  );
+  await userEvent.hover(badge);
+  const issueName = `Issue ${issue.displayKey}: ${liveTitle}`;
+  const previewLink = page.getByRole("link", { name: issueName });
+  await userEvent.hover(previewLink.getByText("sam", { exact: true }));
+  await expect.element(previewLink).toBeVisible();
+  const contextMenu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+  await act(() => previewLink.element().dispatchEvent(contextMenu));
+  expect(contextMenu.defaultPrevented).toBe(false);
+  await userEvent.click(badge);
+  const issueRow = page
+    .getByRole("region", { name: "Linked issues" })
+    .getByRole("link", { name: issueName });
+  await expect.element(issueRow.getByRole("img", { name: "Open" })).toBeVisible();
+  await expect.element(issueRow.getByRole("img", { name: "3 comments" })).toBeVisible();
+  await expect.element(issueRow.getByRole("img", { name: "Linear" })).toBeVisible();
+  await expect.element(issueRow.getByText(issue.scope, { exact: true })).toBeVisible();
+  await userEvent.click(issueRow);
+  expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${linked.id}`);
+  await expect.element(page.getByRole("heading", { name: liveTitle })).toBeVisible();
+  await act(() => useRightPanelStore.getState().close(scopeThreadRef(ENVIRONMENT_ID, linked.id)));
+  await expect
+    .element(
+      page.getByRole("region", { name: "Thread details" }).getByRole("link", {
+        name: issueName,
+        exact: true,
+      }),
+    )
+    .toBeVisible();
+});
 
 it("a machine chip stashed in one thread restores with its machine in another", async () => {
   await using _viewport = await chatViewport();
@@ -283,26 +466,16 @@ it("an interrupted image-only first send of a new thread says it may not have be
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
   });
   const draftId = DraftId.make("draft-image-only-interrupted");
+  const threadId = ThreadId.make("thread-image-only-interrupted");
   useComposerDraftStore
     .getState()
     .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
-      threadId: ThreadId.make("thread-image-only-interrupted"),
+      threadId,
       envMode: "local",
       environmentSelection: "manual",
     });
-  using _projectDefaults = answerRpc(WS_METHODS.projectsReadFile, (input: ProjectReadFileInput) =>
-    input.relativePath === T3_PROJECT_FILE_NAME && input.allowMissing === true
-      ? Effect.succeed({
-          relativePath: input.relativePath,
-          contents: "",
-          byteLength: 0,
-          truncated: false,
-          exists: false,
-        })
-      : Effect.never,
-  );
-  // A dropped connection interrupts a new thread's launch, which is not resent.
-  using launch = holdRpc(ORCHESTRATION_V2_WS_METHODS.launchThread, Effect.interrupt);
+  using _projectDefaults = noProjectWorkspaceDefault();
+  using delivery = deferFakeSends();
   const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
   await router.load();
   await using _app = await render(<AppRoot router={router} />, {
@@ -321,17 +494,202 @@ it("an interrupted image-only first send of a new thread says it may not have be
   editor
     .element()
     .dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
-  await expect.element(page.getByRole("img", { name: "shot.png" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Preview shot.png" })).toBeEnabled();
   await userEvent.keyboard("{Enter}");
-  await vi.waitFor(() => expect(launch.calls).toHaveLength(1));
-  await userEvent.keyboard("next draft");
+  await vi.waitFor(() => expect(delivery.requests).toHaveLength(1));
+  const original = delivery.requests[0]!;
+  expect(original.method).toBe(ORCHESTRATION_V2_WS_METHODS.launchThread);
+  expect(original.payload).toMatchObject({
+    threadId,
+    initialMessage: { attachments: [expect.objectContaining({ type: "image", id: "upload-1" })] },
+  });
+  await insertText("next draft");
   await expect.element(editor).toHaveTextContent("next draft");
-  launch.release();
+  await act(() => original.loseAcknowledgement());
 
+  const waiting = page.getByText("Waiting for confirmation", { exact: true });
   await expect.element(page.getByText("Message may not have been sent")).toBeVisible();
+  await expect.element(waiting).toBeVisible();
   await expect.element(editor).toHaveTextContent("next draft");
   // With no text there is nothing to copy.
   expect(page.getByText("Copy message", { exact: true }).query()).toBeNull();
+  expect(delivery.requests).toHaveLength(1);
+  await page.getByRole("button", { name: "Retry sending this message" }).click();
+  await vi.waitFor(() => expect(delivery.requests).toHaveLength(2));
+  const retry = delivery.requests[1]!;
+  expect(retry.method).toBe(original.method);
+  expect(retry.payload).toEqual(original.payload);
+  await act(() => retry.loseAcknowledgement());
+  await expect.element(waiting).toBeVisible();
+  await page.getByRole("button", { name: "Dismiss unsent message" }).click();
+  await expect.element(editor).toHaveTextContent("next draft");
+});
+
+it.each(["new", "existing"] as const)(
+  "Enter while an image compresses shows a cancellable banner, cancels on edit or Esc, and still sends after leaving a %s thread",
+  async (kind) => {
+    await using _viewport = await chatViewport();
+    const thread = threadWithHistory(`upload-wait-${kind}`, 1);
+    const other = threadWithHistory(`upload-wait-other-${kind}`, 1);
+    using _environment = installFakeEnvironment(kind === "existing" ? [thread, other] : [other]);
+    __setClientSettingsForTests({
+      ...DEFAULT_CLIENT_SETTINGS,
+      onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const draftId = DraftId.make(`draft-upload-wait-${kind}`);
+    if (kind === "new") {
+      useComposerDraftStore
+        .getState()
+        .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
+          threadId: thread.id,
+          envMode: "local",
+          environmentSelection: "manual",
+        });
+    }
+    using _projectDefaults = noProjectWorkspaceDefault();
+    using delivery = deferFakeSends();
+    const router = getRouter(
+      createMemoryHistory({
+        initialEntries: [kind === "new" ? `/draft/${draftId}` : `/${ENVIRONMENT_ID}/${thread.id}`],
+      }),
+    );
+    await router.load();
+    await using _app = await render(<AppRoot router={router} />, {
+      // AppRoot brings its own router.
+      router: false,
+    });
+    const compressed = Promise.withResolvers<void>();
+    compression.gate = compressed.promise;
+    const targetKey = composerTargetKey(
+      kind === "new" ? draftId : scopeThreadRef(ENVIRONMENT_ID, thread.id),
+    );
+    using _compression = {
+      [Symbol.dispose]: () => {
+        cancelPreparingComposerImages(targetKey);
+        compression.gate = null;
+        compressed.resolve();
+      },
+    };
+    using _uploads = acceptAttachmentUploads();
+    const editor = page.getByTestId("composer-editor");
+    await expect.element(editor).toBeVisible();
+    await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+    await userEvent.click(editor);
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([PNG], "shot.png", { type: "image/png" }));
+    editor
+      .element()
+      .dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+      );
+    await expect.element(page.getByRole("button", { name: "Preview shot.png" })).toBeDisabled();
+
+    // Enter arms the send and shows the banner plus a disabled spinner button.
+    await insertText("check image");
+    await userEvent.keyboard("{Enter}");
+    const banner = page.getByText("Sending once image is ready", { exact: true });
+    await expect.element(banner).toBeVisible();
+    const waitingButton = page.getByRole("button", { name: "Sending when ready", exact: true });
+    await expect.element(waitingButton).toBeDisabled();
+    await expect.element(waitingButton).toHaveAttribute("aria-busy", "true");
+
+    // Typing disarms the queued send and keeps the edit.
+    await insertText(" now");
+    await expect.element(banner).not.toBeInTheDocument();
+    await expect.element(editor).toHaveTextContent("check image now");
+
+    // Enter arms again; Esc cancels cleanly.
+    await userEvent.keyboard("{Enter}");
+    await expect.element(banner).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect.element(banner).not.toBeInTheDocument();
+
+    // Enter arms again; leaving the thread still sends once the image is ready.
+    await userEvent.keyboard("{Enter}");
+    await expect.element(banner).toBeVisible();
+    expect(delivery.requests).toHaveLength(0);
+    await router.navigate({ to: `/${ENVIRONMENT_ID}/${other.id}` });
+    await expect.element(page.getByText(`Answer 0 for upload-wait-other-${kind}.`)).toBeVisible();
+    await userEvent.click(editor);
+    await insertText("other thread draft");
+
+    compressed.resolve();
+    await vi.waitFor(() => expect(delivery.requests).toHaveLength(1));
+    const sent = delivery.requests[0]!;
+    const message = {
+      text: "check image now",
+      attachments: [expect.objectContaining({ type: "image", id: "upload-1" })],
+    };
+    if (kind === "new") {
+      expect(sent.method).toBe(ORCHESTRATION_V2_WS_METHODS.launchThread);
+      expect(sent.payload).toMatchObject({ threadId: thread.id, initialMessage: message });
+    } else {
+      expect(sent.method).toBe(ORCHESTRATION_V2_WS_METHODS.dispatchCommand);
+      expect(sent.payload).toMatchObject({
+        type: "message.dispatch",
+        threadId: thread.id,
+        ...message,
+      });
+    }
+    await act(async () => {
+      await sent.commit();
+      sent.acknowledge();
+    });
+    await expect.element(page.getByText(`Answer 0 for upload-wait-other-${kind}.`)).toBeVisible();
+    await expect.element(editor).toHaveTextContent("other thread draft");
+    expect(router.state.location.pathname).toBe(`/${ENVIRONMENT_ID}/${other.id}`);
+    expect(delivery.requests).toHaveLength(1);
+  },
+);
+
+it("a file picked after the phone composer collapses still attaches", async () => {
+  await using _viewport = await chatViewport(390, 844);
+  const thread = threadWithHistory("thread-40993", 1);
+  using _environment = installFakeEnvironment([thread]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  using _uploads = acceptAttachmentUploads();
+  const editor = page.getByTestId("composer-editor");
+  await expect.element(page.getByText(`Answer 0 for ${thread.id}.`)).toBeVisible();
+  const expand = page.getByRole("button", { name: "Expand composer" });
+  await expand.click();
+  await expect.element(editor).toHaveFocus();
+  const attach = page.getByRole("button", { name: "Attach files" });
+  await expect.element(attach).toBeVisible();
+  const input = document.querySelector<HTMLInputElement>(
+    'form[data-chat-composer-form] input[type="file"]',
+  )!;
+
+  // Opening the native picker blurs the editor, which collapses the phone composer.
+  using picker = vi.spyOn(input, "click").mockImplementation(() => {
+    (editor.element() as HTMLElement).blur();
+  });
+  await attach.click();
+  expect(picker).toHaveBeenCalledOnce();
+  await expect.element(expand).toBeVisible();
+  await expect.element(attach).not.toBeInTheDocument();
+  expect(input.isConnected).toBe(true);
+  const files = new DataTransfer();
+  files.items.add(new File([PNG], "picked.png", { type: "image/png" }));
+  input.files = files.files;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+
+  const preview = page.getByRole("button", { name: "Preview picked.png", exact: true });
+  await expect.element(preview).toBeVisible();
+  expect(preview.element().closest("[data-chat-composer-resting-images]")).not.toBeNull();
+  await expand.click();
+  await expect.element(page.getByRole("img", { name: "picked.png" })).toBeVisible();
 });
 
 it("opens the thread actions menu for an older settled thread the shell leaves out", async () => {
@@ -653,6 +1011,68 @@ it("a shortcut conditioned on rightPanelOpen sees the thread's open right panel"
   await expect.element(toggle).toHaveAttribute("aria-pressed", "true");
 });
 
+it("compresses host readings before they reach the chat toolbar", async () => {
+  await using _viewport = await chatViewport(1440, 900);
+  const thread = {
+    ...threadWithHistory("host-status-clearance", 1),
+    title: "Review host status while resizing the conversation header",
+  };
+  using _environment = installFakeEnvironment([thread], { keybindings: rightPanelKeybindings });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  const environmentFetch = globalThis.fetch;
+  using _hostStatus = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+    if (url.origin !== window.location.origin || url.pathname !== "/api/host-status") {
+      return environmentFetch(input, init);
+    }
+    return Response.json({
+      hosts: (["vps", "test", "mini", "home"] as const).map((id) => ({
+        id,
+        status: "available",
+        cpuUsagePercent: 38,
+        logicalCpuCount: 8,
+        occupiedMemoryBytes: 18 * 1024 ** 3,
+        availableMemoryBytes: 46 * 1024 ** 3,
+        totalMemoryBytes: 64 * 1024 ** 3,
+        swapIoBytesPerSecond: Math.round(2.4 * 1024 ** 2),
+        sampledAt: new Date().toISOString(),
+      })),
+    } satisfies HostStatusSnapshot);
+  });
+
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, { router: false });
+
+  const readings = page.getByRole("group", { name: "Host status" });
+  const laptop = readings.getByRole("img", { name: /^Laptop: CPU 38%/ });
+  const rightPanel = page.getByRole("button", { name: "Toggle right panel", exact: true });
+  await expect.element(laptop).toHaveTextContent("Laptop · 38% · 2.4 mb/s");
+  const toolbar = rightPanel.element().closest("[data-workspace-titlebar-controls]")!;
+  const readingsRight = () => readings.element().getBoundingClientRect().right;
+  const clearance = () => toolbar.getBoundingClientRect().left - readingsRight();
+  await expect.poll(clearance).toBeGreaterThanOrEqual(7.5);
+
+  const pillRow = () => laptop.element().parentElement!.getBoundingClientRect();
+  const wideRow = pillRow();
+  const toolbarInset = window.innerWidth - toolbar.getBoundingClientRect().left;
+  await page.viewport(Math.floor(wideRow.right + toolbarInset - 24), 900);
+  await expect.poll(() => pillRow().width).toBeLessThan(wideRow.width);
+  await expect.poll(clearance).toBeGreaterThanOrEqual(7.5);
+  expect(pillRow().right).toBeLessThanOrEqual(readingsRight() + 0.5);
+  expect(readings.element().querySelectorAll('[role="img"]')).toHaveLength(4);
+
+  await page.viewport(1440, 900);
+  await expect.poll(() => pillRow().width).toBe(wideRow.width);
+  await expect.element(laptop).toHaveTextContent("Laptop · 38% · 2.4 mb/s");
+});
+
 it("selecting a side-chat tab focuses that side chat's composer", async () => {
   await using _viewport = await chatViewport();
   const parent = threadWithHistory("focus-parent", 1);
@@ -670,8 +1090,8 @@ it("selecting a side-chat tab focuses that side chat's composer", async () => {
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
   });
   const parentRef = scopeThreadRef(ENVIRONMENT_ID, parent.id);
-  useRightPanelStore.getState().openSideChat(parentRef, otherSide.id);
-  useRightPanelStore.getState().openSideChat(parentRef, side.id);
+  useRightPanelStore.getState().openThread(parentRef, otherSide.id);
+  useRightPanelStore.getState().openThread(parentRef, side.id);
   const router = getRouter(
     createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${parent.id}`] }),
   );
@@ -699,4 +1119,198 @@ it("selecting a side-chat tab focuses that side chat's composer", async () => {
   await userEvent.click(screen.getByRole("button", { name: side.title, exact: true }));
   await expect.element(sideEditor).toHaveFocus();
   await expect.element(mainEditor).toHaveTextContent("main draft");
+});
+
+it("a subagent tab shows its read-only bar under no header of its own", async () => {
+  const parent = threadWithHistory("subagent-parent", 1);
+  const subagent = {
+    ...threadWithHistory("subagent-child", 1),
+    providerSubagentOf: parent.id,
+    olderSettled: true as const,
+  };
+  await page.viewport(1400, 900);
+  using _environment = installFakeEnvironment([parent, subagent]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const parentRef = scopeThreadRef(ENVIRONMENT_ID, parent.id);
+  useRightPanelStore.getState().openThread(parentRef, subagent.id);
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${parent.id}`] }),
+  );
+  await router.load();
+  await using screen = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const pane = screen.getByTestId("side-thread-pane");
+  // No header of its own: the tab names it, and only a side chat has actions to put in one.
+  await expect.element(pane.getByRole("heading", { name: subagent.title })).not.toBeInTheDocument();
+  await expect.element(pane.getByText("Runs on its own")).toBeVisible();
+  await expect.element(pane.getByRole("button", { name: "Add to chat" })).not.toBeInTheDocument();
+  await expect
+    .element(screen.getByRole("textbox", { name: `Message ${subagent.title}`, exact: true }))
+    .not.toBeInTheDocument();
+  await expect
+    .element(screen.getByRole("textbox", { name: `Message ${parent.title}`, exact: true }))
+    .toBeVisible();
+});
+
+it("/side sends the draft's attachments and context, and keeps them when it does not start", async () => {
+  await using _viewport = await chatViewport();
+  const thread = threadWithHistory("side-attachments", 1);
+  const fixtures = [thread];
+  let holdFork = false;
+  using _environment = installFakeEnvironment(fixtures, {
+    acceptCommands: true,
+    holdCommand: (command) => holdFork && command.type === "thread.fork",
+  });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  using _uploads = acceptAttachmentUploads();
+  await expect.element(page.getByText(`Answer 0 for ${thread.id}.`)).toBeVisible();
+
+  const editor = page.getByRole("textbox", { name: `Message ${thread.title}`, exact: true });
+  const image = page.getByRole("img", { name: "shot.png" });
+  const reply = page.getByRole("button", { name: "Reply to this response" }).first();
+  const sendImageToSideChat = async () => {
+    await userEvent.click(editor);
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([PNG], "shot.png", { type: "image/png" }));
+    editor
+      .element()
+      .dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+      );
+    await expect.element(page.getByRole("button", { name: "Preview shot.png" })).toBeEnabled();
+    await insertText("/side what is this?");
+    await userEvent.keyboard("{Enter}");
+    await expect.element(image).not.toBeInTheDocument();
+  };
+  // An accepted fork has to reach the client through the shell before it can take a message.
+  const sideChatTabs = page.getByRole("button", { name: "Side chat", exact: true });
+  const sentMessage = async (fields: Record<string, unknown>, openTabs: number) => {
+    const fork = await vi.waitFor(() => {
+      const forks = dispatchedCommands().filter((command) => command.type === "thread.fork");
+      expect(forks).toHaveLength(openTabs);
+      return forks[openTabs - 1]!;
+    });
+    expect(fork).toMatchObject({ sideChat: true, sourceThreadId: thread.id });
+    fixtures.push({
+      ...threadWithHistory(fork.targetThreadId, 0),
+      sideChatOf: fork.sourceThreadId,
+      title: fork.title ?? "Side chat",
+    });
+    await act(() => refreshFakeShell());
+    await vi.waitFor(() =>
+      expect(dispatchedCommands()).toContainEqual(
+        expect.objectContaining({
+          type: "message.dispatch",
+          threadId: fork.targetThreadId,
+          ...fields,
+        }),
+      ),
+    );
+    await expect.element(sideChatTabs).toHaveLength(openTabs);
+  };
+
+  await sendImageToSideChat();
+  await sentMessage(
+    {
+      text: "what is this?",
+      attachments: [expect.objectContaining({ type: "image", id: "upload-1" })],
+      context: {
+        version: 1,
+        records: [expect.objectContaining({ kind: "image", attachmentId: "upload-1" })],
+      },
+    },
+    1,
+  );
+
+  // A reply alone is enough to send.
+  await reply.click();
+  await userEvent.click(editor);
+  await insertText("/side ");
+  await userEvent.keyboard("{Enter}");
+  await sentMessage(
+    {
+      context: expect.objectContaining({
+        records: [expect.objectContaining({ kind: "response" })],
+      }),
+    },
+    2,
+  );
+
+  // A failed start puts the message back after the draft typed meanwhile.
+  holdFork = true;
+  await reply.click();
+  await sendImageToSideChat();
+  await insertText("next draft");
+  await vi.waitFor(() =>
+    expect(dispatchedCommands().filter((command) => command.type === "thread.fork")).toHaveLength(
+      3,
+    ),
+  );
+  await rejectPendingCommand("Side chats are paused.");
+  await expect.element(image).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
+  await expect.element(sideChatTabs).toHaveLength(2);
+  await vi.waitFor(() =>
+    expect((editor.element() as HTMLElement).innerText.split("\n").filter(Boolean)).toEqual([
+      "next draft",
+      "/side what is this?",
+    ]),
+  );
+});
+
+it("opening Settings without a page event closes the composer model picker and permissions menu", async () => {
+  using _environment = installFakeEnvironment([]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const draftId = DraftId.make("draft-29219");
+  useComposerDraftStore
+    .getState()
+    .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
+      threadId: ThreadId.make("thread-29219"),
+    });
+
+  const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  await expect.element(page.getByTestId("composer-editor")).toBeVisible();
+  const trigger = document.querySelector<HTMLElement>("[data-chat-provider-model-picker]");
+  if (!trigger) throw new Error("composer model picker trigger missing");
+  await userEvent.click(trigger);
+  const search = page.getByPlaceholder("Search models...");
+  await expect.element(search).toBeVisible();
+
+  // The desktop menu's open-settings accelerator navigates with no key or pointer event in the page.
+  await act(() => router.navigate({ to: "/settings" }));
+  await expect.element(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await expect.element(search).not.toBeInTheDocument();
+
+  await act(() => router.navigate({ to: "/draft/$draftId", params: { draftId } }));
+  await page.getByRole("button", { name: /^Permissions: / }).click();
+  // The modal Settings dialog aria-hides everything outside it, so match text, not role.
+  const permissions = page.getByText("Allow commands and edits without prompts.").last();
+  await expect.element(permissions).toBeVisible();
+  await act(() => router.navigate({ to: "/settings" }));
+  await expect.element(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await expect.element(permissions).not.toBeInTheDocument();
 });

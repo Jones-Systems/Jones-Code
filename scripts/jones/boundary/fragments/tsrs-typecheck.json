@@ -22,6 +22,8 @@
     "packages/effect-acp/vite.config.ts",
     "packages/effect-codex-app-server/package.json",
     "packages/effect-codex-app-server/vite.config.ts",
+    "packages/issue-tracker-linear/package.json",
+    "packages/issue-tracker-linear/vite.config.ts",
     "packages/provider-acp-registry/package.json",
     "packages/provider-acp-registry/vite.config.ts",
     "packages/provider-acp/package.json",
@@ -68,6 +70,8 @@
     "packages/source-control-github/vite.config.ts",
     "packages/source-control-gitlab/package.json",
     "packages/source-control-gitlab/vite.config.ts",
+    "packages/source-control-tanstack-source/package.json",
+    "packages/source-control-tanstack-source/vite.config.ts",
     "packages/source-control-testing/package.json",
     "packages/source-control-testing/vite.config.ts",
     "packages/ssh/package.json",
@@ -80,6 +84,14 @@
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "packages/issue-tracker-linear/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-tanstack-source/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
     {
       "from": "apps/desktop/vite.config.ts",
       "to": "scripts/jones/tsrs/task-cache.ts"

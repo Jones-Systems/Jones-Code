@@ -1,5 +1,15 @@
 import type { RemoteAdmissionRecord, RemoteAdmissionSnapshot } from "@t3tools/contracts";
 
+export function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 export function admissionFixture(
   overrides: Partial<RemoteAdmissionRecord> = {},
 ): RemoteAdmissionRecord {

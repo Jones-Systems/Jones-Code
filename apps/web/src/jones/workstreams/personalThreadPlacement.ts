@@ -8,6 +8,7 @@ import {
   type PersonalWorkstreamsState,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { sortActiveThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
 
 import { planWorkstreamThreadReorder } from "./personalThreadReorder";
 
@@ -18,13 +19,13 @@ export interface PersonalThreadPlacementInput {
   readonly after: boolean;
   readonly state: PersonalWorkstreamsState;
   readonly activeThreads: readonly EnvironmentThreadShell[];
-  readonly activeKeys: readonly string[];
+  readonly orderRoster: readonly EnvironmentThreadShell[];
   readonly activeKeysById: ReadonlyMap<string, string | null | undefined>;
   readonly reorderableKeys: ReadonlySet<string>;
-  readonly threadByKey: ReadonlyMap<string, EnvironmentThreadShell>;
   readonly allowReorder: boolean;
   readonly controller: Pick<PersonalWorkstreamsController, "assign" | "canAssign">;
   readonly canOperate: (threads: readonly EnvironmentThreadShell[]) => boolean;
+  readonly unpin?: (() => Promise<boolean>) | undefined;
   readonly reorder: (thread: EnvironmentThreadShell, orderKey: string) => Promise<boolean>;
   readonly onAssignmentFailure: (failure: PersonalWorkstreamsFailure) => void;
   readonly onPositionFailure: (assignmentSaved: boolean, cause: unknown) => void;
@@ -45,17 +46,27 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
     return false;
 
   const movedId = shellKey(thread);
-  if (!input.activeKeys.includes(movedId) && thread.pinnedAt == null) return false;
+  const isVisible = (id: string) => input.activeThreads.some((member) => shellKey(member) === id);
+  if (thread.pinnedAt == null && !isVisible(movedId)) return false;
   const currentGroup = visiblePersonalWorkstreamId(input.state, thread);
   const changesGroup = currentGroup !== destinationId;
   if (changesGroup && !controller.canAssign(thread)) return false;
+  const confirmUnpin = thread.pinnedAt == null ? undefined : input.unpin;
 
   let assignments: NonNullable<ReturnType<typeof planWorkstreamThreadReorder>> = [];
+  let membersByKey: ReadonlyMap<string, EnvironmentThreadShell> | undefined;
   if (neighbor !== null) {
-    if (!input.allowReorder || neighbor.pinnedAt != null) return false;
-    // Pinned members appear after active members and use a different order.
-    const activeMembers = input.activeThreads.filter((member) => member.pinnedAt == null);
-    const activeMemberKeys = new Set(activeMembers.map(shellKey));
+    if (
+      !input.allowReorder ||
+      neighbor.pinnedAt != null ||
+      (thread.pinnedAt != null && (!confirmUnpin || !input.reorderableKeys.has(movedId)))
+    )
+      return false;
+    // Order keys outlive status filters. Keep hidden active siblings in the plan.
+    const activeMembers = sortActiveThreadsByOrderKey(
+      input.orderRoster.filter((member) => member.pinnedAt == null),
+    );
+    membersByKey = new Map(activeMembers.map((member) => [shellKey(member), member]));
     const grouping = groupPersonalThreads(input.state, activeMembers);
     const groupIdByKey = new Map(
       grouping.groups.flatMap((group) =>
@@ -65,20 +76,20 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
     const neighborId = shellKey(neighbor);
     if (
       neighborId === movedId ||
-      !activeMemberKeys.has(neighborId) ||
+      !isVisible(neighborId) ||
+      !membersByKey.has(neighborId) ||
       (groupIdByKey.get(neighborId) ?? null) !== destinationId
     )
       return false;
 
     const writable = new Set(
-      [...input.reorderableKeys].filter((key) => {
-        const candidate = input.threadByKey.get(key);
-        return candidate !== undefined && input.canOperate([candidate]);
-      }),
+      [...membersByKey].flatMap(([key, member]) =>
+        input.reorderableKeys.has(key) && input.canOperate([member]) ? [key] : [],
+      ),
     );
-    if (thread.pinnedAt != null) writable.add(movedId);
+    if (confirmUnpin) writable.add(movedId);
     const plan = planWorkstreamThreadReorder({
-      activeOrder: input.activeKeys.filter((key) => activeMemberKeys.has(key)),
+      activeOrder: [...membersByKey.keys()],
       keysById: input.activeKeysById,
       movedId,
       neighborId,
@@ -100,10 +111,11 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
     }
     assignmentSaved = true;
   }
+  // Active reorder rejects a pinned arrival. Wait for the unpin receipt before touching any keys.
+  if (confirmUnpin && !(await confirmUnpin())) return false;
   for (const assignment of assignments) {
     try {
-      const target =
-        input.threadByKey.get(assignment.id) ?? (assignment.id === movedId ? thread : undefined);
+      const target = assignment.id === movedId ? thread : membersByKey?.get(assignment.id);
       if (!target || !input.canOperate([target]))
         throw new Error("The drop position is no longer writable. Refresh before retrying.");
       if (!(await input.reorder(target, assignment.orderKey)))

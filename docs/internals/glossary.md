@@ -63,4 +63,5 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Attachment binding   | The link from an image or file record to its server-owned attachment. Its attachment ID can change without changing `contextId`.    |
 | Attachment inventory | The ordered image records shown as thumbnails above the prose, including images with no inline references.                          |
 
-See [composer context references](./composer-context-references.md) for the contract and lifecycle.
+See the [composer context contract](../../packages/contracts/src/composerContext.ts)
+and [reference syntax](../../packages/shared/src/composerContextReferences.ts).

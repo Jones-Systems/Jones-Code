@@ -19,6 +19,7 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
 import * as WorkspaceSearchIndex from "./WorkspaceSearchIndex.ts";
+import * as TestClock from "effect/testing/TestClock";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -95,6 +96,24 @@ const appendSeparator = (input: string) =>
       : `${input}${platform === "win32" ? "\\" : "/"}`,
   );
 
+const primeIndex = (
+  entries: WorkspaceEntries.WorkspaceEntries["Service"],
+  cwd: string,
+  variant: WorkspaceSearchIndex.WorkspaceSearchIndexVariant,
+) =>
+  variant === "paths"
+    ? Effect.asVoid(entries.list({ cwd }))
+    : Effect.asVoid(
+        entries.searchContents({
+          cwd,
+          query: "file",
+          limit: 1,
+          caseSensitive: false,
+          wholeWord: false,
+          useRegex: false,
+        }),
+      );
+
 it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -111,13 +130,16 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         const refreshed: string[] = [];
         const lookup = vi.fn((key: string): ReturnType<typeof WorkspaceSearchIndex.layer> =>
           Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
+            list: () => Effect.succeed({ entries: [], truncated: false }),
             refresh: () =>
               Effect.sync(() => {
                 refreshed.push(key);
               }),
           }),
         );
-        const indexes = yield* LayerMap.make(lookup);
+        const indexes = yield* LayerMap.make(lookup, {
+          idleTimeToLive: WorkspaceSearchIndex.WORKSPACE_INDEX_IDLE_TTL,
+        });
         const entries = yield* WorkspaceEntries.make.pipe(
           Effect.provideService(WorkspaceSearchIndex.WorkspaceSearchIndexMap, indexes),
         );
@@ -125,7 +147,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         expect(lookup).not.toHaveBeenCalled();
         const pathKey = WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "paths");
         const contentKey = WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "content");
-        yield* indexes.contextEffect(pathKey);
+        yield* primeIndex(entries, cwd, "paths");
 
         yield* entries.refresh(cwdAlias);
 
@@ -146,13 +168,14 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
           const cwd = yield* makeTempDir();
           const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
           const normalizedCwd = yield* workspacePaths.normalizeWorkspaceRoot(cwd);
+          const siblingVariant = failingVariant === "paths" ? "content" : "paths";
           const failedKey = WorkspaceSearchIndex.workspaceSearchIndexKey(
             normalizedCwd,
             failingVariant,
           );
           const siblingKey = WorkspaceSearchIndex.workspaceSearchIndexKey(
             normalizedCwd,
-            failingVariant === "paths" ? "content" : "paths",
+            siblingVariant,
           );
           const error =
             failure === "timeout"
@@ -167,6 +190,8 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
           const refreshed: string[] = [];
           const lookup = vi.fn((key: string): ReturnType<typeof WorkspaceSearchIndex.layer> =>
             Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
+              list: () => Effect.succeed({ entries: [], truncated: false }),
+              searchContents: () => Effect.succeed({ matches: [], truncated: false }),
               refresh: () =>
                 Effect.gen(function* () {
                   refreshed.push(key);
@@ -174,14 +199,15 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
                 }),
             }),
           );
-          const indexes = yield* LayerMap.make(lookup);
-          yield* indexes.contextEffect(failedKey);
-          yield* indexes.contextEffect(siblingKey);
+          const indexes = yield* LayerMap.make(lookup, {
+            idleTimeToLive: WorkspaceSearchIndex.WORKSPACE_INDEX_IDLE_TTL,
+          });
+          let priming = true;
           const entries = yield* WorkspaceEntries.make.pipe(
             Effect.provideService(WorkspaceSearchIndex.WorkspaceSearchIndexMap, {
               ...indexes,
               get: (key) =>
-                failure === "create" && key === failedKey
+                !priming && failure === "create" && key === failedKey
                   ? Layer.effect(
                       WorkspaceSearchIndex.WorkspaceSearchIndex,
                       Effect.fail(
@@ -195,6 +221,9 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
             }),
           );
 
+          yield* primeIndex(entries, cwd, failingVariant);
+          yield* primeIndex(entries, cwd, siblingVariant);
+          priming = false;
           yield* entries.refresh(cwd);
 
           expect(refreshed.toSorted()).toEqual(
@@ -214,10 +243,12 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         const cwd = yield* makeTempDir({ git: true });
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
+        const platform = yield* HostProcess.Platform;
         yield* writeTextFile(cwd, "tracked.txt");
         yield* git(cwd, ["add", "tracked.txt"]);
         yield* writeTextFile(cwd, ".gitignore", "node_modules/\n.env\ntracked.txt\n");
         yield* writeTextFile(cwd, ".env", "secret=value");
+        if (platform !== "win32") yield* writeTextFile(cwd, ":(draft).md");
         yield* writeTextFile(cwd, "node_modules/pkg/index.js");
         yield* writeTextFile(cwd, "src/index.ts");
         yield* fileSystem.makeDirectory(path.join(cwd, "empty"));
@@ -239,6 +270,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
             { path: "src", kind: "directory" },
             { path: "empty", kind: "directory" },
             { path: "tracked.txt", kind: "file" },
+            ...(platform === "win32" ? [] : [{ path: ":(draft).md", kind: "file" }]),
           ]),
         );
         expect(root.entries.some((entry) => entry.path.includes("/"))).toBe(false);
@@ -380,11 +412,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const platform = yield* HostProcess.Platform;
-        yield* writeTextFile(
-          cwd,
-          ".gitignore",
-          "node_modules/\ndist/\n\\[id\\]/\n*.map\nfoo\n!foo/\n",
-        );
+        yield* writeTextFile(cwd, ".gitignore", "node_modules/\ndist/\n\\[id\\]/\n*.map\n:foo/\n");
         yield* Effect.forEach(
           [
             "node_modules",
@@ -423,8 +451,8 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
             ? [
                 // git refuses to classify paths beyond a symlink, so nothing there is labelled.
                 { directoryPath: "node_modules/link", ignored: false, except: [] },
-                // Leading : is pathspec magic; Git sees foo/pkg-0.js, unignored by !foo/.
-                { directoryPath: ":foo", ignored: false, except: [] },
+                // Git reads ./:foo literally, so :foo/ in .gitignore labels the whole folder.
+                { directoryPath: ":foo", ignored: true, except: [] },
               ]
             : []),
         ]) {
@@ -731,7 +759,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         }
       }),
     );
-    it.effect("lets the nearest .ignore rule decide a symlink, and git's rules still hide it", () =>
+    it.effect("lets the nearest .ignore rule decide a symlink, ahead of git's rules", () =>
       Effect.gen(function* () {
         if ((yield* HostProcess.Platform) === "win32") return;
         const cwd = yield* makeTempDir({ prefix: "t3code-workspace-symlinks-", git: true });
@@ -752,12 +780,12 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         for (const entries of [searched.entries, listed.entries]) {
           const paths = entries.map((entry) => entry.path);
           expect(paths).toContain("sub/hide-link.ts");
-          expect(paths).not.toContain("keep-link.ts");
+          expect(paths).toContain("keep-link.ts");
         }
         // The real files are shown or hidden by the same rules.
         const listedPaths = listed.entries.map((entry) => entry.path);
         expect(listedPaths).toContain("sub/hide-real.ts");
-        expect(listedPaths).not.toContain("keep-real.ts");
+        expect(listedPaths).toContain("keep-real.ts");
       }),
     );
     it.effect("matches .ignore rules against whole names and treats folder links as links", () =>
@@ -824,6 +852,43 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
           expect(partial.entries.map((entry) => entry.path)).not.toContain(path);
         }
       }),
+    );
+
+    it.effect("releases an index nobody searched within the idle timeout on refresh", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-idle-refresh-" });
+        yield* writeTextFile(cwd, "src/index.ts");
+        let rescans = 0;
+        let destroyed = 0;
+        const createFinder = FileFinder.create.bind(FileFinder);
+        vi.spyOn(FileFinder, "create").mockImplementation((options) => {
+          const created = createFinder(options);
+          if (created.ok) {
+            const finder = created.value;
+            const scanFilesAsync = finder.scanFilesAsync.bind(finder);
+            finder.scanFilesAsync = () => {
+              rescans += 1;
+              return scanFilesAsync();
+            };
+            const destroy = finder.destroy.bind(finder);
+            finder.destroy = () => {
+              destroyed += 1;
+              destroy();
+            };
+          }
+          return created;
+        });
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        yield* TestClock.adjust("1 hour");
+        yield* searchWorkspaceEntries({ cwd, query: "index", limit: 10 });
+
+        for (let run = 0; run < 3; run++) {
+          yield* TestClock.adjust("6 minutes");
+          yield* workspaceEntries.refresh(cwd);
+        }
+
+        expect({ rescans, destroyed }).toEqual({ rescans: 2, destroyed: 1 });
+      }).pipe(Effect.provide(TestClock.layer())),
     );
   });
 
@@ -1238,6 +1303,34 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
           _tag: "WorkspaceEntriesReadDirectoryError",
           pathMissing: false,
         });
+      }),
+    );
+
+    it.effect("lists symlinks to directories under their link path", () =>
+      Effect.gen(function* () {
+        if ((yield* HostProcess.Platform) === "win32") return;
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-symlink-" });
+        const externalTarget = yield* makeTempDir({
+          prefix: "t3code-workspace-browse-symlink-target-",
+        });
+        yield* writeTextFile(cwd, "real-dir/readme.md", "hi");
+        yield* writeTextFile(cwd, "plain.txt", "hi");
+
+        yield* fileSystem.symlink(externalTarget, path.join(cwd, "personal"));
+        yield* fileSystem.symlink(path.join(cwd, "plain.txt"), path.join(cwd, "file-link"));
+        yield* fileSystem.symlink(path.join(cwd, "does-not-exist"), path.join(cwd, "broken-link"));
+
+        const result = yield* workspaceEntries.browse({
+          partialPath: yield* appendSeparator(cwd),
+        });
+
+        expect(result.entries).toEqual([
+          { name: "personal", fullPath: path.join(cwd, "personal") },
+          { name: "real-dir", fullPath: path.join(cwd, "real-dir") },
+        ]);
       }),
     );
   });

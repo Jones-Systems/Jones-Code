@@ -242,7 +242,13 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     deadline,
     revalidateReplacement,
   );
-  const retiredWriter =
+  // A new conversation can reserve a shared session ID previously used by the
+  // same app thread. That reservation does not identify the retired writer.
+  const unboundDestination =
+    provider.status === "not_loaded" &&
+    provider.nativeThreadRef === null &&
+    provider.runtimeIdentity?.runtimeGeneration === undefined;
+  const retiredSession =
     provider.providerSessionId !== null &&
     (yield* (
       sessions.hasRetiredWriter?.({
@@ -250,6 +256,7 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
         threadId: run.threadId,
       }) ?? Effect.succeed(false)
     ));
+  const retiredWriter = retiredSession && !unboundDestination;
   const generation = provider.runtimeIdentity?.runtimeGeneration;
   const hasNativeIdentity =
     provider.appThreadId === run.threadId &&
@@ -317,7 +324,7 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
   }
   // A new session key prevents a pooled sibling's resident runtime from being reused.
   const replacement =
-    retiredWriter ||
+    retiredSession ||
     stoppedRuntime ||
     previousWorkspaceSession !== undefined ||
     plan.transition.type === "restart_and_resume" ||

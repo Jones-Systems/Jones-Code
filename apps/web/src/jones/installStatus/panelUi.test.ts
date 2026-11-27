@@ -67,4 +67,74 @@ describe("renderer read ordering", () => {
     store.open();
     expect(store.get().collapsed).toBe(false);
   });
+
+  it("orders empty, current, and archive-only updates by the desk document revision", () => {
+    const store = createInstallStatusStore();
+    const closed = { ...plan, dismissedAt: "2026-10-27T04:05:00Z", revision: 4 };
+    const history = {
+      planId: plan.planId,
+      revision: closed.revision,
+      targetVersion: plan.target.version,
+      closedAt: closed.dismissedAt,
+      pendingLaptop: true,
+      pendingDevices: [],
+    };
+    store.update({ native: { ...state(plan), documentRevision: 4 } });
+    store.update({ native: { ...state(null), documentRevision: 3 } });
+    expect(store.get().native?.current?.planId).toBe(plan.planId);
+    store.update({
+      native: { ...state(null, closed), documentRevision: 5, recoveryHistory: [history] },
+    });
+    store.open(true, plan.planId);
+    store.update({ native: { ...state(null, closed), documentRevision: 5 }, historyPlan: closed });
+    const later = { ...closed, revision: 5 };
+    store.update({
+      native: {
+        ...state(null, closed),
+        documentRevision: 6,
+        recoveryHistory: [{ ...history, revision: 5 }],
+      },
+      historyPlan: later,
+    });
+    store.update({
+      native: { ...state(null, closed), documentRevision: 5, recoveryHistory: [history] },
+      historyPlan: closed,
+    });
+    expect(store.get().native?.documentRevision).toBe(6);
+    expect(store.get().historyPlan?.revision).toBe(5);
+    store.open(true, "different-plan");
+    expect(store.get().historyPlan).toBeNull();
+    store.bindDesk("previous-desk");
+    store.bindDesk("replacement-desk");
+    store.update({ native: { ...state(null), documentRevision: 1 } });
+    expect(store.get().native?.documentRevision).toBe(1);
+    expect(store.get().historyPlanId).toBeNull();
+  });
+
+  it("keeps a newer storage refusal until a fresh writable read of the same revision", () => {
+    const store = createInstallStatusStore();
+    const writable = { ...state(plan), documentRevision: 4 };
+    store.update({ native: writable });
+    store.update({
+      native: {
+        ...state(null),
+        laptop: { ...writable.laptop, observedAt: "2026-10-27T04:00:02Z" },
+        readOnly: { code: "invalid", message: "Storage unavailable" },
+      },
+      nativeRefusal: "Storage unavailable",
+    });
+    store.update({ native: writable, nativeRefusal: null });
+    expect(store.get().native?.current?.planId).toBe(plan.planId);
+    expect(store.get().native?.readOnly?.message).toBe("Storage unavailable");
+    expect(store.get().nativeRefusal).toBe("Storage unavailable");
+    store.update({
+      native: {
+        ...writable,
+        laptop: { ...writable.laptop, observedAt: "2026-10-27T04:00:03Z" },
+      },
+      nativeRefusal: null,
+    });
+    expect(store.get().native?.readOnly).toBeUndefined();
+    expect(store.get().nativeRefusal).toBeNull();
+  });
 });

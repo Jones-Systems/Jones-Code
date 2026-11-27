@@ -106,7 +106,7 @@ does not perform repository deletion or authorize runtime changes.
 
 ## Workflow policy
 
-The Jones-Code workflow allowlist is `artifact-cli-linux.yml`, `artifact-cli-mac.yml`, `artifact-desktop-mac.yml`, `ci.yml`, `jones-desktop-signing.yml`, `jones-native-workflows.yml`, `jones-thread-monitor-native.yml`, `jones-update-qualification.yml`, `native-enrollment-candidate.yml`, and `server-parallel-qualification.yml`, using GitHub-hosted Ubuntu and macOS runners. CI runs
+The Jones-Code workflow allowlist is `artifact-cli-linux.yml`, `artifact-cli-mac.yml`, `artifact-desktop-mac.yml`, `ci.yml`, `jones-desktop-signing.yml`, `jones-native-workflows.yml`, `jones-packaged-picker.yml`, `jones-pr-cache-capacity.yml`, `jones-thread-monitor-native.yml`, `jones-update-qualification.yml`, `native-enrollment-candidate.yml`, and `server-parallel-qualification.yml`, using GitHub-hosted Ubuntu and macOS runners. CI runs
 on pull requests, main pushes and manual dispatch. `Check` is the required
 aggregate; selected Linux jobs may skip only
 on explicit successful classification, with full main, unknown-change and
@@ -137,8 +137,11 @@ remain an accepted gap. Re-entry requires a device-level regression that cheaper
 checks miss or a qualified macOS route with no custody hold, starting by reverting
 the retirement. Existing native startup and cleanup holds remain unresolved.
 
-There are no tag, release, privileged PR, workflow-completion or
-repository-dispatch triggers. Additional Jones-Code-owned workflows require
+The Jones packaged picker can qualify a completed canonical main Mac Desktop
+Artifact run. The Jones PR cache capacity workflow uses trusted main policy to
+reclaim space from old PR caches during and after CI. These are the two accepted
+`workflow_run` triggers. Tag, release, privileged PR, and repository-dispatch
+triggers stay disabled. Additional Jones-Code-owned workflows require
 their own reviewed PRs. Other upstream workflows are absent from
 `.github/workflows/` so a sync cannot quietly activate a release, deployment,
 privileged PR event or Blacksmith job. Deferred workflows remain available in
@@ -156,7 +159,9 @@ to deferred until its trigger, runner, permissions and secrets are reviewed.
 | `issue-labels.yml`                  | Push, manual, issue                              | Not applicable         | Upstream issue taxonomy.                                             |
 | `mobile-android-apk.yml`            | Schedule, manual                                 | Deferred               | Play credential use, release artifact writes and Blacksmith runner.  |
 | `mobile-eas-preview.yml`            | PR                                               | Deferred               | EAS preview publishing and credentials.                              |
+| `mobile-eas-preview-build.yml`      | Reusable call                                    | Deferred               | EAS preview build and publishing pipeline.                           |
 | `mobile-eas-production.yml`         | Manual, push                                     | Deferred               | Production mobile release and credentials.                           |
+| `mobile-eas-production-build.yml`   | Reusable call                                    | Deferred               | Production mobile build and publishing pipeline.                     |
 | `mobile-fingerprint-check.yml`      | PR                                               | Deferred               | Native fingerprint coverage needs a hosted-runner conversion.        |
 | `mobile-showcase-screenshots.yml`   | Manual                                           | Not applicable         | Upstream marketing assets.                                           |
 | `pr-size.yml`                       | Privileged PR event                              | Not applicable         | Upstream labeling policy.                                            |
@@ -191,7 +196,7 @@ CI retains the release smoke checks for package versions, lockfile regeneration,
 
 1. Pin the chosen upstream tag or branch ref and full commit, the receiving branch and full commit, and the previously incorporated upstream commit. Use the owner-assigned receiving branch; do not assume `main` when the workstream targets staging. Inspect the complete delta, including nonconflicting changes to contracts, migrations, dependencies, provider runtimes, browser automation, clients, CI and workflows.
 2. Check open Jones-Code PRs for overlapping paths and behavior. Create a dedicated non-main import branch in an isolated linked worktree with one Git owner. Merge the pinned upstream commit with a merge commit. Keep the bottom PR focused on upstream incorporation and conflict resolution, favoring upstream implementations with minimal new divergence. Retain unaffected Jones-owned modules. Preserve repository identity, workflow restrictions, authorization boundaries and separate migration histories; record every necessary exception.
-3. Reapply the workflow policy above. Keep disabled upstream workflows disabled and classify new ones. Compare workflows with the reviewed receiving set and account for every trigger, runner or permissions change. Do not activate release/deployment workflows, unreviewed schedules, privileged events, unsupported runners or upstream secrets as a side effect of a source sync. Also review the non-workflow install surfaces the Jones update feed and host adoption depend on: the artifact workflows' version stamp, artifact names and `ARTIFACT.json` fields; `scripts/stamp-jones-build.ts`; `scripts/update-release-package-versions.ts`; `scripts/build-cli-archive.ts`; `scripts/build-desktop-artifact.ts` (update provider and DMG name); `packages/shared/src/cliRelease.ts`; `packages/shared/src/jones/jonesActions.ts`; and `apps/server/src/jones/hostService/`. A changed name, version pattern or field can make new main builds silently ineligible for updates. `scripts/install.sh`, `scripts/install.ps1` and `docs/operations/release.md` stay upstream-only; keep them pointed at upstream and do not present them as Jones install paths.
+3. Reapply the workflow policy above. Keep disabled upstream workflows disabled and classify new ones. Compare workflows with the reviewed receiving set and account for every trigger, runner or permissions change. Do not activate release/deployment workflows, unreviewed schedules, privileged events, unsupported runners or upstream secrets as a side effect of a source sync. Also review the non-workflow install surfaces the Jones update feed and host adoption depend on: the artifact workflows' version stamp, artifact names and `ARTIFACT.json` fields; `scripts/stamp-jones-build.ts`; `scripts/update-release-package-versions.ts`; `scripts/build-cli-archive.ts`; `scripts/build-desktop-artifact.ts` (update provider and DMG name); `packages/shared/src/cliRelease.ts`; `packages/shared/src/jones/jonesActions.ts`; and `apps/server/src/jones/hostService/`. A changed name, version pattern or field can make new main builds silently ineligible for updates. Keep `scripts/install.sh`, `scripts/install.ps1` and the [upstream release runbook](./03_release.md) scoped to T3 Code.
 4. Maintain the repair ledger as each conflict is resolved or changed dependency, API or pathway is inspected; do not wait until the import is finished. Record the affected Jones behavior, source path/change and reason, expected failure or changed result, proposed follow-on PR scope and dependencies, and the check that will prove restoration. Include changes that merge cleanly but break compatibility. Update each entry with its actual PR and verification as restoration progresses. Temporary Jones functionality or compilation failures in the bottom PR are repair obligations, not reasons to rebuild Jones behavior inside it or weaken checks. Restore behavior in moderate, coherent PRs stacked above the import, using the [extracted contribution structure](./contributor-guidance.md#keep-jones-changes-separate-from-upstream). Each feature records its restoration PR and evidence, or M Jones's explicit acceptance of an upstream replacement or deferral. Similar names or APIs do not establish parity.
 5. Do not merge the import or any prefix while restoration is unfinished. Run focused checks per layer and the deduplicated affected union on the final composed candidate; CI owns full-suite verification. Qualify upstream behavior and Jones parity, including guards, stored history and applicable clients. For an atomically selected contiguous complete group, apply the standing [atomic stack qualification policy](./contributor-guidance.md#atomic-stack-qualification): the qualified current top must contain every repair and cover the complete group. Map each lower failure to its higher repair and passing top-of-stack check in the ledger. Record resolved lower failures instead of separately fixing each layer's CI or asking for another exception for an eligible stack. Broken prefixes cannot land independently; non-atomic queues require qualification of each group actually landed. Ordinary PRs retain current-head check requirements, and normal merge authority, required reviews and thread resolution still apply. Never bypass checks or alter rulesets to make a stack eligible.
 6. Once the complete stack and merge gates are satisfied, use the accepted merge-commit method to preserve upstream ancestry. Read back the receiving ref and integrated tree, and record the pinned upstream and Jones merge commits. Runtime promotion, deployment and live database migration are separate operations.
@@ -233,9 +238,10 @@ owner review on ordinary backend conflict resolution.
 ## Fork-only migrations
 
 Keep upstream and Jones migration histories in separate loaders and tracking
-tables. Do not assign a Jones migration the next upstream ID or a large reserved
-ID in the upstream stream: a highest-ID loader can then skip future upstream
-migrations. For a database carrying a historical fork migration, verify its
+tables. The same number can identify different migrations in the two tracking
+tables. Keep Jones migrations in `jones_sql_migrations` so the upstream loader
+can advance `effect_sql_migrations` independently. For a database carrying a
+historical fork migration, verify its
 migration identity, schema compatibility and any bridge needed before adopting
 the separate Jones migration history. Source integration does not authorize
 migration of a running installation.

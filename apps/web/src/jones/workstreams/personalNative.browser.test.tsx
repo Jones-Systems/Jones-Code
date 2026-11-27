@@ -428,6 +428,7 @@ describe("personal thread composer reference drags", () => {
       workstream.id,
       member,
       false,
+      undefined,
     );
     expect(composerReferences(screen.container)).toEqual([]);
   });

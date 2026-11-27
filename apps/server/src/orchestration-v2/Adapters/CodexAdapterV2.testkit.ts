@@ -433,18 +433,21 @@ export function codexReplayPreamble(input: {
   ];
 }
 
-/**
- * Every logical turn/start follows a config/read; inserts that exchange and shifts later
- * client ids. A capacity retry resends its logical turn's built parameters promptlessly
- * (an empty input on a thread this process already started), so it reads no config.
- */
-export function withConfigReadBeforeTurnStart(
+export const CODEX_TEST_THREAD_TITLE = "Codex continuation test";
+
+export const REPLAY_NATIVE_OPEN_RETRY = "retry native conversation open";
+
+/** Add the setup exchanges for logical thread opens and turn starts, keeping request IDs paired. */
+export function withCodexSetupExchanges(
   entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>,
+  threadName = CODEX_TEST_THREAD_TITLE,
 ): Array<CodexReplay.CodexAppServerReplayEntry> {
   const result: Array<CodexReplay.CodexAppServerReplayEntry> = [];
   let offset = 0;
   let clientIds = new Map<number, number>();
   let startedThreads = new Set<unknown>();
+  let namedThreads = new Set<unknown>();
+  let previousMethod: string | undefined;
   for (const entry of entries) {
     const frame = entry.type === "runtime_exit" ? undefined : entry.frame;
     if (!Predicate.isObject(frame) || typeof frame.id !== "number") {
@@ -456,30 +459,48 @@ export function withConfigReadBeforeTurnStart(
         offset = 0;
         clientIds = new Map();
         startedThreads = new Set();
+        namedThreads = new Set();
       }
       const params = Predicate.isObject(frame.params) ? frame.params : {};
+      if (frame.method === "thread/name/set") namedThreads.add(params.threadId);
+      // Metadata-only resumes and a native retry with the same parameters reuse existing config.
+      const threadOpen =
+        (frame.method === "thread/start" ||
+          frame.method === "thread/resume" ||
+          frame.method === "thread/fork") &&
+        "config" in params &&
+        previousMethod !== "config/read" &&
+        entry.label !== REPLAY_NATIVE_OPEN_RETRY;
+      // Capacity retries reuse the original turn parameters and omit its input.
       const capacityRetry =
         frame.method === "turn/start" &&
         Array.isArray(params.input) &&
         params.input.length === 0 &&
         startedThreads.has(params.threadId);
       if (frame.method === "turn/start") startedThreads.add(params.threadId);
-      if (frame.method === "turn/start" && !capacityRetry) {
+      const turnStart =
+        frame.method === "turn/start" && !capacityRetry && previousMethod !== "config/read";
+      const exchanges: Array<readonly [string, unknown, unknown]> = [];
+      if (turnStart && !namedThreads.has(params.threadId)) {
+        namedThreads.add(params.threadId);
+        exchanges.push(["thread/name/set", { threadId: params.threadId, name: threadName }, {}]);
+      }
+      if (threadOpen || turnStart) {
+        exchanges.push([
+          "config/read",
+          { ...(params.cwd === undefined ? {} : { cwd: params.cwd }), includeLayers: false },
+          { config: {}, origins: {} },
+        ]);
+      }
+      for (const [method, params, response] of exchanges) {
         const id = frame.id + offset;
         result.push(
-          {
-            type: "expect_outbound",
-            label: "config/read",
-            frame: { id, method: "config/read", params: { cwd: params.cwd, includeLayers: false } },
-          },
-          {
-            type: "emit_inbound",
-            label: "config/read",
-            frame: { id, result: { config: {}, origins: {} } },
-          },
+          { type: "expect_outbound", label: method, frame: { id, method, params } },
+          { type: "emit_inbound", label: method, frame: { id, result: response } },
         );
         offset += 1;
       }
+      previousMethod = frame.method;
       clientIds.set(frame.id, frame.id + offset);
       result.push(withReplayRequestId(entry, frame.id + offset));
       continue;
@@ -494,10 +515,11 @@ export function withConfigReadBeforeTurnStart(
   return result;
 }
 
-export function withConfigReads(
+export function withCodexSetup(
   transcript: CodexReplay.CodexAppServerReplayTranscript,
+  threadName?: string,
 ): CodexReplay.CodexAppServerReplayTranscript {
-  return { ...transcript, entries: withConfigReadBeforeTurnStart(transcript.entries) };
+  return { ...transcript, entries: withCodexSetupExchanges(transcript.entries, threadName) };
 }
 
 const decodeMaterializedTranscript = Schema.decodeUnknownSync(

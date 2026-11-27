@@ -50,6 +50,7 @@ import {
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
@@ -141,6 +142,7 @@ export const layerExecutor: Layer.Layer<
   | RuntimeRequestService.RuntimeRequestServiceV2
   | ThreadTitleRegenerationService.ThreadTitleRegenerationService
   | ThreadManagementService.ThreadManagementService
+  | ProjectionMaintenance.ProjectionMaintenanceV2
   | ServerSettings.ServerSettingsService
 > = Layer.effect(
   OrchestrationEffectExecutorV2,
@@ -152,6 +154,7 @@ export const layerExecutor: Layer.Layer<
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const projectionMaintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const restartPreparation = yield* RestartPreparation.RestartPreparation;
     const providerTurnControl = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
@@ -262,6 +265,7 @@ export const layerExecutor: Layer.Layer<
               ...(effect.request.processLossCount === undefined
                 ? {}
                 : { processLossCount: effect.request.processLossCount }),
+              ...(effect.request.cause === undefined ? {} : { cause: effect.request.cause }),
               ...(effect.request.continueWithoutPreference === undefined
                 ? {}
                 : { continueWithoutPreference: effect.request.continueWithoutPreference }),
@@ -677,6 +681,15 @@ export const layerExecutor: Layer.Layer<
                           ? error
                           : new GoalNotificationDeliveryUnknown({ cause: error });
                       }
+                      // Ordinary steers that the completed turn could not receive keep their
+                      // original queue position and selection. The dispatcher checks the source
+                      // run's Stop fence before moving the message to a successor.
+                      const orderedFollowUp =
+                        steerDeclined ||
+                        (turnCompleted &&
+                          message.notification === undefined &&
+                          message.delegatedCompletion === undefined &&
+                          request.steerFollowUpAfterRunOrdinal !== undefined);
                       // Reuse the message identity and a stable command receipt so an outbox
                       // retry cannot append a duplicate message or start a second follow-up.
                       yield* threads
@@ -685,8 +698,8 @@ export const layerExecutor: Layer.Layer<
                           commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
                           threadId: effect.threadId,
                           messageId: message.id,
-                          ...(steerDeclined ? { steerFollowUpOfRunId: run.id } : {}),
-                          ...(steerDeclined && request.steerFollowUpAfterRunOrdinal !== undefined
+                          ...(orderedFollowUp ? { steerFollowUpOfRunId: run.id } : {}),
+                          ...(orderedFollowUp && request.steerFollowUpAfterRunOrdinal !== undefined
                             ? { steerFollowUpAfterRunOrdinal: request.steerFollowUpAfterRunOrdinal }
                             : {}),
                           text: message.text,
@@ -694,7 +707,7 @@ export const layerExecutor: Layer.Layer<
                           attachments: message.attachments,
                           // A delegated-task question is a new turn on the thread's selection;
                           // other notifications stay on the run they were meant to reach.
-                          ...(steerDeclined && request.modelSelection !== undefined
+                          ...(orderedFollowUp && request.modelSelection !== undefined
                             ? { modelSelection: request.modelSelection }
                             : message.delegatedCompletion === undefined &&
                                 (message.notification === undefined ||
@@ -705,7 +718,7 @@ export const layerExecutor: Layer.Layer<
                             type:
                               message.delegatedCompletion === undefined &&
                               message.notification === undefined &&
-                              !steerDeclined
+                              !orderedFollowUp
                                 ? "start_immediately"
                                 : "queue_after_active",
                           },
@@ -879,6 +892,7 @@ export const layerExecutor: Layer.Layer<
                 return checkpointRollback.execute(
                   {
                     threadId: effect.threadId,
+                    requestId: effect.commandId,
                     providerThreadId: request.providerThreadId,
                     checkpointId: request.checkpointId,
                     scopeId: request.scopeId,
@@ -1032,6 +1046,18 @@ export const layerExecutor: Layer.Layer<
               ),
             );
           }
+          case "thread-content.purge":
+            return projectionMaintenance.purgeDeletedThread(effect.threadId).pipe(
+              Effect.asVoid,
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "thread-title.generate":
             return threadTitleRegeneration
               .execute({
@@ -1120,7 +1146,10 @@ const retryWhileLocked = <A, E, R>(settlement: Effect.Effect<A, E, R>) =>
     }),
   );
 
-type ClaimFilter = Omit<Parameters<EffectOutbox.EffectOutboxV2Shape["claimNext"]>[0], "workerId">;
+type ClaimFilter = Omit<
+  Parameters<EffectOutbox.EffectOutboxV2Shape["claimNext"]>[0],
+  "workerId" | "trackStartDispatch"
+>;
 
 export interface OrchestrationEffectWorkerV2Shape {
   readonly awaitWork: Effect.Effect<void>;
@@ -1168,6 +1197,7 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const executor = yield* OrchestrationEffectExecutorV2;
+      const beginStartDispatch = outbox.startDispatch?.begin;
       const managedClaims = Option.isSome(yield* Effect.serviceOption(LifecycleConfiguration));
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
@@ -1282,6 +1312,7 @@ export const layerWithOptions = (
             outbox.claimNext({
               workerId,
               ...filter,
+              ...(beginStartDispatch === undefined ? {} : { trackStartDispatch: true }),
             }),
           );
           yield* increment(orchestrationEffectClaimsTotal, {
@@ -1327,8 +1358,18 @@ export const layerWithOptions = (
                   ),
                   Duration.millis(Math.max(0, claimedAt - eligibleAt)),
                 );
-                // Recheck durable cancellation after registering the Deferred; cancellation may have committed after claim.
-                if (yield* wasCancelled(effect.id)) {
+                // Serialize the first ordinary start's entry with captured Stop. Keep the
+                // cancellation race armed for work that has already crossed that boundary.
+                const firstOrdinaryStart =
+                  effect.request.type === "provider-turn.start" &&
+                  effect.nativeCreationExecutionReference === undefined &&
+                  effect.attemptCount === 1 &&
+                  effect.payloadIdentity !== undefined;
+                const canExecute =
+                  firstOrdinaryStart && beginStartDispatch !== undefined
+                    ? yield* beginStartDispatch(effect)
+                    : !(yield* wasCancelled(effect.id));
+                if (!canExecute) {
                   yield* outbox.clearCancellation(effect.id);
                   return true;
                 }

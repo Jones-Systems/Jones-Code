@@ -323,10 +323,22 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>(
     acceptedContext(nativeThreadId: string) {
       return acceptedContexts.get(nativeThreadId)?.context;
     },
+    // Reserve the order at steer dispatch so a delayed ACK cannot overwrite a newer start.
+    prepareContextUpdate(
+      nativeThreadId: string,
+      update: (context: AdditionalContext | undefined) => AdditionalContext,
+    ) {
+      const ordinal = ++nextOrdinal;
+      return () => {
+        const accepted = acceptedContexts.get(nativeThreadId);
+        if (accepted === undefined || accepted.ordinal < ordinal)
+          acceptedContexts.set(nativeThreadId, { ordinal, context: update(accepted?.context) });
+      };
+    },
     complete(
       binding: NativeBinding,
       nativeTurnId: string,
-      readTerminal?: () => CodexStartTerminal,
+      readTerminal?: () => CodexStartTerminal | undefined,
     ) {
       for (const dispatch of dispatches) {
         if (

@@ -33,6 +33,7 @@ function fixture(
     ["b1", "b"],
   ],
   pinnedId?: string,
+  movedId = "moved",
 ) {
   let rows = ids.map(
     (id, index) =>
@@ -105,21 +106,21 @@ function fixture(
     after = false,
     overrides: Partial<PersonalThreadPlacementInput> = {},
   ): PersonalThreadPlacementInput => ({
-    thread: row("moved"),
+    thread: row(movedId),
     destinationId,
     neighbor: neighborId === null ? null : row(neighborId),
     after,
     state,
     activeThreads: activeRows(),
-    activeKeys: activeRows().map(shellKey),
+    orderRoster: rows,
     activeKeysById: new Map(rows.map((thread) => [shellKey(thread), thread.activeOrderKey])),
-    reorderableKeys: new Set(activeRows().map(shellKey)),
-    threadByKey: new Map(rows.map((thread) => [shellKey(thread), thread])),
+    reorderableKeys: new Set(rows.map(shellKey)),
     allowReorder: true,
     controller,
     canOperate,
     reorder: async (thread, orderKey) => {
       orderAttempts += 1;
+      if (row(thread.id).pinnedAt != null) return false;
       if (orderAttempts === throwOrderAt) throw new Error("order transport failed");
       if (orderAttempts === failOrderAt) return false;
       orderWrites.push({ id: thread.id, orderKey });
@@ -163,7 +164,7 @@ function fixture(
       rows = rows.map((thread) => (thread.id === id ? { ...thread, activeOrderKey: key } : thread));
     },
     unpin: () => {
-      rows = rows.map((thread) => (thread.id === "moved" ? { ...thread, pinnedAt: null } : thread));
+      rows = rows.map((thread) => (thread.id === movedId ? { ...thread, pinnedAt: null } : thread));
     },
   };
 }
@@ -213,7 +214,6 @@ describe("placePersonalThread", () => {
       await placePersonalThread({
         ...input,
         activeThreads: members,
-        activeKeys: members.map(shellKey),
         reorderableKeys: new Set(members.map(shellKey)),
       }),
     ).toBe(true);
@@ -237,29 +237,226 @@ describe("placePersonalThread", () => {
     expect(f.assignmentWrites).toEqual(["a"]);
   });
 
-  it("places a grouped thread into Unassigned and leaves its former group keys intact", async () => {
-    const f = fixture(undefined, [
-      ["moved", "a"],
-      ["a1", "a"],
-      ["a2", "a"],
-      ["b1", "b"],
-    ]);
+  it.each([
+    { destinationId: "a", rejectSecond: false },
+    { destinationId: "a", rejectSecond: true },
+    { destinationId: null, rejectSecond: false },
+    { destinationId: null, rejectSecond: true },
+  ])(
+    "preserves destination siblings when arriving between equal keys (lane=$destinationId, rejectSecond=$rejectSecond)",
+    async ({ destinationId, rejectSecond }) => {
+      const siblings = ["a1", "a2", "b1", "b2"];
+      const ids = [...siblings, "moved", "control"];
+      const f = fixture(ids, [
+        ...(destinationId === null
+          ? [["moved", "a"] as const]
+          : siblings.map((id) => [id, destinationId] as const)),
+        ["control", "b"],
+      ]);
+      f.setOrderKey("b1", "m");
+      f.setOrderKey("b2", "m");
+      f.setOrderKey("moved", "t");
+      if (rejectSecond) f.failOrderAt(2);
+
+      const input = f.input(destinationId, "b1", true);
+      const siblingOrderAfterWrites: string[][] = [];
+      expect(
+        await placePersonalThread({
+          ...input,
+          reorder: async (thread, key) => {
+            const saved = await input.reorder(thread, key);
+            if (saved) {
+              siblingOrderAfterWrites.push(
+                f.groupOrder(destinationId).filter((id) => id !== "moved"),
+              );
+            }
+            return saved;
+          },
+        }),
+      ).toBe(!rejectSecond);
+
+      expect(f.assignmentWrites).toEqual([destinationId]);
+      expect(f.positionFailures.map(({ assignmentSaved }) => assignmentSaved)).toEqual(
+        rejectSecond ? [true] : [],
+      );
+      expect(siblingOrderAfterWrites).toHaveLength(rejectSecond ? 1 : 5);
+      for (const order of siblingOrderAfterWrites) expect(order).toEqual(siblings);
+      expect(f.row("control").activeOrderKey).toBeNull();
+
+      const reloadedRows = JSON.parse(
+        JSON.stringify(ids.map(f.row).reverse()),
+      ) as EnvironmentThreadShell[];
+      const reloaded = groupPersonalThreads(input.state, sortActiveThreadsByOrderKey(reloadedRows));
+      const lane =
+        destinationId === null
+          ? reloaded.ungrouped
+          : reloaded.groups.find(({ workstream }) => workstream.id === destinationId)!.threads;
+      expect(lane.map(({ id }) => id).filter((id) => id !== "moved")).toEqual(siblings);
+      if (!rejectSecond) {
+        expect(lane.map(({ id }) => id)).toEqual(["a1", "a2", "b1", "moved", "b2"]);
+      }
+    },
+  );
+
+  it.each(
+    [
+      { destinationId: null, endpoint: "tail", upper: "z", keyless: ["a"] },
+      { destinationId: "a", endpoint: "fixed", upper: "z", keyless: ["a1", "a2"] },
+      { destinationId: "a", endpoint: "fixed", upper: "n", keyless: ["a1", "a2"] },
+    ].flatMap((scenario) => [false, true].map((rejectSecond) => ({ ...scenario, rejectSecond }))),
+  )(
+    "splits tied keys below a hidden read-only endpoint (lane=$destinationId, upper=$upper, rejectSecond=$rejectSecond)",
+    async ({ destinationId, endpoint, upper, keyless, rejectSecond }) => {
+      const siblings = [...keyless, "b1", "b2", endpoint];
+      const ids = [...keyless, "b1", "b2", "u", endpoint];
+      const f = fixture(
+        ids,
+        destinationId === null ? [] : siblings.map((id) => [id, destinationId]),
+        undefined,
+        "u",
+      );
+      f.setOrderKey("b1", "m");
+      f.setOrderKey("b2", "m");
+      f.setOrderKey("u", "t");
+      f.setOrderKey(endpoint, upper);
+      f.denied.add(endpoint);
+      if (rejectSecond) f.failOrderAt(2);
+
+      const input = f.input(destinationId, "b1", true);
+      const siblingOrders: string[][] = [];
+      expect(
+        await placePersonalThread({
+          ...input,
+          activeThreads: input.activeThreads.filter(({ id }) => id !== endpoint),
+          reorder: async (thread, key) => {
+            const saved = await input.reorder(thread, key);
+            if (saved) siblingOrders.push(f.groupOrder(destinationId).filter((id) => id !== "u"));
+            return saved;
+          },
+        }),
+      ).toBe(!rejectSecond);
+
+      expect(f.assignmentWrites).toEqual(destinationId === null ? [] : [destinationId]);
+      expect(f.positionFailures.map(({ assignmentSaved }) => assignmentSaved)).toEqual(
+        rejectSecond ? [destinationId !== null] : [],
+      );
+      expect(f.orderWrites.map(({ id }) => id)).toEqual(rejectSecond ? ["b2"] : ["b2", "u"]);
+      for (const order of siblingOrders) expect(order).toEqual(siblings);
+      for (const id of keyless) expect(f.row(id).activeOrderKey).toBeNull();
+      expect(f.row("b1").activeOrderKey).toBe("m");
+      expect(f.row(endpoint).activeOrderKey).toBe(upper);
+
+      const savedRows = structuredClone(ids.toReversed().map(f.row));
+      const reloaded = groupPersonalThreads(
+        structuredClone(input.state),
+        sortActiveThreadsByOrderKey(savedRows),
+      );
+      const lane =
+        destinationId === null
+          ? reloaded.ungrouped
+          : reloaded.groups.find(({ workstream }) => workstream.id === destinationId)!.threads;
+      const reloadedIds = lane.map(({ id }) => id);
+      expect(reloadedIds.filter((id) => id !== "u")).toEqual(siblings);
+      if (!rejectSecond) expect(reloadedIds).toEqual([...keyless, "b1", "u", "b2", endpoint]);
+    },
+  );
+
+  it("rejects a tie between equal fixed bounds before saving membership, unpinning, or writing keys", async () => {
+    const f = fixture(
+      ["b0", "b1", "b2", "u"],
+      [
+        ["b0", "a"],
+        ["b1", "a"],
+        ["b2", "a"],
+      ],
+      "u",
+      "u",
+    );
+    for (const id of ["b0", "b1", "b2"]) f.setOrderKey(id, "m");
+    f.setOrderKey("u", "t");
+    f.denied.add("b0");
+    f.denied.add("b2");
+    let unpins = 0;
+    expect(
+      await placePersonalThread(
+        f.input("a", "b1", true, {
+          unpin: async () => {
+            unpins += 1;
+            return true;
+          },
+        }),
+      ),
+    ).toBe(false);
+    expect(f.assignmentWrites).toEqual([]);
+    expect(unpins).toBe(0);
+    expect(f.orderWrites).toEqual([]);
+    expect(f.groupOrder("a")).toEqual(["b0", "b1", "b2"]);
+    expect(f.row("u").pinnedAt).toBe(at);
+  });
+
+  it("places a grouped thread into a mixed Unassigned prefix and keeps the other keys", async () => {
+    const f = fixture(
+      ["u1", "a1", "b1", "moved", "a2", "u2", "u3"],
+      [
+        ["moved", "a"],
+        ["a1", "a"],
+        ["a2", "a"],
+        ["b1", "b"],
+      ],
+    );
+    f.setOrderKey("u3", "m");
+    f.setOrderKey("moved", "t");
     expect(await placePersonalThread(f.input(null, "u1", true))).toBe(true);
-    expect(f.groupOrder(null)).toEqual(["u1", "moved", "u2"]);
+    expect(f.groupOrder(null)).toEqual(["u1", "moved", "u2", "u3"]);
     expect(f.groupOrder("a")).toEqual(["a1", "a2"]);
     expect([f.row("a1").activeOrderKey, f.row("a2").activeOrderKey]).toEqual([null, null]);
+    expect(f.row("u3").activeOrderKey).toBe("m");
+    expect(f.orderWrites.map(({ id }) => id)).toEqual(["u2", "moved"]);
     expect(f.assignmentWrites).toEqual([null]);
   });
 
-  it("plans a pinned arrival as an active writable participant without unpinning it", async () => {
+  it("admits a pinned arrival to active ordering only after unpinning it", async () => {
     const f = fixture(undefined, undefined, "moved");
-    expect(await placePersonalThread(f.input("a", "a1", true))).toBe(true);
-    expect(f.row("moved").pinnedAt).toBe(at);
+    expect(
+      await placePersonalThread(
+        f.input("a", "a1", true, {
+          unpin: async () => {
+            expect(f.assignmentWrites).toEqual(["a"]);
+            expect(f.orderWrites).toEqual([]);
+            f.unpin();
+            return true;
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(f.row("moved").pinnedAt).toBeNull();
     expect(f.row("moved").activeOrderKey).not.toBeNull();
-    f.unpin();
     expect(f.groupOrder("a")).toEqual(["a1", "moved", "a2"]);
     expect(f.groupOrder(null)).toEqual(["u1", "u2"]);
   });
+
+  it.each(["source capability", "unpin callback"])(
+    "rejects a pinned ordinal before any changes when missing %s",
+    async (missing) => {
+      const f = fixture(undefined, undefined, "moved");
+      const input = f.input("a", "a1", true);
+      const unpin = async () => {
+        throw new Error("An invalid placement must leave the thread pinned");
+      };
+      const reorderableKeys = new Set(input.reorderableKeys);
+      if (missing === "source capability") reorderableKeys.delete(shellKey(input.thread));
+      expect(
+        await placePersonalThread({
+          ...input,
+          reorderableKeys,
+          unpin: missing === "unpin callback" ? undefined : unpin,
+        }),
+      ).toBe(false);
+      expect(f.assignmentWrites).toEqual([]);
+      expect(f.orderWrites).toEqual([]);
+      expect(f.row("moved").pinnedAt).toBe(at);
+    },
+  );
 
   it.each([false, true])(
     "positions a pinned arrival at a keyed group's edge: after=%s",
@@ -275,10 +472,18 @@ describe("placePersonalThread", () => {
       );
       f.setOrderKey("a1", "a0");
       f.setOrderKey("a2", "a1");
-      expect(await placePersonalThread(f.input("a", after ? "a2" : "a1", after))).toBe(true);
+      expect(
+        await placePersonalThread(
+          f.input("a", after ? "a2" : "a1", after, {
+            unpin: async () => {
+              f.unpin();
+              return true;
+            },
+          }),
+        ),
+      ).toBe(true);
       expect(f.assignmentWrites).toEqual([]);
       expect(f.orderWrites.some((write) => write.id === "moved")).toBe(true);
-      f.unpin();
       expect(f.groupOrder("a")).toEqual(after ? ["a1", "a2", "moved"] : ["moved", "a1", "a2"]);
     },
   );
@@ -290,6 +495,27 @@ describe("placePersonalThread", () => {
       expect(await placePersonalThread(f.input("a", null, false, { allowReorder }))).toBe(true);
       expect(f.groupOrder("a")).toEqual(["moved", "a1", "a2"]);
       expect(f.orderWrites).toEqual([]);
+    },
+  );
+
+  it.each([false, true])(
+    "keeps a pinned group-header drop assignment-only for order keys (external=%s)",
+    async (external) => {
+      const f = fixture(undefined, undefined, "moved");
+      const input = f.input("a", null, false, {
+        allowReorder: false,
+        unpin: external
+          ? async () => {
+              expect(f.assignmentWrites).toEqual(["a"]);
+              f.unpin();
+              return true;
+            }
+          : undefined,
+      });
+      expect(await placePersonalThread(input)).toBe(true);
+      expect(f.assignmentWrites).toEqual(["a"]);
+      expect(f.orderWrites).toEqual([]);
+      expect(f.row("moved").pinnedAt).toBe(external ? null : at);
     },
   );
 
@@ -392,15 +618,32 @@ describe("placePersonalThread", () => {
   it.each(["false", "throw", "permission"])(
     "reports saved membership after partial order failure: %s",
     async (kind) => {
-      const f = fixture();
+      const f = fixture(
+        ["u1", "a1", "b1", "moved", "a2", "hidden", "u2"],
+        [
+          ["a1", "a"],
+          ["a2", "a"],
+          ["hidden", "a"],
+          ["b1", "b"],
+        ],
+      );
+      f.setOrderKey("hidden", "m");
+      f.setOrderKey("moved", "t");
       if (kind === "false") f.failOrderAt(2);
       if (kind === "throw") f.throwOrderAt(2);
       if (kind === "permission") f.revokeAfterWrites(1);
-      expect(await placePersonalThread(f.input("a", "a1"))).toBe(false);
+      const input = f.input("a", "a1");
+      expect(
+        await placePersonalThread({
+          ...input,
+          activeThreads: input.activeThreads.filter(({ id }) => id !== "hidden"),
+        }),
+      ).toBe(false);
       expect(f.assignmentWrites).toEqual(["a"]);
       expect(f.orderWrites).toHaveLength(1);
-      expect(f.orderWrites[0]!.id).toBe("moved");
-      expect(f.groupOrder("a")).toEqual(["a1", "a2", "moved"]);
+      expect(f.orderWrites[0]!.id).toBe("a2");
+      expect(f.groupOrder("a")).toEqual(["a1", "a2", "hidden", "moved"]);
+      expect(f.row("hidden").activeOrderKey).toBe("m");
       expect(f.groupOrder(null)).toEqual(["u1", "u2"]);
       expect(f.positionFailures).toHaveLength(1);
       expect(f.positionFailures[0]!.assignmentSaved).toBe(true);

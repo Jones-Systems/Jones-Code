@@ -367,6 +367,7 @@ export function createTargetOperations(options: {
     }
     // Discovery leaves the receipt accepted. Only the supervisor can attach a job after
     // reserving its durable pre-spawn evidence, and it awaits the receipt before launch.
+    let downgradeRefusal: string | undefined;
     const operation = {
       operationId: id,
       signal: controller.signal,
@@ -387,6 +388,9 @@ export function createTargetOperations(options: {
             throw new Error("The staging worker was not bound to this operation.");
           return { ...r, phase: "adopting" };
         });
+      },
+      onDowngradeRefusal: (installedSource: string, message: string) => {
+        if (installedSource === input.expectedInstalledSource) downgradeRefusal = message;
       },
     };
     const state =
@@ -437,8 +441,10 @@ export function createTargetOperations(options: {
           : {
               ...r,
               phase: "failed",
-              code: "download-failed",
-              message: "The selected source was not staged. Nothing was installed.",
+              code:
+                downgradeRefusal === undefined ? "download-failed" : "target-older-than-installed",
+              message:
+                downgradeRefusal ?? "The selected source was not staged. Nothing was installed.",
             },
       );
     }

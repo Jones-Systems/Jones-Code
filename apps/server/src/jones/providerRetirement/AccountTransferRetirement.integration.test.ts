@@ -441,6 +441,10 @@ const scenario = (
           : projection.runs.length === 1 && isIdle(projection),
       );
       sourceRunId = source.runs[0]!.id;
+      if (mode === "direct") {
+        // Dispatch treats the completed source as active until its capture settles.
+        yield* outbox.awaitSettled(`effect:checkpoint.capture:${sourceRunId}`);
+      }
       const sourceThread = source.providerThreads.find(
         (row) => row.id === source.thread.activeProviderThreadId,
       )!;

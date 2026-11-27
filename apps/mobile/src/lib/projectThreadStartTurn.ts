@@ -14,7 +14,10 @@ import {
   deriveThreadTitleSeed,
   threadTitleTextFromPrompt,
 } from "@t3tools/client-runtime/operations";
+import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
+import { msg } from "gt-react-native";
 
+import { m } from "../i18n/messages";
 import type { UploadedMobileAttachment } from "./attachmentUpload";
 
 export interface ProjectThreadStartTurnSpec {
@@ -37,15 +40,21 @@ export interface ProjectThreadStartTurnSpec {
   readonly startFromOrigin: boolean;
   readonly baseFreshness?: OrchestrationV2WorktreeBaseFreshness;
   readonly serverResolvesWorktreeBase?: boolean;
+  /** Tracked repositories a new worktree takes, by path. */
+  readonly worktreeRepositories?: ReadonlyArray<string>;
+  /** The project folder itself is not a repository. */
+  readonly startsFromRepositoryDefaults?: boolean;
   readonly worktreeBranchName: string;
 }
 
 export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpec) {
-  const title = deriveThreadTitleSeed({
-    text: spec.titleText ?? spec.text,
-    attachments: spec.uploadedAttachments,
-  });
+  const title = deriveThreadTitleSeed(
+    { text: spec.titleText ?? spec.text, attachments: spec.uploadedAttachments },
+    m,
+  );
   const isWorktree = spec.workspaceMode === "worktree";
+  // For a plain project folder the launch ignores this ref and uses each repository's default.
+  const baseBranch = spec.branch ?? (spec.startsFromRepositoryDefaults ? "HEAD" : undefined);
   return {
     commandId: CommandId.make(spec.commandId),
     creationSource: "mobile" as const,
@@ -77,13 +86,16 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
         ? {
             prepareWorktree: {
               projectCwd: spec.projectCwd,
-              ...(spec.branch !== null ? { baseBranch: spec.branch } : {}),
+              ...(baseBranch === undefined ? {} : { baseBranch }),
               branch: spec.worktreeBranchName,
               ...(spec.baseFreshness !== undefined
                 ? { baseFreshness: spec.baseFreshness }
                 : spec.startFromOrigin
                   ? { startFromOrigin: true }
                   : {}),
+              ...(spec.worktreeRepositories === undefined
+                ? {}
+                : { repositories: spec.worktreeRepositories.map((path) => ({ path })) }),
             },
             runSetupScript: true,
           }
@@ -94,6 +106,8 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
 }
 
 export function deriveThreadTitleFromPrompt(value: string): string {
-  const title = threadTitleTextFromPrompt(value) || "New thread";
-  return title.length <= 72 ? title : `${title.slice(0, 69).trimEnd()}...`;
+  const title = threadTitleTextFromPrompt(value, m) || m(msg("New thread"));
+  if (title.length <= 72) return title;
+  const end = splitsSurrogatePair(title, 69) ? 68 : 69;
+  return `${title.slice(0, end).trimEnd()}...`;
 }

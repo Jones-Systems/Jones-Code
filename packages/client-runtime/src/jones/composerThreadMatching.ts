@@ -1,4 +1,6 @@
 import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 import type { ComposerThreadItem } from "../composerThreadItems.ts";
 
 export interface JonesComposerThreadCandidate {
@@ -61,6 +63,7 @@ function rankComposerThreadCandidates<
 
 export function matchJonesComposerThreadItems(
   input: JonesComposerThreadMatchInput,
+  resolve: MFunctionType = mFallback,
 ): ComposerThreadItem[] {
   const referenceEnvironments = input.referenceEnvironments ?? input.linkedEnvironments;
   return rankComposerThreadCandidates(
@@ -75,14 +78,20 @@ export function matchJonesComposerThreadItems(
     input.query,
   )
     .slice(0, 5)
-    .map((shell) => ({
-      id: `thread:${shell.environmentId}:${shell.id}`,
-      type: "thread",
-      thread: { environmentId: shell.environmentId, threadId: shell.id },
-      label: shell.title,
-      description:
+    .map((shell) => {
+      const machine =
         shell.environmentId === input.environmentId
-          ? "Thread"
-          : `Thread on ${referenceEnvironments?.get(shell.environmentId) ?? shell.environmentId}`,
-    }));
+          ? undefined
+          : (referenceEnvironments?.get(shell.environmentId) ?? shell.environmentId);
+      return {
+        id: `thread:${shell.environmentId}:${shell.id}`,
+        type: "thread",
+        thread: { environmentId: shell.environmentId, threadId: shell.id },
+        label: shell.title,
+        description:
+          machine === undefined
+            ? resolve(msg("Thread", { $context: "noun, search result type" }))
+            : resolve(msg("Thread on {machine}", { machine })),
+      };
+    });
 }

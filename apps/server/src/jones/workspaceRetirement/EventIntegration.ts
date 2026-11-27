@@ -59,7 +59,11 @@ export const events = Effect.fn("WorkspaceRetirement.admitRecordedEvents")(funct
     }
     if (event.type === "thread.created" || Object.hasOwn(payload, "worktreePath"))
       batchPaths.set(event.threadId, nextPath ?? null);
-    if (event.type === "thread.unsettled" || event.type === "thread.settled") {
+    if (
+      event.type === "thread.unsettled" ||
+      event.type === "thread.settled" ||
+      event.type === "thread.deleted"
+    ) {
       // Only never-issued work is cancelled here. Issued scripts keep their actual claims.
       yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(event.occurredAt)} WHERE released_at IS NULL AND claim_id IN
         (SELECT 'settlement-intent:'||event_id FROM jones_workspace_retirement_intents WHERE thread_id=${event.threadId} AND event_id!=${event.id} AND script_state='pending')`;

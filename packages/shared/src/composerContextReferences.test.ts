@@ -80,6 +80,12 @@ describe("labels and reference links", () => {
     for (const occurrence of occurrences) {
       expect(text.slice(occurrence.start, occurrence.end)).toBe(occurrence.source);
     }
+    const reference = "[#30296](t3-context://v1/review-comment/ctx_pr)";
+    expect(collectComposerContextReferences(`[${reference}]`)[0]).toMatchObject({
+      label: "#30296",
+      source: reference,
+      start: 1,
+    });
   });
 
   it("recognizes a prompt made only of image references", () => {
@@ -604,6 +610,25 @@ describe("threadLinkContextReferences", () => {
       threadLinkContextReferences("https://app.t3.codes/threads/env-9/t9", [], () => undefined)
         .records,
     ).toEqual([threadContextRecord(thread("env-9", "t9"), "Thread")]);
+  });
+
+  it.each(["\r", "\r\n", "\n"])("keeps fenced examples literal with %j line endings", (eol) => {
+    for (const fence of ["~~~", "```"]) {
+      const text = [fence, "<t3-thread://v2/local/t>", fence].join(eol);
+      expect(threadLinkContextReferences(text, [], () => "Task")).toEqual({
+        text,
+        records: [],
+      });
+      const pasted = threadLinkContextReferences(
+        `${text}${eol}<t3-thread://v2/local/after>`,
+        [],
+        () => "Task",
+      );
+      expect(pasted).toEqual({
+        text: `${text}${eol}${reference("local", "after", "Task")}`,
+        records: [threadContextRecord(thread("local", "after"), "Task")],
+      });
+    }
   });
 
   it("keeps links it may not chip, v1 links, and links in code as written", () => {

@@ -13,7 +13,7 @@ export const PERSISTENT_REMOTE_ADOPTION_SCRIPT = `      # Attaching to the home'
       printf 'external\\n' >"$MANAGED_FILE"`;
 
 // Runs after adoption and launch-identity transfer. Requires REMOTE_PID,
-// REMOTE_PORT, REMOTE_MANAGED, ADOPTED_PID, wait_ready() and
+// REMOTE_PORT, REMOTE_MANAGED, ADOPTED_PID, FOREIGN_LAUNCHER, wait_ready() and
 // managed_server_running(). The enclosing launch script replaces the reuse
 // timeout. A cleared record continues to the update and home-owner waits.
 export const PERSISTENT_REMOTE_REUSE_SCRIPT = `# A client attaches to the host owner; readiness failure never grants replacement.
@@ -37,6 +37,9 @@ elif [ -n "$REMOTE_PORT" ] && managed_server_running "$REMOTE_PID"; then
   if ! wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
     printf 'Remote T3 server is already running with PID %s but is not ready on 127.0.0.1:%s. Inspect it on the host before retrying.\\n' "$REMOTE_PID" "$REMOTE_PORT" >&2
     exit 1
+  elif [ "$FOREIGN_LAUNCHER" -eq 1 ]; then
+    # Only this reply is external. The shared record still belongs to the launcher.
+    REMOTE_MANAGED="external"
   fi
 else
   REMOTE_PID=""

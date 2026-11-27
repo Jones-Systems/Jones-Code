@@ -236,7 +236,7 @@ const fixture = (queueOnly = false) =>
           registry,
           Layer.mock(Launch.ThreadLaunchService)({}),
           Layer.mock(Git.GitVcsDriver)({}),
-          Layer.mock(Projects.ProjectService)({}),
+          Layer.mock(Projects.ProjectService)({ workspaceScanDirectory: Effect.succeed }),
           Layer.mock(Schedules.ScheduledTaskService)({}),
           Layer.mock(Secrets.SecretRequests)({}),
           Layer.mock(Remote.RemoteDelegation)({}),
@@ -246,6 +246,7 @@ const fixture = (queueOnly = false) =>
             ),
             refreshInstance: () =>
               Ref.update(refreshes, (n) => n + 1).pipe(Effect.andThen(Ref.get(providers))),
+            refreshWorkspaceSnapshot: () => Ref.get(providers),
           }),
         ),
       ),

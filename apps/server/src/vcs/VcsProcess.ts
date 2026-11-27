@@ -71,6 +71,11 @@ const DISCOVERY_OPERATION_PREFIX = "source-control.discovery.";
 // Forge CLIs can take seconds per call; cap them together so git, checkpoints included, keeps slots.
 const NON_GIT_PROCESS_CONCURRENCY = VCS_PROCESS_CONCURRENCY / 2;
 
+/** Background non-git calls, such as the pull request sync sweep's, leave one slot for the rest. */
+export const Background = Context.Reference<boolean>("t3/vcs/VcsProcess/Background", {
+  defaultValue: () => false,
+});
+
 /** Shown to users when a Git command fails because another process holds the index lock. */
 export const GIT_INDEX_LOCKED_DETAIL =
   "Git's index is locked. Wait for other Git operations to finish, then try again.";
@@ -136,6 +141,22 @@ export const gitConfigEnv = (
  */
 export const explicitBareRepositoryEnv = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) =>
   gitConfigEnv(env, "safe.bareRepository", "explicit", platform);
+
+// A failing `gc --auto` (say, missing objects) reruns after every fetch and strands a full-size
+// `tmp_pack_*` each time, so T3's frequent background Git calls could fill the disk.
+const SERVER_GIT_CONFIG = [
+  ["safe.bareRepository", "explicit"],
+  ["maintenance.auto", "false"],
+  ["gc.auto", "0"],
+] as const;
+
+export const serverGitConfigEnv = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) => {
+  const added: NodeJS.ProcessEnv = {};
+  for (const [key, value] of SERVER_GIT_CONFIG) {
+    Object.assign(added, gitConfigEnv({ ...env, ...added }, key, value, platform));
+  }
+  return added;
+};
 
 const REPOSITORY_SELECTORS = new Set([
   "GIT_DIR",
@@ -212,6 +233,7 @@ export const make = Effect.gen(function* () {
   const hostPlatform = yield* HostProcess.Platform;
   const vcsProcesses = yield* Semaphore.make(VCS_PROCESS_CONCURRENCY);
   const nonGitProcesses = yield* Semaphore.make(NON_GIT_PROCESS_CONCURRENCY);
+  const backgroundProcesses = yield* Semaphore.make(NON_GIT_PROCESS_CONCURRENCY - 1);
   const keyedProcesses = new Map<string, Semaphore.Semaphore>();
   const keyedPermit = (concurrency: NonNullable<VcsProcessInput["concurrency"]>) => {
     let semaphore = keyedProcesses.get(concurrency.key);
@@ -245,7 +267,7 @@ export const make = Effect.gen(function* () {
           // LANGUAGE leaves LC_CTYPE, which hooks inherit, alone.
           ...(input.command === "git" ? { LANGUAGE: "C" } : {}),
           ...input.env,
-          ...explicitBareRepositoryEnv({ ...process.env, ...input.env }, hostPlatform),
+          ...serverGitConfigEnv({ ...process.env, ...input.env }, hostPlatform),
         },
         timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxOutputBytes: input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
@@ -410,7 +432,10 @@ export const make = Effect.gen(function* () {
     // Discovery already has its own pool, so it holds no git slot and no forge-call slot.
     const shared =
       input.command === "git" || discovery ? bounded : nonGitProcesses.withPermits(1)(bounded);
-    return yield* input.concurrency === undefined ? shared : keyedPermit(input.concurrency)(shared);
+    const keyed = input.concurrency === undefined ? shared : keyedPermit(input.concurrency)(shared);
+    return yield* input.command !== "git" && !discovery && (yield* Background)
+      ? backgroundProcesses.withPermits(1)(keyed)
+      : keyed;
   });
 
   return VcsProcess.of({ run });

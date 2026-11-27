@@ -231,6 +231,40 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
     expect(next?.visibleTurnItems[0]).toBe(visibleTurnItems[0]);
   });
 
+  it("retains saved queue policy through sparse lifecycle events and honors revocation", () => {
+    const projection = {
+      ...emptyProjection,
+      runs: [
+        {
+          ...run,
+          explicitQueue: true as const,
+          queuedToolBoundaryEligible: true,
+          queuedToolBoundaryFollowUpOfRunId: runId,
+        },
+      ],
+    };
+    const event = {
+      id: "event-sparse-queue-update",
+      type: "run.updated",
+      threadId,
+      runId,
+      occurredAt: now,
+      payload: run,
+    } as OrchestrationV2DomainEvent;
+    const next = applyOrchestrationV2ProjectionEvent(projection, event);
+    expect(next?.runs[0]).toMatchObject({
+      explicitQueue: true,
+      queuedToolBoundaryEligible: true,
+      queuedToolBoundaryFollowUpOfRunId: runId,
+    });
+    const revoked = applyOrchestrationV2ProjectionEvent(next, {
+      ...event,
+      type: "run.updated",
+      payload: { ...run, queuedToolBoundaryEligible: false },
+    });
+    expect(revoked?.runs[0]?.queuedToolBoundaryEligible).toBe(false);
+  });
+
   it("replaces only the updated visible item and retains its deferred work cursor", () => {
     const deferredWork = { cursor: "remaining-work", itemCount: 100, lastOrdinal: 101 };
     const first = { ...commandItem("item-first", "first"), deferredWork };
@@ -497,7 +531,13 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
 
   it("hides a steer that fell back to the queue until its run starts", () => {
     const queuedRunId = RunId.make("run-requeued-steer");
-    const queuedRun = { ...run, id: queuedRunId, ordinal: 2, status: "queued" } as const;
+    const queuedRun = {
+      ...run,
+      id: queuedRunId,
+      ordinal: 2,
+      status: "queued",
+      startedAt: null,
+    } as const;
     const reply = commandItem("item-reply", "reply", 102);
     const steer: OrchestrationV2TurnItem = {
       id: TurnItemId.make("item-steer"),
@@ -1190,6 +1230,54 @@ it("requested runtime stop preserves active attachment and projection until its 
   });
   expect(next).toBe(projection);
   expect(next?.thread.activeProviderThreadId).toBe(activeProviderThreadId);
+});
+
+it("projects a captured Stop for its attributed run without adding interrupt history", () => {
+  const active = {
+    ...run,
+    providerThreadId: ProviderThreadId.make("provider-thread:captured-stop"),
+    activeAttemptId: RunAttemptId.make("attempt:captured-stop"),
+    status: "starting",
+    startedAt: null,
+    completedAt: null,
+  } satisfies OrchestrationV2Run;
+  const projection = { ...emptyProjection, runs: [active] };
+  const occurredAt = DateTime.add(now, { seconds: 1 });
+  const event = {
+    id: EventId.make("event:captured-stop"),
+    type: "provider-session.detach-requested",
+    threadId,
+    runId,
+    occurredAt,
+    payload: { providerSessionId: ProviderSessionId.make("session:captured-stop") },
+  } satisfies OrchestrationV2DomainEvent;
+  const next = applyOrchestrationV2ProjectionEvent(projection, event);
+  expect(next).toEqual({ ...projection, capturedRuntimeStopRunId: runId });
+  expect(applyOrchestrationV2ProjectionEvent(next, event)).toBe(next);
+  expect(
+    applyOrchestrationV2ProjectionEvent(next, {
+      ...event,
+      type: "run.updated",
+      payload: {
+        ...active,
+        status: "running",
+        startedAt: occurredAt,
+        activeAttemptId: RunAttemptId.make("attempt:replacement"),
+      },
+    })?.capturedRuntimeStopRunId,
+  ).toBe(runId);
+
+  for (const payload of [
+    { ...active, status: "interrupted", completedAt: occurredAt },
+    { ...active, providerThreadId: ProviderThreadId.make("provider-thread:replacement") },
+  ] satisfies ReadonlyArray<OrchestrationV2Run>) {
+    const updated = applyOrchestrationV2ProjectionEvent(next, {
+      ...event,
+      type: "run.updated",
+      payload,
+    });
+    expect(updated?.capturedRuntimeStopRunId).toBeUndefined();
+  }
 });
 
 describe("provider-thread.updated", () => {

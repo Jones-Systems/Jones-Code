@@ -243,8 +243,8 @@ Codex resumes with metadata-only reads when it needs a thread's identity and upd
 initialization capabilities opt out of `turn/diff/updated`: T3 derives diffs from checkpoints.
 The logger filters those notifications before traversal when an older provider still sends them.
 
-Model classification has its own [manifest constraints](./model-manifest.md). Assistant-reference
-handling is documented under [citations](./assistant-citations.md).
+See the [model manifest constraints](./03_providers.md#model-manifest) and the
+[shared assistant citation format](../../packages/shared/src/assistantCitations.ts).
 
 ## Provider response settlement and checkpoint completion
 
