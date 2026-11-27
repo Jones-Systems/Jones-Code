@@ -163,13 +163,14 @@ describe("durable client update duties", () => {
       enrollmentId: admission.enrollmentId,
       kind: admission.kind,
     };
+    const sidecar = "jones.bound-action-duties.v1";
     storage.values.set(
-      JONES_ACTION_JOURNAL_KEY,
-      JSON.stringify({
-        schema: 1,
-        duties: [{ ...duty, request: { ...input, admission: reordered } }],
-      }),
+      sidecar,
+      JSON.stringify([{ ...duty, request: { ...input, admission: reordered } }]),
     );
+    expect(JSON.parse(storage.values.get(JONES_ACTION_JOURNAL_KEY)!)).toMatchObject({
+      duties: [{ kind: "legacy", operationId: id(1) }],
+    });
     const stopped = { ...receipt("stopped"), ...input, admission: reordered };
     expect(await journal.reconcileReceipt(receipt("stopped"), { ledgerRead: true })).toBe(false);
     expect(
@@ -188,6 +189,77 @@ describe("durable client update duties", () => {
       request: { admission },
       receipt: { admission, phase: "stopped" },
     });
+  });
+
+  it("keeps bound Stops exact and preserves unrelated work for older readers", async () => {
+    const storage = disk();
+    const shared = { ...storage, withLock: <A>(work: () => Promise<A>) => work() };
+    const current = createJonesActionJournal(shared);
+    const bound = {
+      ...receipt(),
+      correlation: { planId: id(3), deviceKey: environmentId },
+      admission: { kind: "ordinary" as const },
+    };
+    const other = { ...receipt(), environmentId: otherEnvironment, operationId: id(4) };
+    const stopDuty = {
+      id: id(2),
+      kind: "stop",
+      action: "stop",
+      environmentId,
+      targetSource,
+      operationId: bound.operationId,
+      stopId: id(2),
+      receipt: bound,
+    } as const;
+    await current.reserve({
+      ...stopDuty,
+      id: id(5),
+      stopId: id(5),
+      operationId: other.operationId,
+      environmentId: otherEnvironment,
+      receipt: other,
+    });
+    await current.reserve(stopDuty);
+    const key = "jones.bound-action-duties.v1";
+    const bindings = storage.values.get(key)!;
+    const raw = storage.values.get(JONES_ACTION_JOURNAL_KEY)!;
+    expect(JSON.parse(raw).duties[1]).toEqual({
+      id: id(2),
+      kind: "legacy",
+      action: "stop",
+      environmentId,
+      targetSource,
+      operationId: bound.operationId,
+      stopId: id(2),
+    });
+    expect(raw).not.toContain("admission");
+    storage.values.delete(key);
+    const held = createJonesActionJournal(shared);
+    await held.load();
+    expect(held.getSnapshot().duties).toMatchObject([
+      { kind: "stop", receipt: other },
+      { kind: "legacy", stopId: id(2) },
+    ]);
+    await expect(held.reserve({ ...stopDuty, id: id(6), stopId: id(6) })).rejects.toThrow(
+      "earlier request",
+    );
+    storage.values.set(key, bindings);
+    const restored = createJonesActionJournal(shared);
+    await restored.load();
+    const stopped = {
+      ...bound,
+      phase: "stopped",
+      updatedAt: "2026-10-27T04:05:02Z",
+      stop: { stopId: id(2), requestedAt: "2026-10-27T04:05:01Z", result: "stopped" },
+    } as const;
+    const { admission: _admission, ...unbound } = stopped;
+    expect(await restored.reconcileReceipt(unbound, { ledgerRead: true })).toBe(false);
+    expect(await restored.reconcileReceipt(stopped, { ledgerRead: true })).toBe(true);
+    const reopened = createJonesActionJournal(shared);
+    await reopened.load();
+    expect(reopened.getSnapshot().duties.map((d) => d.id)).toEqual([id(5)]);
+    expect(reopened.getSnapshot().history[0]).toMatchObject({ id: id(2), receipt: stopped });
+    expect(storage.values.get(JONES_ACTION_JOURNAL_KEY)).not.toContain("admission");
   });
 
   it.each(["running", "held", "stopped", "unsupported"] as const)(

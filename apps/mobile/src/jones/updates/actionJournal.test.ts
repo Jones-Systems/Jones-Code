@@ -26,7 +26,11 @@ vi.mock("../../lib/uuid", () => {
   let next = 1;
   return { uuidv4: () => `${String(next++).padStart(8, "0")}-1111-4111-8111-111111111111` };
 });
-import { createMobileJonesRuntime, type MobileJonesTransport } from "./jonesUpdates";
+import {
+  createMobileJonesRuntime,
+  mobileJonesObservation,
+  type MobileJonesTransport,
+} from "./jonesUpdates";
 
 const environmentId = EnvironmentId.make("mobile-process-journal"),
   targetSource = "a".repeat(40);
@@ -73,7 +77,7 @@ function transport(): MobileJonesTransport {
 }
 
 describe("mobile process recreation", () => {
-  it.each(["running", "durable refusal"] as const)(
+  it.each(["running", "durable refusal", "already completed"] as const)(
     "recovers legacy unsupported with exact %s proof",
     async (outcome) => {
       const storage = disk(),
@@ -125,16 +129,22 @@ describe("mobile process recreation", () => {
       await journal.load();
       await session.observe(running);
       expect(session.getSnapshot().receipt).toEqual(provisional);
+      let live: JonesOperationReceipt | undefined;
+      const readLatest = () => ({
+        observation: {
+          state: {
+            ...state,
+            capability: { ...state.capability, operations: 1 as const },
+            ...(live === undefined ? {} : { operation: live }),
+          },
+          freshness: "fresh" as const,
+        },
+        canOperate: true,
+      });
       const actions = runtime.actions({
         environmentId,
         transport: target,
-        readLatest: () => ({
-          observation: {
-            state: { ...state, capability: { ...state.capability, operations: 1 } },
-            freshness: "fresh",
-          },
-          canOperate: true,
-        }),
+        readLatest,
       });
       if (outcome === "durable refusal") {
         const confirmed = { ...provisional, message: "The host durably refused the request." };
@@ -161,6 +171,32 @@ describe("mobile process recreation", () => {
           })
           .read();
         expect(restoredSession.getSnapshot().message).toBe(confirmed.message);
+        return;
+      }
+      if (outcome === "already completed") {
+        const stopped: JonesOperationReceipt = {
+          ...running,
+          phase: "stopped",
+          updatedAt: "2026-10-27T04:00:01Z",
+        };
+        vi.mocked(target.read).mockImplementationOnce(async () => {
+          live = stopped;
+          await session.observe(stopped);
+          expect(session.getSnapshot().receipt).toEqual(provisional);
+          return { receipts: [{ operationId, receipt: running }] };
+        });
+        await actions.read();
+        expect(session.getSnapshot().receipt).toEqual(stopped);
+        expect(journal.getSnapshot().duties).toEqual([]);
+        expect(journal.getSnapshot().history[0]?.receipt).toEqual(stopped);
+        expect(
+          mobileJonesObservation(readLatest().observation, {
+            ...session.getSnapshot(),
+            receipt: running,
+          }).state?.operation,
+        ).toEqual(stopped);
+        await actions.stop();
+        expect(target.stop).not.toHaveBeenCalled();
         return;
       }
       vi.mocked(target.read).mockResolvedValue({ receipts: [{ operationId, receipt: running }] });

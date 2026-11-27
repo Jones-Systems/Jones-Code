@@ -53,9 +53,12 @@ const Document = Schema.Struct({
   history: Schema.optionalKey(Schema.Array(JonesActionDuty).check(Schema.isMaxLength(64))),
 });
 export const JONES_ACTION_JOURNAL_KEY = "jones.update-duties.v1";
+// Older clients retain these duties as holds. Only a client with the exact binding can settle them.
+const BOUND_DUTIES_KEY = "jones.bound-action-duties.v1";
 // Keep the v1 journal readable to existing clients. This optional proof only suppresses a repeat Read.
 const VERIFIED_UNSUPPORTED_KEY = "jones.verified-unsupported.v1";
 const JONES_ACTION_JOURNAL_BYTES = 128 * 1024;
+const BOUND_DUTIES_BYTES = 2 * JONES_ACTION_JOURNAL_BYTES;
 const terminal = new Set([
   "completed",
   "rolled-back",
@@ -260,6 +263,16 @@ function metadataDuty(duty: JonesActionDuty): JonesActionDuty {
         }),
   };
 }
+function hasBoundAdmission(duty: JonesActionDuty) {
+  return duty.request?.admission !== undefined || duty.receipt?.admission !== undefined;
+}
+function legacyProjection(duty: JonesActionDuty): JonesActionDuty {
+  const metadata = metadataDuty(duty);
+  if (!hasBoundAdmission(metadata)) return metadata;
+  const { request: _request, receipt: _receipt, ...hold } = metadata;
+  return { ...hold, kind: "legacy" };
+}
+
 function noExtraFields(value: unknown, metadata: unknown): boolean {
   if (value === null || typeof value !== "object") return true;
   if (metadata === null || typeof metadata !== "object") return false;
@@ -306,6 +319,7 @@ function validDuty(duty: JonesActionDuty) {
 /** A failed persistence operation holds admission; unresolved entries are never evicted. */
 const compiledIs1 = Schema.is(Document);
 const compiledIs2 = Schema.is(JonesOperationReceipt);
+const isBoundDutyList = Schema.is(Schema.Array(JonesActionDuty).check(Schema.isMaxLength(256)));
 const isVerifiedUnsupportedList = Schema.is(
   Schema.Array(JonesOperationReceipt).check(Schema.isMaxLength(64)),
 );
@@ -349,8 +363,8 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
       if (raw !== null && byteLength(raw) > JONES_ACTION_JOURNAL_BYTES) return fail();
       const document = raw === null ? { schema: 1 as const, duties: [] } : JSON.parse(raw);
       if (!compiledIs1(document)) return fail();
-      const duties: readonly JonesActionDuty[] = document.duties;
-      const history: readonly JonesActionDuty[] = document.history ?? [];
+      let duties: readonly JonesActionDuty[] = document.duties;
+      let history: readonly JonesActionDuty[] = document.history ?? [];
       const all = [...duties, ...history];
       if (
         !noExtraFields(document, {
@@ -362,6 +376,32 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
         !all.every(validDuty)
       )
         return fail();
+      if (all.some((d) => d.kind === "legacy" && d.operationId !== undefined)) {
+        const bindings = await storage.getItem(BOUND_DUTIES_KEY);
+        if (bindings !== null) {
+          if (byteLength(bindings) > BOUND_DUTIES_BYTES) return fail();
+          const decoded: unknown = JSON.parse(bindings);
+          if (!isBoundDutyList(decoded)) return fail();
+          const byId = new Map(decoded.map((d) => [d.id, d]));
+          if (
+            byId.size !== decoded.length ||
+            !decoded.every(
+              (d) => hasBoundAdmission(d) && noExtraFields(d, metadataDuty(d)) && validDuty(d),
+            )
+          )
+            return fail();
+          const restore = (d: JonesActionDuty): JonesActionDuty => {
+            const bound = byId.get(d.id);
+            return d.kind === "legacy" &&
+              bound !== undefined &&
+              canonicalJonesCommand(d) === canonicalJonesCommand(legacyProjection(bound))
+              ? bound
+              : d;
+          };
+          duties = duties.map(restore);
+          history = history.map(restore);
+        }
+      }
       if (
         !history.some(
           (d) =>
@@ -509,15 +549,31 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
         duties: duties.map(metadataDuty),
         history: history.map(metadataDuty),
       };
-      const json = JSON.stringify(document);
       if (
         !compiledIs1(document) ||
         !duties.every(validDuty) ||
         !history.every(validDuty) ||
-        byteLength(json) > JONES_ACTION_JOURNAL_BYTES
+        byteLength(JSON.stringify(document)) > JONES_ACTION_JOURNAL_BYTES
       )
         throw new Error("Update request history is full. Existing unknown requests were retained.");
+      const previousBound = [...snapshot.duties, ...previousHistory].filter(hasBoundAdmission);
+      const nextBound = [...document.duties, ...document.history].filter(hasBoundAdmission);
+      const json = JSON.stringify({
+        schema: 1,
+        duties: document.duties.map(legacyProjection),
+        history: document.history.map(legacyProjection),
+      });
       try {
+        if (previousBound.length > 0 || nextBound.length > 0) {
+          // An interrupted write leaves the old v1 references readable. The v1 document
+          // decides which sidecar records belong to a duty and whether it is still pending.
+          const combined = new Map(
+            [...previousBound, ...nextBound].map((d) => [d.id, metadataDuty(d)]),
+          );
+          const serialized = JSON.stringify([...combined.values()]);
+          if (byteLength(serialized) > BOUND_DUTIES_BYTES) return fail();
+          await storage.setItem(BOUND_DUTIES_KEY, serialized);
+        }
         await storage.setItem(JONES_ACTION_JOURNAL_KEY, json);
       } catch {
         return fail();
@@ -578,7 +634,8 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
         if (
           duties.some(
             (d) =>
-              d.environmentId === duty.environmentId && (duty.kind !== "stop" || d.kind === "stop"),
+              d.environmentId === duty.environmentId &&
+              (duty.kind !== "stop" || d.action === "stop"),
           )
         )
           throw new Error(
