@@ -48,5 +48,11 @@ export function createPersonalWorkstreamsRpcTransport(
         }),
       ),
     assign: (connection, input) => run(client(connection)["workstreamsPersonal.assign"](input)),
+    request: (connection, input) => run(client(connection)["workstreamsPersonal.request"](input)),
+    cancel: (connection, input) => run(client(connection)["workstreamsPersonal.cancel"](input)),
+    manageFleet: (connection, input) => run(client(connection)["workstreamsPersonal.fleet"](input)),
+    releaseFollower: (connection, authorityEnvironmentId) =>
+      run(client(connection)["workstreamsPersonal.release"]({ authorityEnvironmentId })),
+    resolve: (connection, input) => run(client(connection)["workstreamsPersonal.resolve"](input)),
   };
 }

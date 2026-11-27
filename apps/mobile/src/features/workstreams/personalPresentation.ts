@@ -11,6 +11,9 @@ const actions = {
   delete: "delete the Workstream",
   assign: "move this thread",
   unassign: "remove this thread",
+  cancelOperation: "cancel the close request",
+  manageFleet: "change Workstream sync settings",
+  resolveOperation: "resolve the Workstream conflict",
 };
 export function personalWorkstreamFailureText(
   failure: PersonalWorkstreamsFailure,
@@ -35,12 +38,9 @@ export function personalWorkstreamFailureText(
     case "closure_unavailable":
       return "Couldn't verify every environment. Connect and update each environment, then try again.";
     case "changed_elsewhere":
-      return failure.action === "lifecycle" ||
-        failure.action === "nameIcon" ||
-        failure.action === "snooze" ||
-        failure.action === "unsnooze"
-        ? "This Workstream changed elsewhere. Try again."
-        : "This thread was moved somewhere else. Try again.";
+      return failure.action === "assign" || failure.action === "unassign"
+        ? "This thread was moved somewhere else. Try again."
+        : "This Workstream changed elsewhere. Try again.";
     case "unconfirmed":
       return "Couldn't confirm that change. Check the Workstream and try again.";
     case "failed":

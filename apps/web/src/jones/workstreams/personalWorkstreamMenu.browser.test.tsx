@@ -643,6 +643,60 @@ describe("Workstream options and header ordering", () => {
       .toBeVisible();
   });
 
+  it("keeps a Workstream visible during an offline close and allows cancellation", async () => {
+    using setup = fixture();
+    const mini = EnvironmentId.make("Mini");
+    const laptop = EnvironmentId.make("Laptop");
+    const operation = {
+      requestId: "closing-alpha",
+      workstreamId: "menu-Alpha",
+      kind: "close",
+      status: "pending",
+      rosterRevision: 1,
+      requestedLifecycle: "completed",
+      reason: null,
+      peers: [{ environmentId: mini, state: "blocked", reason: "peer_unavailable" }],
+    } as const;
+    const fleet = {
+      authorityEnvironmentId: laptop,
+      role: "authority",
+      rosterRevision: 1,
+      members: [mini],
+    } as const;
+    const cancel = vi.fn<NonNullable<PersonalWorkstreamsController["cancelOperation"]>>(
+      async () => {
+        setup.registry.set(setup.state, {
+          ...setup.initial,
+          fleet: { ...fleet, operations: [] },
+        });
+        return {
+          ok: true,
+          value: {
+            operation: { ...operation, status: "cancelled" },
+            workstream: null,
+            sequence: 2,
+          },
+        };
+      },
+    );
+    setup.controller.cancelOperation = cancel;
+    setup.registry.set(setup.state, {
+      ...setup.initial,
+      fleet: { ...fleet, operations: [operation] },
+    });
+    await using _screen = await render(setup.ui);
+    const request = page.getByText("Close requested · waiting for Mini", { exact: true });
+    await expect.element(request).toBeVisible();
+    await expect.element(page.getByText("Members of menu-Alpha", { exact: true })).toBeVisible();
+    await options();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Rename", exact: true }))
+      .toBeDisabled();
+    await page.getByRole("menuitem", { name: "Cancel close request", exact: true }).click();
+    expect(cancel).toHaveBeenCalledWith("closing-alpha");
+    await expect.element(request).not.toBeInTheDocument();
+  });
+
   it("focuses Cancel and cancels deletion through Cancel, Escape and the backdrop", async () => {
     using setup = fixture();
     await using _screen = await render(setup.ui);

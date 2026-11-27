@@ -127,6 +127,9 @@ export function mobilePersonalConnectionsAtom(ids: readonly EnvironmentId[]) {
           writable:
             AsyncResult.isSuccess(auth) && sessionGrantsScope(auth.value, "orchestration:operate"),
         }),
+        fleetCapable:
+          authenticated &&
+          config?.environment.capabilities?.workstreamsPersonalFleet?.version === 1,
         client: AsyncResult.isSuccess(session)
           ? Option.getOrUndefined(session.value)?.client
           : undefined,

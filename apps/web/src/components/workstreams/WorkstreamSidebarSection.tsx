@@ -1,5 +1,7 @@
 import { useClientSettings } from "../../hooks/useSettings";
+import { useEnvironments } from "../../state/environments";
 import "../../jones/sidebarAppearance/sidebarAppearance.workstreams.css";
+import { T, useGT } from "gt-react";
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
 import { requestCustomSnooze } from "../CustomSnoozeDialog";
 import {
@@ -226,6 +228,7 @@ function Group({
   onDeleteRequested,
   memberCount,
   snoozedIds,
+  environmentNames,
 }: {
   item: PersonalWorkstreamView;
   automaticColor: string | undefined;
@@ -235,6 +238,7 @@ function Group({
   children: (window: { limit: PersonalThreadLimit; expanded: boolean }) => ReactNode;
   memberCount: number;
   snoozedIds: ReadonlySet<string>;
+  environmentNames: ReadonlyMap<string, string>;
   summary: PersonalThreadSummary;
   rosterTotal: number;
   dragging: boolean;
@@ -278,6 +282,27 @@ function Group({
         setPending(false);
       });
   };
+  const closeRequest = state.fleet?.operations.find(
+    (operation) =>
+      operation.workstreamId === item.id &&
+      operation.kind === "close" &&
+      (operation.status === "pending" || operation.status === "stale"),
+  );
+  const closeWaitingOn = closeRequest?.peers
+    .filter((peer) => peer.state !== "delivered")
+    .map((peer) => environmentNames.get(peer.environmentId) ?? peer.environmentId);
+  const gt = useGT();
+  const closeStatus =
+    closeRequest?.status === "stale"
+      ? gt("Close requested · environment list changed")
+      : closeRequest?.reason === "unsettled_threads"
+        ? gt("Close requested · settle or move active threads on the authority")
+        : closeWaitingOn?.length
+          ? gt("Close requested · waiting for {environments}", {
+              environments: closeWaitingOn.join(", "),
+            })
+          : gt("Close requested");
+  const canEdit = state.canCreate && !closeRequest;
   const sectionRef = useRef<HTMLElement>(null);
   const finishRename = (restoreFocus = true) => {
     setEditing(null);
@@ -289,12 +314,11 @@ function Group({
       );
   };
   const startRename = () => {
-    if (!state.canCreate || pendingRef.current || confirmingDelete) return;
+    if (!canEdit || pendingRef.current || confirmingDelete) return;
     setEditing("name");
   };
   const saveRename = (name: string) => {
-    if (!state.canCreate || pendingRef.current)
-      return Promise.reject(new Error("Rename is unavailable."));
+    if (!canEdit || pendingRef.current) return Promise.reject(new Error("Rename is unavailable."));
     pendingRef.current = true;
     setPending(true);
     return Promise.resolve()
@@ -404,9 +428,7 @@ function Group({
           visibleCount={shownCount}
           statusFilter={statusFilter}
           onStatusFilterChange={setStatusFilter}
-          {...(state.canCreate && !pending && !confirmingDelete
-            ? { onRenameRequested: startRename }
-            : {})}
+          {...(canEdit && !pending && !confirmingDelete ? { onRenameRequested: startRename } : {})}
           nameEditor={
             editing === "name" ? (
               <PersonalWorkstreamTitleEditor
@@ -419,6 +441,11 @@ function Group({
           }
         />
       </div>
+      {closeRequest ? (
+        <div role="status" className="px-3 pb-1 text-xs text-muted-foreground">
+          {closeStatus}
+        </div>
+      ) : null}
       <Menu open={menuOpen} onOpenChange={openMenu}>
         <MenuPopup
           aria-label={`Workstream actions for ${item.name}`}
@@ -454,17 +481,27 @@ function Group({
               <MenuSeparator />
             </>
           ) : null}
-          <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
+          {closeRequest && controller.cancelOperation ? (
+            <MenuItem
+              disabled={!state.canCreate || pending}
+              onClick={() => void run(() => controller.cancelOperation!(closeRequest.requestId))}
+            >
+              <T>Cancel close request</T>
+            </MenuItem>
+          ) : null}
+          <MenuItem disabled={!canEdit || pending} onClick={startRename}>
             <PencilIcon aria-hidden /> Rename
           </MenuItem>
           <PersonalWorkstreamColorMenu
             color={item.color}
             automaticColor={colors.automaticColor}
-            disabled={!state.canCreate || pending}
+            disabled={!canEdit || pending}
             onSelect={(color) => void run(() => controller.setColor(item.id, color))}
           />
           <MenuSub>
-            <MenuSubTrigger disabled={!state.canSnooze || pending || !snoozeEnvironmentId}>
+            <MenuSubTrigger
+              disabled={!state.canSnooze || !!closeRequest || pending || !snoozeEnvironmentId}
+            >
               <AlarmClockIcon aria-hidden /> Snooze
             </MenuSubTrigger>
             <MenuSubPopup>
@@ -479,7 +516,7 @@ function Group({
           </MenuSub>
           <MenuSeparator />
           <MenuSub>
-            <MenuSubTrigger disabled={!state.canCreate || pending}>
+            <MenuSubTrigger disabled={!canEdit || pending}>
               Workstream state <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
             </MenuSubTrigger>
             <MenuSubPopup>
@@ -488,7 +525,7 @@ function Group({
                   <MenuRadioItem
                     key={lifecycle}
                     value={lifecycle}
-                    disabled={!state.canCreate || pending}
+                    disabled={!canEdit || pending}
                     closeOnClick
                     onClick={() => {
                       if (item.lifecycle === lifecycle) return;
@@ -512,11 +549,13 @@ function Group({
               projects={nameIconProjects}
               value={item.nameIcon?.projectKey ?? null}
               unavailableReason={
-                pending
-                  ? "A Workstream change is being saved."
-                  : !state.canSetNameIcon
-                    ? "A writable connection with Workstream icon support is required."
-                    : undefined
+                closeRequest
+                  ? gt("A close has been requested.")
+                  : pending
+                    ? "A Workstream change is being saved."
+                    : !state.canSetNameIcon
+                      ? "A writable connection with Workstream icon support is required."
+                      : undefined
               }
               onChange={(projectKey) => void run(() => setNameIcon(item.id, projectKey))}
             />
@@ -539,7 +578,7 @@ function Group({
           </MenuGroup>
           <MenuSeparator />
           <MenuItem
-            disabled={!state.canCreate || pending || index === 0}
+            disabled={!canEdit || pending || index === 0}
             onClick={() =>
               void run(async () => {
                 const result = await controller.reorder(item.id, {
@@ -553,7 +592,7 @@ function Group({
             <ArrowUpIcon aria-hidden /> Move up
           </MenuItem>
           <MenuItem
-            disabled={!state.canCreate || pending || index === openWorkstreams.length - 1}
+            disabled={!canEdit || pending || index === openWorkstreams.length - 1}
             onClick={() =>
               void run(async () => {
                 const result = await controller.reorder(item.id, {
@@ -569,7 +608,7 @@ function Group({
           <MenuSeparator />
           <MenuItem
             variant="destructive"
-            disabled={!state.canCreate || pending}
+            disabled={!canEdit || pending}
             onClick={onDeleteRequested}
           >
             <TrashIcon aria-hidden /> Delete Workstream…
@@ -637,6 +676,10 @@ export function WorkstreamSidebarSection({
   unassignedSummary?: PersonalThreadSummary;
 }) {
   const state = useAtomValue(controller.state);
+  const { environments } = useEnvironments();
+  const environmentNames = new Map(
+    environments.map(({ environmentId, label }) => [environmentId, label]),
+  );
   const [unassignedCollapsed, setUnassignedCollapsed] = useLocalStorage(
     personalGroupCollapsedKey(null),
     false,
@@ -955,6 +998,7 @@ export function WorkstreamSidebarSection({
                   summary={summaries?.get(item.id) ?? emptySummary}
                   rosterTotal={rosterTotals?.get(item.id) ?? summaries?.get(item.id)?.total ?? 0}
                   memberCount={memberCounts?.get(item.id) ?? 0}
+                  environmentNames={environmentNames}
                   snoozedIds={snoozedIds}
                   dragging={draggedId === item.id}
                   dropTarget={dropTargetId === item.id}

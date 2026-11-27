@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useGT } from "gt-react-native";
 import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { isClosedPersonalWorkstream } from "@t3tools/contracts/jones/workstreamsPersonal";
 import {
@@ -24,10 +25,20 @@ export function MobileWorkstreamControls(props: {
   perform: <A>(action: () => Promise<PersonalResult<A>>) => Promise<boolean>;
   environmentNames: ReadonlyMap<string, string>;
 }) {
+  const gt = useGT();
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
   const group = props.state.workstreams.find((entry) => entry.id === props.selection?.groupKey);
+  const closeRequest = props.state.fleet?.operations.find(
+    (operation) =>
+      operation.workstreamId === group?.id &&
+      operation.kind === "close" &&
+      (operation.status === "pending" || operation.status === "stale"),
+  );
+  const waitingOn = closeRequest?.peers
+    .filter((peer) => peer.state !== "delivered")
+    .map((peer) => props.environmentNames.get(peer.environmentId) ?? peer.environmentId);
   const thread = props.selection?.thread;
   const openWorkstreams = openPersonalWorkstreams(props.state);
   const closedWorkstreams = props.state.workstreams.filter((entry) =>
@@ -50,7 +61,9 @@ export function MobileWorkstreamControls(props: {
       live = false;
     };
   }, [controller, closedId]);
-  const writable = thread ? props.controller.canAssign(thread) : props.state.canCreate;
+  const writable = thread
+    ? props.controller.canAssign(thread)
+    : props.state.canCreate && !closeRequest;
   const run = async (action: () => Promise<PersonalResult<unknown>>) => {
     if (busy) return;
     setBusy(true);
@@ -100,6 +113,28 @@ export function MobileWorkstreamControls(props: {
         <Text accessibilityRole="header" style={{ fontSize: 24, fontWeight: "600" }}>
           {group?.name ?? "Workstreams"}
         </Text>
+        {closeRequest ? (
+          <View>
+            <Text accessibilityLiveRegion="polite">
+              {closeRequest.status === "stale"
+                ? gt("Close requested · environment list changed")
+                : closeRequest.reason === "unsettled_threads"
+                  ? gt("Close requested · settle or move active threads on the authority")
+                  : waitingOn?.length
+                    ? gt("Close requested · waiting for {environments}", {
+                        environments: waitingOn.join(", "),
+                      })
+                    : gt("Close requested")}
+            </Text>
+            {controller.cancelOperation
+              ? button(
+                  gt("Cancel close request"),
+                  () => void run(() => controller.cancelOperation!(closeRequest.requestId)),
+                  !props.state.canCreate,
+                )
+              : null}
+          </View>
+        ) : null}
         {!closedId && (
           <TextInput
             accessibilityLabel={group ? "Workstream name" : "New Workstream name"}
@@ -232,7 +267,8 @@ export function MobileWorkstreamControls(props: {
                     props.onSelect({ groupKey: entry.id });
                   }
                 },
-                !!thread && !writable,
+                !!thread &&
+                  (!writable || props.state.pendingCloseWorkstreamIds?.has(entry.id) === true),
               ),
             )}
             {!thread && closedWorkstreams.length > 0 && (

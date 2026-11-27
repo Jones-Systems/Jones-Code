@@ -120,6 +120,7 @@ export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCa
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
   workstreamsPersonal: Schema.optionalKey(Schema.Struct({ version: Schema.Literal(1) })),
+  workstreamsPersonalFleet: Schema.optionalKey(Schema.Struct({ version: Schema.Literal(1) })),
   /** Bearer HTTP list/assign for personal Workstreams; a later version stays decodable. */
   workstreamsPersonalHttp: Schema.optionalKey(Schema.Struct({ version: PositiveInt })),
   queuedSteerBatch: Schema.optionalKey(QueuedSteerBatchCapability),

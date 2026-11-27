@@ -37,6 +37,7 @@ import migration from "../../persistence/Migrations/153_JonesPersonalWorkstreams
 import lifecycleMigration from "../../persistence/Migrations/159_JonesWorkstreamLifecycleRevision.ts";
 import snoozeMigration from "../../persistence/Migrations/160_JonesWorkstreamSnooze.ts";
 import nameIconMigration from "../../persistence/Migrations/161_JonesWorkstreamNameIcons.ts";
+import fleetMigration from "../../persistence/Migrations/168_JonesPersonalWorkstreamFleet.ts";
 import * as Agent from "./agentService.ts";
 import * as BearerHttp from "./bearerHttp.ts";
 import * as Personal from "./service.ts";
@@ -58,6 +59,7 @@ const database = Layer.effectDiscard(
     yield* lifecycleMigration;
     yield* snoozeMigration;
     yield* nameIconMigration;
+    yield* fleetMigration;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 const dependencies = Layer.mergeAll(

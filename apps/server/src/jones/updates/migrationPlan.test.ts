@@ -871,7 +871,7 @@ it("candidate registration predicts the exact pending Jones migrations after rel
       status: "ready",
       migrationPlan: {
         pendingUpstream: [],
-        pendingJones: [156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167],
+        pendingJones: [156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168],
       },
     });
     expect(NodeFS.readFileSync(databasePath)).toEqual(before);

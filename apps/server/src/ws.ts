@@ -1,4 +1,5 @@
 import * as PersonalWorkstreams from "./jones/workstreams/personal/service.ts";
+import { WorkstreamFleetWorker } from "./jones/workstreams/personal/fleetWorker.ts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
 import { withClientSettlementOrigin } from "./jones/settlementOrigins/clientIngress.ts";
@@ -2163,6 +2164,7 @@ export const layerWsRpc = (
       });
 
       const personalWorkstreams = yield* PersonalWorkstreams.PersonalWorkstreams;
+      const workstreamFleet = yield* WorkstreamFleetWorker;
       const handlers = ServerWsRpcGroup.of({
         ...(yield* RepoFreshnessWs.make()),
         [WS_METHODS.issuesList]: (input) => issues.list(input),
@@ -2186,6 +2188,12 @@ export const layerWsRpc = (
           personalWorkstreams.put(workstream, expected),
         "workstreamsPersonal.assign": (input) =>
           personalWorkstreams.assign(input, { supersedeInitialAutoAssignment: true }),
+        "workstreamsPersonal.request": personalWorkstreams.requestOperation,
+        "workstreamsPersonal.cancel": personalWorkstreams.cancelOperation,
+        "workstreamsPersonal.fleet": workstreamFleet.manage,
+        "workstreamsPersonal.release": ({ authorityEnvironmentId }) =>
+          personalWorkstreams.releaseFollower(authorityEnvironmentId),
+        "workstreamsPersonal.resolve": personalWorkstreams.resolveOperation,
         ...retainedHandlers,
         [WS_METHODS.pullRequestsCiStatus]: (input) => pullRequests.ciStatus(input),
         [WS_METHODS.serverReadTokenAccounting]: (_input) => tokenAccounting.read,
@@ -4034,6 +4042,7 @@ export const layer = Layer.unwrap(
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const peerThreadRelay = yield* PeerThreadRelay.PeerThreadRelay;
     const peerClientPairing = yield* PeerClientPairing.PeerClientPairing;
+    const workstreamFleet = yield* WorkstreamFleetWorker;
     const sql = yield* SqlClient.SqlClient;
     // Server-lifetime instances: every socket shares one shell cache and queue compatibility owner.
     const shellMaterialization = yield* ShellMaterialization.ShellMaterialization;
@@ -4133,7 +4142,10 @@ export const layer = Layer.unwrap(
                 Layer.succeed(ShellMaterialization.ShellMaterialization, shellMaterialization),
               ),
               Layer.provide(
-                Layer.succeed(QueueCompatibility.QueueCompatibility, queueCompatibility),
+                Layer.merge(
+                  Layer.succeed(QueueCompatibility.QueueCompatibility, queueCompatibility),
+                  Layer.succeed(WorkstreamFleetWorker, workstreamFleet),
+                ),
               ),
               Layer.provide(
                 Layer.succeed(

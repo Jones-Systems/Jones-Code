@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { pinOrderKeyBetween } from "@t3tools/shared/jones/pinOrder";
 import * as PersonalWorkstreams from "./service.ts";
 
 export type AssignmentExpectation =
@@ -191,8 +192,52 @@ const make = Effect.gen(function* () {
       };
     }),
     setExpecting,
-    create: service.create,
+    create: Effect.fn("AgentWorkstreams.create")(function* (input) {
+      const snapshot = yield* service.snapshot();
+      if (!snapshot.fleet) return yield* service.create(input);
+      if (snapshot.fleet.role !== "authority")
+        return yield* new P.WorkstreamsPersonalError({ code: "authority_required" });
+      const old = snapshot.workstreams.find((workstream) => workstream.id === input.id);
+      if (old) {
+        if (old.deletedAt !== null)
+          return yield* new P.WorkstreamsPersonalError({ code: "workstream_deleted" });
+        return {
+          outcome: old.name === input.name.trim() ? "already_satisfied" : "superseded",
+          workstream: old,
+          sequence: snapshot.sequence,
+        } satisfies P.PutResult;
+      }
+      const lastOrderKey =
+        snapshot.workstreams
+          .filter((item) => item.deletedAt === null)
+          .map((item) => item.orderKey)
+          .sort()
+          .at(-1) ?? null;
+      const orderKey = pinOrderKeyBetween(lastOrderKey, null);
+      if (orderKey === null)
+        return yield* new P.WorkstreamsPersonalError({ code: "invalid_request" });
+      const operation = yield* service.requestOperation({
+        requestId: input.id,
+        workstreamId: input.id,
+        expected: null,
+        action: {
+          kind: "create",
+          name: input.name.trim(),
+          orderKey,
+          ...(input.lifecycle === undefined ? {} : { lifecycle: input.lifecycle }),
+          ...(input.color === undefined ? {} : { color: input.color }),
+        },
+      });
+      return {
+        outcome: "applied",
+        workstream: operation.workstream!,
+        sequence: operation.sequence,
+      } satisfies P.PutResult;
+    }),
     update: Effect.fn("AgentWorkstreams.update")(function* (input) {
+      const s = yield* service.snapshot();
+      if (s.fleet?.role === "follower")
+        return yield* new P.WorkstreamsPersonalError({ code: "authority_required" });
       const old = yield* find(input.id);
       if (
         input.delete !== true &&
@@ -201,7 +246,22 @@ const make = Effect.gen(function* () {
         P.isClosedPersonalWorkstream(input.lifecycle)
       )
         return yield* new P.WorkstreamsPersonalError({ code: "closure_unavailable" });
-      const s = yield* service.snapshot();
+      if (s.fleet) {
+        const action =
+          input.delete === true
+            ? ({ kind: "delete" } as const)
+            : ({ kind: "edit", patch: input } as const);
+        const operation = yield* service.requestAgentOperation({
+          workstreamId: old.id,
+          expected: old,
+          action,
+        });
+        return {
+          outcome: "applied",
+          workstream: operation.workstream!,
+          sequence: operation.sequence,
+        } satisfies P.PutResult;
+      }
       const now = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
       const candidate = yield* Effect.try({
         try: () =>
