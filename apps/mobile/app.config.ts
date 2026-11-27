@@ -3,7 +3,7 @@ import type { ExpoConfig } from "expo/config";
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
-type AppVariant = "development" | "preview" | "production";
+type AppVariant = "development" | "preview" | "production" | "jones-testflight";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
@@ -12,12 +12,21 @@ process.env.EXPO_NO_TYPESCRIPT_SETUP = "1";
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
+const isJonesTestFlight = APP_VARIANT === "jones-testflight";
 const runtimeVersionPolicy =
   process.env.MOBILE_VERSION_POLICY ??
   (APP_VARIANT === "development" ? "appVersion" : "fingerprint");
 
 const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
+const UPSTREAM_IOS_BUNDLE_IDENTIFIER = "com.t3tools.t3code";
+const UPSTREAM_APPLE_TEAM_ID = "ARK85ZXQ4Z";
+const UPSTREAM_EXPO_OWNER = "pingdotgg";
+const UPSTREAM_EAS_PROJECT_ID = "d763fcb8-d37c-41ea-a773-b54a0ab4a454";
+
+if (repoEnv.EAS_BUILD_PROFILE === "jones-testflight" && !isJonesTestFlight) {
+  throw new Error("The jones-testflight build requires APP_VARIANT=jones-testflight.");
+}
 
 // Compiled into the native project. Without a relay, Observe's native side could dispatch to
 // Expo's own ingest before observe.ts turns it off; `.invalid` never resolves (RFC 6761).
@@ -29,6 +38,7 @@ const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
 const androidAdaptiveForeground = "./assets/android-icon-foreground.png";
 
 if (
+  !isJonesTestFlight &&
   isIosPersonalTeamBuild &&
   (!personalTeamBundleIdentifier ||
     !IOS_BUNDLE_IDENTIFIER_PATTERN.test(personalTeamBundleIdentifier))
@@ -97,7 +107,7 @@ const VARIANT_CONFIG = {
   production: {
     appName: "T3 Code",
     scheme: "t3code",
-    iosBundleIdentifier: "com.t3tools.t3code",
+    iosBundleIdentifier: UPSTREAM_IOS_BUNDLE_IDENTIFIER,
     androidPackage: "com.t3tools.t3code",
     relyingParty: "clerk.t3.codes",
     assets: RELEASE_ASSETS,
@@ -109,20 +119,74 @@ function resolveAppVariant(value: string | undefined): AppVariant {
     case "development":
     case "preview":
     case "production":
+    case "jones-testflight":
       return value;
     case undefined:
       return "production";
     default:
-      throw new Error("APP_VARIANT must be development, preview, or production.");
+      throw new Error("APP_VARIANT must be development, preview, production, or jones-testflight.");
   }
 }
 
-const variant = VARIANT_CONFIG[APP_VARIANT];
-// Copied thread links open the app. app.t3.codes/.well-known lists every variant's identifiers.
+function requireJonesTestFlightValue(key: string, pattern: RegExp) {
+  const value = repoEnv[key]?.trim();
+  if (!value || !pattern.test(value)) {
+    throw new Error(`Set ${key} to a valid Jones Code value for jones-testflight.`);
+  }
+  return value;
+}
+
+function resolveJonesTestFlight() {
+  if (repoEnv.JONES_TESTFLIGHT_PLATFORM === "android" || repoEnv.EAS_BUILD_PLATFORM === "android") {
+    throw new Error("The jones-testflight profile only supports iOS.");
+  }
+  if (isIosPersonalTeamBuild) {
+    throw new Error("jones-testflight requires an Apple Developer Program team for distribution.");
+  }
+
+  const owner = requireJonesTestFlightValue(
+    "JONES_TESTFLIGHT_EXPO_OWNER",
+    /^[a-z0-9][a-z0-9_-]*$/i,
+  );
+  const projectId = requireJonesTestFlightValue(
+    "JONES_TESTFLIGHT_EAS_PROJECT_ID",
+    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i,
+  ).toLowerCase();
+  const bundleIdentifier = requireJonesTestFlightValue(
+    "JONES_TESTFLIGHT_IOS_BUNDLE_ID",
+    IOS_BUNDLE_IDENTIFIER_PATTERN,
+  );
+  const appleTeamId = requireJonesTestFlightValue(
+    "JONES_TESTFLIGHT_APPLE_TEAM_ID",
+    /^[A-Z0-9]{10}$/,
+  );
+  if (
+    owner.toLowerCase() === UPSTREAM_EXPO_OWNER ||
+    projectId === UPSTREAM_EAS_PROJECT_ID ||
+    /^com\.t3tools(?:\.|$)/i.test(bundleIdentifier) ||
+    appleTeamId === UPSTREAM_APPLE_TEAM_ID
+  ) {
+    throw new Error("jones-testflight requires Jones-owned Expo and Apple identifiers.");
+  }
+  if (repoEnv.EAS_BUILD_PROJECT_ID && repoEnv.EAS_BUILD_PROJECT_ID !== projectId) {
+    throw new Error("EAS_BUILD_PROJECT_ID does not match JONES_TESTFLIGHT_EAS_PROJECT_ID.");
+  }
+
+  const clerkDomain = repoEnv.JONES_TESTFLIGHT_CLERK_DOMAIN?.trim().toLowerCase();
+  if (clerkDomain && !/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(clerkDomain)) {
+    throw new Error("JONES_TESTFLIGHT_CLERK_DOMAIN must be a hostname.");
+  }
+  return { owner, projectId, bundleIdentifier, appleTeamId, clerkDomain };
+}
+
+const jonesTestFlight = isJonesTestFlight ? resolveJonesTestFlight() : undefined;
+const variant = VARIANT_CONFIG[APP_VARIANT === "jones-testflight" ? "production" : APP_VARIANT];
+// app.t3.codes/.well-known lists the upstream identifiers for copied thread links.
 const HOSTED_APP_HOST = "app.t3.codes";
-const iosBundleIdentifier = isIosPersonalTeamBuild
-  ? personalTeamBundleIdentifier!
-  : variant.iosBundleIdentifier;
+const relyingParty = isJonesTestFlight ? jonesTestFlight?.clerkDomain : variant.relyingParty;
+const iosBundleIdentifier =
+  jonesTestFlight?.bundleIdentifier ??
+  (isIosPersonalTeamBuild ? personalTeamBundleIdentifier! : variant.iosBundleIdentifier);
 
 const dmSansFonts = {
   regular: "@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf",
@@ -138,7 +202,7 @@ const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
     enablePushNotifications: true,
     // Frequent updates need the iOS entitlement to avoid early throttling.
     frequentUpdates: true,
-    enableAndroid: true,
+    enableAndroid: !isJonesTestFlight,
     widgets: [
       {
         name: "SubscriptionUsage",
@@ -225,7 +289,7 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
       },
     },
     android: {
-      enabled: true,
+      enabled: !isJonesTestFlight,
       singleShareMimeTypes: ["*/*"],
       multipleShareMimeTypes: ["*/*"],
     },
@@ -235,38 +299,43 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
 // Match iOS PostScript names on Android so RN and the native composer share fonts before runtime loading.
 
 const config: ExpoConfig = {
-  name: variant.appName,
-  slug: "t3-code",
-  platforms: ["ios", "android"],
-  scheme: variant.scheme,
+  name: isJonesTestFlight ? "Jones Code TestFlight" : variant.appName,
+  slug: isJonesTestFlight ? "jones-code-testflight" : "t3-code",
+  platforms: isJonesTestFlight ? ["ios"] : ["ios", "android"],
+  scheme: isJonesTestFlight ? "jonescode-testflight" : variant.scheme,
   version: repoEnv.T3CODE_MOBILE_VERSION ?? "2.4.0",
-  runtimeVersion: {
-    // Skip costly fingerprinting on dev launches; preview and production OTAs require matching native projects.
-    policy: runtimeVersionPolicy,
-  },
+  // Skip costly fingerprinting on dev launches. OTA-enabled release variants match native projects.
+  runtimeVersion: isJonesTestFlight ? undefined : { policy: runtimeVersionPolicy },
   orientation: "portrait",
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
-  updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-    checkAutomatically: "ON_LOAD",
-    fallbackToCacheTimeout: 0,
-  },
+  updates: isJonesTestFlight
+    ? { enabled: false }
+    : {
+        enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
+        url: `https://u.expo.dev/${UPSTREAM_EAS_PROJECT_ID}`,
+        checkAutomatically: "ON_LOAD",
+        fallbackToCacheTimeout: 0,
+      },
   ios: {
     icon: variant.assets.iosIcon,
     supportsTablet: true,
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
     // Avoid Personal Team fallback: it cannot sign App Groups, Apple sign-in or push entitlements.
-    appleTeamId: "ARK85ZXQ4Z",
-    associatedDomains: [
-      `applinks:${variant.relyingParty}`,
-      `webcredentials:${variant.relyingParty}`,
-      `applinks:${HOSTED_APP_HOST}`,
-    ],
+    appleTeamId: jonesTestFlight?.appleTeamId ?? UPSTREAM_APPLE_TEAM_ID,
+    associatedDomains: relyingParty
+      ? [
+          `applinks:${relyingParty}`,
+          `webcredentials:${relyingParty}`,
+          ...(isJonesTestFlight ? [] : [`applinks:${HOSTED_APP_HOST}`]),
+        ]
+      : undefined,
     entitlements: {
-      "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
+      "keychain-access-groups": [
+        `$(AppIdentifierPrefix)${jonesTestFlight?.bundleIdentifier ?? variant.iosBundleIdentifier}`,
+      ],
+      ...(isJonesTestFlight ? { "aps-environment": "production" } : {}),
     },
     infoPlist: {
       UISupportedInterfaceOrientations: [
@@ -277,8 +346,9 @@ const config: ExpoConfig = {
       NSAppTransportSecurity: {
         NSAllowsArbitraryLoads: true,
       },
-      NSLocalNetworkUsageDescription:
-        "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
+      NSLocalNetworkUsageDescription: isJonesTestFlight
+        ? "Allow Jones Code to connect to servers on your local network or tailnet."
+        : "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
       // Built with the iOS 27 SDK, only view controllers can hide or style the status bar.
       UIViewControllerBasedStatusBarAppearance: true,
       NSPhotoLibraryAddUsageDescription: "Allow T3 Code to save images to your photo library.",
@@ -298,33 +368,35 @@ const config: ExpoConfig = {
         : {}),
     },
   },
-  android: {
-    icon: variant.assets.appIcon,
-    package: variant.androidPackage,
-    ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
-      ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
-      : {}),
-    adaptiveIcon: {
-      backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
-      ...(variant.assets.androidAdaptiveBackgroundImage
-        ? { backgroundImage: variant.assets.androidAdaptiveBackgroundImage }
-        : {}),
-      foregroundImage: variant.assets.androidAdaptiveForeground,
-      monochromeImage: variant.assets.androidMonochromeIcon,
-    },
-    // JS back dispatch needs RN's Android 16 shim and withAndroidPredictiveBackCompat on Android 13-15.
-    predictiveBackGestureEnabled: true,
-    // expo-sensors declares this for its pedometer, which the app does not use.
-    blockedPermissions: ["android.permission.ACTIVITY_RECOGNITION"],
-    intentFilters: [
-      {
-        action: "VIEW",
-        autoVerify: true,
-        data: [{ scheme: "https", host: HOSTED_APP_HOST, pathPrefix: "/threads/" }],
-        category: ["BROWSABLE", "DEFAULT"],
+  android: isJonesTestFlight
+    ? undefined
+    : {
+        icon: variant.assets.appIcon,
+        package: variant.androidPackage,
+        ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
+          ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
+          : {}),
+        adaptiveIcon: {
+          backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
+          ...(variant.assets.androidAdaptiveBackgroundImage
+            ? { backgroundImage: variant.assets.androidAdaptiveBackgroundImage }
+            : {}),
+          foregroundImage: variant.assets.androidAdaptiveForeground,
+          monochromeImage: variant.assets.androidMonochromeIcon,
+        },
+        // JS back dispatch needs RN's Android 16 shim and withAndroidPredictiveBackCompat on Android 13-15.
+        predictiveBackGestureEnabled: true,
+        // expo-sensors declares this for its pedometer, which the app does not use.
+        blockedPermissions: ["android.permission.ACTIVITY_RECOGNITION"],
+        intentFilters: [
+          {
+            action: "VIEW",
+            autoVerify: true,
+            data: [{ scheme: "https", host: HOSTED_APP_HOST, pathPrefix: "/threads/" }],
+            category: ["BROWSABLE", "DEFAULT"],
+          },
+        ],
       },
-    ],
-  },
   web: {
     favicon: variant.assets.appIcon,
   },
@@ -493,11 +565,11 @@ const config: ExpoConfig = {
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
     eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+      projectId: jonesTestFlight?.projectId ?? UPSTREAM_EAS_PROJECT_ID,
       observe: { endpointUrl: observeEndpointUrl },
     },
   },
-  owner: "pingdotgg",
+  owner: jonesTestFlight?.owner ?? UPSTREAM_EXPO_OWNER,
   experiments: {
     // Metro only runs babel-plugin-react-compiler when this is set; see src/reactCompilerCoverage.test.ts.
     reactCompiler: true,

@@ -1,0 +1,28 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "mobile-orchestrator",
+  "jonesOwnedPaths": [
+    "apps/mobile/src/jones/mobileOrchestrator/",
+    "apps/mobile/src/jones/modelOptions/QuickModelOptions.tsx"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/mobile/src/Stack.tsx",
+      "to": "apps/mobile/src/jones/mobileOrchestrator/OrchestratorThreadScreen.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/layout/workspace/WorkspaceExtraTab.tsx",
+      "to": "apps/mobile/src/jones/mobileOrchestrator/MobileOrchestratorScreen.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadSettingsSheet.tsx",
+      "to": "apps/mobile/src/jones/modelOptions/QuickModelOptions.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadSettingsSheet.tsx",
+      "to": "apps/mobile/src/jones/mobileOrchestrator/draft.ts"
+    }
+  ]
+}

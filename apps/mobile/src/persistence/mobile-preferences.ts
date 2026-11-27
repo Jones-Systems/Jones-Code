@@ -181,6 +181,8 @@ export interface Preferences {
     readonly provider: ProviderInstanceId;
     readonly model: string;
   }>;
+  readonly modelPickerFavoritesOnly?: boolean;
+  readonly mobileOrchestratorTarget?: { readonly environmentId: string; readonly threadId: string };
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
   readonly threadListWorkingShelfExpanded?: boolean;
@@ -271,6 +273,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     useLastProjectForNewThreads?: boolean;
     lastThreadProject?: typeof ThreadProject.Type;
     modelFavorites?: Preferences["modelFavorites"];
+    modelPickerFavoritesOnly?: boolean;
+    mobileOrchestratorTarget?: Preferences["mobileOrchestratorTarget"];
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
@@ -435,6 +439,18 @@ function sanitizePreferences(parsed: Preferences): Preferences {
         typeof favorite.model === "string" &&
         favorite.model.trim().length > 0,
     );
+  }
+  if (typeof parsed.modelPickerFavoritesOnly === "boolean") {
+    preferences.modelPickerFavoritesOnly = parsed.modelPickerFavoritesOnly;
+  }
+  const orchestratorTarget = parsed.mobileOrchestratorTarget;
+  if (
+    typeof orchestratorTarget?.environmentId === "string" &&
+    orchestratorTarget.environmentId.trim() !== "" &&
+    typeof orchestratorTarget.threadId === "string" &&
+    orchestratorTarget.threadId.trim() !== ""
+  ) {
+    preferences.mobileOrchestratorTarget = orchestratorTarget;
   }
   if (typeof parsed.threadListSettledShelfExpanded === "boolean") {
     preferences.threadListSettledShelfExpanded = parsed.threadListSettledShelfExpanded;

@@ -57,7 +57,11 @@ export function WorkspaceToolbar(props: {
   const selectedTab = workspace.settingsOpen ? "settings" : workspace.state.selectedTab;
   const tab = workspace.state.tabs[selectedTab];
   const searchLabel = m(
-    SEARCH_LABELS[selectedTab === "usage" || selectedTab === "workflows" ? "threads" : selectedTab],
+    SEARCH_LABELS[
+      selectedTab === "usage" || selectedTab === "workflows" || selectedTab === "orchestrator"
+        ? "threads"
+        : selectedTab
+    ],
   );
   const { isTabActive: isListTabActive } = workspace;
   // A retained tab slot stays mounted while another is shown.

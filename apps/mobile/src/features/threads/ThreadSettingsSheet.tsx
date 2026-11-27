@@ -126,6 +126,11 @@ import {
 } from "./thread-settings-sheet-state";
 import { formatProviderUpdateRequiredNotice } from "@t3tools/client-runtime/providerUpdateRequiredModels";
 import type { MessageResolver } from "../../i18n/messages";
+import { isQuickModelOption, QuickModelOption } from "../../jones/modelOptions/QuickModelOptions";
+import {
+  ORCHESTRATOR_TEXT_DRAFT_KEY,
+  orchestratorOptionsKey,
+} from "../../jones/mobileOrchestrator/draft";
 
 const PRIMARY_PROVIDER_DRIVERS: ReadonlySet<string> = new Set([
   "claudeAgent",
@@ -310,6 +315,7 @@ export type ExistingThreadSettingsRouteParams = {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly draftKey: string;
+  readonly orchestrator?: true;
 };
 
 type ThreadSettingsSessionValue = {
@@ -509,7 +515,10 @@ function ThreadSettingsSessionProvider(
     });
   };
   const [showLegacyToggle, setShowLegacyToggle] = useState(false);
-  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [favoritesFilter, setFavoritesOnly] = useState<boolean | undefined>();
+  const favoritesOnly =
+    favoritesFilter ??
+    (AsyncResult.isSuccess(preferences) && preferences.value.modelPickerFavoritesOnly === true);
   const [providerFilter, setProviderFilter] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [providerExpansionOverrides, setProviderExpansionOverrides] = useState<ReadonlySet<string>>(
@@ -998,6 +1007,21 @@ function ThreadSettingsOptionsItem(props: {
         layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}
       >
         {session.displayedDescriptors.map((descriptor) => {
+          const promptControlsOption =
+            session.promptTraits.ultrathinkPromptControlled &&
+            descriptor.id === session.promptTraits.primarySelectDescriptor?.id;
+          if (isQuickModelOption(descriptor) && !promptControlsOption) {
+            return (
+              <QuickModelOption
+                key={descriptor.id}
+                descriptor={descriptor}
+                selection={session.displayedModelSelection}
+                reportedSelection={session.reportedModelSelection}
+                onChange={(value) => session.applyOptionChange(descriptor.id, value)}
+                onMore={() => props.onOpenSubmenu({ kind: "descriptor", id: descriptor.id })}
+              />
+            );
+          }
           if (descriptor.type === "select") {
             return (
               <Animated.View
@@ -1011,8 +1035,7 @@ function ThreadSettingsOptionsItem(props: {
                 <DisclosureRow
                   label={descriptor.label}
                   value={
-                    session.promptTraits.ultrathinkPromptControlled &&
-                    descriptor.id === session.promptTraits.primarySelectDescriptor?.id
+                    promptControlsOption
                       ? "Ultrathink"
                       : getProviderOptionCurrentLabel(
                           descriptor,
@@ -1518,10 +1541,13 @@ export function ExistingThreadSettingsRouteScreen({
   const threadKey = scopedThreadKey(route.params.environmentId, route.params.threadId);
   const queuedRunEdit = useQueuedRunEdit(threadKey);
   // A queued edit can end while the sheet is open; the prompt then belongs to the thread's draft.
-  const draftKey = activeComposerDraftKey(threadKey, route.params.draftKey, queuedRunEdit);
+  const draftKey = route.params.orchestrator
+    ? orchestratorOptionsKey(route.params)
+    : activeComposerDraftKey(threadKey, route.params.draftKey, queuedRunEdit);
   const draftSettings = useComposerDraftSettings(draftKey);
   const threadDraftSettings = useComposerDraftSettings(threadKey);
-  const prompt = useComposerDraft(draftKey).text;
+  const promptKey = route.params.orchestrator ? ORCHESTRATOR_TEXT_DRAFT_KEY : draftKey;
+  const prompt = useComposerDraft(promptKey).text;
 
   if (!selectedThread) {
     return <View className="flex-1 bg-sheet" />;
@@ -1551,7 +1577,10 @@ export function ExistingThreadSettingsRouteScreen({
         option.selection.model === modelSelection.model,
     ) ?? null;
   const updateModelSelection = (selection: ModelSelection) =>
-    selectThreadModel(route.params, selection);
+    route.params.orchestrator
+      ? updateComposerDraftSettings(draftKey, { modelSelection: selection })
+      : selectThreadModel(route.params, selection);
+  const runtimeDraftKey = route.params.orchestrator ? draftKey : threadKey;
 
   return (
     <ThreadSettingsPickerScreen
@@ -1563,7 +1592,7 @@ export function ExistingThreadSettingsRouteScreen({
       providerGroups={groupByProvider(modelOptions)}
       selectedModel={modelSelection}
       prompt={prompt}
-      onPromptChange={(text) => setComposerDraftText(draftKey, text)}
+      onPromptChange={(text) => setComposerDraftText(promptKey, text)}
       reportedModelSelection={reportedModelSelection}
       onSelectModel={(option) =>
         updateModelSelection(
@@ -1582,8 +1611,13 @@ export function ExistingThreadSettingsRouteScreen({
         rememberModelOptions(modelSelection.instanceId, modelSelection.model, options ?? []);
         updateModelSelection({ ...modelSelection, options });
       }}
-      runtimeMode={threadDraftSettings.runtimeMode ?? selectedThread.runtimeMode}
-      onUpdateRuntimeMode={(runtimeMode) => updateComposerDraftSettings(threadKey, { runtimeMode })}
+      runtimeMode={
+        (route.params.orchestrator ? draftSettings : threadDraftSettings).runtimeMode ??
+        selectedThread.runtimeMode
+      }
+      onUpdateRuntimeMode={(runtimeMode) =>
+        updateComposerDraftSettings(runtimeDraftKey, { runtimeMode })
+      }
       onClose={() => navigation.goBack()}
     />
   );

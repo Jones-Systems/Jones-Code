@@ -1,12 +1,13 @@
 import { useGT } from "gt-react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
+import type { AppBarAction } from "../../components/ui/AppBar.types";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 
 /** A thread shown outside its route: in the inspector pane, or presented full screen with a close. */
 export type ThreadInspectorPresentation =
   | { readonly onMaximize: () => void }
-  | { readonly onClose: () => void };
+  | { readonly onClose: () => void; readonly actions?: readonly AppBarAction[] };
 
 export function ThreadInspectorHeader(
   props: ThreadInspectorPresentation & { readonly title: string; readonly subtitle?: string },
@@ -32,6 +33,7 @@ export function ThreadInspectorHeader(
       title={props.title}
       subtitle={props.subtitle}
       onClose={props.onClose}
+      actions={props.actions}
       accessibilityLabel={gt("Close thread")}
     />
   );
