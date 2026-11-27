@@ -4,6 +4,14 @@
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "features": [
     {
+      "id": "design-review",
+      "tests": [
+        "apps/web/src/jones/sidebarAppearance/sidebarAppearanceCards.browser.test.tsx",
+        "apps/web/src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.browser.test.tsx"
+      ],
+      "scope": "Development-only standalone HTML previews import real Jones Code renderer components with synthetic data, report their source revision, and let the owner compare and export choices. The first preview exercises sidebar thread title brightness using the existing non-sortable row, slider, appearance scope, and theme."
+    },
+    {
       "id": "thread-title-drag",
       "tests": ["apps/web/src/jones/threadTitleDrag/threadTitleDrag.browser.test.tsx"],
       "scope": "The shared web and desktop chat header starts a single-thread pointer drag. It uses the existing composer drop event and sidebar placement operations, with a card preview and insertion indicator in the sidebar. The shared header, sidebar, context preview and CSS changes connect the existing renderer entry points without duplicating menu, composer or order logic."
