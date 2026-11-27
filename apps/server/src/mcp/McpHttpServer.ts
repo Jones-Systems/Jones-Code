@@ -1682,7 +1682,7 @@ export const layerWorkstreamToolkit = toolkitRegistration(
   workstreamHandlers,
 ).pipe(Layer.provide(AgentWorkstreams.layer));
 
-/** Every active tool the Jones MCP server advertises. */
+/** The common tool registrations measured by the agent context budget. */
 export const layerTools = Layer.mergeAll(
   Layer.unwrap(
     Effect.gen(function* () {
@@ -1699,7 +1699,6 @@ export const layerTools = Layer.mergeAll(
     }),
   ),
   layerWorkstreamToolkit,
-  toolkitRegistration(WorkstreamFleetPeerTools.toolkit, WorkstreamFleetPeerTools.handlers),
   toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(
     Layer.provide(UserResponseRequest.layer),
   ),
@@ -1871,6 +1870,12 @@ export const layerMilestoneEvents = Layer.effectDiscard(
   Layer.provide(layerWebhookTransport),
 );
 
+// Workstream fleet tools are only visible to authenticated peer clients.
+const layerWorkstreamFleetPeerTools = toolkitRegistration(
+  WorkstreamFleetPeerTools.toolkit,
+  WorkstreamFleetPeerTools.handlers,
+);
+
 export const layer = layerMcpTransport(
-  Layer.mergeAll(layerTools, layerToolSearch, layerMilestoneEvents),
+  Layer.mergeAll(layerTools, layerWorkstreamFleetPeerTools, layerToolSearch, layerMilestoneEvents),
 );
