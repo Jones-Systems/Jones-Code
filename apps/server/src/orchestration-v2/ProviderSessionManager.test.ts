@@ -540,6 +540,10 @@ function unimplemented(detail: string) {
   );
 }
 
+type BeforeProviderOpen = (
+  input: ProviderAdapter.ProviderAdapterV2OpenSessionInput,
+) => Effect.Effect<void>;
+
 const makeProviderAdapter = Effect.fnUntraced(function* (
   state: Ref.Ref<TestProviderRuntimeState>,
   options: {
@@ -556,10 +560,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly mcpConfigs?: Ref.Ref<
       ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
     >;
-    readonly beforeOpen?: (input: {
-      readonly providerSessionId: ProviderSessionId;
-      readonly initialProviderItemIdentityVersion?: 2;
-    }) => Effect.Effect<void>;
+    readonly beforeOpen?: BeforeProviderOpen;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
     readonly backgroundTasksEndWithProcess?: boolean;
@@ -776,10 +777,7 @@ function layerTest(input: {
   readonly mcpConfigs?: Ref.Ref<
     ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
   >;
-  readonly beforeOpen?: (input: {
-    readonly providerSessionId: ProviderSessionId;
-    readonly initialProviderItemIdentityVersion?: 2;
-  }) => Effect.Effect<void>;
+  readonly beforeOpen?: BeforeProviderOpen;
   readonly failReleaseEventWrites?: boolean;
   readonly flakyReleaseWrites?: FlakyReleaseWrites;
   readonly pauseAttachWrite?: Parameters<typeof layerPausingAttachEventSink>[0];
@@ -6775,6 +6773,122 @@ it.effect("MCP caller proof requires the original credential on the actual live 
       assert.isFalse(yield* manager.isMcpCallerAttached(caller));
     }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, mcpConfigs })));
   }),
+);
+
+it.effect.each(["saved binding", "changed predecessor"] as const)(
+  "admitting a saved thread to a shared runtime preserves its original predecessor: %s",
+  (scenario) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const lifecycleRef = yield* Ref.make<ProviderAdapter.ProviderRuntimeLifecycle | undefined>(
+        undefined,
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const firstId = ThreadId.make("shared-runtime-first");
+        const savedId = ThreadId.make("shared-runtime-saved");
+        const providerSessionId = ids.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        const saved = {
+          ...makeProviderThread({ idAllocator: ids, threadId: savedId, providerSessionId, now }),
+          runtimeIdentity: {
+            runtimeGeneration: "previous-producer",
+            requested: ProviderAdapter.requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+            observed: ProviderAdapter.unobservedRuntimeIdentity(),
+          },
+        };
+        const writeBinding = (payload: OrchestrationV2ProviderThread) =>
+          Effect.gen(function* () {
+            yield* sink.write({
+              events: [
+                {
+                  id: yield* ids.allocate.event({ threadId: savedId }),
+                  type: "provider-thread.updated",
+                  threadId: savedId,
+                  occurredAt: now,
+                  payload,
+                },
+              ],
+            });
+          });
+        yield* sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator: ids, threadId: firstId, now }),
+            yield* makeThreadCreatedEvent({ idAllocator: ids, threadId: savedId, now }),
+          ],
+        });
+        yield* writeBinding(saved);
+        const open = (threadId: ThreadId) =>
+          manager.open({
+            ...makeTestAdmission().input,
+            threadId,
+            providerSessionId,
+            modelSelection,
+            runtimePolicy,
+          });
+        yield* open(firstId);
+        const runtime = yield* open(savedId);
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+
+        if (scenario === "changed predecessor") {
+          const lifecycle = yield* Ref.get(lifecycleRef);
+          assert.isDefined(lifecycle);
+          const runtimeGeneration = yield* lifecycle!.reserve(firstId);
+          const admission = { runtimeGeneration, threadId: savedId };
+          yield* lifecycle!.admit(admission);
+          const competitor = {
+            ...saved,
+            runtimeIdentity: { ...saved.runtimeIdentity, runtimeGeneration: "other-producer" },
+          };
+          yield* writeBinding(competitor);
+          const error = yield* lifecycle!.admit(admission).pipe(Effect.flip);
+          assert.equal(error._tag, "ProviderRuntimeBindingError");
+          assert.equal(
+            error.message,
+            "Provider runtime binding failed [previous_generation_mismatch].",
+          );
+          assert.equal(
+            (yield* store.getThreadProjection(savedId)).providerThreads[0]?.runtimeIdentity
+              ?.runtimeGeneration,
+            "other-producer",
+          );
+          return;
+        }
+
+        const resumed = yield* runtime.resumeThread({
+          threadId: savedId,
+          providerThread: saved,
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.equal(resumed.id, saved.id);
+        assert.deepEqual(resumed.nativeThreadRef, saved.nativeThreadRef);
+        assert.isDefined(resumed.runtimeIdentity?.runtimeGeneration);
+        assert.notEqual(
+          resumed.runtimeIdentity?.runtimeGeneration,
+          saved.runtimeIdentity.runtimeGeneration,
+        );
+        assert.equal(
+          (yield* store.getThreadProjection(savedId)).providerThreads[0]?.runtimeIdentity
+            ?.runtimeGeneration,
+          resumed.runtimeIdentity?.runtimeGeneration,
+        );
+        assert.equal((yield* Ref.get(state)).resumeCount, 1);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            publishNativeLoads: true,
+            beforeOpen: (input) => Ref.set(lifecycleRef, input.runtimeLifecycle),
+          }),
+        ),
+      );
+    }),
 );
 
 it.effect.each([false, true])(

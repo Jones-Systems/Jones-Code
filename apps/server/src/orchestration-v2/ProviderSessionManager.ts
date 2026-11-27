@@ -718,6 +718,7 @@ export const layerWithOptions = (
           string,
           {
             readonly previous: Map<string, string | null>;
+            readonly capturedThreadIds: Set<ThreadId>;
             readonly bindings: Map<string, ThreadId>;
             readonly invalidated: Set<string>;
           }
@@ -998,6 +999,7 @@ export const layerWithOptions = (
                       thread.runtimeIdentity?.runtimeGeneration ?? null,
                     ]),
                 ),
+                capturedThreadIds: new Set([threadId]),
                 bindings: new Map(),
                 invalidated: new Set(),
               });
@@ -1027,19 +1029,27 @@ export const layerWithOptions = (
                 }),
               );
               const rows = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+              if (reservations.get(runtimeGeneration) !== reservation)
+                return yield* protocolError("The launch reservation was lost.");
+              // A shared producer first sees a sibling's predecessor when admitting that thread.
+              const capturePredecessor = !reservation.capturedThreadIds.has(threadId);
               for (const thread of rows.providerThreads) {
                 if (
                   thread.providerInstanceId === instanceId &&
                   thread.driver === driver &&
                   !reservation.bindings.has(thread.id)
                 ) {
-                  const predecessor = reservation.previous.get(thread.id) ?? null;
-                  if ((thread.runtimeIdentity?.runtimeGeneration ?? null) !== predecessor)
+                  const predecessor = thread.runtimeIdentity?.runtimeGeneration ?? null;
+                  if (capturePredecessor) {
+                    reservation.previous.set(thread.id, predecessor);
+                  } else if (predecessor !== (reservation.previous.get(thread.id) ?? null)) {
                     return yield* protocolError(
                       "The original launch predecessor changed before admission.",
                     );
+                  }
                 }
               }
+              reservation.capturedThreadIds.add(threadId);
             }).pipe(Effect.mapError(protocolError)),
           ),
           prepareBindingPublication,

@@ -3,6 +3,8 @@ import "~/index.css";
 import { createMemoryHistory } from "@tanstack/react-router";
 import { Atom } from "effect/reactivity";
 import type * as Context from "effect/Context";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { ThreadId } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -10,6 +12,7 @@ import type { PersonalWorkstreamsState } from "@t3tools/client-runtime/jones/wor
 import { personalThreadKey } from "@t3tools/client-runtime/jones/workstreams/personal";
 import * as Schema from "effect/Schema";
 import { AppRoot } from "~/AppRoot";
+import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
 import { useThreadRouteTarget } from "~/hooks/useThreadRouteTarget";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
@@ -21,6 +24,7 @@ import {
   dispatchedCommands,
   ENVIRONMENT_ID,
   installFakeEnvironment,
+  PROJECT_ID,
   refreshFakeShell,
   threadWithHistory,
   type FakeDriver,
@@ -295,6 +299,44 @@ it("lays out Unassigned before named Workstreams", async () => {
     expect(order.slice(0, 2).sort()).toEqual(["u1", "u2"]);
     expect(order.slice(2, 7).every((id) => id.startsWith("a"))).toBe(true);
     expect(order[7]).toBe("b1");
+  });
+});
+
+it("places drafts beneath the Workstreams header and visits them before Unassigned", async () => {
+  await withSidebar(async ({ router, rows, visit, step }) => {
+    const draftId = DraftId.make("workstreams-draft");
+    const store = useComposerDraftStore.getState();
+    using _draft = { [Symbol.dispose]: () => store.clearDraftThread(draftId) };
+    await act(() => {
+      store.setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
+        threadId: ThreadId.make("workstreams-draft-thread"),
+      });
+      store.setPrompt(draftId, "Draft for the next workstream");
+    });
+
+    const header = page.getByRole("button", { name: "Hide all Workstreams", exact: true });
+    const draft = page.getByTestId("sidebar-draft-row");
+    const unassigned = page.getByRole("button", { name: "Collapse Unassigned", exact: true });
+    await expect.element(draft).toBeVisible();
+    const bounds = draft.element().getBoundingClientRect();
+    expect(header.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(bounds.top);
+    expect(bounds.bottom).toBeLessThanOrEqual(unassigned.element().getBoundingClientRect().top);
+
+    const firstThread = rows()[0]!;
+    await visit(firstThread);
+    await userEvent.keyboard("{Meta>}{Shift>}[BracketLeft]{/Shift}{/Meta}");
+    await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/draft/${draftId}`));
+    await expect.element(draft).toHaveAttribute("aria-current", "page");
+    await step("next", firstThread);
+    await userEvent.keyboard("{Meta>}1{/Meta}");
+    await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/draft/${draftId}`));
+
+    await act(() => (header.element() as HTMLButtonElement).focus());
+    await userEvent.keyboard("{Enter}");
+    await expect
+      .element(page.getByRole("button", { name: "Show all Workstreams", exact: true }))
+      .toBeVisible();
+    await expect.element(draft).toBeVisible();
   });
 });
 
