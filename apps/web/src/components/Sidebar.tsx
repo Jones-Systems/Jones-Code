@@ -1705,29 +1705,20 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     draftTerminalLabels,
     excludedEnvironmentIds,
   );
-  // Draft rows follow Workstreams when enabled and lead the list otherwise.
   const listedDraftIds = statusFilter === "all" && !isSearchingThreads ? draftIds : EMPTY_DRAFT_IDS;
   const draftIdByRowKey = new Map<string, DraftId>(listedDraftIds.map((id) => [`draft:${id}`, id]));
   const draftRowKeys = [...draftIdByRowKey.keys()];
-  const orderedRowKeys = orderedThreadKeys.toSpliced(
-    workstreamsEnabled ? workstreamActiveThreads.visible.length : 0,
-    0,
-    ...draftRowKeys,
-  );
-  const traversalRowKeys = traversalThreadKeys.toSpliced(
-    workstreamsEnabled ? workstreamActiveThreads.traversal.length : 0,
-    0,
-    ...draftRowKeys,
-  );
+  const orderedRowKeys = [...draftRowKeys, ...orderedThreadKeys];
+  const traversalRowKeys = [...draftRowKeys, ...traversalThreadKeys];
   const routeDraftRowKey = `draft:${routeDraftIdForRows}`;
   const routeRowKey = draftIdByRowKey.has(routeDraftRowKey) ? routeDraftRowKey : routeRowThreadKey;
   const hiddenRowNeighbor = useHiddenPersonalSidebarNeighbor(
     workstreamsEnabled ? routeRowKey : null,
     traversalRowKeys,
     () => [
+      ...draftRowKeys,
       ...workstreamGrouping.ungrouped.map(threadShellKey),
       ...workstreamGrouping.groups.flatMap((group) => group.threads.map(threadShellKey)),
-      ...draftRowKeys,
       ...orderedShelfThreads.map(threadShellKey),
     ],
   );
@@ -4135,6 +4126,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           );
                         };
                         const from = isContextDrag ? null : (dragState?.activeSection ?? null);
+                        const drafts =
+                          listedDraftIds.length > 0 ? (
+                            <SidebarDraftBlock
+                              key="draft-sessions"
+                              draftIds={listedDraftIds}
+                              routeDraftComposer={routeDraftComposer}
+                              terminalLabels={draftTerminalLabels}
+                              jumpLabelByDraftId={draftJumpLabelById}
+                              projectByKey={projectByKey}
+                              projectDisplayNameByKey={projectDisplayNameByKey}
+                              routeDraftId={routeDraftIdForRows}
+                              onNavigateToDraft={navigateToDraft}
+                              onDraftContextMenu={handleDraftContextMenu}
+                            />
+                          ) : null;
                         const items: ReactNode[] = [
                           workstreamsEnabled ? (
                             <li key="native-workstream-groups" className="list-none">
@@ -4142,6 +4148,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 controller={workstreamController.controller}
                                 nameIconProjects={nameIconProjects}
                                 newThreadAction={newWorkstreamThreadAction}
+                                drafts={drafts}
                                 externalDropRef={workstreamExternalDropRef}
                                 canOperate={(thread) =>
                                   readEnvironmentScope(
@@ -4175,21 +4182,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 readReferenceThreads={readWorkstreamReferenceThreads}
                               />
                             </li>
-                          ) : null,
-                          statusFilter === "all" ? (
-                            <SidebarDraftBlock
-                              key="draft-sessions"
-                              draftIds={draftIds}
-                              routeDraftComposer={routeDraftComposer}
-                              terminalLabels={draftTerminalLabels}
-                              jumpLabelByDraftId={draftJumpLabelById}
-                              projectByKey={projectByKey}
-                              projectDisplayNameByKey={projectDisplayNameByKey}
-                              routeDraftId={routeDraftIdForRows}
-                              onNavigateToDraft={navigateToDraft}
-                              onDraftContextMenu={handleDraftContextMenu}
-                            />
-                          ) : null,
+                          ) : (
+                            drafts
+                          ),
                         ];
                         for (const item of sidebarListItems) {
                           if (item.kind === "thread") {
