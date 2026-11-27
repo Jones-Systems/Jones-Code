@@ -1,6 +1,7 @@
 import type { DesktopBridge, EnvironmentId } from "@t3tools/contracts";
 import { AuthOrchestrationOperateScope, sessionGrantsScope } from "@t3tools/contracts";
-import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { JonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
+import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentSession } from "../../state/session";
 import type { EnvironmentPresentation } from "../../state/environments";
@@ -10,6 +11,19 @@ import { requestConfirmDialog } from "../../confirmDialog";
 import type { InstallStatusDevice } from "./panelUi";
 import type { InstallPlanServices } from "./services";
 import { chooseRecoveryPolicy } from "./recoveryReview";
+
+export const runJonesOperation: InstallPlanServices["operation"] = async (environmentId, input) => {
+  const result = await runAtomCommand(
+    appAtomRegistry,
+    jonesUpdates.operation,
+    { environmentId, input },
+    { reportFailure: false, reportDefect: false },
+  );
+  if (result._tag === "Success") return result.value;
+  const error = squashAtomCommandFailure(result);
+  if (error instanceof JonesOperationNotSentError) throw error;
+  throw new Error("The operation has no acknowledged receipt.");
+};
 
 export function productionInstallPlanServices(
   bridge: DesktopBridge,
@@ -36,6 +50,7 @@ export function productionInstallPlanServices(
       observation,
       canOperate:
         session._tag === "Success" &&
+        !session.waiting &&
         session.value.authenticated &&
         sessionGrantsScope(session.value, AuthOrchestrationOperateScope),
       ...(observed.get(environmentId)?.lastObservedAt === undefined
@@ -91,16 +106,7 @@ export function productionInstallPlanServices(
         throw new Error("The update request has no acknowledged result.");
       return result.value;
     },
-    operation: async (environmentId, input) => {
-      const result = await runAtomCommand(
-        appAtomRegistry,
-        jonesUpdates.operation,
-        { environmentId, input },
-        { reportFailure: false, reportDefect: false },
-      );
-      if (result._tag !== "Success") throw new Error("The operation has no acknowledged receipt.");
-      return result.value;
-    },
+    operation: runJonesOperation,
     stop: async (environmentId, input) => {
       const result = await runAtomCommand(
         appAtomRegistry,

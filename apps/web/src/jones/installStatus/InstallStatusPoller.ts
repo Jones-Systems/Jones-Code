@@ -3,6 +3,7 @@ import {
   createStatusPoller,
   deviceHasRecoveryDuty,
   deviceStatusActive,
+  isProvisionalUnsupportedReceipt,
   type StatusPollerOptions,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { getDocumentActivity, subscribeDocumentActivity } from "../../lib/documentActivity";
@@ -87,7 +88,15 @@ export function startInstallStatusPoller(
       });
     const device = archiveDevice(id);
     const planId = store.get().historyPlanId;
-    if (device === undefined || !deviceHasRecoveryDuty(device) || planId === null) return;
+    if (
+      device === undefined ||
+      planId === null ||
+      (!deviceHasRecoveryDuty(device) &&
+        !device.operations.some(
+          ({ receipt }) => receipt !== undefined && isProvisionalUnsupportedReceipt(receipt),
+        ))
+    )
+      return;
     const history = await readTargetPlan(binding, { planId, archived: true });
     if (current() && history.plan !== null && nativePlanIssue(history.result) === undefined)
       await refreshDeviceEvidence(binding, environmentId, history.plan, observed, {

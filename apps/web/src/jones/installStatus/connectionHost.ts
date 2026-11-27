@@ -1,16 +1,21 @@
-import type { EnvironmentId } from "@t3tools/contracts";
-import type { JonesAction } from "@t3tools/client-runtime/jones/updates";
+import { AuthOrchestrationReadScope, type EnvironmentId } from "@t3tools/contracts";
+import {
+  JonesOperationNotSentError,
+  type JonesAction,
+} from "@t3tools/client-runtime/jones/updates";
 import type { JonesExecutorHost } from "@t3tools/client-runtime/jones/updates/executor";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { jonesUpdates } from "../updates/jonesUpdates";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
+import { readEnvironmentScopeAccess } from "../../state/session";
 import { requestConfirmDialog } from "../../confirmDialog";
-import { installPlanServices, requestInstallPlan } from "./services";
-import { validateReceipt } from "@t3tools/client-runtime/jones/install-plan";
+import { hasOperationReadScope, installPlanServices, requestInstallPlan } from "./services";
+import { validateOperationEvidence } from "@t3tools/client-runtime/jones/install-plan";
 import { chooseRecoveryPolicy } from "./recoveryReview";
 import { pendingJonesOperationId, reconcileJonesExecution } from "./execution";
 import type { WebReviewAuthority } from "./webReviewAuthority";
 import { webJonesJournal, reconcileNativeJonesDuty } from "./executionJournal";
+import { runJonesOperation } from "./production";
 
 export function connectionExecutorHost(
   environmentId: EnvironmentId,
@@ -29,23 +34,20 @@ export function connectionExecutorHost(
       authority === undefined
         ? Promise.resolve(requestConfirmDialog(message)).then((result) => result ?? false)
         : authority.wait(async () => (await requestConfirmDialog(message)) ?? false, false),
-    start: async (input) => {
-      if (!readLatest().canOperate)
-        throw new Error("This control no longer authorizes the action.");
-      const result = await runAtomCommand(
-        appAtomRegistry,
-        jonesUpdates.operation,
-        { environmentId, input: { action: "operationStart", input } },
-        { reportFailure: false, reportDefect: false },
-      );
-      if (result._tag !== "Success" || !("operationId" in result.value))
-        throw new Error("Operation acceptance is not confirmed.");
-      const receipt = result.value;
+    start: async (input, beforeSend) => {
+      if (!readLatest().canOperate) throw new JonesOperationNotSentError({});
       const binding = installPlanServices();
+      const receipt = await runJonesOperation(environmentId, {
+        action: "operationStart",
+        input,
+        ...(beforeSend === undefined ? {} : { beforeSend }),
+      });
+      if (!("operationId" in receipt)) throw new Error("Operation acceptance is not confirmed.");
       if (
         binding !== undefined &&
+        hasOperationReadScope(binding.services, environmentId) &&
         input.correlation !== undefined &&
-        validateReceipt(input, receipt)
+        validateOperationEvidence(input, receipt)
       )
         await requestInstallPlan(
           {
@@ -86,7 +88,11 @@ export async function readUnresolvedJonesExecution(environmentId: EnvironmentId)
     await reconcileNativeJonesDuty(result);
   }
   const operationId = pendingJonesOperationId(environmentId);
-  if (operationId === undefined) return;
+  if (
+    operationId === undefined ||
+    readEnvironmentScopeAccess(environmentId, AuthOrchestrationReadScope).status !== "granted"
+  )
+    return;
   const result = await runAtomCommand(
     appAtomRegistry,
     jonesUpdates.operation,
@@ -96,8 +102,13 @@ export async function readUnresolvedJonesExecution(environmentId: EnvironmentId)
     },
     { reportFailure: false, reportDefect: false },
   );
-  if (result._tag === "Success" && "receipts" in result.value) {
-    const receipt = result.value.receipts.find((r) => r.operationId === operationId)?.receipt;
-    if (receipt != null) await reconcileJonesExecution(environmentId, receipt);
-  }
+  if (
+    result._tag !== "Success" ||
+    !("receipts" in result.value) ||
+    result.value.receipts.length !== 1
+  )
+    return;
+  const exact = result.value.receipts[0];
+  if (exact?.operationId === operationId && exact.receipt !== null)
+    await reconcileJonesExecution(environmentId, exact.receipt, { ledgerRead: true });
 }

@@ -18,6 +18,7 @@ import type {
 } from "@t3tools/contracts/jones/installPlan";
 import type {
   JonesRecoveryPreflight,
+  JonesOperationAdmission,
   JonesOperationReceipt,
 } from "@t3tools/contracts/jones/jonesOperations";
 import * as Effect from "effect/Effect";
@@ -341,33 +342,345 @@ it("keeps ordinary Done separate from closing a plan superseded by a manual inst
   expect(next.state.current?.planId).not.toBe(plan.planId);
 });
 
+const downloadRequest = (planId: string) =>
+  ({
+    type: "claim",
+    planId,
+    environmentId: remote,
+    claimant: "window-a",
+    step: "download",
+    explicit: false,
+    action: { kind: "download-exact", targetSource: source },
+    expectedInstalledSource: old,
+  }) as const;
+const cancelRequest = (plan: { planId: string; revision: number }) =>
+  ({
+    type: "cancel-plan",
+    planId: plan.planId,
+    expectedRevision: plan.revision,
+  }) as const;
+const reportRequest = (planId: string, receipt: JonesOperationReceipt, ledgerRead?: true) =>
+  ({
+    type: "report",
+    planId,
+    environmentId: receipt.environmentId,
+    operationId: receipt.operationId,
+    evidence: { kind: "receipt", receipt, ...(ledgerRead === undefined ? {} : { ledgerRead }) },
+  }) as const;
+
+describe("bound host operation grants", () => {
+  it.each(["operations", "follower-operations"] as const)(
+    "records the native-selected admission for Download and a reviewed Install on %s",
+    async (route) => {
+      const f = fixture();
+      const enrollmentId = id(110);
+      const plan = await f.start([
+        route === "operations" ? selection : { ...selection, route, enrollmentId },
+      ]);
+      const claim = { ...downloadRequest(plan.planId), boundAdmission: 1 } as const;
+      const send = f.coordinator.request;
+      let admission: JonesOperationAdmission = { kind: "ordinary" };
+      if (route === "follower-operations") {
+        expect((await send({ ...claim, expectedInstalledSource: source })).refused?.code).toBe(
+          "directive-required",
+        );
+        const setup = await send({
+          ...claim,
+          step: "directive",
+          enrollmentId,
+          expectedDirectiveId: null,
+        });
+        expect(setup.grant?.request.kind).toBe("plan-directive");
+        const directiveId = setup.grant!.operationId;
+        const report = (observedId: string, targetTree = tree) =>
+          send({
+            type: "report",
+            planId: plan.planId,
+            environmentId: remote,
+            operationId: directiveId,
+            evidence: {
+              kind: "directive",
+              status: {
+                environmentId: remote,
+                operationProtocol: 1,
+                planDirectiveProtocol: 1,
+                enrollment: {
+                  environmentId: remote,
+                  enrollmentId,
+                  enabled: true,
+                  continueRunningThreads: false,
+                },
+                operation: null,
+                update: null,
+                follower: {
+                  protocol: 1,
+                  state: "waiting-for-leader",
+                  leaderSource: null,
+                  planDirective: {
+                    directiveId: observedId,
+                    targetSource: source,
+                    targetTree,
+                    mode: "manual-review",
+                    issuedAt: timestamp,
+                  },
+                },
+              },
+            },
+          });
+        expect((await report(id(111))).refused?.code).toBe("invalid-evidence");
+        expect((await report(directiveId, old)).refused?.code).toBe("invalid-evidence");
+        expect((await send(claim)).grant).toBeUndefined();
+        expect((await report(directiveId)).refused).toBeUndefined();
+        admission = {
+          kind: "follower",
+          enrollmentId,
+          directiveId,
+          targetSource: source,
+          targetTree: tree,
+        };
+      }
+
+      const before = f.snapshot();
+      for (const forged of [
+        { ...claim, boundAdmission: 2 },
+        { ...claim, admission },
+        { ...claim, action: { ...claim.action, admission } },
+        { ...claim, enrollmentId: id(111) },
+      ]) {
+        expect(await send(forged as JonesInstallPlanRequest)).toMatchObject({
+          refused: { code: "invalid-evidence" },
+        });
+        expect(f.snapshot()).toBe(before);
+      }
+      expect(before.document.schema).toBe(2);
+      const downloaded = await send(claim);
+      const grant = downloaded.grant!;
+      expect(grant.request).toMatchObject({
+        kind: "operation-start",
+        input: { admission, correlation: { planId: plan.planId, deviceKey: remote } },
+      });
+      expect(downloaded.state).toMatchObject({ schema: 1, view: { boundAdmission: 1 } });
+      expect(f.snapshot().document.schema).toBe(3);
+      const retained = f.snapshot();
+      expect(
+        (await send({ ...downloadRequest(plan.planId), operationId: grant.operationId })).grant,
+      ).toEqual(grant);
+      expect(f.snapshot()).toBe(retained);
+
+      const staged = f.receipt(grant, "completed");
+      const { admission: _admission, ...unbound } = staged;
+      const replacement: JonesOperationAdmission =
+        admission.kind === "follower"
+          ? { ...admission, directiveId: id(111) }
+          : {
+              kind: "follower",
+              enrollmentId,
+              directiveId: id(111),
+              targetSource: source,
+              targetTree: tree,
+            };
+      for (const wrong of [
+        unbound,
+        { ...staged, admission: replacement },
+        { ...staged, staged: { ...staged.staged!, sourceTree: old } },
+        { ...staged, forged: true },
+      ]) {
+        expect((await send(reportRequest(plan.planId, wrong, true))).refused?.code).toBe(
+          "invalid-evidence",
+        );
+        expect(f.snapshot()).toBe(retained);
+      }
+      expect((await send(reportRequest(plan.planId, staged))).refused).toBeUndefined();
+      const action = {
+        kind: "install",
+        stagedHandle: "stage",
+        currentVersion: "old",
+        targetSource: source,
+      } as const;
+      const review = {
+        stagedHandle: action.stagedHandle,
+        currentVersion: action.currentVersion,
+        targetSource: source,
+        expectedInstalledSource: old,
+        reviewedAt: timestamp,
+      };
+      const install = { ...claim, step: "install", explicit: true, action, review } as const;
+      expect(
+        (await send({ ...install, action: { ...action, stagedHandle: "same-source-replacement" } }))
+          .refused?.code,
+      ).toBe("invalid-evidence");
+      expect((await send(install)).grant?.request).toMatchObject({
+        kind: "operation-start",
+        input: { admission, action },
+      });
+    },
+  );
+
+  it("keeps a legacy reservation and its fence unbound when a later claim negotiates admission", async () => {
+    const f = fixture();
+    const plan = await f.start();
+    const request = downloadRequest(plan.planId);
+    const grant = (await f.coordinator.request(request)).grant!;
+    expect(grant.request.input).not.toHaveProperty("admission");
+    const before = f.snapshot();
+    expect(before.document.schema).toBe(2);
+    const replay = { ...request, operationId: grant.operationId, boundAdmission: 1 } as const;
+    expect((await f.coordinator.request(replay)).grant).toEqual(grant);
+    expect(f.snapshot()).toBe(before);
+    f.advance();
+    const fence = await f.coordinator.request({ ...replay, step: "fence", explicit: true });
+    expect(fence.grant?.request).toEqual({ kind: "operation-fence", input: grant.request.input });
+    expect(f.snapshot().document.schema).toBe(2);
+  });
+
+  it.each(["active", "archived"] as const)(
+    "stops and fences only the original bound operations in an %s plan",
+    async (scope) => {
+      const f = fixture();
+      const other = { ...selection, environmentId: EnvironmentId.make("unseen") };
+      const plan = await f.start([selection, other]);
+      const request = { ...downloadRequest(plan.planId), boundAdmission: 1 } as const;
+      const send = f.coordinator.request;
+      const running = (await send(request)).grant!;
+      const unseen = (await send({ ...request, environmentId: other.environmentId })).grant!;
+      const accepted = f.receipt(running);
+      expect((await send(reportRequest(plan.planId, accepted))).refused).toBeUndefined();
+      if (scope === "archived")
+        expect((await send(cancelRequest(f.snapshot().document.current!))).refused).toBeUndefined();
+      f.advance();
+      const recover = (grant: JonesInstallPlanGrant, step: "stop" | "fence") => {
+        const { current, last } = f.snapshot().document;
+        return send({
+          type: "claim",
+          planId: plan.planId,
+          expectedRevision: (current ?? last)!.revision,
+          environmentId: grant.environmentId,
+          claimant: "recovery",
+          step,
+          explicit: true,
+          operationId: grant.operationId,
+        });
+      };
+      const stop = await recover(running, "stop");
+      expect(stop.grant?.request).toMatchObject({
+        kind: "operation-stop",
+        input: { operationId: running.operationId, environmentId: remote },
+      });
+      if (stop.grant?.request.kind !== "operation-stop") throw new Error("Expected Stop grant.");
+      const fence = await recover(unseen, "fence");
+      expect(fence.grant?.request).toEqual({
+        kind: "operation-fence",
+        input: unseen.request.input,
+      });
+      const { acceptedAt: _acceptedAt, ...unseenReceipt } = f.receipt(unseen);
+      const tombstone = { ...unseenReceipt, phase: "fenced" } as const;
+      const { admission: _bound, ...unbound } = tombstone;
+      expect((await send(reportRequest(plan.planId, unbound, true))).refused?.code).toBe(
+        "invalid-evidence",
+      );
+      expect((await send(reportRequest(plan.planId, tombstone))).refused).toBeUndefined();
+      const stopped = {
+        ...accepted,
+        phase: "stopped",
+        stop: {
+          stopId: stop.grant.request.input.stopId,
+          requestedAt: timestamp,
+          result: "stopped",
+        },
+      } as const;
+      expect((await send(reportRequest(plan.planId, stopped))).refused).toBeUndefined();
+      if (scope === "archived") {
+        expect((await send(request)).refused?.code).toBe("plan-mismatch");
+        const history = await send({ type: "read-history", planId: plan.planId });
+        expect(history.state.current).toBeNull();
+        expect(history.state.recoveryHistory).toEqual([]);
+        expect(history.historyPlan?.devices[1]?.operations[0]?.receipt).toEqual(tombstone);
+      }
+    },
+  );
+
+  it("settles a new preacceptance unsupported receipt only after a positive exact ledger read", async () => {
+    const f = fixture();
+    const plan = await f.start();
+    const grant = (await f.claim(plan.planId)).grant!;
+    f.advance();
+    const fence = await f.coordinator.request({
+      ...downloadRequest(plan.planId),
+      step: "fence",
+      operationId: grant.operationId,
+    });
+    expect(fence.grant?.request.kind).toBe("operation-fence");
+    const { acceptedAt: _acceptedAt, ...payload } = f.receipt(grant);
+    const unsupported = { ...payload, phase: "refused", code: "unsupported" } as const;
+    const before = f.snapshot();
+    expect(
+      (await f.coordinator.request(reportRequest(plan.planId, unsupported))).refused?.code,
+    ).toBe("invalid-evidence");
+    expect(f.snapshot()).toBe(before);
+    const exact = await f.coordinator.request(reportRequest(plan.planId, unsupported, true));
+    expect(exact.refused).toBeUndefined();
+    expect(exact.state.current?.devices[0]?.operations[0]?.receipt).toEqual(unsupported);
+  });
+
+  it("corrects an archived legacy unsupported result with terminal ledger proof and preserves its replay identity", async () => {
+    const f = fixture();
+    const plan = await f.start();
+    const claim = {
+      ...downloadRequest(plan.planId),
+      expectedRevision: plan.revision,
+      command: {
+        commandId: id(111),
+        environmentId: remote,
+        action: "download-exact",
+        targetSource: source,
+        planId: plan.planId,
+        expectedRevision: plan.revision,
+      },
+    } as const;
+    const send = f.coordinator.request;
+    const issued = await send(claim);
+    const exact = f.receipt(issued.grant!, "completed");
+    f.advance();
+    const { acceptedAt: _acceptedAt, ...scope } = f.receipt(issued.grant!);
+    const provisional = { ...scope, phase: "refused", code: "unsupported" } as const;
+    // Reproduce a terminal result already recorded by a desktop before this change.
+    const current = f.snapshot().document.current!;
+    const [device] = current.devices;
+    await f.options.store.transact(async (snapshot) => ({
+      ...snapshot,
+      document: {
+        ...snapshot.document,
+        current: {
+          ...current,
+          devices: [
+            { ...device!, operations: [{ ...device!.operations[0]!, receipt: provisional }] },
+          ],
+        },
+      },
+      result: undefined,
+    }));
+    expect((await send(cancelRequest(current))).state.recoveryHistory).toEqual([]);
+    expect((await send(claim)).command).toMatchObject({ outcome: "terminal", code: "unsupported" });
+    const before = f.snapshot();
+    expect((await send(reportRequest(plan.planId, exact))).refused?.code).toBe("invalid-evidence");
+    expect(
+      (await send(reportRequest(plan.planId, { ...exact, admission: { kind: "ordinary" } }, true)))
+        .refused?.code,
+    ).toBe("invalid-evidence");
+    expect(
+      (await send(reportRequest(plan.planId, f.receipt(issued.grant!), true))).refused?.code,
+    ).toBe("invalid-evidence");
+    expect(f.snapshot()).toBe(before);
+    const corrected = await send(reportRequest(plan.planId, exact, true));
+    expect(corrected.state.last?.devices[0]?.operations[0]?.receipt).toEqual(exact);
+    expect(corrected.state.current).toBeNull();
+    expect(corrected.state.recoveryHistory).toEqual([]);
+    expect((await send(claim)).command).toEqual({ ...issued.command, outcome: "terminal" });
+  });
+});
+
 describe("closed plan recovery", () => {
   const peer = { ...selection, environmentId: EnvironmentId.make("peer"), label: "Peer" };
-  const downloadRequest = (planId: string) =>
-    ({
-      type: "claim",
-      planId,
-      environmentId: remote,
-      claimant: "window-a",
-      step: "download",
-      explicit: false,
-      action: { kind: "download-exact", targetSource: source },
-      expectedInstalledSource: old,
-    }) as const;
-  const cancelRequest = (plan: { planId: string; revision: number }) =>
-    ({
-      type: "cancel-plan",
-      planId: plan.planId,
-      expectedRevision: plan.revision,
-    }) as const;
-  const reportRequest = (planId: string, receipt: JonesOperationReceipt) =>
-    ({
-      type: "report",
-      planId,
-      environmentId: receipt.environmentId,
-      operationId: receipt.operationId,
-      evidence: { kind: "receipt", receipt },
-    }) as const;
 
   it.each(["claim", "close"])(
     "serializes %s first and gives no forward grant after closure",
@@ -624,6 +937,7 @@ describe("closed plan recovery", () => {
     const request = {
       ...downloadRequest(a.planId),
       explicit: true,
+      boundAdmission: 1,
       command: {
         commandId: id(105),
         environmentId: remote,
@@ -812,10 +1126,12 @@ describe("closed plan recovery", () => {
       select: [selection, peer],
     });
     const active = start.state.current!;
-    const first = await f.coordinator.request(downloadRequest(active.planId));
+    const request = { ...downloadRequest(active.planId), boundAdmission: 1 } as const;
+    const first = await f.coordinator.request(request);
     expect(first.grant).toBeDefined();
+    expect(f.snapshot().document.schema).toBe(3);
     const excess = await f.coordinator.request({
-      ...downloadRequest(active.planId),
+      ...request,
       environmentId: peer.environmentId,
     });
     expect(excess.refused?.code).toBe("bounds");
@@ -2084,6 +2400,7 @@ describe("native client command reservations", () => {
       { ...terminal, operationId: id(87) },
       { ...terminal, correlation: { ...terminal.correlation!, planId: last.planId } },
       { ...terminal, action: { kind: "download-exact" as const, targetSource: old } },
+      { ...terminal, admission: { kind: "ordinary" as const } },
       { ...terminal, phase: "running" as const, code: "launcher-unconfirmed" },
     ]) {
       expect((await settle(wrong)).refused?.code).toBe("invalid-evidence");

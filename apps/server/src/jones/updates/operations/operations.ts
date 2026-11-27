@@ -14,6 +14,7 @@ import type {
   JonesRecoverCleanupInput,
   JonesRecoverCleanupResult,
 } from "@t3tools/contracts/jones/jonesOperations";
+import type { FleetEnrollment } from "@t3tools/contracts/jones/fleet-updates";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import {
   JonesUpdater,
@@ -25,8 +26,12 @@ import { followerTargetRefusal } from "../followerPolicy.ts";
 import type { OperationReconciliation } from "../launcherOperation.ts";
 import { inspectHeldPreparationCleanup } from "../preparation/nativeEffectsRecovery.ts";
 import type { PreparationSupervisor } from "../preparation/supervisor.ts";
-import { serialized } from "../../fleetUpdates/store.ts";
-import { type OperationLedger, operationReceipt, operationTombstone } from "./ledger.ts";
+import {
+  type FleetFollowerRecord,
+  type FleetHostStore,
+  serialized,
+} from "../../fleetUpdates/store.ts";
+import { type OperationLedger, replayOperationFence, replayOperationReceipt } from "./ledger.ts";
 
 const targetOf = (r: JonesOperationStartInput) =>
   r.action.kind === "download" ? r.action.sourceSha : r.action.targetSource;
@@ -36,7 +41,7 @@ const beforeWorker = (r: JonesOperationReceipt) =>
   r.acceptedAt !== undefined &&
   r.jobId === undefined &&
   (r.phase === "accepted" || (r.phase === "stop-requested" && r.action.kind !== "install"));
-const bindingMatches = (r: JonesOperationReceipt, state: JonesUpdateState) =>
+const bindingMatches = (r: JonesOperationStartInput, state: JonesUpdateState) =>
   r.action.kind === "install" &&
   state.environmentId === r.environmentId &&
   state.installedSource?.sha === r.expectedInstalledSource &&
@@ -44,9 +49,52 @@ const bindingMatches = (r: JonesOperationReceipt, state: JonesUpdateState) =>
   state.stagedHandle === r.action.stagedHandle &&
   state.provenance?.sourceSha === r.action.targetSource;
 
+const requiresOperationRoute = (input: JonesOperationStartInput) =>
+  input.correlation !== undefined || input.admission !== undefined;
+
+function operationRouteRefusal(
+  input: JonesOperationStartInput,
+  state: JonesUpdateState,
+  enrollment: FleetEnrollment | null,
+  follower: FleetFollowerRecord | null,
+): string | undefined {
+  const { admission } = input;
+  if (admission === undefined)
+    return enrollment === null ? undefined : "admission-binding-required";
+  if (input.correlation === undefined) return "admission-route-changed";
+  if (admission.kind === "ordinary")
+    return enrollment?.enabled === true ? "admission-route-changed" : undefined;
+  const directive = follower?.directive;
+  const provenance = state.provenance;
+  if (
+    input.environmentId !== state.environmentId ||
+    enrollment?.environmentId !== input.environmentId ||
+    enrollment.enabled !== true ||
+    enrollment.enrollmentId !== admission.enrollmentId ||
+    directive?.enrollmentId !== admission.enrollmentId ||
+    directive.directiveId !== admission.directiveId ||
+    directive.targetSource !== admission.targetSource ||
+    directive.targetTree !== admission.targetTree ||
+    targetOf(input) !== admission.targetSource ||
+    (provenance?.sourceSha === admission.targetSource &&
+      provenance.sourceTree !== admission.targetTree) ||
+    (input.action.kind === "install" && !bindingMatches(input, state))
+  )
+    return "admission-route-changed";
+  return undefined;
+}
+
+function operationRouteSupported(input: JonesOperationStartInput, state: JonesUpdateState) {
+  return (
+    state.capability.operations === 1 &&
+    (input.admission === undefined || state.capability.boundAdmission === 1)
+  );
+}
+
 export function createTargetOperations(options: {
   readonly key: string;
   readonly ledger: OperationLedger;
+  readonly fleetStore: FleetHostStore;
   readonly updater: JonesUpdater;
   readonly preparation: PreparationSupervisor;
   readonly refreshPolicy: () => Promise<unknown>;
@@ -70,7 +118,7 @@ export function createTargetOperations(options: {
     readonly observed: (operationId: string) => Promise<"clone" | "copy" | undefined>;
   };
 }) {
-  const { ledger, updater, preparation } = options;
+  const { ledger, updater, preparation, fleetStore } = options;
   const active = new Map<string, AbortController>();
   const lifecycleHolds = new Set<string>();
   const cleanupReviews = new Map<
@@ -85,41 +133,42 @@ export function createTargetOperations(options: {
   let recoveryFailed = false;
   const gate = <A>(f: () => Promise<A>) => serialized(`target-operations:${options.key}`, f);
   const publish = (receipt: JonesOperationReceipt) => {
-    if (receipt.environmentId === updater.snapshot().environmentId)
+    if (
+      receipt.code !== "operation-conflict" &&
+      receipt.environmentId === updater.snapshot().environmentId
+    )
       updater.recordOperation(receipt);
+    return receipt;
+  };
+  const inEnvironment = (
+    receipt: JonesOperationReceipt | null,
+    environmentId: JonesOperationReadInput["environmentId"],
+  ) => {
+    if (receipt !== null && receipt.environmentId !== environmentId)
+      throw new Error("Operation receipt environment binding changed.");
     return receipt;
   };
   const readBoundReceipt = async (
     environmentId: JonesOperationReadInput["environmentId"],
     id: string,
-  ) => {
-    const receipt = await ledger.read(id);
-    if (receipt !== null && receipt.environmentId !== environmentId)
-      throw new Error("Operation receipt environment binding changed.");
-    return receipt;
-  };
+  ) => inEnvironment(await ledger.read(id), environmentId);
   const change = async (id: string, f: (old: JonesOperationReceipt) => JonesOperationReceipt) =>
     publish(await ledger.transition(id, f));
   const patch = (id: string, fields: Partial<JonesOperationReceipt>) =>
     change(id, (old) => ({ ...old, ...fields }));
-  const refuse = async (input: JonesOperationStartInput, code: string) =>
-    publish(
-      (
-        await ledger.refuse(
-          input,
-          code,
-          "This request did not start; refresh the host's exact update state before choosing another action.",
-        )
-      ).receipt,
+  const recordRefusal = (input: JonesOperationStartInput, code: string) =>
+    ledger.refuse(
+      input,
+      code,
+      "This request did not start; refresh the host's exact update state before choosing another action.",
     );
-  const replay = async (input: JonesOperationStartInput, retained: JonesOperationReceipt) => {
+  const replay = (input: JonesOperationStartInput, retained: JonesOperationReceipt) => {
     if (
       retained.environmentId !== updater.snapshot().environmentId &&
       !(retained.phase === "refused" && retained.acceptedAt === undefined)
     )
       throw new Error("Start environment binding changed.");
-    publish(retained);
-    return (await ledger.accept(input)).receipt;
+    return replayOperationReceipt(publish(retained), input);
   };
   const finishStop = (
     r: JonesOperationReceipt,
@@ -165,6 +214,8 @@ export function createTargetOperations(options: {
       state.stagedHandle === undefined ||
       p === undefined ||
       p.sourceSha !== targetOf(r) ||
+      (r.admission?.kind === "follower" && p.sourceTree !== r.admission.targetTree) ||
+      (r.action.kind === "download" && p.artifactId !== r.action.artifactId) ||
       state.environmentId !== r.environmentId ||
       state.installedSource?.sha !== r.expectedInstalledSource
     )
@@ -349,6 +400,16 @@ export function createTargetOperations(options: {
       return;
     }
     if (input.action.kind === "install") {
+      if (input.admission?.kind === "follower") {
+        const state = updater.snapshot();
+        if (
+          !bindingMatches(input, state) ||
+          state.provenance?.sourceTree !== input.admission.targetTree
+        ) {
+          await patch(id, { phase: "refused", code: "stale-binding" });
+          return;
+        }
+      }
       receipt = await patch(id, { phase: "running" }); // durable dispatch marker, before the native call
       const action = input.action;
       let refusal: JonesInstallBeforeDispatchRefusal | undefined;
@@ -371,6 +432,16 @@ export function createTargetOperations(options: {
       operationId: id,
       signal: controller.signal,
       onReserved: async (jobId: string) => {
+        if (input.admission?.kind === "follower") {
+          const provenance = updater.snapshot().provenance;
+          if (
+            provenance?.sourceSha !== input.admission.targetSource ||
+            provenance.sourceTree !== input.admission.targetTree
+          )
+            throw new Error(
+              "The discovered artifact does not match this operation's source and tree.",
+            );
+        }
         await change(id, (r) => {
           if (r.stop !== undefined || controller.signal.aborted)
             throw new PreparationStopRequested(id);
@@ -536,109 +607,121 @@ export function createTargetOperations(options: {
         throw cause;
       }
     });
-  return {
-    start: async (input: JonesOperationStartInput) => {
-      const admission = await gate(async () => {
-        const old = await ledger.read(input.operationId);
-        if (old !== null) return { kind: "receipt" as const, receipt: await replay(input, old) };
-        if (updater.snapshot().capability.operations !== 1)
-          return { kind: "receipt" as const, receipt: await refuse(input, "unsupported") };
-        if (
-          active.size > 0 ||
-          recoveryFailed ||
-          updater.admissionHeld() ||
-          ["preparing", "installing"].includes(updater.snapshot().phase)
-        )
-          return { kind: "receipt" as const, receipt: await refuse(input, "busy") };
-        return { kind: "reservation" as const, reservation: updater.reserveCheckAdmission() };
-      });
-      if (admission.kind === "receipt") return admission.receipt;
-      try {
-        // Do not hold the receipt gate while joining discovery: a lost send can still be fenced.
-        await admission.reservation.ready;
-        return await gate(async () => {
-          const old = await ledger.read(input.operationId);
-          if (old !== null) return replay(input, old);
-          await options.refreshPolicy();
-          const s = updater.snapshot();
-          const a = input.action;
-          let code: string | undefined;
-          if (s.capability.operations !== 1) code = "unsupported";
-          else if (
-            input.environmentId !== s.environmentId ||
-            input.expectedInstalledSource !== s.installedSource?.sha
-          )
-            code = "stale-binding";
-          else if (targetOf(input) === s.installedSource?.sha) code = "already-installed";
-          else if (a.kind === "install" ? !s.capability.install : !s.capability.download)
-            code = "unsupported";
-          else if (
-            a.kind === "download-exact" &&
-            (s.capability.exactSource !== true || !s.capability.check)
-          )
-            code = "unsupported";
-          else if (a.kind === "install" && !bindingMatches(operationReceipt(input, "accepted"), s))
-            code = "stale-binding";
-          else if (
-            a.kind === "download" &&
-            (s.provenance?.artifactId !== a.artifactId || s.provenance.sourceSha !== a.sourceSha)
-          )
-            code = "stale-binding";
-          else if (
-            a.kind !== "install" &&
-            s.stagedHandle !== undefined &&
-            s.provenance?.sourceSha !== targetOf(input)
-          )
-            code = "another-stage";
-          else if (
-            followerTargetRefusal(
-              s.policy,
-              targetOf(input),
-              s.provenance?.sourceSha === targetOf(input) ? s.provenance.sourceTree : undefined,
-            ) !== undefined
-          )
-            code = "follower-policy";
-          else if (
-            active.size > 0 ||
-            recoveryFailed ||
-            updater.admissionHeld() ||
-            ["preparing", "installing"].includes(s.phase)
-          )
-            code = "busy";
-          else if (a.kind === "install" && a.recovery !== undefined)
-            code =
-              options.recovery === undefined || s.capability.recoveryPolicy !== 1
-                ? "recovery-unsupported"
-                : options.recovery.validate(a.recovery, {
-                    environmentId: input.environmentId,
-                    stagedHandle: a.stagedHandle,
-                    currentVersion: a.currentVersion,
-                    expectedInstalledSource: input.expectedInstalledSource,
-                  });
-          if (code !== undefined) return refuse(input, code);
-          const accepted = await ledger.accept(input);
-          if (accepted.created && accepted.receipt.phase === "accepted") {
-            const controller = new AbortController();
-            active.set(input.operationId, controller);
-            // Acceptance is the response; the durable dispatch continues independently of HTTP lifetime.
-            void execute(input, controller)
-              .catch(async () => {
-                const r = await ledger.read(input.operationId);
-                if (r !== null && !terminal(r)) {
-                  if (r.action.kind === "install") await reconcileInstall(r);
-                  else if (beforeWorker(r)) await interruptBeforeWorker(r.operationId);
-                  else await held(r);
-                }
-              })
-              .catch(options.onFailure)
-              .finally(() => active.delete(input.operationId));
-          }
-          return publish(accepted.receipt);
-        });
-      } finally {
-        admission.reservation.release();
+  const admissionBusy = (state: JonesUpdateState) =>
+    active.size > 0 ||
+    recoveryFailed ||
+    updater.admissionHeld() ||
+    ["preparing", "installing"].includes(state.phase);
+  const startRefusal = (input: JonesOperationStartInput, s: JonesUpdateState) => {
+    const a = input.action;
+    const target = targetOf(input);
+    if (!operationRouteSupported(input, s)) return "operation-admission-disabled";
+    if (
+      input.environmentId !== s.environmentId ||
+      input.expectedInstalledSource !== s.installedSource?.sha
+    )
+      return "stale-binding";
+    if (target === s.installedSource?.sha) return "already-installed";
+    if (a.kind === "install" ? !s.capability.install : !s.capability.download)
+      return "action-unsupported";
+    if (a.kind === "download-exact" && (s.capability.exactSource !== true || !s.capability.check))
+      return "exact-source-unsupported";
+    if (a.kind === "install" && !bindingMatches(input, s)) return "stale-binding";
+    if (
+      a.kind === "download" &&
+      (s.provenance?.artifactId !== a.artifactId || s.provenance.sourceSha !== a.sourceSha)
+    )
+      return "stale-binding";
+    if (a.kind !== "install" && s.stagedHandle !== undefined && s.provenance?.sourceSha !== target)
+      return "another-stage";
+    if (
+      !requiresOperationRoute(input) &&
+      followerTargetRefusal(
+        s.policy,
+        target,
+        s.provenance?.sourceSha === target ? s.provenance.sourceTree : undefined,
+      ) !== undefined
+    )
+      return "follower-policy";
+    if (admissionBusy(s)) return "busy";
+    if (a.kind === "install" && a.recovery !== undefined)
+      return options.recovery === undefined || s.capability.recoveryPolicy !== 1
+        ? "recovery-unsupported"
+        : options.recovery.validate(a.recovery, {
+            environmentId: input.environmentId,
+            stagedHandle: a.stagedHandle,
+            currentVersion: a.currentVersion,
+            expectedInstalledSource: input.expectedInstalledSource,
+          });
+    return undefined;
+  };
+  const start = async (input: JonesOperationStartInput) => {
+    const requiresRoute = requiresOperationRoute(input);
+    const admission = await gate(async () => {
+      const old = await ledger.read(input.operationId);
+      if (old !== null) return { kind: "receipt" as const, receipt: replay(input, old) };
+      if (!requiresRoute) {
+        const state = updater.snapshot();
+        const code = !operationRouteSupported(input, state)
+          ? "operation-admission-disabled"
+          : admissionBusy(state)
+            ? "busy"
+            : undefined;
+        if (code !== undefined)
+          return {
+            kind: "receipt" as const,
+            receipt: publish((await recordRefusal(input, code)).receipt),
+          };
       }
-    },
+      return { kind: "reservation" as const, reservation: updater.reserveCheckAdmission() };
+    });
+    if (admission.kind === "receipt") return admission.receipt;
+    try {
+      // A lost send can still be fenced while this request joins discovery.
+      await admission.reservation.ready;
+      const result = await gate(async () => {
+        const old = await ledger.read(input.operationId);
+        if (old !== null) return { receipt: replay(input, old) };
+        await options.refreshPolicy();
+        const record = (state: JonesUpdateState, routeRefusal?: string) => {
+          const code = routeRefusal ?? startRefusal(input, state);
+          return code === undefined ? ledger.accept(input) : recordRefusal(input, code);
+        };
+        // Take the fleet writer lock before the receipt lock to order admission against enrollment
+        // and directive edits. Refresh and worker dispatch are outside this critical section.
+        const accepted = requiresRoute
+          ? await fleetStore.withConfirmedOperationRoute((enrollment, follower) => {
+              const state = updater.snapshot();
+              return record(state, operationRouteRefusal(input, state, enrollment, follower));
+            })
+          : await record(updater.snapshot());
+        const receipt = publish(accepted.receipt);
+        if (!accepted.created || receipt.phase !== "accepted") return { receipt };
+        const controller = new AbortController();
+        active.set(input.operationId, controller);
+        return { receipt, controller };
+      });
+      if (result.controller !== undefined) {
+        // Only the creator dispatches, independently of the HTTP response.
+        void execute(input, result.controller)
+          .catch(async () => {
+            const r = await ledger.read(input.operationId);
+            if (r !== null && !terminal(r)) {
+              if (r.action.kind === "install") await reconcileInstall(r);
+              else if (beforeWorker(r)) await interruptBeforeWorker(r.operationId);
+              else await held(r);
+            }
+          })
+          .catch(options.onFailure)
+          .finally(() => active.delete(input.operationId));
+      }
+      return result.receipt;
+    } finally {
+      admission.reservation.release();
+    }
+  };
+  return {
+    start,
     stop: (input: JonesOperationStopInput) =>
       gate(async () => {
         if (input.environmentId !== updater.snapshot().environmentId)
@@ -681,10 +764,10 @@ export function createTargetOperations(options: {
       gate(async () => {
         if (input.environmentId !== updater.snapshot().environmentId)
           throw new Error("Fence environment binding changed.");
-        if (updater.snapshot().capability.operations !== 1) {
+        if (!operationRouteSupported(input, updater.snapshot())) {
           const retained = await readBoundReceipt(input.environmentId, input.operationId);
           if (retained === null) throw new Error("Durable target operation admission is disabled.");
-          return publish(retained);
+          return publish(replayOperationFence(retained, input));
         }
         const r = await ledger.fence(input);
         if (r.environmentId !== input.environmentId)
@@ -711,11 +794,11 @@ export function createTargetOperations(options: {
           ],
         };
       }
-      const receipts = await Promise.all(
-        input.operationIds.map(async (operationId) => ({
+      const receipts = (await ledger.readMany(input.operationIds)).map(
+        ({ operationId, receipt }) => ({
           operationId,
-          receipt: await readBoundReceipt(input.environmentId, operationId),
-        })),
+          receipt: inEnvironment(receipt, input.environmentId),
+        }),
       );
       const operationId = input.inspectCleanup;
       if (operationId === undefined) return { receipts };
@@ -852,23 +935,14 @@ export function createTargetOperations(options: {
 }
 
 /** Legacy/desktop hosts never claim durable-operation support or fabricate preflight measurements. */
+const unsupportedTargetOperation = async (_input: unknown): Promise<never> => {
+  throw new Error("Durable target operations are unavailable on this host.");
+};
 export const unsupportedTargetOperations = {
-  start: async (input: JonesOperationStartInput): Promise<JonesOperationReceipt> => ({
-    ...operationReceipt(input, "refused"),
-    code: "unsupported",
-    message: "Durable target operations are unavailable on this host.",
-  }),
-  stop: async (_input: JonesOperationStopInput): Promise<JonesOperationReceipt> => {
-    throw new Error("Durable target operations are unavailable on this host.");
-  },
-  fence: async (input: JonesOperationFenceInput): Promise<JonesOperationReceipt> => ({
-    ...operationTombstone(input),
-    phase: "refused",
-    code: "unsupported",
-  }),
-  read: async (_input: JonesOperationReadInput): Promise<JonesOperationReadResult> => {
-    throw new Error("Durable target operations are unavailable on this host.");
-  },
+  start: unsupportedTargetOperation,
+  stop: unsupportedTargetOperation,
+  fence: unsupportedTargetOperation,
+  read: unsupportedTargetOperation,
   abandonStage: async (_input: JonesAbandonStageInput): Promise<JonesAbandonStageResult> => ({
     receipt: null,
     reason: "Staged update retirement is unavailable on this host.",

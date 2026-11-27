@@ -244,6 +244,30 @@ describe("install-plan renderer authority", () => {
     ).toThrow();
   });
 
+  it("carries the bound admission capability between schema-1 views and claims", () => {
+    const decodeState = Schema.decodeUnknownSync(JonesInstallPlanState);
+    const claim = {
+      type: "claim",
+      planId,
+      environmentId,
+      claimant: lease.claimant,
+      step: "download",
+      explicit: true,
+      action: operationStart.input.action,
+      expectedInstalledSource: installed,
+    };
+    const advertised = { ...state, view: { ...state.view, boundAdmission: 1 } };
+    const negotiated = { ...claim, boundAdmission: 1 };
+    expect(decodeState(state)).toEqual(state);
+    expect(decodeState(advertised)).toEqual(advertised);
+    expect(decode(claim)).toEqual(claim);
+    expect(decode(negotiated)).toEqual(negotiated);
+    for (const boundAdmission of [2, true]) {
+      expect(() => decodeState({ ...state, view: { ...state.view, boundAdmission } })).toThrow();
+      expect(() => decode({ ...claim, boundAdmission })).toThrow();
+    }
+  });
+
   it("rejects renderer verification, arbitrary recording and native laptop evidence reports", () => {
     for (const type of ["verify", "record", "bindLaptopInstall", "recordLaptopOutcome"])
       expect(() => decode({ type, planId, evidence: { activeSource: source } })).toThrow();
@@ -341,6 +365,30 @@ describe("install-plan renderer authority", () => {
         },
       }),
     ).toThrow();
+  });
+
+  it("marks a positive ledger read of a legacy refusal without changing the receipt", () => {
+    const legacyRefusal = {
+      ...operationStart.input,
+      protocol: 1,
+      phase: "refused",
+      updatedAt: at,
+      code: "unsupported",
+    };
+    const evidence = { kind: "receipt", receipt: legacyRefusal };
+    const report = { type: "report", planId, environmentId, operationId, evidence };
+    const ledgerReport = { ...report, evidence: { ...evidence, ledgerRead: true } };
+    expect(decode(report)).toEqual(report);
+    expect(decode(ledgerReport)).toEqual(ledgerReport);
+    expect(() => decode({ ...report, evidence: { ...evidence, ledgerRead: false } })).toThrow();
+    expect(() =>
+      decode({ ...report, evidence: { kind: "receipt", receipt: null, ledgerRead: true } }),
+    ).toThrow();
+    const directiveRefusal = { kind: "directive-refused", reason: "conflict", message: "Changed" };
+    expect(decode({ ...report, evidence: { ...directiveRefusal, ledgerRead: true } })).toEqual({
+      ...report,
+      evidence: directiveRefusal,
+    });
   });
 
   it("bounds edit/start selections, deselections and renderer claimant labels", () => {
@@ -511,14 +559,27 @@ describe("install-plan persisted and native output contracts", () => {
     ).toThrow();
   });
 
-  it("round-trips all four dispatch envelopes with their target-bound operation IDs", () => {
+  it("round-trips legacy and bound dispatch envelopes with their original request bodies", () => {
     const decode = Schema.decodeUnknownSync(JonesInstallPlanGrant);
     const grant = { planId, environmentId, operationId, leaseUntil: lease.leaseUntil };
+    const admission = {
+      kind: "follower",
+      enrollmentId,
+      directiveId: stopId,
+      targetSource: source,
+      targetTree: tree,
+    };
+    const input = { ...operationStart.input, admission };
+    const boundStart = { kind: "operation-start", input };
+    const recorded = { ...operation, request: boundStart, receipt: { ...receipt, admission } };
+    expect(compiledDecodeUnknownSync6(recorded)).toEqual(recorded);
     for (const [step, request] of [
       ["download", operationStart],
       ["stop", { kind: "operation-stop", input: { operationId, stopId, environmentId } }],
       ["fence", { kind: "operation-fence", input: operationStart.input }],
       ["directive", { kind: "plan-directive", input: directiveInput }],
+      ["download", boundStart],
+      ["fence", { kind: "operation-fence", input }],
     ] as const)
       expect(decode({ ...grant, step, request })).toEqual({ ...grant, step, request });
     expect(() =>

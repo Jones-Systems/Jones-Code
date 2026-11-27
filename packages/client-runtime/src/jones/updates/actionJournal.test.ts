@@ -131,6 +131,106 @@ describe("durable client update duties", () => {
     expect(restarted.getSnapshot().history[0]?.receipt?.phase).toBe("stopped");
   });
 
+  it("retains bound admission and treats reordered journal fields as the same request under the lock", async () => {
+    const storage = disk();
+    const journal = createJonesActionJournal({ ...storage, withLock: (work) => work() });
+    const admission = {
+      kind: "follower",
+      enrollmentId: id(2),
+      directiveId: id(3),
+      targetSource,
+      targetTree: "d".repeat(40),
+    } as const;
+    const input = {
+      ...request,
+      correlation: { planId: id(4), deviceKey: environmentId },
+      admission,
+    };
+    const duty = {
+      id: id(1),
+      environmentId,
+      kind: "operation",
+      action: "download-exact",
+      targetSource,
+      operationId: id(1),
+      request: input,
+    } as const;
+    await journal.reserve(duty);
+    const reordered = {
+      targetTree: admission.targetTree,
+      directiveId: admission.directiveId,
+      targetSource,
+      enrollmentId: admission.enrollmentId,
+      kind: admission.kind,
+    };
+    storage.values.set(
+      JONES_ACTION_JOURNAL_KEY,
+      JSON.stringify({
+        schema: 1,
+        duties: [{ ...duty, request: { ...input, admission: reordered } }],
+      }),
+    );
+    const stopped = { ...receipt("stopped"), ...input, admission: reordered };
+    expect(await journal.reconcileReceipt(receipt("stopped"), { ledgerRead: true })).toBe(false);
+    expect(
+      await journal.reconcileReceipt(
+        {
+          ...stopped,
+          admission: { ...admission, directiveId: id(5) },
+        },
+        { ledgerRead: true },
+      ),
+    ).toBe(false);
+    expect(await journal.reconcileReceipt(stopped)).toBe(true);
+    const reloaded = createJonesActionJournal(storage);
+    await reloaded.load();
+    expect(reloaded.getSnapshot().history[0]).toMatchObject({
+      request: { admission },
+      receipt: { admission, phase: "stopped" },
+    });
+  });
+
+  it("holds new unsupported replies and refines an older archived one with exact read evidence", async () => {
+    const storage = disk();
+    const provisional: JonesOperationReceipt = {
+      ...request,
+      protocol: 1,
+      phase: "refused",
+      code: "unsupported",
+      updatedAt: "2026-10-27T04:05:00Z",
+    };
+    const duty = {
+      id: id(1),
+      environmentId,
+      kind: "operation",
+      action: "download-exact",
+      targetSource,
+      operationId: id(1),
+      request,
+    } as const;
+    const waiting = createJonesActionJournal(storage);
+    await waiting.reserve(duty);
+    expect(await waiting.reconcileReceipt(provisional)).toBe(false);
+    expect(waiting.getSnapshot().duties).toEqual([duty]);
+
+    storage.values.set(
+      JONES_ACTION_JOURNAL_KEY,
+      JSON.stringify({
+        schema: 1,
+        duties: [],
+        history: [{ ...duty, receipt: provisional }],
+      }),
+    );
+    const archived = createJonesActionJournal(storage);
+    await archived.load();
+    const stopped = receipt("stopped");
+    await archived.reconcileReceipt(stopped);
+    expect(archived.getSnapshot().history[0]?.receipt).toEqual(provisional);
+    await archived.reconcileReceipt(stopped, { ledgerRead: true });
+    expect(archived.getSnapshot().duties).toEqual([]);
+    expect(archived.getSnapshot().history[0]?.receipt).toEqual(stopped);
+  });
+
   it("holds Stop through missing/wrong IDs, held results, backwards receipts and a late start reply", async () => {
     const storage = disk(),
       journal = createJonesActionJournal(storage);

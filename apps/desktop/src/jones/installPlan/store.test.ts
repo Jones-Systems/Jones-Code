@@ -5,9 +5,10 @@ import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
+import { JONES_INSTALL_PLAN_HISTORY_LIMIT } from "@t3tools/contracts/jones/installPlan";
 import { startPlan } from "@t3tools/client-runtime/jones/install-plan/model";
 import { readPrivateJson } from "../storage/privateJsonStore.ts";
-import { archiveCurrent, commitRevision } from "./journal.ts";
+import { admitPlanWork, archiveCurrent, commitRevision } from "./journal.ts";
 import { createInstallPlanStore, type PlanSnapshot } from "./store.ts";
 
 const roots = new Set<string>();
@@ -23,9 +24,9 @@ const target = {
   sourceTree: "b".repeat(40),
   version: "new",
 } as const;
-const plan = () =>
+const plan = (planId = "11111111-1111-4111-8111-111111111111") =>
   startPlan({
-    planId: "11111111-1111-4111-8111-111111111111",
+    planId,
     origin: "update-button",
     target,
     from: { version: "old" },
@@ -173,7 +174,7 @@ describe("native install plan storage", () => {
       const file = NodePath.join(f.directory, "plan.json");
       const bytes =
         kind === "newer"
-          ? '{"schema":3,"future":"preserve"}'
+          ? '{"schema":4,"future":"preserve"}'
           : kind === "oversized"
             ? "x".repeat(1024 * 1024 + 1)
             : "{invalid";
@@ -264,6 +265,95 @@ describe("native install plan storage", () => {
     expect(saved.last?.planId).toBe(active.planId);
     expect(saved.last?.from.version.length).toBe(padding);
     expect(saved.older).toEqual([latest]);
+  });
+
+  it("writes V3 on the first persisted binding and keeps V3 after settling and evicting it", async () => {
+    const f = await fixture();
+    const current = plan();
+    const save = (work: (document: PlanSnapshot["document"]) => PlanSnapshot["document"]) =>
+      f.store.transact(async (snapshot) => ({
+        ...snapshot,
+        document: work(snapshot.document),
+        result: undefined,
+      }));
+    await save((document) => commitRevision(document, { ...document, current }));
+    const path = NodePath.join(f.directory, "plan.json");
+    const legacy = await NodeFSP.readFile(path, "utf8");
+    expect((await f.read()).document.schema).toBe(2);
+    expect(await NodeFSP.readFile(path, "utf8")).toBe(legacy);
+
+    const environmentId = EnvironmentId.make("host");
+    const operationId = "22222222-2222-4222-8222-222222222222";
+    const input = {
+      operationId,
+      environmentId,
+      action: { kind: "download-exact", targetSource: target.sourceSha },
+      expectedInstalledSource: "c".repeat(40),
+      correlation: { planId: current.planId, deviceKey: environmentId },
+      admission: { kind: "ordinary" },
+    } as const;
+    const operation = {
+      operationId,
+      step: "download",
+      request: { kind: "operation-start", input },
+      lease: { claimant: "window", reservedAt: current.createdAt, leaseUntil: current.createdAt },
+    } as const;
+    const device = {
+      environmentId,
+      label: "Host",
+      membership: "selected",
+      route: "operations",
+      addedAt: current.createdAt,
+      operations: [operation],
+    } as const;
+    const bound = { ...current, devices: [device] };
+    await expect(save((document) => ({ ...document, current: bound }))).rejects.toMatchObject({
+      code: "bounds",
+    });
+    expect(await NodeFSP.readFile(path, "utf8")).toBe(legacy);
+    await save((document) => commitRevision(document, { ...document, current: bound }));
+    const restarted = createInstallPlanStore({ home: f.home, profile: undefined });
+    const saved = await restarted.transact(async (s) => ({ ...s, result: s.document }));
+    expect(saved).toMatchObject({ schema: 3, documentRevision: 2, current: bound });
+
+    const settled = {
+      ...bound,
+      dismissedAt: current.createdAt,
+      devices: [
+        {
+          ...device,
+          operations: [
+            {
+              ...operation,
+              receipt: { ...input, protocol: 1, phase: "fenced", updatedAt: current.createdAt },
+            },
+          ],
+        },
+      ],
+    } as const;
+    await save((document) => commitRevision(document, archiveCurrent(document, settled)));
+    expect((await f.read()).document.last).toEqual(settled);
+
+    const otherPlans = Array.from({ length: JONES_INSTALL_PLAN_HISTORY_LIMIT }, (_, i) =>
+      plan(`${String(i).padStart(8, "0")}-1234-4234-8234-123456789abc`),
+    );
+    await save((document) => {
+      if (document.schema !== 3) throw new Error("Missing bound document.");
+      const candidate = {
+        ...document,
+        current: otherPlans[0]!,
+        last: otherPlans[1]!,
+        older: [...otherPlans.slice(2), settled],
+      };
+      const admitted = admitPlanWork(candidate, true);
+      if (admitted?.schema !== 3) throw new Error("Expected V3 admission after archiving.");
+      expect(admitted.older.some((entry) => entry.planId === current.planId)).toBe(false);
+      return commitRevision(document, admitted);
+    });
+    await expect(
+      save((document) => ({ ...document, schema: 2 }) as PlanSnapshot["document"]),
+    ).rejects.toMatchObject({ code: "bounds" });
+    expect((await f.read()).document.schema).toBe(3);
   });
 
   it("fails closed under a second process lock and resumes after its owner releases it", async () => {

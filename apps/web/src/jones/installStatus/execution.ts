@@ -5,6 +5,11 @@ import {
   type JonesExecutorHost,
 } from "@t3tools/client-runtime/jones/updates/executor";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
+import { JonesOperationNotSentError } from "@t3tools/client-runtime/jones/updates";
+import {
+  isProvisionalUnsupportedReceipt,
+  validateOperationEvidence,
+} from "@t3tools/client-runtime/jones/install-plan";
 import type {
   JonesActionDuty,
   JonesActionJournal,
@@ -18,6 +23,7 @@ import {
 } from "./entrypoints";
 import { nativeJonesDispatch, webJonesJournal } from "./executionJournal";
 import { installPlanServices, requestInstallPlan } from "./services";
+import { operationAdmissionMessage } from "./copy";
 
 const unknownMessage =
   "The request may have been accepted. Its effect is unknown. Read its exact outcome; nothing will be resent.";
@@ -41,19 +47,30 @@ export function unresolvedJonesExecution(
     };
   return undefined;
 }
-export function pendingJonesOperationId(environmentId: EnvironmentId) {
-  const duties = webJonesJournal.getSnapshot().duties;
-  return (
+export function pendingJonesOperationId(
+  environmentId: EnvironmentId,
+  { duties, history } = webJonesJournal.getSnapshot(),
+) {
+  const pending =
     duties.find((d) => d.environmentId === environmentId && d.kind === "stop") ??
-    duties.find((d) => d.environmentId === environmentId)
+    duties.find((d) => d.environmentId === environmentId);
+  if (pending !== undefined) return pending.operationId;
+  return history.findLast(
+    (d) =>
+      d.environmentId === environmentId &&
+      d.kind === "operation" &&
+      d.request !== undefined &&
+      d.receipt !== undefined &&
+      isProvisionalUnsupportedReceipt(d.receipt),
   )?.operationId;
 }
 export function reconcileJonesExecution(
   environmentId: EnvironmentId,
   receipt: JonesOperationReceipt,
+  options?: { readonly ledgerRead?: true },
 ) {
   return receipt.environmentId === environmentId
-    ? webJonesJournal.reconcileReceipt(receipt)
+    ? webJonesJournal.reconcileReceipt(receipt, options)
     : Promise.resolve(false);
 }
 
@@ -201,7 +218,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
           if (reply !== null) await journal.acknowledge(input.operationId);
           return reply;
         },
-        start: async (request) => {
+        start: async (request, beforeSend) => {
           const nativeDuty = journal
             .getSnapshot()
             .duties.find((d) => d.id === input.operationId && d.kind === "native");
@@ -217,20 +234,33 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
             });
           else if (!host.readLatest().canOperate)
             throw new Error("This control no longer authorizes the action.");
-          if (
-            connections !== undefined &&
-            request.action.kind === "install" &&
-            !connections.canStart(request)
-          ) {
+          const nativeStart = request.action.kind === "install" ? connections : undefined;
+          const issue = nativeStart?.startIssue(request);
+          if (issue !== undefined) {
+            refusedBeforeDispatch = issue;
             if (localReservation) {
               await journal.notSent(input.operationId);
               localReservation = false;
             }
-            throw new Error("The selected device changed before install dispatch.");
+            throw new JonesOperationNotSentError({});
           }
+          const guard = nativeStart?.beforeStart(request, beforeSend) ?? beforeSend;
           dispatched = true;
-          const receipt = await host.start(request);
-          await journal.reconcileReceipt(receipt);
+          let receipt: JonesOperationReceipt;
+          try {
+            receipt = await host.start(request, guard);
+          } catch (error) {
+            if (error instanceof JonesOperationNotSentError) {
+              dispatched = false;
+              refusedBeforeDispatch = nativeStart?.startIssue(request) ?? error.message;
+              if (localReservation) {
+                await journal.notSent(input.operationId);
+                localReservation = false;
+              }
+            }
+            throw error;
+          }
+          if (validateOperationEvidence(request, receipt)) await journal.reconcileReceipt(receipt);
           return receipt;
         },
       },
@@ -245,6 +275,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
         kind: "unknown",
         code: "native-handoff-unknown",
         message:
+          refusedBeforeDispatch ??
           "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
       };
     const stopped = [...journal.getSnapshot().duties, ...journal.getSnapshot().history].find(
@@ -275,7 +306,8 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
         message:
           refusedBeforeDispatch ?? "The action was refused before dispatch. Nothing was sent.",
       };
-    return result;
+    const admissionMessage = operationAdmissionMessage(result.code);
+    return admissionMessage === undefined ? result : { ...result, message: admissionMessage };
   };
 }
 export const executeWebJonesAction = createWebJonesExecutor(webJonesJournal);

@@ -3,6 +3,17 @@ export const INSTALL_PLAN_GO = "Laptop verified · Others go";
 export const LAPTOP_REOPEN_TO_CHECK_INSTALL =
   "Reopen Jones Code to check the Laptop install outcome.";
 
+export function operationAdmissionMessage(code: string | undefined) {
+  switch (code) {
+    case "admission-route-changed":
+      return "This device's update enrollment or setup changed. Check the original request in Install status before reviewing a new plan.";
+    case "admission-binding-required":
+      return "Check the original request in Install status. Use current versions of Laptop and this host when reviewing a new plan for this enrollment.";
+    default:
+      return undefined;
+  }
+}
+
 export function lastUpdateLabel(at: string) {
   const date = new Date(at);
   return Number.isFinite(date.getTime())

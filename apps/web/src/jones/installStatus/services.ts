@@ -1,20 +1,29 @@
 import type { DesktopBridge, EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesAction,
+  JonesOperationBeforeSend,
   JonesOperationCommand,
   JonesStopCommand,
 } from "@t3tools/client-runtime/jones/updates";
 import type { JonesExecutorHost } from "@t3tools/client-runtime/jones/updates/executor";
 import type { FleetHostRequest } from "@t3tools/client-runtime/jones/fleet-updates";
 import {
+  allowsOperationRecovery,
+  canFenceWithUnavailableFleet,
+  deviceActiveOperations,
+  exactOperationRequest,
+  matchesForwardRoute,
   matchPlanEnrollment,
+  sameOperationBinding,
   supportsInstallPlanMutations,
   supportsOperationReceiptReads,
+  type PlanEnrollmentMatch,
 } from "@t3tools/client-runtime/jones/install-plan";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import type {
   JonesOperationReadResult,
   JonesOperationReceipt,
+  JonesOperationStartInput,
   JonesAbandonStageResult,
   JonesRecoverCleanupResult,
   JonesRecoveryPreflight,
@@ -23,11 +32,15 @@ import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type {
   JonesInstallPlan,
   JonesInstallPlanDevice,
+  JonesInstallPlanGrant,
+  JonesInstallPlanRequest,
+  JonesInstallPlanReview,
   JonesInstallPlanResult,
   JonesInstallPlanState,
 } from "@t3tools/contracts/jones/installPlan";
 import type { InstallStatusDevice, InstallStatusStore } from "./panelUi";
 import { archivedPlanFrom, installStatusStore, isOlderNativeState, statusTurn } from "./panelUi";
+import { operationAdmissionMessage } from "./copy";
 
 export { exactOperationRequest } from "@t3tools/client-runtime/jones/install-plan";
 
@@ -127,7 +140,27 @@ function sameStatus(left: JonesUpdateState | null, right: JonesUpdateState | nul
     left?.operation?.phase === right?.operation?.phase &&
     left?.capability.operations === right?.capability.operations &&
     left?.capability.operationReceipts === right?.capability.operationReceipts &&
+    left?.capability.boundAdmission === right?.capability.boundAdmission &&
     left?.capability.abandonStage === right?.capability.abandonStage
+  );
+}
+
+export function planEnrollmentFor(
+  device: JonesInstallPlanDevice,
+  observed: InstallStatusDevice | undefined,
+): PlanEnrollmentMatch {
+  if (observed === undefined) return "unknown";
+  const { environmentId } = device;
+  if (
+    observed.environmentId !== environmentId ||
+    (observed.observation.state?.environmentId !== undefined &&
+      observed.observation.state.environmentId !== environmentId)
+  )
+    return "identity-changed";
+  return matchPlanEnrollment(
+    device,
+    matchingUpdateStatus(observed, environmentId) ?? null,
+    observed.fleetStatus,
   );
 }
 
@@ -156,6 +189,10 @@ export interface InstallPlanBinding {
   readonly store: InstallStatusStore;
 }
 
+export function hasOperationReadScope(services: InstallPlanServices, environmentId: EnvironmentId) {
+  return services.canReadReceipts?.(environmentId) ?? true;
+}
+
 interface PlanHostObservation {
   readonly sequence: number;
   readonly direct: InstallStatusDevice | undefined;
@@ -177,34 +214,57 @@ export function currentPlanHostAuthority(
   const latest = active === binding ? active.latestObservation(environmentId) : undefined;
   const direct = latest?.direct;
   const directStatus = matchingUpdateStatus(direct, environmentId);
-  const match = (evidence: InstallStatusDevice | undefined) =>
-    evidence === undefined
-      ? "unknown"
-      : evidence.environmentId !== environmentId
-        ? "changed"
-        : matchPlanEnrollment(device, evidence.observation.state, evidence.fleetStatus);
-  // The device projection may omit fleet status. A failed direct read erases forward proof,
-  // while a known fleet contradiction still blocks an automatic fence until reliably cleared.
-  const contradicted =
-    match(current) === "changed" ||
-    match(direct) === "changed" ||
-    matchPlanEnrollment(device, null, latest?.knownFleet) === "changed";
+  const projectedEnrollment = planEnrollmentFor(device, current);
+  const directEnrollment = planEnrollmentFor(device, direct);
+  const retainedEnrollment = matchPlanEnrollment(device, status ?? null, latest?.knownFleet);
+  // Missing fleet status removes forward proof without clearing a retained contradiction.
+  const enrollment = [projectedEnrollment, directEnrollment, retainedEnrollment].includes(
+    "identity-changed",
+  )
+    ? "identity-changed"
+    : directEnrollment === "route-changed"
+      ? "route-changed"
+      : projectedEnrollment === "route-changed" ||
+          retainedEnrollment === "route-changed" ||
+          (current?.fleetStatus === null && projectedEnrollment !== "match")
+        ? "unknown"
+        : directEnrollment;
   const { native, nativeRefusal } = store.get();
+  const writable = active === binding && native?.readOnly === undefined && nativeRefusal === null;
+  const hasOperationScope =
+    writable &&
+    current?.canOperate === true &&
+    direct?.canOperate !== false &&
+    status !== undefined;
+  const hasReadScope = hasOperationReadScope(services, environmentId);
   return {
     status,
     canDispatch:
-      active === binding &&
-      native?.readOnly === undefined &&
-      nativeRefusal === null &&
-      current?.canOperate === true &&
-      status !== undefined &&
+      hasOperationScope &&
       supportsInstallPlanMutations(status.capability) &&
       (directStatus === undefined || supportsInstallPlanMutations(directStatus.capability)),
+    canRecoverOperation:
+      hasOperationScope &&
+      status.capability.operations === 1 &&
+      directStatus?.capability.operations === 1,
     canReadReceipt:
+      active === binding &&
+      hasReadScope &&
       status !== undefined &&
       supportsOperationReceiptReads(status.capability) &&
-      (services.canReadReceipts?.(environmentId) ?? true),
-    enrollment: contradicted ? "changed" : directStatus === undefined ? "unknown" : match(direct),
+      allowsOperationRecovery(enrollment, "read"),
+    canReportReceipt: hasReadScope,
+    enrollment,
+    allowUnavailableFence:
+      enrollment === "unknown" &&
+      projectedEnrollment !== "route-changed" &&
+      retainedEnrollment !== "route-changed" &&
+      canFenceWithUnavailableFleet(device, status ?? null, direct?.fleetStatus),
+    ...(hasOperationScope &&
+    status.capability.boundAdmission === 1 &&
+    (directStatus === undefined || directStatus.capability.boundAdmission === 1)
+      ? { boundAdmission: 1 as const }
+      : {}),
     fleetStatus: direct?.fleetStatus,
   } as const;
 }
@@ -230,8 +290,7 @@ export function bindInstallPlanServices(source: InstallPlanServices, store = ins
           latest.set(environmentId, {
             sequence: started,
             direct: device,
-            knownFleet:
-              device?.fleetStatus === undefined ? previous?.knownFleet : device.fleetStatus,
+            knownFleet: device?.fleetStatus ?? previous?.knownFleet,
           });
       };
       try {
@@ -280,6 +339,144 @@ export function requireWritablePlan(binding: InstallPlanBinding, result?: JonesI
 
 export function revisionFor(state: JonesInstallPlanState, plan: JonesInstallPlan) {
   return state.view.recoveryHistory === 1 ? { expectedRevision: plan.revision } : {};
+}
+
+export function claimAdmission(
+  state: JonesInstallPlanState,
+  authority: ReturnType<typeof currentPlanHostAuthority>,
+) {
+  return state.view.boundAdmission === 1 && authority.boundAdmission === 1
+    ? { boundAdmission: 1 as const }
+    : {};
+}
+
+export function issuedDevice(
+  plan: JonesInstallPlan | null | undefined,
+  original: JonesInstallPlan,
+  selected: JonesInstallPlanDevice,
+) {
+  if (
+    plan?.planId !== original.planId ||
+    plan.target.repository !== original.target.repository ||
+    plan.target.sourceSha !== original.target.sourceSha ||
+    plan.target.sourceTree !== original.target.sourceTree
+  )
+    return undefined;
+  const device = plan.devices.find((item) => item.environmentId === selected.environmentId);
+  return device?.membership === "selected" &&
+    device.route === selected.route &&
+    device.enrollmentId === selected.enrollmentId &&
+    device.abandoning !== true
+    ? device
+    : undefined;
+}
+
+export function planStartIssue(
+  binding: InstallPlanBinding,
+  plan: JonesInstallPlan,
+  device: JonesInstallPlanDevice,
+  grant: JonesInstallPlanGrant,
+  claim: Pick<
+    Extract<JonesInstallPlanRequest, { type: "claim" }>,
+    "claimant" | "boundAdmission" | "review"
+  >,
+  input: JonesOperationStartInput,
+) {
+  const { native } = binding.store.get();
+  const current = native?.current;
+  const member = issuedDevice(current, plan, device);
+  const operation = member === undefined ? undefined : deviceActiveOperations(member).at(-1);
+  const original = operation && exactOperationRequest(plan.planId, device.environmentId, operation);
+  if (
+    current == null ||
+    member === undefined ||
+    operation === undefined ||
+    grant.request.kind !== "operation-start" ||
+    grant.planId !== plan.planId ||
+    grant.environmentId !== device.environmentId ||
+    grant.operationId !== input.operationId ||
+    !sameOperationBinding(grant.request.input, input) ||
+    original === undefined ||
+    !sameOperationBinding(original, input) ||
+    operation.step !== grant.step ||
+    operation.lease.claimant !== claim.claimant ||
+    operation.lease.leaseUntil !== grant.leaseUntil ||
+    !(Date.parse(grant.leaseUntil) > binding.services.now()) ||
+    operation.receipt !== undefined ||
+    operation.fence !== undefined ||
+    member.ended !== undefined ||
+    member.verifiedElsewhere !== undefined ||
+    current.cancelled === true ||
+    current.dismissedAt !== undefined ||
+    current.supersededAt !== undefined ||
+    current.laptop.gate === undefined ||
+    current.laptop.gateClosed !== undefined ||
+    current.laptop.gatePause === true ||
+    native?.laptop.activationBlocked !== false
+  )
+    return "This plan's exact reservation changed or expired. Check the original operation.";
+  const authority = currentPlanHostAuthority(binding, device);
+  if (authority.enrollment === "route-changed")
+    return operationAdmissionMessage("admission-route-changed");
+  if (
+    !authority.canDispatch ||
+    !allowsOperationRecovery(authority.enrollment, "start") ||
+    authority.status?.installedSource?.sha !== input.expectedInstalledSource
+  )
+    return "Fresh control authority and the selected device's enrollment are required.";
+  const { admission, action } = input;
+  const newlyReserved = !deviceActiveOperations(device).some(
+    (item) => item.operationId === input.operationId,
+  );
+  if (
+    (admission !== undefined && authority.boundAdmission !== 1) ||
+    (newlyReserved && (claim.boundAdmission === 1) !== (admission !== undefined))
+  )
+    return operationAdmissionMessage("admission-binding-required");
+  if (!matchesForwardRoute(current, member, input, authority.fleetStatus))
+    return operationAdmissionMessage("admission-route-changed");
+  if (
+    action.kind === "install" &&
+    (!sameReview(operation.review, claim.review) ||
+      authority.status.stagedHandle !== action.stagedHandle ||
+      authority.status.currentVersion !== action.currentVersion ||
+      authority.status.provenance?.sourceSha !== plan.target.sourceSha ||
+      authority.status.provenance.sourceTree !== plan.target.sourceTree)
+  )
+    return "The reviewed stage changed. Check the original operation and review again.";
+  return undefined;
+}
+
+function sameReview(
+  recorded: JonesInstallPlanReview | undefined,
+  review: JonesInstallPlanReview | undefined,
+) {
+  return (
+    recorded !== undefined &&
+    review !== undefined &&
+    recorded.reviewedAt === review.reviewedAt &&
+    recorded.stagedHandle === review.stagedHandle &&
+    recorded.targetSource === review.targetSource &&
+    recorded.currentVersion === review.currentVersion &&
+    recorded.expectedInstalledSource === review.expectedInstalledSource &&
+    recorded.continueRunningThreads === review.continueRunningThreads &&
+    recorded.recovery?.policy === review.recovery?.policy &&
+    recorded.recovery?.preflightId === review.recovery?.preflightId
+  );
+}
+
+export function guardPlanStart(
+  binding: InstallPlanBinding,
+  issue: () => string | undefined,
+  beforeSend?: JonesOperationBeforeSend,
+): JonesOperationBeforeSend {
+  return async () => {
+    if (issue() !== undefined) return false;
+    const read = await requestInstallPlan({ type: "read" }, binding);
+    requireWritablePlan(binding, read);
+    if (beforeSend !== undefined && !(await beforeSend())) return false;
+    return issue() === undefined;
+  };
 }
 
 export type PlanTarget = {

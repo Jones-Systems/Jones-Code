@@ -15,8 +15,10 @@ import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import {
+  allowsOperationRecovery,
   deviceSelectionLocked,
   deviceStatusActive,
+  isProvisionalUnsupportedReceipt,
   operationOutstanding,
   orphanReceiptCheck,
 } from "@t3tools/client-runtime/jones/install-plan";
@@ -35,9 +37,9 @@ import { ProgressSteps } from "./ProgressSteps";
 import { desktopCanPreviewInstallPlan, selectionFor, targetForDesktop } from "./entrypoints";
 import {
   confirmClosedPlan,
-  hasPlanEnrollment,
   installPlanServices,
   nativePlanIssue,
+  planEnrollmentFor,
   readTargetPlan,
   readWritableTarget,
   requestInstallPlan,
@@ -50,6 +52,7 @@ import {
   checkOrphanedPlanCommand,
   fencePanelOperation,
   inspectPanelCleanup,
+  latestPanelOperation,
   performPanelAction,
   recoverPanelCleanup,
   stopPanelDownload,
@@ -65,6 +68,7 @@ import {
   INSTALL_PLAN_WAIT,
   LAPTOP_REOPEN_TO_CHECK_INSTALL,
   lastUpdateLabel,
+  operationAdmissionMessage,
 } from "./copy";
 
 interface EditDraft {
@@ -814,9 +818,20 @@ function InstallStatusPlan({
               const member = plan.devices.find((d) => d.environmentId === environmentId);
               const operations = member?.operations;
               const operation = view.archived
-                ? (operations?.find(operationOutstanding) ?? operations?.at(-1))
+                ? member === undefined
+                  ? undefined
+                  : latestPanelOperation(member, true)
                 : operations?.find((op) => op.operationId === row?.operationId);
               const receipt = operation?.receipt;
+              const enrollment =
+                member === undefined ? "unknown" : planEnrollmentFor(member, device);
+              const receiptMessage = operationAdmissionMessage(receipt?.code) ?? receipt?.message;
+              const routeMessage =
+                enrollment === "route-changed" &&
+                member?.membership === "selected" &&
+                receipt?.code !== "admission-route-changed"
+                  ? operationAdmissionMessage("admission-route-changed")
+                  : undefined;
               const operationId = operation?.operationId;
               const setupUnconfirmed =
                 operation?.step === "directive" && operationOutstanding(operation);
@@ -848,7 +863,7 @@ function InstallStatusPlan({
               const abandonTarget = deviceAbandonTarget(plan, environmentId, view.archived);
               const resumeArchived = archivedRecovery && abandonTarget?.resume === true;
               const canInspect = !view.archived || archivedRecovery || plan.cancelled === true;
-              const recoveryReason = view.deskReadOnly
+              const hostRecoveryReason = view.deskReadOnly
                 ? (snapshot.native?.readOnly?.message ??
                   snapshot.nativeRefusal ??
                   "Install status is read-only.")
@@ -861,18 +876,31 @@ function InstallStatusPlan({
                       ? "Fresh status for this device is required."
                       : device.observation.state.capability.operations !== 1
                         ? "This device does not currently support update operations."
-                        : view.archived &&
-                            member !== undefined &&
-                            !hasPlanEnrollment(member, device)
-                          ? "The original device route is unconfirmed. Refresh this device."
-                          : undefined;
-              const fenceReason =
-                recoveryReason ??
-                (setupUnconfirmed &&
-                (snapshot.native?.view.directiveFence !== 1 ||
-                  device?.fleetStatus?.fencePlanDirective !== 1)
-                  ? "The host and Laptop must support fencing this original setup request."
+                        : undefined;
+              const routeUnconfirmed =
+                "The original device route is unconfirmed. Refresh this device.";
+              const recoveryReason =
+                hostRecoveryReason ??
+                (view.archived && member !== undefined && enrollment !== "match"
+                  ? routeUnconfirmed
                   : undefined);
+              const stopReason =
+                hostRecoveryReason ??
+                (!allowsOperationRecovery(enrollment, "stop") ? routeUnconfirmed : undefined);
+              const fenceReason = setupUnconfirmed
+                ? (recoveryReason ??
+                  (snapshot.native?.view.directiveFence !== 1 ||
+                  device?.fleetStatus?.fencePlanDirective !== 1
+                    ? "The host and Laptop must support fencing this original setup request."
+                    : undefined))
+                : (hostRecoveryReason ??
+                  (!allowsOperationRecovery(enrollment, "fence")
+                    ? routeUnconfirmed
+                    : operation?.request.kind === "operation-start" &&
+                        operation.request.input.admission !== undefined &&
+                        device?.observation.state?.capability.boundAdmission !== 1
+                      ? operationAdmissionMessage("admission-binding-required")
+                      : undefined));
               const recoveryDescription = `${descriptionId}-recovery-${environmentId}`;
               return (
                 <li key={environmentId}>
@@ -1033,7 +1061,11 @@ function InstallStatusPlan({
                       {device === undefined ? null : <HeardAgo at={choice.heardAt} />}
                       {row?.operationId ? <OperationId value={row.operationId} /> : null}
                       {receipt?.code ? <p>Code: {receipt.code}</p> : null}
-                      {receipt?.message ? <p>{receipt.message}</p> : null}
+                      {receiptMessage ? <p>{receiptMessage}</p> : null}
+                      {routeMessage ? <p>{routeMessage}</p> : null}
+                      {receipt !== undefined && isProvisionalUnsupportedReceipt(receipt) ? (
+                        <p>Check the exact operation receipt to confirm what the host recorded.</p>
+                      ) : null}
                       {operation?.directiveFence === undefined ? null : (
                         <p>
                           {operation.directiveFence.outcome === "fenced"
@@ -1071,10 +1103,11 @@ function InstallStatusPlan({
                         </p>
                       ) : null}
                       {recoveryReason !== undefined &&
-                      (stopArchived ||
-                        resumeArchived ||
-                        (cleanupTarget !== undefined && canInspect)) ? (
+                      (resumeArchived || (cleanupTarget !== undefined && canInspect)) ? (
                         <p id={recoveryDescription}>{recoveryReason}</p>
+                      ) : null}
+                      {(row?.actions.stop || stopArchived) && stopReason !== undefined ? (
+                        <p id={`${recoveryDescription}-stop`}>{stopReason}</p>
                       ) : null}
                       {fenceArchived && fenceReason !== undefined ? (
                         <p id={`${recoveryDescription}-fence`}>{fenceReason}</p>
@@ -1185,13 +1218,10 @@ function InstallStatusPlan({
                               variant="outline"
                               size="micro"
                               disabled={
-                                pending.has(`${environmentId}:stop`) ||
-                                (view.archived && recoveryReason !== undefined)
+                                pending.has(`${environmentId}:stop`) || stopReason !== undefined
                               }
                               aria-describedby={
-                                view.archived && recoveryReason !== undefined
-                                  ? recoveryDescription
-                                  : undefined
+                                stopReason !== undefined ? `${recoveryDescription}-stop` : undefined
                               }
                               onClick={() => stop("device", environmentId, operationId)}
                             >

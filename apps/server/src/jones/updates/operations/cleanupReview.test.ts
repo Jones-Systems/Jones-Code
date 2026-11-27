@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import type { JonesOperationStartInput } from "@t3tools/contracts/jones/jonesOperations";
+import { createFleetHostStore } from "../../fleetUpdates/store.ts";
 import { JonesUpdater } from "../JonesUpdater.ts";
 import { inspectHeldPreparationCleanup } from "../preparation/nativeEffectsRecovery.ts";
 import { createOperationLedger } from "./ledger.ts";
@@ -84,6 +85,7 @@ async function make(base: string) {
   const operations = createTargetOperations({
     key: base,
     ledger,
+    fleetStore: createFleetHostStore(base),
     updater,
     preparation: {
       start: unexpected,

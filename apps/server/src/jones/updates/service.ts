@@ -17,9 +17,11 @@ import {
 } from "@t3tools/contracts";
 
 import type {
-  JonesOperationStartInput,
+  JonesLegacyOperationStartInput,
+  JonesBoundOperationStartInput,
   JonesOperationStopInput,
-  JonesOperationFenceInput,
+  JonesLegacyOperationFenceInput,
+  JonesBoundOperationFenceInput,
   JonesOperationReadInput,
   JonesOperationReadResult,
   JonesOperationReceipt,
@@ -101,13 +103,19 @@ export class JonesUpdates extends Context.Service<
   JonesUpdates,
   {
     readonly operationStart: (
-      input: JonesOperationStartInput,
+      input: JonesLegacyOperationStartInput,
+    ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
+    readonly operationStartBound: (
+      input: JonesBoundOperationStartInput,
     ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
     readonly operationStop: (
       input: JonesOperationStopInput,
     ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
     readonly operationFence: (
-      input: JonesOperationFenceInput,
+      input: JonesLegacyOperationFenceInput,
+    ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
+    readonly operationFenceBound: (
+      input: JonesBoundOperationFenceInput,
     ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
     readonly operationRead: (
       input: JonesOperationReadInput,
@@ -305,14 +313,20 @@ export const layer = Layer.effect(
         "start" | "stop" | "fence" | "read" | "recoverCleanup" | "abandonStage"
       >,
     ) => ({
-      operationStart: Effect.fn("JonesUpdates.operationStart")((input: JonesOperationStartInput) =>
-        operationCall(() => operations.start(input)),
+      operationStart: Effect.fn("JonesUpdates.operationStart")(
+        (input: JonesLegacyOperationStartInput) => operationCall(() => operations.start(input)),
+      ),
+      operationStartBound: Effect.fn("JonesUpdates.operationStartBound")(
+        (input: JonesBoundOperationStartInput) => operationCall(() => operations.start(input)),
       ),
       operationStop: Effect.fn("JonesUpdates.operationStop")((input: JonesOperationStopInput) =>
         operationCall(() => operations.stop(input)),
       ),
-      operationFence: Effect.fn("JonesUpdates.operationFence")((input: JonesOperationFenceInput) =>
-        operationCall(() => operations.fence(input)),
+      operationFence: Effect.fn("JonesUpdates.operationFence")(
+        (input: JonesLegacyOperationFenceInput) => operationCall(() => operations.fence(input)),
+      ),
+      operationFenceBound: Effect.fn("JonesUpdates.operationFenceBound")(
+        (input: JonesBoundOperationFenceInput) => operationCall(() => operations.fence(input)),
       ),
       operationRead: Effect.fn("JonesUpdates.operationRead")((input: JonesOperationReadInput) =>
         operationCall(() => operations.read(input)),
@@ -853,7 +867,9 @@ export const layer = Layer.effect(
             }),
         capability: {
           ...serviceCapability,
-          ...(fleetOperationsSupported ? { operations: 1 as const } : {}),
+          ...(fleetOperationsSupported
+            ? { operations: 1 as const, boundAdmission: 1 as const }
+            : {}),
           ...(operationReceiptReadsSupported && !fleetOperationsSupported
             ? { operationReceipts: 1 as const }
             : {}),
@@ -1172,6 +1188,7 @@ export const layer = Layer.effect(
         ? createTargetOperations({
             key: config.baseDir,
             ledger: createOperationLedger(config.baseDir),
+            fleetStore,
             updater,
             preparation,
             refreshPolicy: () => run(refreshPolicy),

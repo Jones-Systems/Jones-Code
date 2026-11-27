@@ -1,5 +1,12 @@
 // @effect-diagnostics globalDate:off - Fixed timestamps and injected clocks exercise receipt, lease and review behavior.
 import { describe, expect, it, vi } from "vite-plus/test";
+import { it as effectIt } from "@effect/vitest";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesInstallPlan,
@@ -14,6 +21,16 @@ import type {
   JonesOperationStartInput,
 } from "@t3tools/contracts/jones/jonesOperations";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
+import {
+  AVAILABLE_CONNECTION_STATE,
+  PrimaryConnectionTarget,
+  type PreparedConnection,
+} from "../../connection/model.ts";
+import { EnvironmentRegistry } from "../../connection/registry.ts";
+import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
+import { layerRemoteHttpClient } from "../../rpc/http.ts";
+import type * as RpcSession from "../../rpc/session.ts";
+import { createJonesUpdateAtoms, JonesOperationNotSentError } from "../updates/jonesUpdates.ts";
 import { matchPlanEnrollment, startPlan } from "./model.ts";
 import { advanceInstallPlan, type InstallPlanDriver } from "./runner.ts";
 
@@ -38,7 +55,7 @@ const request: JonesOperationStartInput = {
   action: { kind: "download-exact", targetSource: source },
   correlation: { planId, deviceKey: env },
 };
-function fixture(recoveryHistory?: 1) {
+function fixture(recoveryHistory?: 1, boundAdmission?: 1) {
   let plan = startPlan({
     planId,
     origin: "update-button",
@@ -72,7 +89,11 @@ function fixture(recoveryHistory?: 1) {
     current: plan,
     last: null,
     laptop: { observedAt: now, activationBlocked: false },
-    view: { complete: false, ...(recoveryHistory === undefined ? {} : { recoveryHistory }) },
+    view: {
+      complete: false,
+      ...(recoveryHistory === undefined ? {} : { recoveryHistory }),
+      ...(boundAdmission === undefined ? {} : { boundAdmission }),
+    },
   });
   const grant: JonesInstallPlanGrant = {
     planId,
@@ -131,6 +152,7 @@ function fixture(recoveryHistory?: 1) {
     canReadReceipt: canReadReceipt(),
     enrollment: matchPlanEnrollment(device, observed.observation.state, observed.fleetStatus),
     fleetStatus: observed.fleetStatus,
+    ...(observed.observation.state?.capability.boundAdmission === 1 ? { boundAdmission: 1 } : {}),
   }));
   return {
     driver: {
@@ -195,13 +217,324 @@ function nextPlan(plan: JonesInstallPlan): JonesInstallPlan {
   };
 }
 
+const readInput = { environmentId: env, operationIds: [opId] };
+const emptyRead = { receipts: [{ operationId: opId, receipt: null }] };
+
+const operationTransport = (fetchFn: typeof fetch, failures: unknown[] = []) =>
+  Effect.gen(function* () {
+    const target = new PrimaryConnectionTarget({
+      environmentId: env,
+      label: "Synthetic primary",
+      httpBaseUrl: "http://updates.example.test",
+      wsBaseUrl: "ws://updates.example.test/ws",
+    });
+    const supervisor = EnvironmentSupervisor.of({
+      target,
+      state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+      session: yield* SubscriptionRef.make(Option.none<RpcSession.RpcSession>()),
+      prepared: yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(
+        Option.some({
+          environmentId: env,
+          label: target.label,
+          target,
+          httpBaseUrl: target.httpBaseUrl,
+          socketUrl: target.wsBaseUrl,
+          httpAuthorization: null,
+        }),
+      ),
+      connect: Effect.void,
+      disconnect: Effect.void,
+      retryNow: Effect.void,
+    });
+    const run: EnvironmentRegistry["Service"]["run"] = (_id, effect) =>
+      Effect.provideService(effect, EnvironmentSupervisor, supervisor);
+    const environmentRegistry = EnvironmentRegistry.of({ run } as EnvironmentRegistry["Service"]);
+    const registry = AtomRegistry.make();
+    yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+    const atoms = createJonesUpdateAtoms(
+      Atom.runtime(
+        Layer.mergeAll(
+          Layer.succeed(EnvironmentRegistry, environmentRegistry),
+          layerRemoteHttpClient(fetchFn),
+        ),
+      ),
+    );
+    const operation: InstallPlanDriver["operation"] = async (environmentId, input) => {
+      const result = await atoms.operation.run(registry, { environmentId, input });
+      if (result._tag === "Success") {
+        if ("operationId" in result.value || "receipts" in result.value) return result.value;
+        throw new Error("Unexpected operation result in the test transport.");
+      }
+      const error = Option.getOrElse(Cause.findErrorOption(result.cause), () => result.cause);
+      failures.push(error);
+      throw error;
+    };
+    return operation;
+  });
+
 describe("bounded install plan runner", () => {
+  effectIt.effect.each([
+    "cancelled",
+    "closed",
+    "lease expired",
+    "reservation changed",
+    "route changed",
+    "identity changed",
+    "route changed during the native read",
+  ] as const)("vetoes a V1 start queued behind a read when %s", (change) =>
+    Effect.gen(function* () {
+      const f = fixture(1);
+      const entered = Promise.withResolvers<void>();
+      const unblock = Promise.withResolvers<void>();
+      const queued = Promise.withResolvers<void>();
+      const nativeRead = Promise.withResolvers<void>();
+      const resumeNative = Promise.withResolvers<void>();
+      const failures: unknown[] = [];
+      const calls: string[] = [];
+      const command = yield* operationTransport(async (url) => {
+        const path = new URL(String(url)).pathname;
+        calls.push(path);
+        if (path.endsWith("/read")) {
+          entered.resolve();
+          await unblock.promise;
+          return Response.json(emptyRead);
+        }
+        return Response.json(f.receipt);
+      }, failures);
+      const inFlight: Promise<unknown>[] = [];
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          unblock.resolve();
+          resumeNative.resolve();
+          await Promise.allSettled(inFlight);
+        }),
+      );
+      const blockingRead = command(env, { action: "operationRead", input: readInput });
+      inFlight.push(blockingRead);
+      expect(
+        yield* Effect.promise(() =>
+          Promise.race([entered.promise.then(() => true), blockingRead.then(() => false)]),
+        ),
+      ).toBe(true);
+      let checkInProgress = false;
+      f.desktop.mockImplementation(async (query) => {
+        if (query.type === "claim") {
+          f.setPlan(withReservation(f.plan()));
+          return { state: f.state(), grant: f.grant };
+        }
+        if (
+          query.type === "read" &&
+          checkInProgress &&
+          change === "route changed during the native read"
+        ) {
+          const proof = f.state();
+          nativeRead.resolve();
+          await resumeNative.promise;
+          return { state: proof };
+        }
+        return { state: f.state() };
+      });
+      f.operation.mockImplementation((id, input) => {
+        expect(input).toMatchObject({ action: "operationStart", input: request });
+        const dispatched = command(id, input);
+        checkInProgress = true;
+        queued.resolve();
+        return dispatched;
+      });
+      let cancelled = false;
+      let currentTime = Date.parse(now);
+      const pass = advanceInstallPlan({
+        ...f.driver,
+        cancelled: () => cancelled,
+        now: () => currentTime,
+      });
+      inFlight.push(pass);
+      expect(
+        yield* Effect.promise(() =>
+          Promise.race([queued.promise.then(() => true), pass.then(() => false)]),
+        ),
+      ).toBe(true);
+      expect(calls).toEqual(["/api/jones-updates/operations/read"]);
+      const changeRoute = (enrollment: "route-changed" | "identity-changed") =>
+        f.authority.mockReturnValue({
+          canDispatch: true,
+          canReadReceipt: true,
+          enrollment,
+          fleetStatus:
+            enrollment === "route-changed"
+              ? enrolled()
+              : { ...enrolled(), environmentId: otherEnv },
+        });
+      if (change === "cancelled") cancelled = true;
+      else if (change === "closed") f.setPlan(nextPlan(f.plan()));
+      else if (change === "lease expired") currentTime = Date.parse(leaseUntil);
+      else if (change === "reservation changed")
+        f.setPlan(
+          withReservation(f.plan(), {
+            ...reservation(),
+            request: {
+              kind: "operation-start",
+              input: { ...request, expectedInstalledSource: tree },
+            },
+          }),
+        );
+      else if (change === "route changed") changeRoute("route-changed");
+      else if (change === "identity changed") changeRoute("identity-changed");
+      unblock.resolve();
+      if (change === "route changed during the native read") {
+        expect(
+          yield* Effect.promise(() =>
+            Promise.race([nativeRead.promise.then(() => true), pass.then(() => false)]),
+          ),
+        ).toBe(true);
+        changeRoute("route-changed");
+        resumeNative.resolve();
+      }
+      yield* Effect.promise(() => pass);
+      expect(calls).toEqual(["/api/jones-updates/operations/read"]);
+      expect(failures).toEqual([expect.any(JonesOperationNotSentError)]);
+      expect(f.desktop.mock.calls.some(([query]) => query.type === "report")).toBe(false);
+      if (change !== "closed") {
+        expect(f.plan().devices[0]?.operations).toHaveLength(1);
+        expect(f.plan().devices[0]?.operations[0]?.receipt).toBeUndefined();
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  effectIt.effect(
+    "fences the exact bound follower request after a same-host enrollment change",
+    () =>
+      Effect.gen(function* () {
+        const f = fixture(1, 1);
+        const input: JonesOperationStartInput = {
+          ...request,
+          admission: {
+            kind: "follower",
+            enrollmentId,
+            directiveId: previousDirectiveId,
+            targetSource: source,
+            targetTree: tree,
+          },
+        };
+        const original = {
+          ...reservation(),
+          request: { kind: "operation-start" as const, input },
+          lease: { ...reservation().lease, leaseUntil: now },
+        };
+        const plan = f.plan();
+        f.setPlan(
+          withReservation(
+            {
+              ...plan,
+              devices: [{ ...plan.devices[0]!, route: "follower-operations", enrollmentId }],
+            },
+            original,
+          ),
+        );
+        const observed = yield* Effect.promise(() => f.observe(env));
+        const update = observed.observation.state!;
+        const fleet = enrolled();
+        f.observe.mockResolvedValue({
+          ...observed,
+          observation: {
+            ...observed.observation,
+            state: { ...update, capability: { ...update.capability, boundAdmission: 1 } },
+          },
+          fleetStatus: { ...fleet, enrollment: { ...fleet.enrollment, enrollmentId: otherOpId } },
+        });
+        const grant: JonesInstallPlanGrant = {
+          ...f.grant,
+          step: "fence",
+          request: { kind: "operation-fence", input },
+        };
+        f.desktop.mockImplementation(async (query) => {
+          if (query.type !== "claim") return { state: f.state() };
+          expect(query).toMatchObject({ step: "fence", operationId: opId });
+          expect(query.boundAdmission).toBeUndefined();
+          f.setPlan(
+            withReservation(f.plan(), { ...original, fence: { lease: reservation().lease } }),
+          );
+          return { state: f.state(), grant };
+        });
+        const fenced = { ...input, protocol: 1, phase: "fenced", updatedAt: now } as const;
+        const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(fenced));
+        f.operation.mockImplementation(yield* operationTransport(fetch));
+        yield* Effect.promise(() => advanceInstallPlan(f.driver));
+        expect(fetch).toHaveBeenCalledTimes(1);
+        const [url, init] = fetch.mock.calls[0]!;
+        expect(new URL(String(url)).pathname).toBe("/api/jones-updates/operations/v2/fence");
+        expect(JSON.parse(String(init?.body))).toEqual(input);
+        expect(f.desktop.mock.calls.at(-1)?.[0]).toMatchObject({
+          evidence: { kind: "receipt", receipt: fenced },
+        });
+        expect(f.host).not.toHaveBeenCalled();
+      }).pipe(Effect.scoped),
+  );
+
+  effectIt.effect.each([
+    { name: "both sides", host: true, native: true, status: 200 },
+    { name: "host only", host: true, native: false, status: 200 },
+    { name: "native only", host: false, native: true, status: 200 },
+    { name: "both sides and actual V2 route returns 404", host: true, native: true, status: 404 },
+  ])("uses the durable intent for transport with $name", ({ host, native, status }) =>
+    Effect.gen(function* () {
+      const f = fixture(1, native ? 1 : undefined);
+      const observed = yield* Effect.promise(() => f.observe(env));
+      const update = observed.observation.state!;
+      f.observe.mockResolvedValue({
+        ...observed,
+        observation: {
+          ...observed.observation,
+          state: {
+            ...update,
+            capability: { ...update.capability, ...(host ? { boundAdmission: 1 } : {}) },
+          },
+        },
+      });
+      const bound = host && native;
+      const input: JonesOperationStartInput = bound
+        ? { ...request, admission: { kind: "ordinary" } }
+        : request;
+      const operation = { ...reservation(), request: { kind: "operation-start" as const, input } };
+      const receipt = { ...f.receipt, ...input };
+      f.desktop.mockImplementation(async (query) => {
+        if (query.type !== "claim") return { state: f.state() };
+        expect(query.boundAdmission).toBe(bound ? 1 : undefined);
+        f.setPlan(withReservation(f.plan(), operation));
+        return { state: f.state(), grant: { ...f.grant, request: operation.request } };
+      });
+      const calls: Array<{ path: string; body: unknown }> = [];
+      const command = yield* operationTransport(async (url, init) => {
+        const path = new URL(String(url)).pathname;
+        calls.push({ path, body: JSON.parse(String(init?.body)) });
+        if (path.endsWith("/read")) return Response.json(emptyRead);
+        return status === 404 ? new Response(null, { status }) : Response.json(receipt);
+      });
+      f.operation.mockImplementation(command);
+      yield* Effect.promise(() => advanceInstallPlan(f.driver));
+      expect(calls).toEqual([
+        { path: `/api/jones-updates/operations/${bound ? "v2/" : ""}start`, body: input },
+        ...(status === 404
+          ? [{ path: "/api/jones-updates/operations/read", body: readInput }]
+          : []),
+      ]);
+      const expected =
+        status === 404 ? ["read", "claim", "read"] : ["read", "claim", "read", "report"];
+      expect(f.desktop.mock.calls.map(([query]) => query.type)).toEqual(expected);
+      expect(f.plan().devices[0]?.operations).toEqual([operation]);
+    }).pipe(Effect.scoped),
+  );
+
   it("claims before download, reports exact acceptance and never installs", async () => {
     const f = fixture();
     await advanceInstallPlan(f.driver);
     expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "claim", "report"]);
     expect(f.desktop.mock.calls[1]?.[0]).toMatchObject({ step: "download", explicit: false });
-    expect(f.operation.mock.calls[0]?.[1]).toEqual({ action: "operationStart", input: request });
+    expect(f.operation.mock.calls[0]?.[1]).toEqual({
+      action: "operationStart",
+      input: request,
+      beforeSend: expect.any(Function),
+    });
     expect(f.desktop.mock.invocationCallOrder[1]).toBeLessThan(
       f.operation.mock.invocationCallOrder[0]!,
     );
@@ -267,7 +600,7 @@ describe("bounded install plan runner", () => {
   });
 
   it.each([false, true])(
-    "sends an issued grant after close and reports to its original plan (disposed: %s)",
+    "reports an in-flight grant to its original plan after close (disposed: %s)",
     async (disposeBeforeReceipt) => {
       const f = fixture(1);
       const a = f.plan();
@@ -278,7 +611,9 @@ describe("bounded install plan runner", () => {
       const sent = Promise.withResolvers<void>();
       const deliverReceipt = Promise.withResolvers<JonesOperationReceipt>();
       let disposed = false;
-      f.operation.mockImplementation(async () => {
+      f.operation.mockImplementation(async (_environmentId, command) => {
+        if (command.action !== "operationStart" || !(await command.beforeSend?.()))
+          throw new Error("fixture did not qualify queued dispatch");
         sent.resolve();
         return deliverReceipt.promise;
       });
@@ -310,20 +645,35 @@ describe("bounded install plan runner", () => {
       });
       const pass = advanceInstallPlan({ ...f.driver, cancelled: () => disposed });
       await Promise.race([granted.promise, pass]);
+      deliverGrant.resolve();
+      await Promise.race([sent.promise, pass]);
       const closed = state.current!;
       state = {
         ...state,
         current: b,
         last: { ...closed, dismissedAt: now, cancelled: true, revision: closed.revision + 1 },
       };
-      deliverGrant.resolve();
-      await Promise.race([sent.promise, pass]);
       disposed = disposeBeforeReceipt;
+      if (disposed) {
+        const currentAuthority = f.authority.getMockImplementation()!;
+        f.canReadReceipt.mockReturnValue(false);
+        f.authority.mockImplementation((device) => ({
+          ...currentAuthority(device),
+          canReportReceipt: true,
+        }));
+      }
       deliverReceipt.resolve(f.receipt);
       await pass;
 
-      expect(f.operation.mock.calls).toEqual([[env, { action: "operationStart", input: request }]]);
-      expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "claim", "report"]);
+      expect(f.operation.mock.calls).toEqual([
+        [env, { action: "operationStart", input: request, beforeSend: expect.any(Function) }],
+      ]);
+      expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual([
+        "read",
+        "claim",
+        "read",
+        "report",
+      ]);
       expect(f.desktop.mock.calls.at(-1)?.[0]).toEqual({
         type: "report",
         planId,
@@ -414,7 +764,7 @@ describe("bounded install plan runner", () => {
     expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "claim", "report"]);
     expect(f.observe.mock.calls).toEqual([[otherEnv]]);
     expect(f.operation.mock.calls).toEqual([
-      [otherEnv, { action: "operationStart", input: bInput }],
+      [otherEnv, { action: "operationStart", input: bInput, beforeSend: expect.any(Function) }],
     ]);
     expect(f.host).not.toHaveBeenCalled();
   });
@@ -536,7 +886,7 @@ describe("bounded install plan runner", () => {
       expect(f.operation.mock.calls).toEqual(
         step === "new download"
           ? []
-          : Array.from({ length: 4 }, () => [
+          : Array.from({ length: 3 }, () => [
               env,
               { action: "operationRead", input: { environmentId: env, operationIds: [opId] } },
             ]),
@@ -545,7 +895,7 @@ describe("bounded install plan runner", () => {
     },
   );
 
-  it.each(["unknown", "changed"] as const)(
+  it.each(["unknown", "route-changed"] as const)(
     "reads the original reservation if route becomes %s while reclaim is pending",
     async (enrollment) => {
       const f = fixture(1);
@@ -566,11 +916,12 @@ describe("bounded install plan runner", () => {
       expect(f.operation.mock.calls).toEqual([
         [env, { action: "operationRead", input: { environmentId: env, operationIds: [opId] } }],
       ]);
+      expect(f.desktop.mock.calls.at(-1)?.[0]).toMatchObject({ evidence: { ledgerRead: true } });
       expect(f.host).not.toHaveBeenCalled();
     },
   );
 
-  it("fences only an expired exact operation when fleet enrollment is unknown", async () => {
+  it("fences expired exact operations with a missing read or proved same-host change", async () => {
     const f = fixture(1);
     const { fleetStatus: _fleet, ...unknown } = await f.observe(env);
     f.observe.mockResolvedValue(unknown);
@@ -597,20 +948,29 @@ describe("bounded install plan runner", () => {
       operationId: opId,
       explicit: false,
     });
-    expect(f.operation.mock.calls).toEqual([[env, { action: "operationFence", input: request }]]);
+    const exactFence = [
+      env,
+      { action: "operationFence", input: request, beforeSend: expect.any(Function) },
+    ];
+    expect(f.operation.mock.calls).toEqual([exactFence]);
     expect(f.host).not.toHaveBeenCalled();
 
-    for (const contradictory of [enrolled(), { ...enrolled(), environmentId: otherEnv }]) {
-      f.desktop.mockClear();
-      f.operation.mockClear();
-      f.observe.mockResolvedValueOnce({ ...unknown, fleetStatus: contradictory });
-      f.operation.mockResolvedValueOnce({ receipts: [{ operationId: opId, receipt: null }] });
-      await advanceInstallPlan(f.driver);
-      expect(f.desktop.mock.calls).toEqual([[{ type: "read" }]]);
-      expect(f.operation.mock.calls).toEqual([
-        [env, { action: "operationRead", input: { environmentId: env, operationIds: [opId] } }],
-      ]);
-    }
+    f.desktop.mockClear();
+    f.operation.mockClear();
+    f.observe.mockResolvedValueOnce({ ...unknown, fleetStatus: enrolled() });
+    f.operation.mockResolvedValueOnce(fenced);
+    await advanceInstallPlan(f.driver);
+    expect(f.operation.mock.calls).toEqual([exactFence]);
+
+    f.desktop.mockClear();
+    f.operation.mockClear();
+    f.observe.mockResolvedValueOnce({
+      ...unknown,
+      fleetStatus: { ...enrolled(), environmentId: otherEnv },
+    });
+    await advanceInstallPlan(f.driver);
+    expect(f.desktop.mock.calls).toEqual([[{ type: "read" }]]);
+    expect(f.operation).not.toHaveBeenCalled();
   });
 
   it("reauthorizes an exact receipt read and report independently of enrollment", async () => {
@@ -632,11 +992,25 @@ describe("bounded install plan runner", () => {
   });
 
   it("resends only its own identical live reservation and fences an abandoned one", async () => {
-    const f = fixture(1);
+    const f = fixture(1, 1);
+    const observed = await f.observe(env);
+    const state = observed.observation.state!;
+    f.observe.mockResolvedValue({
+      ...observed,
+      observation: {
+        ...observed.observation,
+        state: { ...state, capability: { ...state.capability, boundAdmission: 1 } },
+      },
+    });
     f.setPlan(withReservation(f.plan()));
     await advanceInstallPlan(f.driver);
     expect(f.desktop.mock.calls[1]?.[0]).toMatchObject({ step: "download", operationId: opId });
-    expect(f.operation.mock.calls[0]?.[1]).toEqual({ action: "operationStart", input: request });
+    expect(f.desktop.mock.calls[1]?.[0]).not.toHaveProperty("boundAdmission");
+    expect(f.operation.mock.calls[0]?.[1]).toEqual({
+      action: "operationStart",
+      input: request,
+      beforeSend: expect.any(Function),
+    });
     f.operation.mockClear();
     f.driver.now = () => Date.parse(leaseUntil) + 1;
     f.desktop.mockImplementation(async (r) => ({
@@ -659,7 +1033,11 @@ describe("bounded install plan runner", () => {
         : {}),
     }));
     await advanceInstallPlan(f.driver);
-    expect(f.operation.mock.calls[0]?.[1]).toEqual({ action: "operationFence", input: request });
+    expect(f.operation.mock.calls[0]?.[1]).toEqual({
+      action: "operationFence",
+      input: request,
+      beforeSend: expect.any(Function),
+    });
   });
 
   it("does not mint a new lease if the original is fenced before the delayed reclaim", async () => {
@@ -741,7 +1119,7 @@ describe("bounded install plan runner", () => {
     await advanceInstallPlan(f.driver);
     expect(f.operation.mock.calls.at(-1)).toEqual([
       env,
-      { action: "operationFence", input: request },
+      { action: "operationFence", input: request, beforeSend: expect.any(Function) },
     ]);
     expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "read", "claim", "report"]);
     expect(f.desktop.mock.calls.at(-1)?.[0]).toEqual({
@@ -836,9 +1214,98 @@ describe("bounded install plan runner", () => {
     expect(f.desktop.mock.calls.at(-1)?.[0]).toMatchObject({
       type: "report",
       operationId: opId,
-      evidence: { kind: "receipt", receipt: f.receipt },
+      evidence: { kind: "receipt", receipt: f.receipt, ledgerRead: true },
     });
     expect(f.desktop.mock.calls.some(([r]) => r.type === "claim")).toBe(false);
+  });
+
+  it.each([false, true])(
+    "reads a bound reservation with no current bound support (expired: %s)",
+    async (expired) => {
+      const f = fixture(1, 1);
+      const input: JonesOperationStartInput = { ...request, admission: { kind: "ordinary" } };
+      f.setPlan(
+        withReservation(f.plan(), {
+          ...reservation(),
+          request: { kind: "operation-start", input },
+          lease: { ...reservation().lease, leaseUntil: expired ? now : leaseUntil },
+        }),
+      );
+      const receipt = { ...f.receipt, ...input };
+      f.canDispatch.mockReturnValue(false);
+      f.operation.mockResolvedValue({ receipts: [{ operationId: opId, receipt }] });
+      await advanceInstallPlan(f.driver);
+      expect(f.operation.mock.calls).toEqual([
+        [env, { action: "operationRead", input: readInput }],
+      ]);
+      expect(f.desktop.mock.calls.map(([query]) => query.type)).toEqual(["read", "report"]);
+      expect(f.desktop.mock.calls.at(-1)?.[0]).toMatchObject({
+        evidence: { kind: "receipt", receipt, ledgerRead: true },
+      });
+    },
+  );
+
+  it("requires positive exact ledger proof before replacing a synthetic unsupported reply", async () => {
+    const f = fixture(1);
+    f.setPlan(withReservation(f.plan()));
+    const provisional: JonesOperationReceipt = {
+      ...request,
+      protocol: 1,
+      phase: "refused",
+      code: "unsupported",
+      updatedAt: leaseUntil,
+    };
+    f.operation.mockResolvedValueOnce(provisional).mockResolvedValueOnce(emptyRead);
+    await advanceInstallPlan(f.driver);
+    expect(f.operation.mock.calls.map(([, query]) => query.action)).toEqual([
+      "operationStart",
+      "operationRead",
+    ]);
+    expect(f.desktop.mock.calls.map(([query]) => query.type)).toEqual(["read", "claim"]);
+    expect(f.plan().devices[0]?.operations).toEqual([reservation()]);
+
+    f.setPlan(withReservation(f.plan(), { ...reservation(), receipt: provisional }));
+    const completed: JonesOperationReceipt = {
+      ...f.receipt,
+      phase: "completed",
+      staged: { stagedHandle: "stage", sourceSha: source, sourceTree: tree, artifactId: 1 },
+    };
+    f.operation.mockResolvedValueOnce({ receipts: [{ operationId: opId, receipt: completed }] });
+    await advanceInstallPlan(f.driver);
+    expect(f.operation.mock.calls.map(([, query]) => query.action)).toEqual([
+      "operationStart",
+      "operationRead",
+      "operationRead",
+    ]);
+    expect(f.desktop.mock.calls.at(-1)?.[0]).toMatchObject({
+      evidence: { kind: "receipt", receipt: completed, ledgerRead: true },
+    });
+    expect(f.desktop.mock.calls.filter(([query]) => query.type === "claim")).toHaveLength(1);
+  });
+
+  it("leaves the request unresolved when the ledger read returns the conflicting body", async () => {
+    const f = fixture(1);
+    f.setPlan(withReservation(f.plan()));
+    const conflict: JonesOperationReceipt = {
+      ...request,
+      protocol: 1,
+      phase: "refused",
+      code: "operation-conflict",
+      updatedAt: now,
+    };
+    const retained: JonesOperationReceipt = { ...f.receipt, expectedInstalledSource: tree };
+    f.operation.mockResolvedValueOnce(conflict).mockResolvedValueOnce({
+      receipts: [{ operationId: opId, receipt: retained }],
+    });
+
+    await advanceInstallPlan(f.driver);
+
+    expect(f.operation.mock.calls.map(([, query]) => query.action)).toEqual([
+      "operationStart",
+      "operationRead",
+    ]);
+    expect(f.desktop.mock.calls.map(([query]) => query.type)).toEqual(["read", "claim"]);
+    expect(f.plan().devices[0]?.operations).toEqual([reservation()]);
   });
 
   it.each([
@@ -914,7 +1381,7 @@ describe("bounded install plan runner", () => {
         planId,
         environmentId: env,
         operationId: opId,
-        evidence: { kind: "receipt", receipt: f.receipt },
+        evidence: { kind: "receipt", receipt: f.receipt, ledgerRead: true },
       });
 
       f.setPlan(plan);

@@ -4,6 +4,10 @@ import * as SchemaAST from "effect/SchemaAST";
 import { EnvironmentId, TrimmedNonEmptyString } from "../baseSchemas.ts";
 import { JonesBuildStartedAt } from "./fleetUpdates/source.ts";
 import {
+  JonesBoundOperationFenceInput,
+  JonesBoundOperationStartInput,
+  JonesLegacyOperationFenceInput,
+  JonesLegacyOperationStartInput,
   JonesOperationReceipt,
   JonesOperationReadResult,
   JonesRecoveryPreflight,
@@ -133,6 +137,8 @@ describe("Jones environment HTTP registration", () => {
       ["operationStart", "POST", "/api/jones-updates/operations/start"],
       ["operationStop", "POST", "/api/jones-updates/operations/stop"],
       ["operationFence", "POST", "/api/jones-updates/operations/fence"],
+      ["operationStartBound", "POST", "/api/jones-updates/operations/v2/start"],
+      ["operationFenceBound", "POST", "/api/jones-updates/operations/v2/fence"],
       ["operationRead", "POST", "/api/jones-updates/operations/read"],
       ["abandonStage", "POST", "/api/jones-updates/operations/abandon-stage"],
       ["recoverCleanup", "POST", "/api/jones-updates/operations/recover-cleanup"],
@@ -156,6 +162,8 @@ it("returns operation refusals as authenticated receipt successes, including rea
     endpoints.operationStart,
     endpoints.operationStop,
     endpoints.operationFence,
+    endpoints.operationStartBound,
+    endpoints.operationFenceBound,
   ]) {
     expect([...endpoint.success].map((schema) => schema.ast)).toEqual([
       Schema.toCodecJson(JonesOperationReceipt).ast,
@@ -170,6 +178,54 @@ it("returns operation refusals as authenticated receipt successes, including rea
   expect([...endpoints.recoveryPreflight.success].map((schema) => schema.ast)).toEqual([
     Schema.toCodecJson(JonesRecoveryPreflight).ast,
   ]);
+});
+
+it("preserves V1 request bodies and dispatches bound bodies only through V2 start and fence", () => {
+  const endpoints = EnvironmentHttpApi.groups.jonesUpdates.endpoints;
+  const uncorrelated = {
+    operationId: "11111111-1111-4111-8111-111111111111",
+    environmentId: "synthetic-host",
+    expectedInstalledSource: "a".repeat(40),
+    action: { kind: "download-exact", targetSource: "b".repeat(40) },
+  };
+  const correlation = {
+    planId: "22222222-2222-4222-8222-222222222222",
+    deviceKey: "synthetic-host",
+  };
+  const legacy = { ...uncorrelated, correlation };
+  const admission = { kind: "ordinary" };
+  const bound = { ...legacy, admission };
+  for (const [legacyRoute, legacySchema, boundRoute, boundSchema] of [
+    [
+      endpoints.operationStart,
+      JonesLegacyOperationStartInput,
+      endpoints.operationStartBound,
+      JonesBoundOperationStartInput,
+    ],
+    [
+      endpoints.operationFence,
+      JonesLegacyOperationFenceInput,
+      endpoints.operationFenceBound,
+      JonesBoundOperationFenceInput,
+    ],
+  ] as const) {
+    const legacyCodec = Schema.toCodecJson(legacySchema);
+    const boundCodec = Schema.toCodecJson(boundSchema);
+    expect(
+      legacyRoute.payload.get("application/json")?.schemas.map((schema) => schema.ast),
+    ).toEqual([legacyCodec.ast]);
+    expect(boundRoute.payload.get("application/json")?.schemas.map((schema) => schema.ast)).toEqual(
+      [boundCodec.ast],
+    );
+    const decodeLegacy = Schema.decodeUnknownSync(legacyCodec);
+    const decodeBound = Schema.decodeUnknownSync(boundCodec);
+    expect(decodeLegacy(uncorrelated)).toEqual(uncorrelated);
+    expect(decodeLegacy(legacy)).toEqual(legacy);
+    expect(() => decodeLegacy(bound)).toThrow();
+    expect(decodeBound(bound)).toEqual(bound);
+    expect(() => decodeBound(legacy)).toThrow();
+    expect(() => decodeBound({ ...uncorrelated, admission })).toThrow();
+  }
 });
 
 it("requires a nonnegative integer count in quit preparation responses", () => {
@@ -397,7 +453,7 @@ it("keeps install-plan details additive for legacy update decoders and missing c
   };
   const additive = {
     ...base,
-    capability: { ...base.capability, operations: 1, recoveryPolicy: 1 },
+    capability: { ...base.capability, operations: 1, boundAdmission: 1, recoveryPolicy: 1 },
     policy: { ...base.policy, reviewTarget: { source, tree, directiveId: operationId } },
     recovery: { ...base.recovery, requested: "clone-required" },
     operation: {
@@ -426,6 +482,7 @@ it("keeps install-plan details additive for legacy update decoders and missing c
   expect(decodeJonesUpdateState(base)).toEqual(base);
   expect(decodeJonesUpdateState(additive)).toEqual(additive);
   expect(decodeJonesUpdateState(base).capability.operations).toBeUndefined();
+  expect(decodeJonesUpdateState(base).capability.boundAdmission).toBeUndefined();
   expect(decodeJonesUpdateState(base).capability.recoveryPolicy).toBeUndefined();
   for (const phase of [
     "checking",
@@ -450,6 +507,8 @@ it("keeps install-plan details additive for legacy update decoders and missing c
   for (const capability of [
     { ...base.capability, operations: true },
     { ...base.capability, operations: 2 },
+    { ...additive.capability, boundAdmission: true },
+    { ...additive.capability, boundAdmission: 2 },
     { ...base.capability, recoveryPolicy: 2 },
   ])
     expect(() => decodeJonesUpdateState({ ...base, capability })).toThrow();

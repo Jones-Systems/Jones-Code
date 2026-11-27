@@ -10,13 +10,19 @@ import {
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import {
   deviceHasRecoveryDuty,
+  isProvisionalUnsupportedReceipt,
   isSettledOperationReceipt,
   operationOutstanding,
   orphanReceiptCheck,
   planHasLaptopRecoveryDuty,
-  validateReceipt,
+  validateOperationEvidence,
 } from "@t3tools/client-runtime/jones/install-plan/model";
-import { closedPlans, retainedPlans, type PlanDocument } from "./store.ts";
+import {
+  closedPlans,
+  requiresBoundAdmissionSchema,
+  retainedPlans,
+  type PlanDocument,
+} from "./store.ts";
 
 const KiB = 1024;
 const ADMISSION_BYTES = JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES - 256 * KiB;
@@ -28,17 +34,23 @@ const bytes = (value: unknown) =>
   value === undefined ? 0 : Buffer.byteLength(JSON.stringify(value));
 
 export const documentRevision = (document: PlanDocument) =>
-  document.schema === 2 ? document.documentRevision : 0;
+  document.schema === 1 ? 0 : document.documentRevision;
 
 const asRecoveryDocument = (document: PlanDocument) =>
-  document.schema === 2
-    ? document
-    : { ...document, schema: 2 as const, documentRevision: 0, older: [] };
+  document.schema === 1
+    ? { ...document, schema: 2 as const, documentRevision: 0, older: [] }
+    : document;
 
-export const commitRevision = (previous: PlanDocument, next: PlanDocument): PlanDocument =>
-  next === previous
-    ? previous
-    : { ...asRecoveryDocument(next), documentRevision: documentRevision(previous) + 1 };
+export function commitRevision(previous: PlanDocument, next: PlanDocument): PlanDocument {
+  if (next === previous) return previous;
+  const recovery = asRecoveryDocument(next);
+  // Older readers must stop before they can project a bound intent as a V1 request.
+  const schema =
+    previous.schema === 3 || recovery.schema === 3 || requiresBoundAdmissionSchema(recovery)
+      ? 3
+      : 2;
+  return { ...recovery, schema, documentRevision: documentRevision(previous) + 1 };
+}
 
 export function archiveCurrent(document: PlanDocument, closed: JonesInstallPlan): PlanDocument {
   return {
@@ -93,7 +105,8 @@ export function matchesOrphanReceipt(
       command.targetSource &&
     (action.kind === "install" ? action.stagedHandle : undefined) === command.stagedHandle &&
     isSettledOperationReceipt(receipt) &&
-    validateReceipt(
+    // This dedicated recovery path carries the positive ledger read of a lost V1 request.
+    validateOperationEvidence(
       {
         operationId,
         environmentId: command.environmentId,
@@ -102,6 +115,7 @@ export function matchesOrphanReceipt(
         action,
       },
       receipt,
+      { ledgerRead: true },
     ) &&
     bytes(receipt) <= RECEIPT_DETAILS_BYTES
   );
@@ -180,8 +194,12 @@ export function receiptDetailsFit(
 function operationRoom(operation: JonesInstallPlanHostOperation): number {
   if (operation.request.kind === "plan-directive")
     return operationOutstanding(operation) ? 8 * KiB : 0;
+  // A legacy unsupported reply can still be replaced with exact settled ledger evidence.
+  const provisional =
+    operation.receipt !== undefined && isProvisionalUnsupportedReceipt(operation.receipt);
   // A terminal operation can still learn its exact late Stop or stage retirement annotation.
-  if (!operationOutstanding(operation)) return RECOVERY_ANNOTATION_BYTES;
+  if (!provisional && !operationOutstanding(operation)) return RECOVERY_ANNOTATION_BYTES;
+  // Reserve the repeated intent, including admission, in the eventual receipt.
   return (
     Math.max(0, bytes(operation.request.input) + RECEIPT_DETAILS_BYTES - bytes(operation.receipt)) +
     RECOVERY_ANNOTATION_BYTES
@@ -211,7 +229,7 @@ export function admitPlanWork(
 ): PlanDocument | undefined {
   if (retainedPlans(document).length <= JONES_INSTALL_PLAN_HISTORY_LIMIT && fitsAdmission(document))
     return document;
-  if (!evictSettled || document.schema !== 2) return undefined;
+  if (!evictSettled || document.schema === 1) return undefined;
   const index = document.older.findLastIndex((plan) => !protectedPlan(document, plan));
   return index < 0
     ? undefined

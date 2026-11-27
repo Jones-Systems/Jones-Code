@@ -86,6 +86,9 @@ export interface FleetHostStore {
   ) => Promise<FleetHostOperation>;
   readonly readFollower: () => Promise<FleetFollowerRecord | null>;
   readonly readConfirmedFollower: () => Promise<FleetFollowerRecord | null>;
+  readonly withConfirmedOperationRoute: <A>(
+    admit: (enrollment: FleetEnrollment | null, follower: FleetFollowerRecord | null) => Promise<A>,
+  ) => Promise<A>;
   readonly editFollower: (
     change: (old: FleetFollowerRecord | null) => FleetFollowerRecord,
   ) => Promise<FleetFollowerRecord>;
@@ -103,7 +106,7 @@ const isFollower = Schema.is(FleetFollowerRecord);
 const isOperation = Schema.is(FleetHostOperation);
 const isOperationId = Schema.is(FleetOperationId);
 
-async function syncDirectory(path: string) {
+export async function syncDirectory(path: string) {
   const directory = await NodeFSP.open(path, "r");
   try {
     await directory.sync();
@@ -247,6 +250,14 @@ export function createFleetHostStore(baseDir: string): FleetHostStore {
         // Status can confirm a directive after a rename whose directory sync failed.
         if (record?.directive !== undefined) await syncDirectory(directory);
         return record;
+      }),
+    withConfirmedOperationRoute: (admit) =>
+      locked(async () => {
+        const enrollmentRecord = await read(enrollment, isEnrollment);
+        const followerRecord = await readFollower();
+        // The absence of enrollment and any visible rename must both survive restart.
+        await syncDirectory(directory);
+        return admit(enrollmentRecord, followerRecord);
       }),
     editFollower: (change) =>
       locked(async () => {

@@ -200,6 +200,12 @@ it("requires a directory sync before returning proof from a write with a failed 
       await expect(reconcile()).rejects.toThrow(failure);
       expect(syncAttempts).toBe(5);
       expect(rename).toHaveBeenCalledTimes(1);
+      const admit = vi.fn(async () => {});
+      await expect(restarted.withConfirmedOperationRoute(admit)).rejects.toThrow(failure);
+      expect(admit).not.toHaveBeenCalled();
+      failSync = false;
+      await restarted.withConfirmedOperationRoute(admit);
+      expect(admit).toHaveBeenCalledWith(enrollment, expect.objectContaining({ directive }));
     } finally {
       open.mockRestore();
       rename.mockRestore();
