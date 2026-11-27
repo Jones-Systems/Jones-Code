@@ -6,6 +6,9 @@ import type { WeightsInput } from "./envelope.ts";
 /** One shard's timing capture: a header, module events, then a terminal record, one per line. */
 export const CAPTURE_SCHEMA = "jones.server-shard-timings/v1";
 
+/** Carries pre-shard discovery on the Vitest context across config and reporter module loaders. */
+export const DISCOVERED_SERVER_SPECS = Symbol.for("jones.server-shard-timings.discovered-specs");
+
 /** Files whose bytes decide how the server suite is discovered, sharded and measured. */
 export const CAPTURE_IDENTITY_FILES = [
   "package.json",
