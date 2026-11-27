@@ -158,7 +158,7 @@ it.effect("reads saved accounting only after an explicit command and rereads exp
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       expect(harness.reads()).toBe(0);
-      const first = yield* Effect.promise(() =>
+      const first = yield* Effect.exit(
         harness.atoms.readTokenAccounting.run(harness.registry, {
           environmentId: target.environmentId,
           input: {},
@@ -170,7 +170,7 @@ it.effect("reads saved accounting only after an explicit command and rereads exp
       yield* SubscriptionRef.set(harness.sessionRef, Option.none());
       yield* SubscriptionRef.set(harness.sessionRef, Option.some(harness.session));
       expect(harness.reads()).toBe(1);
-      yield* Effect.promise(() =>
+      yield* Effect.exit(
         harness.atoms.readTokenAccounting.run(harness.registry, {
           environmentId: target.environmentId,
           input: {},
@@ -185,7 +185,7 @@ it.effect("does not dispatch to a server that omits the optional reader capabili
   Effect.scoped(
     Effect.gen(function* () {
       const harness = yield* makeHarness(false);
-      const read = yield* Effect.promise(() =>
+      const read = yield* Effect.exit(
         harness.atoms.readTokenAccounting.run(harness.registry, {
           environmentId: target.environmentId,
           input: {},
@@ -234,7 +234,7 @@ it.effect("rejects saved accounting when its validated session is replaced befor
         } as unknown as WsRpcProtocolClient,
       };
       yield* SubscriptionRef.set(harness.sessionRef, Option.some(validatedSession));
-      const readFiber = yield* Effect.promise(() =>
+      const readFiber = yield* Effect.exit(
         harness.atoms.readTokenAccounting.run(harness.registry, {
           environmentId: target.environmentId,
           input: {},
@@ -266,7 +266,7 @@ it.effect("rejects saved accounting when its validated session is replaced befor
           "connection changed before the request was issued",
         );
       }
-      const replacementRead = yield* Effect.promise(() =>
+      const replacementRead = yield* Effect.exit(
         harness.atoms.readTokenAccounting.run(harness.registry, {
           environmentId: target.environmentId,
           input: {},
@@ -281,7 +281,7 @@ it.effect("rejects saved accounting when its validated session is replaced befor
       expect(replacementReads).toBe(0);
       expect(harness.reads()).toBe(0);
       yield* SubscriptionRef.set(harness.sessionRef, Option.some(validatedSession));
-      const explicitRead = yield* Effect.promise(() =>
+      const explicitRead = yield* Effect.exit(
         harness.atoms.readTokenAccounting.run(harness.registry, {
           environmentId: target.environmentId,
           input: {},
@@ -299,7 +299,7 @@ it.effect("keeps a disconnected reader failure local without dispatch", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const harness = yield* makeHarness(true, false);
-      const read = yield* Effect.promise(() =>
+      const read = yield* Effect.exit(
         harness.atoms.readTokenAccounting.run(harness.registry, {
           environmentId: target.environmentId,
           input: {},
@@ -315,7 +315,7 @@ it.effect("refuses saved accounting without diagnostics access before dispatch",
   Effect.scoped(
     Effect.gen(function* () {
       const harness = yield* makeHarness(true, true, false);
-      const read = yield* Effect.promise(() =>
+      const read = yield* Effect.exit(
         harness.atoms.readTokenAccounting.run(harness.registry, {
           environmentId: target.environmentId,
           input: {},

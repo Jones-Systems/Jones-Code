@@ -84,6 +84,24 @@ const fixedHandle = (database: IDBDatabase) => ({
 });
 
 describe("ConnectionStorage.makeCatalogBackend", () => {
+  it.effect("reports a desktop snapshot read failure as a connection error", () =>
+    Effect.gen(function* () {
+      vi.stubGlobal("window", {
+        desktopBridge: {
+          getConnectionCatalogSnapshot: async () => {
+            throw new Error("Snapshot unavailable");
+          },
+        },
+      });
+      const backend = ConnectionStorage.makeCatalogBackend(fixedHandle({} as IDBDatabase));
+
+      const error = yield* backend.snapshot!.pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(ConnectionTransientError);
+      expect(error.detail).toContain("Snapshot unavailable");
+    }),
+  );
+
   it.effect("fails IndexedDB writes whose commit aborts", () =>
     Effect.gen(function* () {
       vi.stubGlobal("window", {});
@@ -837,9 +855,9 @@ describe("IndexedDB compatibility hint transactions", () => {
         { environmentId, routeBinding: "binding", kind: "outdated-update" },
       ]);
       failCommit = true;
-      expect(yield* backend.set(environmentId, "binding", null).pipe(Effect.flip)).toBeInstanceOf(
-        ConnectionTransientError,
-      );
+      const commitFailure = yield* backend.set(environmentId, "binding", null).pipe(Effect.flip);
+      expect(commitFailure).toBeInstanceOf(ConnectionTransientError);
+      expect(commitFailure.detail).toContain("Commit failed");
       failCommit = false;
       expect(yield* backend.read).toHaveLength(1);
       yield* backend.set(environmentId, "binding", null);

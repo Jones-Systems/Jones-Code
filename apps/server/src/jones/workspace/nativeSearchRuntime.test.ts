@@ -9,14 +9,18 @@ import {
 import { afterEach, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import { vi } from "vite-plus/test";
 
 import * as NodeFS from "node:fs";
 import * as NativeRuntime from "./nativeSearchRuntime.ts";
+import * as SearchGitProbe from "./SearchGitProbe.ts";
 import { nativeSearchProbeTestLayer } from "../serverParallelism/nativeWorkspace.testkit.ts";
+import type { Bootstrap } from "../serverCompute/protocol.ts";
 import { WorkspaceSearchProbe } from "../serverCompute/searchProbeClient.ts";
 import { probeFailure } from "../serverCompute/searchProbeProtocol.ts";
 import { WorkspaceSearchIndexScanTimedOut } from "../serverCompute/workspaceErrors.ts";
@@ -362,6 +366,74 @@ it.effect("continues whole-word searches after a filtered grep page", () =>
       expect(grep.mock.calls[1]?.[1]?.cursor).toBe(nextCursor);
     }),
   ),
+);
+
+it.live(
+  "selects whole-word Git candidates from the trusted search request before the file cap",
+  () =>
+    withNativeServices(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* fs.realPath(
+          yield* fs.makeTempDirectoryScoped({ prefix: "jones-git-whole-word-" }),
+        );
+        const git = yield* VcsProcess.VcsProcess;
+        yield* git.run({ operation: "test.gitInit", command: "git", args: ["init"], cwd });
+        yield* fs.writeFileString(
+          path.join(cwd, "words.txt"),
+          `${"needleSuffix\n".repeat(100)}Needle!\n`,
+        );
+
+        const bootstrap: Bootstrap = {
+          version: 1,
+          build: "a".repeat(64),
+          authorityId: "authority",
+          slotId: 0,
+          slotGeneration: 1,
+          nonce: "nonce",
+        };
+        const token = {
+          authorityId: bootstrap.authorityId,
+          slotId: bootstrap.slotId,
+          slotGeneration: bootstrap.slotGeneration,
+          keyId: "key",
+          incarnation: 1,
+        };
+        const probe = yield* SearchGitProbe.make;
+        yield* probe.bind({ bootstrap, token, key: { cwd, variant: "content" } });
+        yield* probe.opened(token);
+        const clock = yield* SearchGitProbe.SearchProbeClock;
+
+        const grep = Effect.fn(function* (requestId: number, wholeWord: boolean) {
+          const owner = { kind: "foreground" as const, requestId };
+          yield* probe.foregroundBegin({
+            token,
+            requestId,
+            operation: "searchContents",
+            input: { query: "needle", caseSensitive: false, useRegex: false, wholeWord, limit: 10 },
+            deadlineMonotonicMs: clock.now() + 30_000,
+          });
+          const result = yield* probe.run(token, owner, requestId, {
+            kind: "grep",
+            pattern: "needle",
+            ignoreCase: true,
+            onlyMatching: false,
+            regexMode: false,
+          });
+          yield* probe.acknowledge(token, owner, requestId);
+          yield* probe.foregroundEnd(token, requestId);
+          expect(result.exitCode).toBe(0);
+          expect(result.stdoutTruncated).toBe(false);
+          return result.stdout;
+        });
+
+        const substrings = yield* grep(1, false);
+        expect(substrings.trimEnd().split("\n")).toHaveLength(100);
+        expect(substrings).not.toContain("Needle!");
+        expect(yield* grep(2, true)).toBe("words.txt\0" + "101\0Needle!\n");
+      }),
+    ),
 );
 
 it.effect.each(["paths", "content"] as const)(

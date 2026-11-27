@@ -4,11 +4,13 @@ import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { useProjects } from "../state/entities";
 import { useEnvironments } from "../state/environments";
+import { useGT } from "gt-react";
 
 // Each helper reads its own source hook so the compiler caches the derived value on that
 // source. Taking the source as an argument instead leaves the helper hook-free, and the
 // compiler then treats it as a plain function and caches nothing.
 export function useEnvironmentLookups() {
+  const gt = useGT();
   const { environments } = useEnvironments();
   const environmentLabelById = new Map(
     environments.map((environment) => [environment.environmentId, environment.label] as const),
@@ -21,7 +23,11 @@ export function useEnvironmentLookups() {
         environment.environmentId,
         {
           kind: isLocal ? "local" : "remote",
-          label: isPrimary ? "Local" : isLocal ? `${environment.label} (Local)` : environment.label,
+          label: isPrimary
+            ? gt("Local", { $context: "machine location" })
+            : isLocal
+              ? gt("{label} (Local)", { label: environment.label })
+              : environment.label,
           machine: resolveEnvironmentMachineKind(environment.serverConfig),
         },
       ] as const;

@@ -58,10 +58,12 @@ describe("Jones environment HTTP registration", () => {
       "jonesFleetUpdates",
       "remoteAdmission",
       "remoteAdmissionReview",
+      "requestManagement",
       "workstreamsPersonal",
       "jonesImportedHistory",
       "previewCompanion",
       "webhooks",
+      "peerLink",
     ]);
   });
 
@@ -77,6 +79,7 @@ describe("Jones environment HTTP registration", () => {
       ...Object.values(groups.workstreams.endpoints),
       ...Object.values(groups.workstreamsPersonal.endpoints),
       ...Object.values(groups.jonesUpdates.endpoints),
+      ...Object.values(groups.requestManagement.endpoints),
     ];
     expect(routes.map(({ identifier, method, path }) => [identifier, method, path])).toEqual([
       ["recent", "GET", "/api/voice-review/recent"],
@@ -143,6 +146,8 @@ describe("Jones environment HTTP registration", () => {
       ["abandonStage", "POST", "/api/jones-updates/operations/abandon-stage"],
       ["recoverCleanup", "POST", "/api/jones-updates/operations/recover-cleanup"],
       ["recoveryPreflight", "POST", "/api/jones-updates/recovery-preflight"],
+      ["query", "POST", "/api/jones/requests/query"],
+      ["edit", "POST", "/api/jones/requests/edit"],
     ]);
     const bearerHeaders = Schema.Struct({
       authorization: Schema.optionalKey(Schema.String),

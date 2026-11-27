@@ -580,7 +580,7 @@ export function jonesFollowerHold(
   if (policy.leaderSource === null)
     return "This host follows its laptop and waits for the laptop to report its installed build.";
   if (source === undefined || source === policy.leaderSource) return undefined;
-  return `This host follows its laptop and installs only the laptop's installed source ${shortJonesSource(policy.leaderSource)}.`;
+  return `This host follows its laptop and uses the last laptop source it recorded: ${shortJonesSource(policy.leaderSource)}.`;
 }
 
 /** One line naming whose build a following host takes. */
@@ -589,7 +589,7 @@ export function jonesFollowerSummary(state: JonesUpdateState): string | undefine
   if (policy === undefined) return undefined;
   return policy.leaderSource === null
     ? "Follows its laptop · waiting for the laptop's installed build"
-    : `Follows its laptop · takes only source ${shortJonesSource(policy.leaderSource)}`;
+    : `Follows its laptop · last reported source ${shortJonesSource(policy.leaderSource)}`;
 }
 
 /** The host's offered or staged build. Hosts that predate offered versions omit `version`. */

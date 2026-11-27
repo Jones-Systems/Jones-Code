@@ -3,6 +3,7 @@ import {
   type JonesExecutorHost,
 } from "@t3tools/client-runtime/jones/updates/executor";
 import {
+  canPrepareFollowerMatch,
   executeWebJonesAction,
   unresolvedJonesExecution,
   executeWebJonesReplacement,
@@ -18,6 +19,8 @@ import {
   sameJonesReplacementStep,
   shortJonesSource,
   type JonesAction,
+  type JonesExactSourceDecision,
+  type JonesExactSourceInput,
   type JonesExactSourceStep,
   type JonesUpdateObservation,
 } from "@t3tools/client-runtime/jones/updates";
@@ -28,6 +31,7 @@ import type {
   JonesUpdateInstallInput,
   JonesUpdateState,
 } from "@t3tools/contracts/jones/jonesUpdates";
+import { useGT } from "gt-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
@@ -58,6 +62,7 @@ export interface ExactSourceTarget {
   readonly alternative?: JonesUpdateAlternative | undefined;
   /** A laptop target must still come from the same fresh, verified local connection. */
   readonly readTargetSource?: (() => string | undefined) | undefined;
+  readonly matchRunningGeneration?: string | undefined;
   readonly allowReplace?: boolean | undefined;
   readonly allowInstall?: boolean | undefined;
   readonly subject?: "this app" | "this laptop" | undefined;
@@ -69,6 +74,22 @@ export interface ExactSourceTarget {
 interface UnresolvedInstall {
   readonly stagedHandle: string;
   readonly revision: number | undefined;
+}
+
+type PrepareFollowerMatch = { readonly kind: "prepare-follower-match" };
+type ExactSourceStep = JonesExactSourceStep | PrepareFollowerMatch;
+
+function resolveExactSourceTarget(
+  input: JonesExactSourceInput & { readonly matchRunningGeneration?: string | undefined },
+): JonesExactSourceDecision | { readonly status: "ready"; readonly step: PrepareFollowerMatch } {
+  const decision = resolveJonesExactSourceAction(input);
+  return input.matchRunningGeneration !== undefined &&
+    input.targetSource !== undefined &&
+    decision.status === "unavailable" &&
+    decision.reason === "follows-laptop" &&
+    canPrepareFollowerMatch(input.environmentId, input.targetSource, input)
+    ? { status: "ready", step: { kind: "prepare-follower-match" } }
+    : decision;
 }
 
 type ExactSourceOutcome =
@@ -101,7 +122,7 @@ function request(step: JonesExactSourceStep, operationId: string): JonesAction {
   }
 }
 
-function sameStep(left: JonesExactSourceStep, right: JonesExactSourceStep) {
+function sameStep(left: JonesExactSourceStep, right: ExactSourceStep) {
   if (left.kind !== right.kind) return false;
   if (left.kind === "install" && right.kind === "install")
     return (
@@ -126,6 +147,7 @@ export async function performExactSourceStep({
   targetSource,
   alternative,
   readTargetSource,
+  matchRunningGeneration,
   allowReplace,
   allowInstall,
   subject,
@@ -134,7 +156,7 @@ export async function performExactSourceStep({
   unresolvedInstall,
   host,
 }: ExactSourceTarget & {
-  readonly step: JonesExactSourceStep;
+  readonly step: ExactSourceStep;
   readonly operationId?: string | undefined;
   readonly unresolvedInstall?: UnresolvedInstall | undefined;
   readonly host: Pick<ExactSourceHost, "readLatest" | "run" | "confirm" | "executor">;
@@ -161,9 +183,11 @@ export async function performExactSourceStep({
       message: "Nothing was sent: the laptop's verified installed build changed or is unavailable.",
     };
   if (step.kind === "replace-exact") {
-    const authority = await readLegacyConnectionsAuthority(targetSource, environmentId).catch(
-      () => "Native plan status is unavailable.",
-    );
+    const authority = await readLegacyConnectionsAuthority(
+      targetSource,
+      environmentId,
+      matchRunningGeneration,
+    ).catch(() => "Native plan status is unavailable.");
     if (typeof authority === "string") return { kind: "refused", message: authority };
     if (
       !(await host.confirm(
@@ -206,6 +230,7 @@ export async function performExactSourceStep({
         targetSource,
         stagedHandle: step.replace.stagedHandle,
         authority,
+        ...(matchRunningGeneration === undefined ? {} : { matchRunningGeneration }),
         host,
         canDispatch: () => {
           const latest = resolve();
@@ -275,7 +300,9 @@ export async function performExactSourceStep({
         ? { kind: "download-exact" as const, targetSource: step.targetSource }
         : step.kind === "download"
           ? { kind: "download" as const, ...step.input }
-          : undefined;
+          : step.kind === "prepare-follower-match"
+            ? { kind: "download-exact" as const, targetSource }
+            : undefined;
   if (action === undefined)
     return { kind: "refused", message: "Review the downloaded build again." };
   const result = await executeWebJonesAction({
@@ -284,6 +311,11 @@ export async function performExactSourceStep({
     action,
     operationId,
     host: executor,
+    ...(matchRunningGeneration === undefined ? {} : { matchRunningGeneration }),
+    ...(step.kind === "prepare-follower-match" ? { prepareFollowerMatch: true as const } : {}),
+    ...(readTargetSource === undefined
+      ? {}
+      : { cancelled: () => readTargetSource() !== targetSource }),
     ...(reviewed?.kind === "ready" ? { review: reviewed.review } : {}),
   });
   if (result.kind === "unknown")
@@ -353,6 +385,7 @@ export function ExactSourceUpdateAction({
   targetSource,
   alternative,
   readTargetSource,
+  matchRunningGeneration,
   allowReplace = false,
   allowInstall = true,
   subject,
@@ -360,6 +393,7 @@ export function ExactSourceUpdateAction({
   compact = false,
   host,
 }: ExactSourceTarget & { readonly host: ExactSourceHost }) {
+  const gt = useGT();
   const journal = useJonesExecutionJournal();
   const observedReceipt = host.snapshot.observation.state?.operation;
   const observedFreshness = host.snapshot.observation.freshness;
@@ -368,16 +402,17 @@ export function ExactSourceUpdateAction({
     if (observedFreshness === "fresh" && observedReceipt !== undefined)
       void reconcileJonesExecution(environmentId, observedReceipt).catch(() => undefined);
   }, [environmentId, observedFreshness, observedReceipt]);
-  const [working, setWorking] = useState<"download" | "install" | null>(null);
+  const [working, setWorking] = useState<"download" | "install" | "plan" | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const inFlight = useRef(false);
   const replacementIds = useRef(new Map<string, string>());
   const decision =
     alternative === undefined
-      ? resolveJonesExactSourceAction({
+      ? resolveExactSourceTarget({
           environmentId,
           ...host.snapshot,
           targetSource,
+          matchRunningGeneration,
           allowReplace,
           allowInstall,
           subject,
@@ -400,7 +435,13 @@ export function ExactSourceUpdateAction({
       replacementIds.current.set(key, operationId);
     }
     inFlight.current = true;
-    setWorking(step.kind === "install" ? "install" : "download");
+    setWorking(
+      step.kind === "prepare-follower-match"
+        ? "plan"
+        : step.kind === "install"
+          ? "install"
+          : "download",
+    );
     setReport(null);
     await releaseAfter(
       async () => {
@@ -410,6 +451,7 @@ export function ExactSourceUpdateAction({
           targetSource,
           alternative,
           readTargetSource,
+          matchRunningGeneration,
           allowReplace,
           allowInstall,
           subject,
@@ -470,12 +512,14 @@ export function ExactSourceUpdateAction({
               ? "Installing…"
               : working === "download"
                 ? "Downloading…"
-                : (buttonLabel ??
-                  (decision.status === "ready" && decision.step.kind === "install"
-                    ? `Install ${short}`
-                    : decision.status === "ready" && decision.step.kind === "replace-exact"
-                      ? `Replace with ${short}`
-                      : `Download ${short}`))
+                : working === "plan"
+                  ? gt("Opening plan…")
+                  : (buttonLabel ??
+                    (decision.status === "ready" && decision.step.kind === "install"
+                      ? `Install ${short}`
+                      : decision.status === "ready" && decision.step.kind === "replace-exact"
+                        ? `Replace with ${short}`
+                        : `Download ${short}`))
           }
         />
       ) : null}

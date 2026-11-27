@@ -306,8 +306,11 @@ Replacement downloads the matching source; it does not restart the server.
 Install remains a separate confirmed action.
 
 In the desktop app, **Settings → Connections → Match laptop** targets this
-laptop's verified installed source. It can also replace a different download
-after confirmation on supported hosts. The host's ordinary Download action
+laptop's verified running source. If there is no competing rollout, it can
+prepare a server-only plan even after the Mac installer for that source expires.
+The server still needs a qualified package for its own platform. Match laptop
+can also replace a different download after confirmation on supported hosts.
+The host's ordinary Download action
 follows its update channel and may offer a different source. Match laptop stays
 visible with an explanation when it cannot run, and disappears once the matching
 source is installed or downloaded. Older hosts may need an update before they
@@ -315,6 +318,11 @@ can replace a download. If replacement is interrupted, check the host's current
 status and explicitly download again if the earlier download is gone.
 Offline, unsupported, or newer servers show why the action is unavailable; the
 notice does not substitute the latest build.
+
+For an enrolled host, **Refresh** in its automatic update status checks what
+that host last recorded. When the laptop can publish a newer verified report,
+Refresh sends it and reads back the result. A retained manual-review directive
+keeps its own source and review requirement.
 
 When a download is retained, **Check** in Connections or **Check for builds** on
 mobile can show a separate **Alternative**. **Replace download** asks you to
@@ -420,24 +428,14 @@ use a separate home directory when a separate server is intended.
 
 ## Update providers
 
-**Settings → Providers** shows provider updates for the selected environment.
-**Update all** updates every outdated provider on every connected environment
-at once. Hover it to see which providers it will update. A provider is left out
-when any of its enabled, outdated instances offers only a manual update command,
-or when its instances use different update commands, such as two instances that
-run different CLI installs. Update those by hand, or point every instance of the
-provider at the same CLI.
-
-After a successful provider CLI update, T3 Code refreshes model discovery for
-every enabled instance of that provider using its own configuration. Connected
-clients receive the refreshed catalogs automatically. Provider update checks
-must be enabled to download the latest T3 Code model catalog.
-
-Provider updates do not restart running chats. An existing session can keep
-using the previous CLI until it ends. If discovery fails, check the provider
-status and refresh it again.
+Open **Settings → Providers** and click **Update now** on individual providers or **Update all** across connected environments. Running chats keep using their current CLI until they end; new sessions and model catalogs refresh automatically. (Provider update checks in **Settings → Maintenance** must be enabled to fetch model catalog updates.)
 
 ## Mobile updates
+
+- Update connected environments and providers from **Settings → Environments** on mobile.
+- Update the mobile app via the App Store or Google Play (background over-the-air updates apply on next app switch and preserve drafts/queued messages).
+
+## Troubleshooting
 
 To update an environment from your phone, open **Settings → Environments** and
 select it. **Check for updates** finds the latest release on that environment's

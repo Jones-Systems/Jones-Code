@@ -77,10 +77,8 @@ it("keeps the local device subtitle, propagates names and exposes attached workt
     isRouteThread: false,
     readOpensPullRequestsInRightPanel: () => false,
     jumpLabel: null,
-    currentEnvironmentId: thread.environmentId,
     environmentLabel: "Synthetic environment",
     environmentMachine: "server",
-    scratchMachineLabel: null,
     project: null,
     projectDisplayName: null,
     providerEntryByInstanceId: new Map(),
@@ -149,7 +147,6 @@ it("keeps the local device subtitle, propagates names and exposes attached workt
       <ul>
         <NonSortableThreadRow
           {...props}
-          currentEnvironmentId={null}
           environmentLabel="Unrecognized host"
           environmentMachine="cloud"
         />

@@ -8,6 +8,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
       "to": "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/orchestration/WorkspacePreparationRead.ts"
     }
   ]
 }

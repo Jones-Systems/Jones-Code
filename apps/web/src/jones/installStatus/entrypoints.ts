@@ -1,3 +1,5 @@
+import { msg } from "gt-react";
+import { m } from "../../i18n/messages";
 import { randomUUID } from "../../lib/utils";
 import type {
   DesktopBridge,
@@ -12,6 +14,7 @@ import type {
   JonesInstallPlanState,
   JonesInstallPlanTarget,
 } from "@t3tools/contracts/jones/installPlan";
+import { verifiedRunningLaptop } from "@t3tools/contracts/jones/installPlan";
 import type {
   JonesOperationAction,
   JonesOperationStartInput,
@@ -367,6 +370,11 @@ export async function handOffJonesTargets(
   targets: readonly JonesHandoffTarget[],
   dispatch?: NativeJonesDispatch,
   reviewedBuild?: JonesUpdateProvenance,
+  match?: {
+    readonly sourceSha: string;
+    readonly generation: string;
+    readonly requireFollower?: boolean;
+  },
 ): Promise<readonly JonesHandoffResult[]> {
   const binding = installPlanServices();
   if (binding?.services.bridge.installPlan === undefined) {
@@ -384,15 +392,44 @@ export async function handOffJonesTargets(
     return targets.map((target) => ({ ...target, handedOff: false, message: issue }));
   }
   requireWritablePlan(binding, read);
-  const desktop = await binding.services.bridge.getUpdateState();
-  const target = read.state.current?.target ?? targetForDesktop(desktop);
+  const current = read.state.current;
+  const desktop = match === undefined ? await binding.services.bridge.getUpdateState() : null;
+  const running =
+    match === undefined
+      ? undefined
+      : verifiedRunningLaptop(
+          read.state.laptop,
+          read.state.laptop.environmentId,
+          binding.services.now(),
+        );
+  if (match !== undefined) {
+    const refused = (message: string) =>
+      targets.map((target) => ({ ...target, handedOff: false, message }));
+    if (
+      read.state.view.matchRunningLaptop !== 1 ||
+      running?.target.sourceSha !== match.sourceSha ||
+      running.generation !== match.generation
+    )
+      return refused("The Laptop's verified running build changed or is unavailable. Check again.");
+    if (
+      current !== null &&
+      (current.target.sourceSha !== running.target.sourceSha ||
+        current.target.sourceTree !== running.target.sourceTree ||
+        current.laptop.gate?.activeGeneration !== running.generation ||
+        current.laptop.gateClosed !== undefined)
+    )
+      return refused(
+        "Review the current Laptop plan in Install status before matching this build.",
+      );
+  }
+  const target = current?.target ?? running?.target ?? targetForDesktop(desktop);
   if (
     reviewedBuild !== undefined &&
-    (read.state.current !== null ||
+    (current !== null ||
       target?.sourceSha !== reviewedBuild.sourceSha ||
       target.sourceTree !== reviewedBuild.sourceTree ||
       target.version !== reviewedBuild.version ||
-      desktop.jones?.provenance?.artifactId !== reviewedBuild.artifactId ||
+      desktop?.jones?.provenance?.artifactId !== reviewedBuild.artifactId ||
       desktop.jones.phase !== "available" ||
       !desktop.jones.capability.download)
   )
@@ -418,11 +455,17 @@ export async function handOffJonesTargets(
       const observed = observations[index];
       if (observed?.status !== "fulfilled") throw new Error("Fresh host status unavailable.");
       const device = observed.value;
+      if (device.environmentId !== entry.environmentId)
+        throw new Error("The observed host does not match this device.");
       if (
         device.observation.freshness === "fresh" &&
         device.observation.state?.installedSource?.sha === target.sourceSha
       ) {
-        results.push({ ...entry, handedOff: false, message: `Already on ${target.version}` });
+        results.push({
+          ...entry,
+          handedOff: false,
+          message: `Already on source ${target.sourceSha.slice(0, 8)}.`,
+        });
         continue;
       }
       const selection = selectionFor(device);
@@ -432,6 +475,14 @@ export async function handOffJonesTargets(
           ...entry,
           handedOff: false,
           message: `Update from Connections after Laptop is verified: ${!device.canOperate ? "no permission" : route.selectable ? "unavailable" : route.reason}`,
+        });
+      } else if (match?.requireFollower && selection.route !== "follower-operations") {
+        results.push({
+          ...entry,
+          handedOff: false,
+          message: m(
+            msg("This host’s Auto-update enrollment changed. Check its status and try again."),
+          ),
         });
       } else {
         selections.push(selection);
@@ -445,7 +496,6 @@ export async function handOffJonesTargets(
       });
     }
   }
-  const current = read.state.current;
   if (selections.length === 0 && reviewedBuild === undefined) return results;
   requireWritablePlan(binding, read);
   if (current === null) {
@@ -463,13 +513,14 @@ export async function handOffJonesTargets(
         }
       : {
           type: "start" as const,
-          origin: "update-everything" as const,
+          origin: match === undefined ? ("update-everything" as const) : ("connections" as const),
           target:
             reviewedBuild === undefined
               ? target
               : { ...target, laptopArtifactId: reviewedBuild.artifactId },
           select: selections,
-          ...(desktop.jones?.phase === "available" && desktop.jones.capability.download
+          ...(match === undefined ? {} : { expectedRunningGeneration: match.generation }),
+          ...(desktop?.jones?.phase === "available" && desktop.jones.capability.download
             ? { laptop: { action: "download" as const } }
             : {}),
         };
@@ -525,6 +576,11 @@ function retainedRecoveryIssue(
 export type LegacyConnectionsAuthority =
   | { readonly kind: "without-native-plan" }
   | {
+      readonly kind: "verified-running";
+      readonly binding: InstallPlanBinding;
+      readonly evidence: NonNullable<ReturnType<typeof verifiedRunningLaptop>>;
+    }
+  | {
       readonly kind: "verified-plan";
       readonly binding: InstallPlanBinding;
       readonly planId: string;
@@ -534,10 +590,13 @@ export type LegacyConnectionsAuthority =
 export async function readLegacyConnectionsAuthority(
   targetSource: string,
   environmentId: EnvironmentId,
+  matchRunningGeneration?: string,
 ): Promise<LegacyConnectionsAuthority | string> {
   const binding = installPlanServices();
   if (typeof window === "undefined" || window.desktopBridge?.installPlan === undefined)
-    return { kind: "without-native-plan" };
+    return matchRunningGeneration === undefined
+      ? { kind: "without-native-plan" }
+      : m(msg("The Laptop's native verification is unavailable. Check again."));
   if (binding === undefined) return "Open Install status on Laptop first.";
   const result = await requestInstallPlan({ type: "read" }, binding);
   const problem = nativePlanIssue(result);
@@ -549,7 +608,29 @@ export async function readLegacyConnectionsAuthority(
   }
   const overlap = retainedRecoveryIssue(result.state, environmentId);
   if (overlap !== undefined) return overlap;
-  const plan = result.state.current ?? result.state.last;
+  const { current, laptop } = result.state;
+  if (matchRunningGeneration !== undefined) {
+    const running = verifiedRunningLaptop(laptop, laptop.environmentId, binding.services.now());
+    if (
+      result.state.view.matchRunningLaptop !== 1 ||
+      running === undefined ||
+      running.environmentId === environmentId ||
+      running.target.sourceSha !== targetSource ||
+      running.generation !== matchRunningGeneration
+    )
+      return m(msg("The Laptop's verified running build changed or is unavailable. Check again."));
+    const laptopOverlap = retainedRecoveryIssue(result.state, running.environmentId);
+    if (laptopOverlap !== undefined) return laptopOverlap;
+    if (current === null) return { kind: "verified-running", binding, evidence: running };
+    if (
+      planHasLaptopRecoveryDuty(current) ||
+      current.devices.some(
+        (device) => device.environmentId === environmentId && deviceHasRecoveryDuty(device),
+      )
+    )
+      return m(msg("Review this device's outstanding work in Install status first."));
+  }
+  const plan = current ?? result.state.last;
   return plan?.target.sourceSha === targetSource &&
     plan.laptop.gate !== undefined &&
     plan.laptop.gateClosed === undefined &&
@@ -593,6 +674,8 @@ export function connectionsPlanDispatch(
   review: JonesReviewedInstall | undefined,
   dispatch: (canClaim?: () => boolean) => NativeJonesDispatch,
   canOperate: () => boolean,
+  matchRunningGeneration?: string,
+  requireFollower?: boolean,
 ) {
   let startIssue: (request: JonesOperationStartInput) => string | undefined = () =>
     "Install was not granted.";
@@ -602,12 +685,30 @@ export function connectionsPlanDispatch(
   ) => {
     if (binding === undefined || installPlanServices() !== binding)
       return { kind: "refused", message: "Open Install status on Laptop first." };
+    if (action.kind !== "install" && matchRunningGeneration !== undefined) {
+      const device = binding.services.devices().find((d) => d.environmentId === environmentId);
+      const [result] = await handOffJonesTargets(
+        [{ environmentId, label: device?.label ?? "Device" }],
+        dispatch(canOperate),
+        undefined,
+        {
+          sourceSha: targetSource,
+          generation: matchRunningGeneration,
+          ...(requireFollower ? { requireFollower } : {}),
+        },
+      );
+      return result?.handedOff
+        ? { kind: "handled", message: result.message }
+        : { kind: "refused", message: result?.message ?? "The plan handoff was refused." };
+    }
     const active = await requestInstallPlan({ type: "read" }, binding);
     const issue = nativePlanIssue(active) ?? retainedRecoveryIssue(active.state, environmentId);
     if (issue !== undefined) return { kind: "refused", message: issue };
     requireWritablePlan(binding, active);
-    const desktopTarget = targetForDesktop(await binding.services.bridge.getUpdateState());
-    if ((active.state.current?.target.sourceSha ?? desktopTarget?.sourceSha) !== targetSource)
+    const target =
+      active.state.current?.target.sourceSha ??
+      targetForDesktop(await binding.services.bridge.getUpdateState())?.sourceSha;
+    if (target !== targetSource)
       return {
         kind: "refused",
         message:

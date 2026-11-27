@@ -22,6 +22,7 @@ const commands = vi.hoisted(() => ({
   snooze: vi.fn(),
 }));
 const capability = vi.hoisted(() => ({ restore: true }));
+const connection = vi.hoisted(() => ({ online: true }));
 const shells = vi.hoisted(() => new Map<string, Record<string, unknown>>());
 
 vi.mock("./settlementRestore", async (original) => ({
@@ -29,9 +30,17 @@ vi.mock("./settlementRestore", async (original) => ({
   readEnvironmentSupportsSettlementRestore: () => capability.restore,
 }));
 vi.mock("../../state/use-atom-query-runner", () => ({ useAtomQueryRunner: () => vi.fn() }));
+vi.mock("../../state/environments", async (original) => ({
+  ...(await original<typeof import("../../state/environments")>()),
+  readEnvironment: (id: EnvironmentId) =>
+    id === environmentId
+      ? { connection: { phase: connection.online ? "connected" : "offline" } }
+      : null,
+}));
 vi.mock("../../state/session", async (original) => ({
   ...(await original<typeof import("../../state/session")>()),
   readEnvironmentScope: () => true,
+  readEnvironmentScopeDenied: () => false,
 }));
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
@@ -125,6 +134,7 @@ let inspect: MockInstance<Transport["inspect"]>;
 beforeEach(() => {
   vi.useFakeTimers();
   capability.restore = true;
+  connection.online = true;
   shells.clear();
   for (const command of Object.values(commands)) {
     command.mockReset().mockResolvedValue(AsyncResult.success({ sequence: 1 }));
@@ -217,17 +227,27 @@ describe("settle notice Undo on a server with native restore", () => {
   });
 });
 
-describe("older servers", () => {
-  it("keep the legacy Undo and never see a restore", async () => {
-    capability.restore = false;
+describe("settle notice Undo without a native receipt", () => {
+  it.each([
+    { reason: "an older server", online: true, supportsRestore: false },
+    { reason: "an offline environment", online: false, supportsRestore: true },
+  ])("keeps legacy Undo for $reason", async ({ online, supportsRestore }) => {
+    connection.online = online;
+    capability.restore = supportsRestore;
     addShell("one");
     await useThreadActions().settleThread(target("one"));
+    expect(commands.settle).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { threadId: target("one").threadId },
+    });
     await useThreadUndoNotice.getState().notice!.undo();
     expect(commands.unsettle).toHaveBeenCalledOnce();
     expect(commands.pin).toHaveBeenCalledOnce();
     expect(dispatch).not.toHaveBeenCalled();
   });
+});
 
+describe("older servers", () => {
   it("get no Undo settle menu item", () => {
     const items = [
       { id: "unsettle", label: "Un-settle thread" },

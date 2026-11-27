@@ -848,6 +848,22 @@ describe("target operations", () => {
       expect((await f.receipt())?.staged?.sourceSha).toBe(candidate.source);
       expect(f.install).not.toHaveBeenCalled();
     }));
+  it("retains the exact downgrade reason without starting a preparation worker", async () =>
+    fixture(async (f) => {
+      f.check.mockResolvedValueOnce({
+        state: "blocked",
+        reason: "target-older-than-installed",
+        retryAfterMs: 0,
+      });
+      expect((await f.operations.start(input)).phase).toBe("accepted");
+      expect(await f.receiptAt("failed")).toMatchObject({
+        code: "target-older-than-installed",
+        message: expect.stringContaining("older than the build running on this host"),
+      });
+      expect(await f.receipt()).not.toHaveProperty("jobId");
+      expect(f.prepareCalls()).toBe(0);
+      expect(f.install).not.toHaveBeenCalled();
+    }));
   it("Stop does not settle or release admission when only the caller was aborted", async () =>
     fixture(async (f) => {
       await f.operations.start(input);

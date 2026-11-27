@@ -75,7 +75,7 @@ assert.equal(config.pack.copy,undefined);
 assert.equal(config.pack.hooks,undefined);
 assert.equal(config.pack.outputOptions,undefined);
 assert.equal(config.pack.exe,undefined);
-assert.deepEqual(config.pack.entry,["src/bin.ts","src/claude-history-worker.ts"]);
+assert.deepEqual(config.pack.entry,["src/bin.ts","src/claude-history-worker.ts","src/process-launcher.ts"]);
 assert.equal(config.pack.sourcemap,true);
 assert.deepEqual(config.pack.plugins.map(p=>p.name),[
   "t3code:source-build-version",

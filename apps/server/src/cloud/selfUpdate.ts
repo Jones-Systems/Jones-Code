@@ -19,7 +19,6 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -48,10 +47,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import {
   ensurePinnedRuntimeInstalled,
   isUnpublishedRelease,
-  pinnedRuntimeCommand,
-  PinnedRuntimeInstallError,
   pinnedRuntimePaths,
-  PinnedRuntimePreflightBlockedError,
   prunePinnedRuntimes,
   verifyPinnedRuntimeProvenance,
 } from "./pinnedRuntime.ts";
@@ -62,6 +58,13 @@ import {
 } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import * as Duration from "effect/Duration";
+import { decodeServiceUnit } from "./serviceProtocol.ts";
+import {
+  PinnedRuntimePreflightBlockedError,
+  pinnedRuntimeCommand,
+  PinnedRuntimeInstallError,
+} from "./pinnedRuntime.ts";
 
 export type QualifiedStageVerifier = (input: {
   readonly stagedHandle: string;
@@ -135,7 +138,7 @@ export const pruneRuntimesOnStart = Effect.fn("cloud.server_self_update.prune_on
     const unit =
       unitPath === undefined
         ? Option.none<string>()
-        : yield* fs.readFileString(unitPath).pipe(Effect.option);
+        : yield* fs.readFile(unitPath).pipe(Effect.map(decodeServiceUnit), Effect.option);
     const program = Option.flatMapNullishOr(unit, bootServiceProgramOf);
     // The unit may name it through another spelling of a symlinked T3 home.
     const references = Option.isNone(program)

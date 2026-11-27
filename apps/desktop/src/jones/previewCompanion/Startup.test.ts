@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Cause from "effect/Cause";
@@ -7,6 +8,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import { DesktopCompanionConfig } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -29,6 +32,7 @@ import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
 import * as ElectronProtocol from "../../electron/ElectronProtocol.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
+import * as DesktopBackendRecoveryProcess from "../../backend/DesktopBackendRecoveryProcess.ts";
 import * as DesktopHomeOwner from "../../backend/DesktopHomeOwner.ts";
 import * as DesktopLocalEnvironmentAuth from "../../backend/DesktopLocalEnvironmentAuth.ts";
 import * as DesktopServerExposure from "../../backend/DesktopServerExposure.ts";
@@ -45,6 +49,7 @@ vi.mock("../../backend/DesktopHomeOwner.ts", async (importOriginal) => ({
   awaitHomeOwnershipRelease: vi.fn(),
   readLiveHomeOwner: vi.fn(),
 }));
+vi.mock("../../backend/DesktopBackendRecoveryProcess.ts", () => ({ make: vi.fn() }));
 vi.mock("electron", () => ({}));
 vi.mock("@clerk/electron", () => ({ createClerkBridge: vi.fn() }));
 vi.mock("@clerk/electron/storage", () => ({ storage: vi.fn() }));
@@ -58,19 +63,29 @@ const config = Schema.decodeSync(DesktopCompanionConfig)({
   label: "Mini",
   browserOnly: true,
 });
+const stateHome = "/fixture/state";
+const userData = "/fixture/companion";
+
 function fixture(
   companion = config,
   localEnabled = true,
   options: {
     readonly homeAvailable?: boolean;
     readonly settingsWriteError?: DesktopAppSettings.DesktopSettingsWriteError;
+    readonly shellUpdates?: DesktopShellEnvironment.DesktopShellEnvironment["Service"]["updates"];
+    readonly backends?: (
+      primary: DesktopBackendManager.DesktopBackendInstance,
+    ) => readonly DesktopBackendManager.DesktopBackendInstance[];
   } = {},
 ) {
   const events: string[] = [];
+  const launcherPaths: string[] = [];
   const authRequested = Deferred.makeUnsafe<void>();
   const wslRequested = Deferred.makeUnsafe<void>();
   const counts = {
     backend: 0,
+    recoverBackend: 0,
+    startupRecovery: 0,
     port: 0,
     exposure: 0,
     appActivation: 0,
@@ -97,6 +112,13 @@ function fixture(
   vi.mocked(DesktopHomeOwner.readLiveHomeOwner).mockImplementation(() =>
     Effect.succeedSome({ pid: 1234, port: 3773, serviceManaged: true }),
   );
+  vi.mocked(DesktopBackendRecoveryProcess.make).mockReturnValue({
+    recover: () => {
+      counts.recoverBackend++;
+      return Promise.resolve(undefined);
+    },
+    track: () => Promise.reject(new Error("Unexpected recovery worker tracking")),
+  });
   const settingsLayer = Layer.effect(
     DesktopAppSettings.DesktopAppSettings,
     Effect.map(DesktopAppSettings.DesktopAppSettings, (settings) => ({
@@ -133,6 +155,7 @@ function fixture(
   const layer = Layer.mergeAll(
     DesktopState.layer,
     DesktopShutdown.layer,
+    NodeCrypto.layerMac,
     Layer.mock(ElectronApp.ElectronApp, { quit: count("quit") }),
     Layer.mock(ElectronDialog.ElectronDialog, { showErrorBox: () => count("dialog") }),
     Layer.mock(ElectronTheme.ElectronTheme, {}),
@@ -142,7 +165,7 @@ function fixture(
       set: () => Effect.succeed(companion),
     }),
     Layer.succeed(DesktopAppIdentity.DesktopAppIdentity, {
-      resolveUserDataPath: Effect.succeed("/fixture/companion"),
+      resolveUserDataPath: Effect.succeed(userData),
       configure: Effect.void,
       previewAutomationRuntimeIdentity: Effect.succeed({
         schemaVersion: 1,
@@ -162,7 +185,17 @@ function fixture(
       isPackaged: true,
       resourcesPath: "/fixture/resources",
       runningUnderArm64Translation: false,
-    }).pipe(Layer.provide(Layer.mergeAll(Path.layer, DesktopConfig.layerTest({})))),
+    }).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Path.layer,
+          DesktopConfig.layerTest({
+            T3CODE_HOME: stateHome,
+            T3CODE_DESKTOP_USER_DATA_DIR: userData,
+          }),
+        ),
+      ),
+    ),
     // Native effects are counted; unexpected mock members fail rather than silently succeeding.
     Layer.mock(DesktopWindow.DesktopWindow, {
       createMainIfBackendReady: count("window"),
@@ -174,6 +207,7 @@ function fixture(
     Layer.mock(DesktopCliCommand.DesktopCliCommand, { installOnFirstLaunch: Effect.void }),
     Layer.mock(DesktopShellEnvironment.DesktopShellEnvironment, {
       awaitUserShellDiscovery: Effect.succeed(false),
+      updates: options.shellUpdates ?? Stream.empty,
     }),
     Layer.mock(DesktopAppActivation.DesktopAppActivation, {
       start: count("appActivation"),
@@ -184,7 +218,7 @@ function fixture(
     Layer.mock(DesktopLegacyLocalStorage.DesktopLegacyLocalStorage, {
       load: () => Effect.void,
     }),
-    DesktopBackendPool.layerTest([backend]),
+    DesktopBackendPool.layerTest(options.backends?.(backend) ?? [backend]),
     Layer.succeed(DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth, {
       getBearerToken: count("bearer").pipe(
         Effect.andThen(Deferred.succeed(authRequested, undefined)),
@@ -194,8 +228,14 @@ function fixture(
     Layer.mock(NetService.NetService, {
       canListenOnHost: () => count("port").pipe(Effect.as(true)),
     }),
-    // The mocked HomeOwner probes declare these services; the no-op file system holds no files.
-    FileSystem.layerNoop({}),
+    FileSystem.layerNoop({
+      makeDirectory: () => Effect.void,
+      writeFileString: () => Effect.void,
+      rename: (_from, to) =>
+        Effect.sync(() => {
+          launcherPaths.push(to);
+        }),
+    }),
     Path.layer,
     Layer.mock(DesktopServerExposure.DesktopServerExposure, {
       configureFromSettings: () =>
@@ -227,12 +267,15 @@ function fixture(
   );
   // Production and tests run the same startup body; IPC registration has independent sender tests.
   const bootstrap = Effect.gen(function* () {
-    const backendStarted = yield* DesktopApp.startLocalBackend(Effect.void);
+    const backendStarted = yield* DesktopApp.startLocalBackend(
+      Effect.void,
+      count("startupRecovery"),
+    );
     yield* DesktopApp.bootstrap(backendStarted);
     return backendStarted;
-  });
+  }).pipe(Effect.provideService(HostProcess.Environment, {}));
   const reenable = setLocalEnvironmentEnabled.handler(true);
-  return { counts, events, layer, bootstrap, reenable, authRequested, wslRequested };
+  return { counts, events, launcherPaths, layer, bootstrap, reenable, authRequested, wslRequested };
 }
 
 describe("browser-only actual desktop bootstrap", () => {
@@ -244,6 +287,8 @@ describe("browser-only actual desktop bootstrap", () => {
         yield* f.bootstrap.pipe(Effect.provide(f.layer), Effect.scoped);
         expect(f.counts).toEqual({
           backend: 0,
+          recoverBackend: 0,
+          startupRecovery: 0,
           port: 0,
           exposure: 0,
           appActivation: 0,
@@ -256,6 +301,8 @@ describe("browser-only actual desktop bootstrap", () => {
           dialog: 0,
           quit: 0,
         });
+        expect(DesktopBackendRecoveryProcess.make).not.toHaveBeenCalled();
+        expect(f.launcherPaths).toEqual([]);
         expect(f.events.slice(0, 2)).toEqual(["local=false", "settings.read"]);
       }),
   );
@@ -266,6 +313,8 @@ describe("browser-only actual desktop bootstrap", () => {
       yield* f.bootstrap.pipe(Effect.provide(f.layer), Effect.scoped);
       expect(f.counts).toEqual({
         backend: 0,
+        recoverBackend: 0,
+        startupRecovery: 0,
         port: 0,
         exposure: 0,
         appActivation: 0,
@@ -278,6 +327,7 @@ describe("browser-only actual desktop bootstrap", () => {
         dialog: 0,
         quit: 0,
       });
+      expect(f.launcherPaths).toEqual([]);
     }),
   );
 
@@ -322,6 +372,8 @@ describe("browser-only actual desktop bootstrap", () => {
         ).toBe(false);
       }).pipe(Effect.provide(f.layer), Effect.scoped);
       expect(f.counts.backend).toBe(0);
+      expect(f.counts.recoverBackend).toBe(0);
+      expect(f.counts.startupRecovery).toBe(0);
       expect(f.counts.port).toBe(0);
       expect(f.counts.appActivation).toBe(0);
       expect(f.counts.exposure).toBe(0);
@@ -329,6 +381,7 @@ describe("browser-only actual desktop bootstrap", () => {
       expect(f.counts.bearer).toBe(0);
       expect(f.counts.wsl).toBe(0);
       expect(f.counts.window).toBe(2);
+      expect(f.launcherPaths).toEqual([]);
     }),
   );
 
@@ -345,6 +398,14 @@ describe("browser-only actual desktop bootstrap", () => {
         yield* Deferred.await(f.wslRequested);
       }).pipe(Effect.provide(f.layer), Effect.scoped);
       expect(f.counts.backend).toBe(1);
+      expect(f.counts.recoverBackend).toBe(1);
+      expect(f.counts.startupRecovery).toBe(1);
+      expect(DesktopBackendRecoveryProcess.make).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          appDataDirectory: "/fixture/home/Library/Application Support",
+          stateDir: `${stateHome}/userdata`,
+        }),
+      );
       expect(f.counts.port).toBe(3);
       expect(f.counts.exposure).toBe(1);
       expect(f.counts.appActivation).toBe(1);
@@ -355,7 +416,7 @@ describe("browser-only actual desktop bootstrap", () => {
     }),
   );
 
-  it.effect("preserves ordinary explicitly disabled local startup", () =>
+  it.effect("refreshes the ordinary CLI launcher without starting a disabled local backend", () =>
     Effect.gen(function* () {
       const f = fixture(
         { ...config, enabled: false, environmentId: null, browserOnly: false },
@@ -363,12 +424,70 @@ describe("browser-only actual desktop bootstrap", () => {
       );
       yield* f.bootstrap.pipe(Effect.provide(f.layer), Effect.scoped);
       expect(f.counts.backend).toBe(0);
+      expect(f.counts.recoverBackend).toBe(0);
+      expect(f.counts.startupRecovery).toBe(0);
       expect(f.counts.port).toBe(0);
-      expect(f.counts.appActivation).toBe(0);
+      expect(f.counts.appActivation).toBe(1);
       expect(f.counts.homeOwner).toBe(0);
       expect(f.counts.bearer).toBe(0);
       expect(f.counts.wsl).toBe(0);
       expect(f.counts.window).toBe(1);
+      expect(f.launcherPaths).toEqual([`${stateHome}/bin/t3`]);
+    }),
+  );
+
+  it.effect("prepares only the backend restarted for changed shell feature flags", () =>
+    Effect.gen(function* () {
+      const restarted = yield* Deferred.make<void>();
+      const events: string[] = [];
+      const notReady: DesktopBackendManager.DesktopBackendSnapshot = {
+        desiredRunning: true,
+        ready: false,
+        activePid: Option.none(),
+        restartAttempt: 0,
+        restartScheduled: false,
+      };
+      const observePreparation = (target: string) =>
+        Effect.sync(() => {
+          events.push(`prepare ${target}`);
+          return notReady;
+        });
+      const f = fixture({ ...config, browserOnly: false }, true, {
+        shellUpdates: Stream.make({
+          version: 1,
+          type: "shellEnvironment",
+          platform: "darwin",
+          discovered: true,
+          environment: { T3CODE_FEATURE_FLAGS: "fixture" },
+        }),
+        backends: (primary) => [
+          {
+            ...primary,
+            snapshot: observePreparation("primary"),
+            stop: () => Effect.sync(() => void events.push("stop primary")),
+            start: Effect.gen(function* () {
+              const restarting = events.includes("stop primary");
+              events.push("start primary");
+              if (restarting) yield* Deferred.succeed(restarted, undefined);
+            }),
+          },
+          {
+            ...primary,
+            id: DesktopBackendPool.BackendInstanceId("secondary"),
+            snapshot: observePreparation("secondary"),
+          },
+        ],
+      });
+      yield* Effect.gen(function* () {
+        expect(yield* f.bootstrap).toBe(true);
+        yield* Deferred.await(restarted);
+        expect(events).toEqual([
+          "start primary",
+          "prepare primary",
+          "stop primary",
+          "start primary",
+        ]);
+      }).pipe(Effect.provide(f.layer), Effect.scoped);
     }),
   );
 
@@ -390,6 +509,8 @@ describe("browser-only actual desktop bootstrap", () => {
         expect(f.events).toEqual(["local=false"]);
         expect(f.counts).toEqual({
           backend: 0,
+          recoverBackend: 0,
+          startupRecovery: 0,
           port: 0,
           exposure: 0,
           appActivation: 0,
@@ -412,6 +533,8 @@ describe("browser-only actual desktop bootstrap", () => {
       expect(DesktopHomeOwner.readLiveHomeOwner).toHaveBeenCalledOnce();
       expect(f.counts).toEqual({
         backend: 0,
+        recoverBackend: 1,
+        startupRecovery: 0,
         port: 0,
         exposure: 0,
         appActivation: 0,

@@ -43,6 +43,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../../jones/questionAnswer/answers";
 import type { PendingUserInput } from "../../lib/threadActivity";
+import { useGT, T } from "gt-react-native";
 
 export interface PendingUserInputCardProps {
   readonly environmentId: EnvironmentId;
@@ -58,6 +59,7 @@ export interface PendingUserInputCardProps {
   readonly onStopThread?: () => void;
   readonly cardProgress: SharedValue<number>;
   readonly cardCoverage: SharedValue<number>;
+  readonly onLayout?: (event: LayoutChangeEvent) => void;
   readonly onInputFocusChange?: (focused: boolean) => void;
   readonly drafts: Record<string, PendingUserInputDraftAnswer>;
   readonly answers: Record<string, string | ReadonlyArray<string>> | null;
@@ -129,6 +131,7 @@ function QuestionText(props: {
 }
 
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
+  const gt = useGT();
   const questionCount = props.pendingUserInput.questions.length;
   const canRespond = props.pendingUserInput.responseCapability !== "not_resumable";
   const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
@@ -223,7 +226,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
 
   const stopButton = props.onStopThread ? (
     <ControlPill
-      accessibilityLabel="Stop"
+      accessibilityLabel={gt("Stop", { $context: "verb, stops the thread" })}
       icon="stop.fill"
       variant="danger"
       className="h-9 w-9"
@@ -241,9 +244,10 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
     >
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Expand user input, ${questionCount} question${
-          questionCount === 1 ? "" : "s"
-        }`}
+        accessibilityLabel={gt(
+          "{count, plural, one {Expand user input, {count} question} other {Expand user input, {count} questions}}",
+          { count: questionCount },
+        )}
         onPress={props.onToggleCollapsed}
         className="min-h-10 flex-1 flex-row items-center gap-2 active:opacity-70"
       >
@@ -277,13 +281,13 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       <View className="flex-row items-start gap-2">
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Collapse user input"
+          accessibilityLabel={gt("Collapse user input")}
           onPress={props.onToggleCollapsed}
           className="flex-1 flex-row items-start gap-2"
         >
           <View className="flex-1 gap-2.5">
             <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
-              User input needed
+              <T>User input needed</T>
             </Text>
             <Text className="font-t3-bold text-lg text-foreground">
               Answer one question at a time
@@ -312,8 +316,10 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       >
         {!canRespond ? (
           <Text className="font-sans text-sm leading-5 text-foreground-muted">
-            The provider process for this request is no longer available. Interrupt or restart the
-            run to continue.
+            <T>
+              The provider process for this request is no longer available. Interrupt or restart the
+              run to continue.
+            </T>
           </Text>
         ) : null}
         {(activeQuestion ? [activeQuestion] : []).map((question) => {
@@ -460,7 +466,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       </View>
       {props.pendingUserInput.dismissible ? (
         <Button
-          label="Dismiss without answering"
+          label={gt("Dismiss without answering")}
           tone="text"
           disabled={isResponding}
           onPress={() => void props.onDismiss()}
@@ -468,7 +474,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       ) : null}
       {!props.canOperateThread ? (
         <Text className="font-sans text-xs text-foreground-tertiary">
-          This connection cannot submit answers.
+          <T>This connection cannot submit answers.</T>
         </Text>
       ) : null}
     </Animated.View>
@@ -478,6 +484,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
     <Animated.View
       className="relative"
       style={Platform.OS === "android" ? androidBoundsStyle : undefined}
+      onLayout={props.onLayout}
     >
       {bar}
       <Animated.View

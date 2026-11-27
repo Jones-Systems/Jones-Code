@@ -1,12 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import {
   clampWorkspacePdfPosition,
   initialWorkspacePdfPosition,
   type WorkspacePdfPosition,
 } from "../../jones/filePreview/workspacePdfSession";
-import { sharedPdfWorker } from "./pdfDocument";
-import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist";
+import { openWorkspacePdf, sharedPdfWorker } from "./pdfDocument";
+import { GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist";
 import {
   EventBus,
   LinkTarget,
@@ -52,12 +52,16 @@ export default function PdfPreview({
   onRetry,
   initialPosition,
   onPositionChange,
+  onOpenLink,
+  actions,
 }: {
   readonly src: string;
   readonly title: string;
   readonly initialPosition?: WorkspacePdfPosition | (() => WorkspacePdfPosition) | undefined;
   readonly onPositionChange?: ((position: WorkspacePdfPosition) => void) | undefined;
   readonly onRetry?: (() => void | Promise<void>) | undefined;
+  readonly onOpenLink?: (url: string, event: MouseEvent) => void;
+  readonly actions?: ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const pagesRef = useRef<HTMLDivElement>(null);
@@ -247,7 +251,7 @@ export default function PdfPreview({
     eventBus.on("updatefindmatchescount", matchCount);
     eventBus.on("pagesinit", initialize);
     eventBus.on("pagerendered", rendered);
-    const task = getDocument({
+    const task = openWorkspacePdf({
       worker: sharedPdfWorker(),
       url: documentIdentity.src,
       BinaryDataFactory: LocalBinaryDataFactory,
@@ -411,6 +415,7 @@ export default function PdfPreview({
         >
           Reset
         </Button>
+        {actions}
       </div>
       {searchOpen && (
         <div role="search" className="flex shrink-0 items-center gap-1 border-b px-2 py-1">
@@ -485,6 +490,15 @@ export default function PdfPreview({
           onClick={(event) => {
             const pointer = pointerRef.current;
             pointerRef.current = null;
+            const link =
+              event.target instanceof Element
+                ? event.target.closest<HTMLAnchorElement>('a[target="_blank"][href]')
+                : null;
+            if (onOpenLink && link && /^https?:/.test(link.href)) {
+              event.preventDefault();
+              onOpenLink(link.href, event.nativeEvent);
+              return;
+            }
             if (interactive(event.target) || pointer?.moved || window.getSelection()?.toString())
               return;
             cycle([event.clientX, event.clientY]);

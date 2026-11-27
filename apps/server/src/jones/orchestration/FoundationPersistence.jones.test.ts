@@ -478,6 +478,7 @@ it.effect.each([undefined, false, true] as const)(
         checkpointId: null,
         contextHandoffId: null,
       };
+      const followUpRunId = eligibility === true ? RunId.make("run:active-follow-up") : undefined;
       yield* sink.write({
         events: [
           threadCreatedEvent({ id: `queue-boolean-thread-${eligibility}`, thread, now }),
@@ -490,6 +491,9 @@ it.effect.each([undefined, false, true] as const)(
             payload: {
               ...run,
               ...(eligibility === undefined ? {} : { queuedToolBoundaryEligible: eligibility }),
+              ...(followUpRunId === undefined
+                ? {}
+                : { queuedToolBoundaryFollowUpOfRunId: followUpRunId }),
             },
           },
         ],
@@ -510,6 +514,11 @@ it.effect.each([undefined, false, true] as const)(
         (yield* projections.getThreadProjection(thread.id)).runs[0]!.queuedToolBoundaryEligible,
         eligibility,
       );
+      assert.strictEqual(
+        (yield* projections.getThreadProjection(thread.id)).runs[0]!
+          .queuedToolBoundaryFollowUpOfRunId,
+        followUpRunId,
+      );
       const rows = yield* sql<{
         kind: string | null;
       }>`SELECT json_type(payload_json,'$.queuedToolBoundaryEligible') AS kind FROM orchestration_v2_projection_runs WHERE run_id=${run.id}`;
@@ -527,6 +536,10 @@ it.effect.each([undefined, false, true] as const)(
         assert.strictEqual(
           (yield* memory.getThreadProjection(thread.id)).runs[0]!.queuedToolBoundaryEligible,
           eligibility,
+        );
+        assert.strictEqual(
+          (yield* memory.getThreadProjection(thread.id)).runs[0]!.queuedToolBoundaryFollowUpOfRunId,
+          followUpRunId,
         );
       }).pipe(Effect.provide(ProjectionStore.layerMemory));
     }).pipe(Effect.provide(TestLayer)),

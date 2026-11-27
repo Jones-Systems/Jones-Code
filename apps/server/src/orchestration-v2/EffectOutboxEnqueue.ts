@@ -31,6 +31,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
     processLossCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    cause: Schema.optional(Schema.Literal("provider_exit")),
     preparedForRestart: Schema.optional(Schema.Boolean),
     continueWithoutPreference: Schema.optional(Schema.Boolean),
   }),
@@ -166,6 +167,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("attachment.cleanup"),
     attachmentIds: Schema.Array(Schema.String),
     skipReferenced: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
+    type: Schema.Literal("thread-content.purge"),
   }),
   Schema.Struct({
     request: Schema.optional(Schema.Never),

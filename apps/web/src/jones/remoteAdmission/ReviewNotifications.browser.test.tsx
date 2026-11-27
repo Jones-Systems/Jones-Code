@@ -13,7 +13,7 @@ import { TooltipProvider } from "../../components/ui/tooltip";
 import { RemoteAdmissionNotifications } from "./RemoteAdmissionNotifications";
 import { installReviewClient, reviewControllerFor } from "./reviewRuntime";
 import { admissionFixture } from "./testFixtures";
-import { requestHref, threadHref } from "./navigation";
+import { renderRequestsRouter } from "./requestsRouterTestHarness";
 
 const mocks = vi.hoisted(() => ({ add: vi.fn(), close: vi.fn() }));
 let receiver = EnvironmentId.make("review-notifications-initial");
@@ -128,7 +128,9 @@ it("collapses an incoming row independently and uses compact controls and an exa
   expect(screen.container.textContent).toContain("1 incoming approval request");
   expect(
     screen.container.querySelector('[aria-label="Open exact request"]')?.getAttribute("href"),
-  ).toBe(requestHref(receiver, f.item.record.id, f.item.record.bindingDigest));
+  ).toBe(
+    `/requests?receiver=${receiver}&request=${f.item.record.id}&binding=${f.item.record.bindingDigest}`,
+  );
   const duration = screen.container.querySelector<HTMLButtonElement>('[aria-label="Duration"]')!;
   // Flex items blockify inline-flex; this still rejects unstyled browser-default buttons.
   expect(getComputedStyle(duration).display).toBe("flex");
@@ -175,47 +177,65 @@ it("collapses an incoming row independently and uses compact controls and an exa
   });
 });
 
-it("keeps creation outcomes separate, routes available threads and unknown requests exactly, and collapses each entry", async () => {
-  const f = setup("review-notifications-created");
-  f.setRecords([]);
-  await f.controller.load();
-  await using _root = await render(<RemoteAdmissionNotifications />);
-  await vi.waitFor(() => expect(f.client.changes).toHaveBeenCalled());
-  const created: Item = {
-    ...f.item,
-    record: { ...f.item.record, status: "dispatched" },
-    outcome: "created",
-    availability: "available",
-    threadId: "confirmed-destination",
-    messageStage: "Initial message accepted",
-  };
-  const unknown: Item = {
-    ...f.item,
-    record: admissionFixture({ id: "unknown-launch", status: "dispatched" }),
-    outcome: "unknown",
-    reason: "Creation outcome unavailable",
-  };
-  await act(() =>
-    f.deliver({ cursor: "after-results", revision: "snapshot-2", results: [created, unknown] }),
-  );
-  await vi.waitFor(() => expect(mocks.add).toHaveBeenCalledTimes(1));
-  await using screen = await render(<TooltipProvider>{body(0)}</TooltipProvider>);
-  expect(screen.container.textContent).toContain("1 thread created · 1 unknown");
-  expect(
-    screen.container.querySelector('[aria-label="Open exact thread"]')?.getAttribute("href"),
-  ).toBe(threadHref(receiver, "confirmed-destination"));
-  expect(
-    screen.container.querySelector('[aria-label="Open exact request"]')?.getAttribute("href"),
-  ).toBe(requestHref(receiver, unknown.record.id, unknown.record.bindingDigest));
-  const titles = [
-    ...screen.container.querySelectorAll<HTMLButtonElement>("article button[aria-expanded]"),
-  ];
-  await act(() => titles[0]!.click());
-  expect(screen.container.textContent).not.toContain("Initial message accepted");
-  expect(screen.container.textContent).toContain("Creation outcome unavailable");
-  expect(titles[1]!.getAttribute("aria-expanded")).toBe("true");
-  expect(f.client.mutate).not.toHaveBeenCalled();
-});
+it.each(["browser", "hash"] as const)(
+  "navigates creation result arrows with %s history",
+  async (historyType) => {
+    const f = setup(`review-notifications-created-${historyType}`);
+    f.setRecords([]);
+    await f.controller.load();
+    await using _root = await render(<RemoteAdmissionNotifications />);
+    await vi.waitFor(() => expect(f.client.changes).toHaveBeenCalled());
+    const created: Item = {
+      ...f.item,
+      record: { ...f.item.record, status: "dispatched" },
+      outcome: "created",
+      availability: "available",
+      threadId: "confirmed-destination",
+      messageStage: "Initial message accepted",
+    };
+    const unknown: Item = {
+      ...f.item,
+      record: admissionFixture({ id: "unknown-launch", status: "dispatched" }),
+      outcome: "unknown",
+      reason: "Creation outcome unavailable",
+    };
+    f.client.lookup = vi.fn(async () => unknown);
+    await act(() =>
+      f.deliver({ cursor: "after-results", revision: "snapshot-2", results: [created, unknown] }),
+    );
+    await vi.waitFor(() => expect(mocks.add).toHaveBeenCalledTimes(1));
+    await using routed = await renderRequestsRouter(historyType, {
+      initial: "/",
+      alongside: body(0),
+    });
+    const { screen, router } = routed;
+    expect(screen.container.textContent).toContain("1 thread created · 1 unknown");
+    const titles = [
+      ...screen.container.querySelectorAll<HTMLButtonElement>("article button[aria-expanded]"),
+    ];
+    await act(() => titles[0]!.click());
+    expect(screen.container.textContent).not.toContain("Initial message accepted");
+    expect(screen.container.textContent).toContain("Creation outcome unavailable");
+    expect(titles[1]!.getAttribute("aria-expanded")).toBe("true");
+    await act(() =>
+      screen.container.querySelector<HTMLElement>('[aria-label="Open exact request"]')!.click(),
+    );
+    await vi.waitFor(() =>
+      expect(f.client.lookup).toHaveBeenCalledWith(unknown.record.id, unknown.record.bindingDigest),
+    );
+    expect(router.state.location).toMatchObject({
+      pathname: "/requests",
+      search: { receiver, request: unknown.record.id, binding: unknown.record.bindingDigest },
+    });
+    await act(() =>
+      screen.container.querySelector<HTMLElement>('[aria-label="Open exact thread"]')!.click(),
+    );
+    await expect
+      .element(screen.getByText(`Thread confirmed-destination on ${receiver}`))
+      .toBeVisible();
+    expect(f.client.mutate).not.toHaveBeenCalled();
+  },
+);
 
 it("retains incoming dismissal across remounts and removals, and re-raises for a new immutable request", async () => {
   const f = setup("review-notifications-dismiss");
@@ -232,4 +252,33 @@ it("retains incoming dismissal across remounts and removals, and re-raises for a
   f.setRecords([{ ...f.item, record: admissionFixture({ id: "unseen-binding" }) }]);
   await act(() => f.controller.load());
   expect(mocks.add).toHaveBeenCalledTimes(2);
+});
+
+it("redacts an already open creation toast when owner review access is lost", async () => {
+  const f = setup("review-notifications-owner-lost");
+  f.setRecords([]);
+  await f.controller.load();
+  await using _root = await render(<RemoteAdmissionNotifications />);
+  await vi.waitFor(() => expect(f.client.changes).toHaveBeenCalled());
+  const result: Item = {
+    ...f.item,
+    record: { ...f.item.record, status: "dispatched" },
+    outcome: "unknown",
+    reason: "Private retained creation details",
+  };
+  await act(() => f.deliver({ cursor: "after-result", revision: "updated", results: [result] }));
+  await vi.waitFor(() => expect(mocks.add).toHaveBeenCalledTimes(1));
+  await using screen = await render(<TooltipProvider>{body(0)}</TooltipProvider>);
+  expect(screen.container.textContent).toContain(result.reason);
+
+  const ownerCapabilities = f.client.capabilities;
+  f.client.capabilities = async () => ({ canDecide: false, features: new Set(["reviewV2"]) });
+  await act(() => f.controller.load());
+  expect(mocks.close).toHaveBeenCalledWith("toast-1");
+  expect(screen.container.textContent).not.toContain(result.reason);
+  expect(screen.container.querySelector('[aria-label="Open exact request"]')).toBeNull();
+
+  f.client.capabilities = ownerCapabilities;
+  await act(() => f.controller.load());
+  await vi.waitFor(() => expect(mocks.add).toHaveBeenCalledTimes(2));
 });

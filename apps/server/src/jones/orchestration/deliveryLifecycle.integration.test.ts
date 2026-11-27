@@ -38,6 +38,7 @@ import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { layerNoTaskFolders } from "../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as Registry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Launch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
@@ -72,6 +73,7 @@ const switched: ModelSelection = {
   options: [{ id: "reasoningEffort", value: "high" }],
 };
 const nativeId = "native-delivery-lifecycle";
+const owner = { managesProviders: true };
 
 function initialize(home: string): Array<Replay.CodexAppServerReplayEntry> {
   return [
@@ -156,6 +158,30 @@ function turn(id: string, status: "inProgress" | "completed" | "interrupted") {
   };
 }
 
+function readCodexConfig(id: number, cwd: string): Array<Replay.CodexAppServerReplayEntry> {
+  return [
+    {
+      type: "expect_outbound",
+      frame: { id, method: "config/read", params: { cwd, includeLayers: false } },
+    },
+    { type: "emit_inbound", frame: { id, result: { config: {}, origins: {} } } },
+  ];
+}
+
+function setCodexThreadName(id: number): Array<Replay.CodexAppServerReplayEntry> {
+  return [
+    {
+      type: "expect_outbound",
+      frame: {
+        id,
+        method: "thread/name/set",
+        params: { threadId: nativeId, name: "Synthetic delivery" },
+      },
+    },
+    { type: "emit_inbound", frame: { id, result: {} } },
+  ];
+}
+
 function startTurn(
   id: number,
   ordinal: number,
@@ -166,11 +192,7 @@ function startTurn(
   const effort = target.options?.find((option) => option.id === "reasoningEffort")?.value;
   const started = turn(`delivery-turn-${ordinal}`, "inProgress");
   return [
-    {
-      type: "expect_outbound",
-      frame: { id: id - 1, method: "config/read", params: { cwd, includeLayers: false } },
-    },
-    { type: "emit_inbound", frame: { id: id - 1, result: { config: {}, origins: {} } } },
+    ...readCodexConfig(id - 1, cwd),
     {
       type: "expect_outbound",
       frame: {
@@ -242,27 +264,29 @@ const fixture = (runEffectWorker: boolean) =>
       scenario: "delivery-a",
       entries: [
         ...initialize(home),
+        ...readCodexConfig(2, cwd),
         {
           type: "expect_outbound",
           frame: {
-            id: 2,
+            id: 3,
             method: "thread/start",
             params: { cwd, model: selection.model, config: Codex.CODEX_THREAD_CONFIG },
           },
         },
         {
           type: "emit_inbound",
-          frame: { id: 2, result: nativeThread(cwd, home, selection.model) },
+          frame: { id: 3, result: nativeThread(cwd, home, selection.model) },
         },
-        ...startTurn(4, 1, cwd, selection, "First"),
+        ...setCodexThreadName(4),
+        ...startTurn(6, 1, cwd, selection, "First"),
         terminal(1, "completed", "complete-first"),
-        ...startTurn(6, 2, cwd, selection, "Second"),
+        ...startTurn(8, 2, cwd, selection, "Second"),
         terminal(2, "completed", "complete-second"),
         {
           type: "expect_outbound",
-          frame: { id: 7, method: "thread/unsubscribe", params: { threadId: nativeId } },
+          frame: { id: 9, method: "thread/unsubscribe", params: { threadId: nativeId } },
         },
-        { type: "emit_inbound", frame: { id: 7, result: { status: "unsubscribed" } } },
+        { type: "emit_inbound", frame: { id: 9, result: { status: "unsubscribed" } } },
         {
           type: "emit_inbound",
           frame: { method: "thread/closed", params: { threadId: nativeId } },
@@ -276,10 +300,11 @@ const fixture = (runEffectWorker: boolean) =>
       scenario: "delivery-b",
       entries: [
         ...initialize(home),
+        ...readCodexConfig(2, cwd),
         {
           type: "expect_outbound",
           frame: {
-            id: 2,
+            id: 3,
             method: "thread/resume",
             params: {
               threadId: nativeId,
@@ -290,17 +315,18 @@ const fixture = (runEffectWorker: boolean) =>
             },
           },
         },
-        { type: "emit_inbound", frame: { id: 2, result: nativeThread(cwd, home, switched.model) } },
-        ...startTurn(4, 3, cwd, switched, "Third"),
+        { type: "emit_inbound", frame: { id: 3, result: nativeThread(cwd, home, switched.model) } },
+        ...setCodexThreadName(4),
+        ...startTurn(6, 3, cwd, switched, "Third"),
         {
           type: "expect_outbound",
           frame: {
-            id: 5,
+            id: 7,
             method: "turn/interrupt",
             params: { threadId: nativeId, turnId: "delivery-turn-3" },
           },
         },
-        { type: "emit_inbound", frame: { id: 5, result: {} } },
+        { type: "emit_inbound", frame: { id: 7, result: {} } },
         terminal(3, "interrupted"),
       ],
     });
@@ -485,6 +511,7 @@ const fixture = (runEffectWorker: boolean) =>
       deletedAt: null,
     };
     const external = Layer.mergeAll(
+      layerNoTaskFolders,
       NodeServices.layer,
       Layer.succeed(ServerConfig.ServerConfig, config),
       settings,
@@ -696,7 +723,7 @@ it.effect(
             creationSource: "web" as const,
           };
           assert.isFalse("modelSelection" in second);
-          yield* Intake.dispatchCommand(second);
+          yield* Intake.dispatchCommand(second, owner);
           const secondRun = (yield* threads.getThreadProjection(threadId)).runs.find(
             (run) => run.userMessageId === second.messageId,
           )!;
@@ -704,12 +731,15 @@ it.effect(
           yield* finishStart(threadId, secondRun.id);
           yield* Deferred.succeed(f.secondComplete, undefined);
           yield* waitRun(threadId, secondRun.id, "completed");
-          yield* Intake.dispatchCommand({
-            type: "provider.switch",
-            commandId: CommandId.make("spine:switch"),
-            threadId,
-            modelSelection: switched,
-          });
+          yield* Intake.dispatchCommand(
+            {
+              type: "provider.switch",
+              commandId: CommandId.make("spine:switch"),
+              threadId,
+              modelSelection: switched,
+            },
+            owner,
+          );
           assert.deepEqual(
             (yield* threads.getThreadProjection(threadId)).thread.modelSelection,
             switched,
@@ -723,7 +753,7 @@ it.effect(
           };
           const lostSend = new Error("Synthetic lost public send response");
           assert.strictEqual(
-            yield* Intake.dispatchCommand(third).pipe(
+            yield* Intake.dispatchCommand(third, owner).pipe(
               Effect.andThen(Effect.fail(lostSend)),
               Effect.flip,
             ),
@@ -748,7 +778,7 @@ it.effect(
               [instanceB]: { driver: Codex.CODEX_DRIVER_KIND, enabled: false },
             },
           });
-          assert.isTrue((yield* Intake.dispatchCommand(third)).replayed);
+          assert.isTrue((yield* Intake.dispatchCommand(third, owner)).replayed);
           assert.deepEqual(
             Option.getOrThrow(yield* receipts.getByCommandId(third.commandId)),
             acceptedReceipt,
@@ -762,8 +792,8 @@ it.effect(
             commandId: CommandId.make("spine:stop"),
             threadId,
           };
-          yield* Intake.dispatchCommand(stop);
-          assert.isTrue((yield* Intake.dispatchCommand(stop)).replayed);
+          yield* Intake.dispatchCommand(stop, owner);
+          assert.isTrue((yield* Intake.dispatchCommand(stop, owner)).replayed);
           yield* waitRun(threadId, thirdRun.id, "interrupted");
           const stopEffects = yield* outbox.listByCommandId(stop.commandId);
           const interrupts = stopEffects.filter(
@@ -1016,7 +1046,7 @@ it.effect(
             "ThreadLaunchError",
           );
           assert.deepEqual(yield* outbox.listByThreadId(rejected.threadId!), effectsBeforeRetry);
-          yield* Intake.dispatchCommand(recovery);
+          yield* Intake.dispatchCommand(recovery, owner);
           const recovered = yield* threads.getThreadProjection(rejected.threadId!);
           assert.lengthOf(
             recovered.messages.filter((message) => message.role === "user"),

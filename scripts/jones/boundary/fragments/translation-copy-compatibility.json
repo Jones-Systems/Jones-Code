@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "translation-copy-compatibility",
+  "jonesOwnedPaths": [
+    "oxlint-plugin-t3code/rules/jones-untranslated-copy-baseline.json",
+    "oxlint-plugin-t3code/rules/jones-untranslated-copy-baseline.ts"
+  ],
+  "hookPaths": ["oxlint-plugin-t3code/rules/no-untranslated-copy.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "oxlint-plugin-t3code/rules/no-untranslated-copy.ts",
+      "to": "oxlint-plugin-t3code/rules/jones-untranslated-copy-baseline.ts"
+    }
+  ]
+}

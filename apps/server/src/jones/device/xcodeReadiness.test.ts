@@ -88,15 +88,19 @@ const fixture = Effect.fn("xcodeFixture")(function* (android = false, xcodebuild
         starts.push(
           command.args.map((word) => (Redacted.isRedacted(word) ? Redacted.value(word) : word)),
         );
+        const output = Stream.encodeText(
+          Stream.make("Ready at http://127.0.0.1/?token=synthetic-hub-token\n"),
+        );
+        let running = true;
         return Effect.acquireRelease(
           Effect.succeed(
             ChildProcessSpawner.makeHandle({
               pid: ChildProcessSpawner.ProcessId(2147480000 + starts.length),
-              stdout: Stream.empty,
+              stdout: output,
               stderr: Stream.empty,
-              all: Stream.empty,
+              all: output,
               exitCode: Effect.never,
-              isRunning: Effect.succeed(true),
+              isRunning: Effect.sync(() => running),
               kill: () => Effect.void,
               stdin: Sink.drain,
               getInputFd: () => Sink.drain,
@@ -106,6 +110,7 @@ const fixture = Effect.fn("xcodeFixture")(function* (android = false, xcodebuild
           ),
           () =>
             Effect.sync(() => {
+              running = false;
               state.stopped++;
             }),
         );

@@ -184,9 +184,13 @@ four ordinary messages whose saved account, provider thread and model differ
 from that turn. With no pending request or edit, **Steer all (4)** must be
 enabled. Click once: one command must contain all four ordered message IDs.
 Server readback must retain the four original messages and create one combined
-provider input. Automatic tool-boundary delivery must still reject mismatched
-queued configurations. Pending requests, stale message versions, maintenance
-commands, ended turns and input limits retain their own guards.
+provider input. For a speed change, save Ultrafast while a Standard Codex goal
+is active on the same account. **Steer all** should send into the active turn.
+An inherited peer follow-up can also join that run at the next safe tool
+boundary. A queued explicit speed change waits for its own turn, and
+Ultrafast stays saved for a subsequent turn. Pending requests,
+stale message versions, maintenance commands, ended turns and input limits
+retain their own guards.
 
 The adjacent [browser regression](../../apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx),
 [client tests](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts)
@@ -316,6 +320,14 @@ only overlays opened by the journey. Preserve state for inspection.
 | Reopen/restore                                                | Close a fixture view through the app, then invoke the configured [reopen shortcut](../../apps/web/src/components/ReopenClosedViewShortcut.tsx); separately exercise thread-action restore in [useThreadActions](../../apps/web/src/hooks/useThreadActions.ts).                                                                                  | Restored draft/server route matches its retained target; reset by returning to the initial view. Archive/delete/restore effects need task-owned fixture state.                                   |
 | Composer promotion and recovery                               | With separately authorized provider execution, submit a synthetic draft; observe route promotion and retained composer. Exercise background/fan-out navigation and **Restore prompt** only with their controlled success/failure fixtures.                                                                                                      | No lost newer draft and correct server target. These ChatView paths are discovered, not provider-tested; there is no provider-free business-behavior stand-in here.                              |
 | Chat to Settings                                              | Follow provider/model setup, scheduled-task or connection links described in [Settings entry paths](settings.md#entry-paths-and-journeys).                                                                                                                                                                                                      | Correct settings section and scope; use Escape/back navigation to return to the fixture thread.                                                                                                  |
+
+Right-click a resolved thread reference in a fixture conversation and open
+**Assign thread**. Choose a Workstream, reopen the menu to confirm the checked
+choice, then choose **Unassigned** to restore the original state. On macOS,
+select link text before right-clicking to check placement above **Show Writing
+Tools** when macOS offers it. With a linked environment, use a fixture with
+distinct source and destination threads and check the assignment on the
+destination.
 
 ## Evidence record
 

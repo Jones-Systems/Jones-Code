@@ -14,6 +14,7 @@ it("keeps lazy Linux imports and worker bundles from executing desktop startup t
   const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-desktop-bundle-"));
   try {
     const workerEntries = [
+      "src/backend/DesktopBackendRecoveryWorker.ts",
       "src/electron/WindowsForegroundFocusWorker.ts",
       "src/snapShot/GlobalShiftShortcutWorker.ts",
       "src/snapShot/RegionSnapShotWorker.ts",
@@ -21,6 +22,7 @@ it("keeps lazy Linux imports and worker bundles from executing desktop startup t
       "src/jones/updates/jonesStagingWorker.ts",
     ];
     await Promise.all([
+      NodeFSP.mkdir(NodePath.join(directory, "src/backend"), { recursive: true }),
       NodeFSP.mkdir(NodePath.join(directory, "src/electron"), { recursive: true }),
       NodeFSP.mkdir(NodePath.join(directory, "src/snapShot"), { recursive: true }),
       NodeFSP.mkdir(NodePath.join(directory, "src/jones/updates"), { recursive: true }),
@@ -43,7 +45,8 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
       ...workerEntries.map((entry) =>
         NodeFSP.writeFile(
           NodePath.join(directory, entry),
-          `import { shared } from "${NodePath.posix.relative(NodePath.posix.dirname(entry), "src/shared.ts")}"; process.emit("worker", shared.value);`,
+          `import { shared } from "${NodePath.posix.relative(NodePath.posix.dirname(entry), "src/shared.ts")}";
+process.emit("worker", shared.value, ${JSON.stringify(entry)});`,
         ),
       ),
     ]);
@@ -93,9 +96,9 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
         module,
         require: (specifier) => load(NodePath.resolve(NodePath.dirname(filename), specifier)),
         process: {
-          emit: (event, value) => {
+          emit: (event, value, entry) => {
             if (event === "startup") startups.push(value);
-            if (event === "worker") workers.push(value);
+            if (event === "worker") workers.push([entry, value]);
             if (event === "ready") ready.resolve(value);
           },
         },
@@ -106,10 +109,14 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
     load(NodePath.join(outputDirectory, "main.cjs"), false);
     assert.equal(await ready.promise, 43);
     assert.deepEqual(startups, [42]);
+    assert.deepEqual(workers, []);
     for (const entry of workerEntries) {
       load(NodePath.join(outputDirectory, entry.replace(/^src\//, "").replace(/\.ts$/, ".cjs")));
     }
-    assert.deepEqual(workers, [42, 42, 42, 42, 42]);
+    assert.deepEqual(
+      workers,
+      workerEntries.map((entry) => [entry, 42]),
+    );
     assert.deepEqual(startups, [42]);
   } finally {
     await NodeFSP.rm(directory, { recursive: true, force: true });

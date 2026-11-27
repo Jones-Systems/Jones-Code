@@ -139,6 +139,7 @@ it.layer(NodeServices.layer)("t3 update under a managed policy", (it) => {
     runUpdate({
       baseDir: "/unused",
       logsDir: "/unused",
+      databasePath: "/unused",
       serverRuntimeStatePath: "/unused",
       channel: input.channel,
       requestedVersion: input.requestedVersion,
@@ -260,6 +261,32 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       // Replaced, not written through.
       assert.equal(yield* fs.readFileString(oldExe), "");
     }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
+  );
+
+  it.effect("repoints a recorded Windows launcher outside PATH", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const baseDir = path.join(root, "home");
+      const runtimeDir = path.join(baseDir, "runtime");
+      const launcher = path.join(root, "custom bin", "t3.cmd");
+      const launchedAs = path.join(runtimeDir, "versions", "1.0.0", "t3.exe");
+      const targetEntryPath = path.join(runtimeDir, "versions", "2.0.0", "t3.exe");
+      yield* fs.makeDirectory(runtimeDir, { recursive: true });
+      yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
+      yield* fs.writeFileString(launcher, `@echo off\r\n"${launchedAs}" %*`);
+      yield* fs.writeFileString(path.join(runtimeDir, "launchers"), `${launcher}\r\n`);
+
+      const repointed = yield* repointLauncher({ launchedAs, baseDir, targetEntryPath });
+
+      assert.equal(Option.getOrUndefined(repointed), launcher);
+      assert.equal(yield* fs.readFileString(launcher), `@echo off\r\n"${targetEntryPath}" %*`);
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(HostProcess.Environment, { PATH: "" }),
+    ),
   );
 
   it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
@@ -695,20 +722,30 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
             });
           const runner = ProcessRunner.ProcessRunner.of({
             run: (input) =>
-              unrelatedLsof
-                .run(input)
-                .pipe(
-                  Effect.map((result) =>
-                    input.args?.includes("--version") === true
-                      ? { ...result, stdout: `t3 v${version}\n` }
-                      : result,
-                  ),
-                ),
+              unrelatedLsof.run(input).pipe(
+                Effect.map((result) => {
+                  if (input.args?.includes("__service-preflight") === true) {
+                    return {
+                      ...result,
+                      stdout: JSON.stringify({
+                        status: "ready",
+                        version,
+                        launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+                      }),
+                    };
+                  }
+                  if (input.args?.includes("--version") === true) {
+                    return { ...result, stdout: `t3 v${version}\n` };
+                  }
+                  return result;
+                }),
+              ),
           });
           try {
             const { error, output } = yield* runUpdate({
               baseDir,
               logsDir: baseDir,
+              databasePath: path.join(baseDir, "db.sqlite"),
               serverRuntimeStatePath: statePath,
               channel: undefined,
               requestedVersion: version,
@@ -829,16 +866,24 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
       });
       const runner = ProcessRunner.ProcessRunner.of({
         run: (input) =>
-          input.args?.includes("--version") === true
-            ? unrelatedLsof
-                .run(input)
-                .pipe(Effect.map((result) => ({ ...result, stdout: `t3 v${version}\n` })))
+          input.args?.includes("__service-preflight") === true
+            ? unrelatedLsof.run(input).pipe(
+                Effect.map((result) => ({
+                  ...result,
+                  stdout: JSON.stringify({
+                    status: "ready",
+                    version,
+                    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+                  }),
+                })),
+              )
             : unrelatedLsof.run(input),
       });
 
       const output = yield* runUpdate({
         baseDir,
         logsDir: baseDir,
+        databasePath: path.join(baseDir, "statev2.sqlite"),
         serverRuntimeStatePath: path.join(baseDir, "server-runtime.json"),
         channel: undefined,
         requestedVersion: version,

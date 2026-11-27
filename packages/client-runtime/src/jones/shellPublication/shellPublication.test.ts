@@ -1,12 +1,12 @@
 import { expect, it } from "@effect/vitest";
-import { RunId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
+import { RunId, RuntimeRequestId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Queue from "effect/Queue";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import { AsyncResult, AtomRegistry } from "effect/reactivity";
-import type { AtomCommand } from "../../state/runtime.ts";
+import * as Fiber from "effect/Fiber";
+import { AtomRegistry } from "effect/reactivity";
 import { EnvironmentRpcUnavailableError } from "../../rpc/client.ts";
 import { makeShellPublicationHarness } from "./shellPublicationHarness.ts";
 
@@ -104,25 +104,6 @@ it.effect(
         const h = yield* makeShellPublicationHarness({ count: 6, instrument: true });
         const id = h.ids[0]!;
         const snapshot = h.environments.get(id)!.snapshot;
-        type Input = {
-          readonly environmentId: typeof id;
-          readonly input: { readonly threadId: ThreadId; readonly title: string };
-        };
-        const accept: Array<
-          (
-            value:
-              | AsyncResult.Success<{ sequence: number }, string>
-              | AsyncResult.Failure<{ sequence: number }, string>,
-          ) => void
-        > = [];
-        const base: AtomCommand<Input, { sequence: number }, string> = {
-          label: "synthetic rename",
-          run: () => new Promise((resolve) => accept.push(resolve)),
-        };
-        const command = h.lifecycle.wrap(base, (thread, input) => ({
-          ...thread,
-          title: input.title,
-        }));
         const seenConfirmed = new Set<string>();
         const stopObserving = h.registry.subscribe(h.threads.quietThreadShellsAtom, (rows) => {
           for (let i = 0; i < 2; i++) {
@@ -132,11 +113,9 @@ it.effect(
           }
         });
         yield* Effect.addFinalizer(() => Effect.sync(stopObserving));
-        const pending = snapshot.threads.slice(0, 3).map((thread, i) =>
-          command.run(h.registry, {
-            environmentId: id,
-            input: { threadId: thread.id, title: `Optimistic ${i}` },
-          }),
+        const { pending, replies } = yield* h.startOptimisticRenames(
+          id,
+          snapshot.threads.slice(0, 3).map((thread) => thread.id),
         );
         expect(
           h.registry
@@ -144,9 +123,9 @@ it.effect(
             .slice(0, 3)
             .map((row) => row.title),
         ).toEqual(["Optimistic 0", "Optimistic 1", "Optimistic 2"]);
-        accept[0]!(AsyncResult.success({ sequence: 2 }));
-        accept[1]!(AsyncResult.success({ sequence: 2 }));
-        yield* Effect.promise(() => Promise.all(pending.slice(0, 2)));
+        yield* Deferred.succeed(replies[0]!, { sequence: 2 });
+        yield* Deferred.succeed(replies[1]!, { sequence: 2 });
+        yield* Fiber.joinAll(pending.slice(0, 2));
         const server = {
           ...snapshot,
           snapshotSequence: 2,
@@ -161,8 +140,8 @@ it.effect(
             .slice(0, 3)
             .map((row) => row.title),
         ).toEqual(["Confirmed 0", "Confirmed 1", "Optimistic 2"]);
-        accept[2]!(AsyncResult.failure(Cause.fail("declined")));
-        yield* Effect.promise(() => pending[2]!);
+        yield* Deferred.fail(replies[2]!, "declined");
+        expect(yield* Fiber.join(pending[2]!).pipe(Effect.flip)).toBe("declined");
         expect(
           h.registry
             .get(h.threads.quietThreadShellsAtom)

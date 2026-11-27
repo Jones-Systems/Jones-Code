@@ -150,7 +150,7 @@ describe("Pending inline composition", () => {
     expect(promptField().value).toBe("Updated prompt");
     expect(instructionsField().value).toBe("Include examples.");
     const send = screen.container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Send prompt to Review fixture now"]',
+      'button[aria-label="Send now to Review fixture"]',
     )!;
     await act(() => send.click());
     expect(voice.mutate.mock.calls.slice(1)).toEqual([
@@ -158,6 +158,42 @@ describe("Pending inline composition", () => {
       [id, "send-now", { expected_revision: revision + 2 }],
     ]);
     expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("announces the selected Workstream and sends to its reviewed route", async () => {
+    using _fixture = setupVoiceFixture();
+    voice.environments = [
+      {
+        environmentId,
+        status: "ready",
+        confirmed: true,
+        workstreamCount: 1,
+        workstreams: [workstream("local", "Design")],
+      },
+    ];
+    voice.sendOptions.mockResolvedValue(options);
+    const editing = { ...draft, state: "editing", revision: draft.revision + 1 } as const;
+    voice.mutate.mockResolvedValueOnce({ draft: editing, edit_handle: "fixture-lease" });
+    voice.sendReviewed.mockResolvedValue({
+      draft: {
+        ...draft,
+        state: "released",
+        revision: editing.revision + 1,
+        command_id: "fixture-command",
+      },
+      edit_handle: null,
+    });
+    await using screen = await render(pending(), { router: false });
+    await screen.getByRole("combobox", { name: "Workstream (optional)" }).click();
+    await page.getByRole("option", { name: "Design", exact: true }).click();
+    const send = screen.getByRole("button", { name: "Send now to Design", exact: true });
+    await expect.element(send).toHaveTextContent("Send now");
+    await send.click();
+    expect(voice.sendReviewed).toHaveBeenCalledExactlyOnceWith(draft.id, {
+      workstream_id: "local",
+      expected_revision: editing.revision,
+      edit_handle: "fixture-lease",
+    });
   });
 
   it("offers only open broker-approved Workstreams from this environment and retains a stale choice", async () => {
@@ -196,8 +232,9 @@ describe("Pending inline composition", () => {
     const dirty = vi.fn();
     await using screen = await render(pending(draft.id, false, dirty), { router: false });
     const picker = screen.getByRole("combobox", { name: "Workstream (optional)" });
-    const send = screen.getByRole("button", { name: "Send prompt to Review fixture now" });
+    const send = screen.getByRole("button", { name: "Send now", exact: true });
     await expect.element(picker).toHaveTextContent("No Workstream");
+    await expect.element(send).toBeVisible();
     await picker.click();
     await expect.element(page.getByRole("option", { name: "No Workstream" })).toBeVisible();
     await expect.element(page.getByRole("option", { name: "Design", exact: true })).toBeVisible();
@@ -219,8 +256,20 @@ describe("Pending inline composition", () => {
     await screen.rerender(pending(draft.id, false, dirty));
     await expect.element(picker).toHaveTextContent("Selected Workstream unavailable");
     await expect.element(send).toHaveAttribute("aria-disabled", "true");
+    await act(() => (send.element() as HTMLButtonElement).click());
     expect(voice.sendReviewed).not.toHaveBeenCalled();
 
+    voice.sendOptions.mockResolvedValueOnce(null);
+    const retry = screen.getByRole("button", { name: "Check send options again" });
+    await retry.click();
+    await expect.element(send).toHaveAttribute("aria-disabled", "true");
+    await act(() => (send.element() as HTMLButtonElement).click());
+    expect(voice.sendReviewed).not.toHaveBeenCalled();
+    expect(voice.mutate).toHaveBeenCalledExactlyOnceWith(draft.id, "edit-begin", {
+      expected_revision: draft.revision,
+    });
+
+    await retry.click();
     await picker.click();
     await page.getByRole("option", { name: "No Workstream" }).click();
     await expect.element(picker).toHaveTextContent("No Workstream");
@@ -245,7 +294,7 @@ describe("Pending inline composition", () => {
       .mockRejectedValueOnce(new Error("Probe failed"))
       .mockResolvedValueOnce(null);
     await using screen = await render(pending(), { router: false });
-    const send = screen.getByRole("button", { name: "Send prompt to Review fixture now" });
+    const send = screen.getByRole("button", { name: "Send now", exact: true });
     const retry = screen.getByRole("button", { name: "Check send options again" });
     await expect.element(send).toHaveAttribute("aria-disabled", "true");
     await expect.element(screen.getByText("Checking where this prompt can be sent…")).toBeVisible();
@@ -262,7 +311,9 @@ describe("Pending inline composition", () => {
     expect(voice.mutate).not.toHaveBeenCalled();
     expect(voice.sendReviewed).not.toHaveBeenCalled();
     await retry.click();
-    await expect.element(send).not.toHaveAttribute("aria-disabled");
+    await expect
+      .element(screen.getByRole("button", { name: "Send now to Review fixture" }))
+      .not.toHaveAttribute("aria-disabled");
   });
 
   it("identifies a known earlier-prompt hold without describing it as a missing inbox", async () => {
@@ -287,7 +338,7 @@ describe("Pending inline composition", () => {
       )
       .toBeVisible();
     await expect
-      .element(screen.getByRole("button", { name: "Send prompt to Review fixture now" }))
+      .element(screen.getByRole("button", { name: "Send now", exact: true }))
       .toHaveAttribute("aria-disabled", "true");
     expect(voice.mutate).not.toHaveBeenCalled();
     expect(voice.sendReviewed).not.toHaveBeenCalled();
@@ -308,7 +359,7 @@ describe("Pending inline composition", () => {
     voice.sendReviewed.mockRejectedValue(new Error("Lost reviewed send acknowledgement"));
     voice.get.mockResolvedValue(editing);
     await using screen = await render(pending(), { router: false });
-    const send = screen.getByRole("button", { name: "Send prompt to Review fixture now" });
+    const send = screen.getByRole("button", { name: "Send now", exact: true });
     const textarea = screen.getByRole("textbox", { name: "Prompt text to Review fixture" });
     expect(screen.container.textContent).toContain(
       "Automatic release is waiting for a destination.",

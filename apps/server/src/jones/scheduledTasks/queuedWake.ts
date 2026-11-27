@@ -1,4 +1,4 @@
-import { ThreadId, type ScheduledTask } from "@t3tools/contracts";
+import type { ScheduledTask, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 
@@ -7,15 +7,24 @@ export const queuedWakeSkipReason =
 
 // Called inside the scheduler's per-task reservation; only queued intent suppresses
 // another timer fire. Running or waiting provider work still permits one wake.
-export const hasQueuedWake = Effect.fn("JonesScheduledTasks.hasQueuedWake")(function* (
-  task: ScheduledTask,
+export const readQueuedWake = Effect.fn("JonesScheduledTasks.readQueuedWake")(function* (
+  taskId: ScheduledTask["id"],
+  threadId: ThreadId,
 ) {
-  if (task.threadId === null) return false;
   const management = yield* ThreadManagementService.ThreadManagementService;
-  const threadId = ThreadId.make(task.threadId);
   const { runs } = yield* management.getThreadRecords(threadId, ["runs"]);
-  const messageIds = runs.filter((run) => run.status === "queued").map((run) => run.userMessageId);
-  if (messageIds.length === 0) return false;
-  const { messages } = yield* management.getThreadRecords(threadId, ["messages"], { messageIds });
-  return messages.some((message) => message.scheduledTaskId === task.id);
+  const queued = runs.filter((run) => run.status === "queued");
+  if (queued.length === 0) return null;
+  const { messages } = yield* management.getThreadRecords(threadId, ["messages"], {
+    messageIds: [...new Set(queued.map((run) => run.userMessageId))],
+  });
+  const scheduled = new Set(
+    messages.filter((message) => message.scheduledTaskId === taskId).map((message) => message.id),
+  );
+  const matching = queued.filter((run) => scheduled.has(run.userMessageId));
+  return matching.some((run) => run.queueHeld === true)
+    ? "held"
+    : matching.length > 0
+      ? "queued"
+      : null;
 });

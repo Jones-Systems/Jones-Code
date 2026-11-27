@@ -170,6 +170,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       T3CODE_PROJECT_ROOT: "/repo",
       T3CODE_WORKTREE_PATH: "/repo-worktree",
       COLORTERM: "",
+      T3CODE_TERMINAL_SHELL: "",
       NO_COLOR: "1",
       FORCE_COLOR: "0",
     });

@@ -1,15 +1,9 @@
 import { expect, it } from "@effect/vitest";
-import {
-  RunId,
-  RuntimeRequestId,
-  ThreadId,
-  type OrchestrationV2ThreadShell,
-} from "@t3tools/contracts";
+import { RunId, RuntimeRequestId, type OrchestrationV2ThreadShell } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
-import { AsyncResult } from "effect/reactivity";
-import type { AtomCommand } from "../../state/runtime.ts";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import { makeShellPublicationHarness } from "./shellPublicationHarness.ts";
 
 // This opt-in benchmark measures real cascade cost; normal CI only runs semantic tests.
@@ -166,35 +160,14 @@ it.effect.skipIf(host.process.env.JONES_SHELL_PUBLICATION_SCALING !== "1")(
             });
             const [home, remote] = h.ids;
             const snapshot = h.environments.get(home!)!.snapshot;
-            type Input = {
-              readonly environmentId: NonNullable<typeof home>;
-              readonly input: { readonly threadId: ThreadId; readonly title: string };
-            };
-            const accept: Array<
-              (
-                value:
-                  | AsyncResult.Success<{ sequence: number }, string>
-                  | AsyncResult.Failure<{ sequence: number }, string>,
-              ) => void
-            > = [];
-            const base: AtomCommand<Input, { sequence: number }, string> = {
-              label: "synthetic rename",
-              run: () => new Promise((resolve) => accept.push(resolve)),
-            };
-            const command = h.lifecycle.wrap(base, (thread, input) => ({
-              ...thread,
-              title: input.title,
-            }));
             h.resetMetrics();
-            const pending = snapshot.threads.slice(0, 3).map((thread, i) =>
-              command.run(h.registry, {
-                environmentId: home!,
-                input: { threadId: thread.id, title: `Optimistic ${i}` },
-              }),
+            const { pending, replies } = yield* h.startOptimisticRenames(
+              home!,
+              snapshot.threads.slice(0, 3).map((thread) => thread.id),
             );
-            accept[0]!(AsyncResult.success({ sequence: 2 }));
-            accept[1]!(AsyncResult.success({ sequence: 2 }));
-            yield* Effect.promise(() => Promise.all(pending.slice(0, 2)));
+            yield* Deferred.succeed(replies[0]!, { sequence: 2 });
+            yield* Deferred.succeed(replies[1]!, { sequence: 2 });
+            yield* Fiber.joinAll(pending.slice(0, 2));
             const server = {
               ...snapshot,
               snapshotSequence: 2,
@@ -209,8 +182,8 @@ it.effect.skipIf(host.process.env.JONES_SHELL_PUBLICATION_SCALING !== "1")(
                 .slice(0, 3)
                 .map((row) => row.title),
             ).toEqual(["Confirmed 0", "Confirmed 1", "Optimistic 2"]);
-            accept[2]!(AsyncResult.failure(Cause.fail("declined")));
-            yield* Effect.promise(() => pending[2]!);
+            yield* Deferred.fail(replies[2]!, "declined");
+            expect(yield* Fiber.join(pending[2]!).pipe(Effect.flip)).toBe("declined");
             expect(
               h.registry
                 .get(h.threads.quietThreadShellsAtom)

@@ -33,6 +33,7 @@ import {
   type ModelSelection,
   NodeId,
   type OrchestrationV2Run,
+  type OrchestratorMcpThreadReadInput,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -98,6 +99,7 @@ import * as PeerLinks from "./PeerLinks.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 // The laptop's agent delegates a task to the box through a link. The box is
 // its real /mcp behind real OAuth, with one thread the test finishes; the
@@ -117,7 +119,18 @@ type LaunchedWith = Pick<
 >;
 
 /** The thread the box launches for the task, which the test finishes. */
+interface TimelineEntry {
+  readonly id: TurnItemId;
+  readonly runId: RunId;
+  readonly text: string;
+  readonly type: "assistant_message" | "error";
+}
+
 interface BoxThread {
+  readonly timeline: Ref.Ref<ReadonlyArray<TimelineEntry> | null>;
+  readonly pageSize: Ref.Ref<number>;
+  readonly holdRefill: Ref.Ref<boolean>;
+  readonly beforeTail: Ref.Ref<Effect.Effect<void>>;
   readonly launched: Ref.Ref<ThreadId | null>;
   readonly launchCalls: Ref.Ref<ReadonlyArray<ThreadLaunch.ThreadLaunchInput>>;
   /** The link session that launched it, as the box stamps it. */
@@ -158,6 +171,8 @@ interface BoxThread {
   readonly stops: Ref.Ref<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>;
   /** The launch starts no run, as one recorded before its run was kept. */
   readonly runless: Ref.Ref<boolean>;
+  /** An attributed run can age out of the bounded read without changing the wait result. */
+  readonly omitRunFromReads: Ref.Ref<boolean>;
   /** Completed on the first interrupt there. */
   readonly interruptedOnce: Deferred.Deferred<void>;
   readonly finished: Deferred.Deferred<void>;
@@ -178,6 +193,10 @@ interface BoxThread {
 
 const makeBoxThread = Effect.gen(function* () {
   return {
+    timeline: yield* Ref.make<ReadonlyArray<TimelineEntry> | null>(null),
+    pageSize: yield* Ref.make(1),
+    holdRefill: yield* Ref.make(false),
+    beforeTail: yield* Ref.make<Effect.Effect<void>>(Effect.void),
     launched: yield* Ref.make<ThreadId | null>(null),
     launchCalls: yield* Ref.make<ReadonlyArray<ThreadLaunch.ThreadLaunchInput>>([]),
     linkOrigin: yield* Ref.make<{ readonly sessionId: string; readonly label: string } | null>(
@@ -205,6 +224,7 @@ const makeBoxThread = Effect.gen(function* () {
     interrupted: yield* Ref.make(0),
     stops: yield* Ref.make<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>([]),
     runless: yield* Ref.make(false),
+    omitRunFromReads: yield* Ref.make(false),
     interruptedOnce: yield* Deferred.make<void>(),
     finished: yield* Deferred.make<void>(),
     laterFinished: yield* Deferred.make<void>(),
@@ -353,8 +373,16 @@ const boxToolkitLayer = (thread: BoxThread) => {
     Layer.mock(ThreadManagement.ThreadManagementService)({
       remoteSendReceipts: receipts.remoteSendReceipts,
       getThreadShell: shellOf,
-      getProjectThreadRecords: (input) => projectionOf(input.threadId),
+      getProjectThreadRecords: (input, _records, filter) =>
+        Effect.gen(function* () {
+          const projection = yield* projectionOf(input.threadId);
+          if (filter?.latestRunLimit !== undefined && (yield* Ref.get(thread.omitRunFromReads)))
+            return { ...projection, runs: [] };
+          return projection;
+        }),
       getThreadRecords: (threadId) => projectionOf(threadId),
+      getRunCount: (threadId) =>
+        projectionOf(threadId).pipe(Effect.map((projection) => projection.runs.length)),
       waitForThread: (input) =>
         Effect.gen(function* () {
           yield* Ref.update(thread.waitedFor, (seen) => [...seen, input.runId]);
@@ -435,7 +463,13 @@ const boxToolkitLayer = (thread: BoxThread) => {
         }),
       getTimelinePage: (threadId, options) =>
         Effect.gen(function* () {
-          if (yield* Ref.get(thread.holdRead)) {
+          if (options.afterPosition === 299 && options.itemId === undefined) {
+            yield* Ref.getAndSet(thread.beforeTail, Effect.void).pipe(Effect.flatten);
+          }
+          if (
+            (yield* Ref.get(thread.holdRead)) ||
+            (options.itemId !== undefined && (yield* Ref.get(thread.holdRefill)))
+          ) {
             yield* Deferred.succeed(thread.readStarted, undefined);
             yield* Deferred.await(thread.releaseRead);
           }
@@ -445,8 +479,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
           const error = yield* Ref.get(thread.error);
           const laterError = yield* Ref.get(thread.laterError);
           const restart = yield* Ref.get(thread.restart);
-          // One item per page, with errors available only in the activity view.
-          const replies = [
+          const timeline = (yield* Ref.get(thread.timeline)) ?? [
             ...(reply === null
               ? []
               : [
@@ -500,18 +533,29 @@ const boxToolkitLayer = (thread: BoxThread) => {
                     type: "assistant_message",
                   },
                 ]),
-          ].map((entry, position) => ({ ...entry, position }));
+          ];
+          // Position 0 is the task prompt. The fixture supplies the items that follow it.
+          const replies = timeline.map((entry, index) => ({ ...entry, position: index + 1 }));
           const visible =
             options.itemId === undefined
               ? replies.filter(
                   (entry) => options.view === "activity" || entry.type === "assistant_message",
                 )
               : replies.filter((entry) => entry.id === options.itemId);
-          const matching = visible
-            .filter((entry) => entry.position > (options.afterPosition ?? -1))
-            .slice(0, 1);
+          const after = options.afterPosition ?? -1;
+          const before = options.beforePosition ?? Number.POSITIVE_INFINITY;
+          const matching =
+            options.itemId === undefined
+              ? visible.filter((entry) => entry.position > after && entry.position < before)
+              : visible;
+          const limit = Math.min(options.limit, yield* Ref.get(thread.pageSize));
+          const page =
+            options.beforePosition === undefined
+              ? matching.slice(0, limit)
+              : matching.slice(Math.max(0, matching.length - limit));
+          const firstPosition = page[0]?.position ?? options.beforePosition ?? after + 1;
           return {
-            items: matching.map(({ id, runId: itemRunId, text, position, type }) => ({
+            items: page.map(({ id, runId: itemRunId, text, position, type }) => ({
               position,
               visibility: "local" as const,
               sourceThreadId: threadId,
@@ -541,12 +585,15 @@ const boxToolkitLayer = (thread: BoxThread) => {
                     }),
               } as never,
             })),
-            totalItems: replies.length,
+            totalItems: replies.length + 1,
             hasMore:
               options.itemId === undefined &&
-              matching.length > 0 &&
-              visible.some((entry) => entry.position > matching.at(-1)!.position),
-            hasEarlier: false,
+              (options.beforePosition === undefined
+                ? matching.length > page.length
+                : (visible.at(-1)?.position ?? -1) >= before),
+            hasEarlier:
+              options.itemId === undefined &&
+              (visible[0]?.position ?? Number.POSITIVE_INFINITY) < firstPosition,
           };
         }),
       interruptThread: (input) =>
@@ -944,7 +991,9 @@ const makeLaptop = (
       Layer.provide(NodeCrypto.layer),
       Layer.provideMerge(layerThreads),
       Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
-      Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+      Layer.provide(
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+      ),
       Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
@@ -1148,6 +1197,28 @@ const taskResult = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, ta
       ),
     );
 
+const captureThreadReads = (nativeFetch: typeof globalThis.fetch) => {
+  const reads: Array<OrchestratorMcpThreadReadInput> = [];
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : null;
+    if (body?.startsWith("{")) {
+      const rpc: {
+        method?: string;
+        params?: { name?: string; arguments?: OrchestratorMcpThreadReadInput };
+      } = JSON.parse(body);
+      if (
+        rpc.method === "tools/call" &&
+        rpc.params?.name === "t3_thread_read" &&
+        rpc.params.arguments !== undefined
+      ) {
+        reads.push(rpc.params.arguments);
+      }
+    }
+    return nativeFetch(input, init);
+  };
+  return { reads, fetch };
+};
+
 it.effect("a task delegated to the box wakes the laptop's parent when it ends there", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1304,8 +1375,8 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       });
       // Three thin Shell lookups revalidate the caller; one payload lookup validates this delivery.
       // Reviewed raw-SQL hashes are independent of the builder and every observed query.
-      const shellDigest = "59179f40abda7c8890e183b8ab2a0eea82991a748c7acbf7e1c35aed783dab2d";
-      const payloadDigest = "87a9f01968cf6314bcd54f88459d29a671b6d50bde5bff50748bf01ded2408b2";
+      const shellDigest = "be3ab2e2fd44cfb1c617f0cfbe8bb3404dde9a4edaaf0b3206d4aefdd9759f00";
+      const payloadDigest = "d4a13a6526b48adeb6863f36f7d3cb010b032dd94f39902d9b063bc60a03ded8";
       const shellParameters = [
         "/compact",
         "/compact",
@@ -1653,6 +1724,38 @@ it.effect("a task named only by environment inherits the parent's model, within 
       expect(yield* Ref.get(thread.launchCalls)).toEqual(launchesBeforeRefusal);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each([
+  { access: "auto-accept-edits", keepsMode: false },
+  { access: "full-access", keepsMode: true },
+] as const)(
+  "a task inheriting over a $access link carries the parent's agent mode: $keepsMode",
+  ({ access, keepsMode }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, access);
+        const effort = { id: "reasoningEffort", value: "high" };
+        const mode = { id: "_t3/session-mode", value: "yolo" };
+        yield* seedParent(a, { ...modelSelection, options: [effort, mode] });
+
+        const result = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: { environmentId: box.environmentId },
+        });
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        expect((yield* Ref.get(thread.launchedWith))?.modelSelection.options).toEqual(
+          keepsMode ? [effort, mode] : [effort],
+        );
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a task naming another driver there never runs its model on the parent's instance", () =>
@@ -2030,6 +2133,227 @@ it.effect.each([false, true])(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect.each(["tail-error", "middle-error", "reply-fallback", "cancel-refill"] as const)(
+  "reads a failed task through full activity pages (%s)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const { reads, fetch } = captureThreadReads(yield* FetchHttpClient.Fetch);
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const thread = yield* makeBoxThread;
+          const b = yield* serveBox(thread);
+          const offers = yield* SubscriptionRef.make<
+            ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+          >([]);
+          const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+          const a = yield* makeLaptop(database, offers);
+          yield* linkTo(a.links, b, "full-access");
+          yield* seedParent(a);
+          const delegated = yield* delegateToBox(a);
+          const result = `Provider details: ${"detail ".repeat(8_000)}end.`;
+          const middle = scenario !== "tail-error";
+          const ownType = scenario === "reply-fallback" ? "assistant_message" : "error";
+          const history = (count: number, runId: RunId, prefix: string): Array<TimelineEntry> =>
+            Array.from({ length: count }, (_, index) => ({
+              id: TurnItemId.make(`${prefix}:${index}`),
+              runId,
+              text: "discarded history ".repeat(120),
+              type: "assistant_message",
+            }));
+          const timeline: Array<TimelineEntry> = [
+            ...history(middle ? 150 : 300, boxRunId, "before"),
+            { id: TurnItemId.make("selected"), runId: boxRunId, text: result, type: ownType },
+            ...(middle ? history(200, boxLaterRunId, "later") : []),
+            {
+              id: TurnItemId.make("other-error"),
+              runId: boxLaterRunId,
+              text: "Wrong run",
+              type: "error",
+            },
+          ];
+          yield* Ref.set(thread.timeline, timeline);
+          yield* Ref.set(thread.pageSize, 100);
+          yield* Ref.set(thread.status, "failed");
+          if (scenario === "cancel-refill") yield* Ref.set(thread.holdRefill, true);
+          yield* Deferred.succeed(thread.finished, undefined);
+          if (scenario === "cancel-refill") {
+            yield* Deferred.await(thread.readStarted);
+            yield* a.threads.stopDelegatedTasks({
+              threadId: parentThreadId,
+              commandId: CommandId.make("command:stop:mid-refill"),
+            });
+            yield* Deferred.succeed(thread.releaseRead, undefined);
+            expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status: "interrupted" });
+            yield* Deferred.await(thread.interruptedOnce);
+            expect(yield* Ref.get(thread.stops)).toContain("thread.stop");
+          } else {
+            expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+              status: "failed",
+              result,
+            });
+          }
+          const pages = reads.filter((read) => read.itemId === undefined && read.limit === 100);
+          // A page moves on by however many items the response budget left it.
+          const remaining = (read: OrchestratorMcpThreadReadInput) =>
+            timeline.length - (read.afterPosition ?? 0);
+          expect(pages[0]).toMatchObject({
+            view: "activity",
+            limit: 100,
+            maxCharsPerItem: 20_000,
+          });
+          expect(pages.slice(1).some((read) => remaining(read) > 100)).toBe(true);
+          for (const read of pages.slice(1))
+            expect(read.maxCharsPerItem).toBe(remaining(read) > 100 ? 1 : 20_000);
+          const forwards = pages.slice(1).map((read) => read.afterPosition ?? -1);
+          expect(forwards).toEqual([...forwards].sort((left, right) => left - right));
+          expect(new Set(forwards).size).toBe(forwards.length);
+          const refills = reads.filter((read) => read.itemId !== undefined);
+          expect(refills[0]).toMatchObject({ itemId: "selected", textOffset: middle ? 1 : 20_000 });
+          if (scenario !== "cancel-refill") expect(refills).toHaveLength(middle ? 3 : 2);
+        }),
+      ).pipe(
+        Effect.provide(NodeHttpServer.layerTest),
+        Effect.provideService(FetchHttpClient.Fetch, fetch),
+      );
+    }),
+);
+
+it.effect.each([
+  "terminal",
+  "long",
+  "later-run",
+  "sparse",
+  "growing",
+  "shrinking",
+  "cancel",
+  "run-outside-read-window",
+  "cancelled",
+  "interrupted",
+] as const)("reads a successful task with an aligned tail probe (%s)", (scenario) =>
+  Effect.gen(function* () {
+    const { reads, fetch } = captureThreadReads(yield* FetchHttpClient.Fetch);
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const result =
+          scenario === "long"
+            ? `Complete ${"detail ".repeat(12_000)}end.`
+            : "Authoritative result.";
+        const middle = scenario === "later-run" || scenario === "shrinking";
+        const history = (count: number, runId: RunId, prefix: string): Array<TimelineEntry> =>
+          Array.from({ length: count }, (_, index) => ({
+            id: TurnItemId.make(`${prefix}:${index}`),
+            runId,
+            text: "History",
+            type: scenario === "sparse" && index % 2 === 0 ? "error" : "assistant_message",
+          }));
+        const timeline: Array<TimelineEntry> = [
+          ...history(middle ? 150 : 300, boxRunId, "before"),
+          {
+            id: TurnItemId.make("selected"),
+            runId: boxRunId,
+            text: result,
+            type: "assistant_message",
+          },
+          ...(middle ? history(200, boxLaterRunId, "later") : []),
+        ];
+        yield* Ref.set(thread.timeline, timeline);
+        yield* Ref.set(thread.pageSize, 100);
+        if (scenario === "growing") {
+          yield* Ref.set(
+            thread.beforeTail,
+            Ref.set(thread.timeline, [...timeline, ...history(101, boxLaterRunId, "growth")]),
+          );
+        }
+        if (scenario === "shrinking") {
+          yield* Ref.set(thread.beforeTail, Ref.set(thread.timeline, timeline.slice(0, 151)));
+        }
+        if (scenario === "cancel") {
+          yield* Ref.set(
+            thread.beforeTail,
+            Effect.gen(function* () {
+              yield* Deferred.succeed(thread.readStarted, undefined);
+              yield* Deferred.await(thread.releaseRead);
+            }),
+          );
+        }
+        if (scenario === "run-outside-read-window") yield* Ref.set(thread.omitRunFromReads, true);
+        const delegated = yield* delegateToBox(a);
+        const status =
+          scenario === "cancelled" || scenario === "interrupted" ? scenario : "completed";
+        const modelNote = scenario === "terminal" || scenario === "long";
+        if (modelNote) yield* Ref.set(thread.executedModel, "gpt-5.4-mini");
+        yield* Ref.set(thread.status, status);
+        yield* Deferred.succeed(thread.finished, undefined);
+        if (scenario === "cancel") {
+          yield* Deferred.await(thread.readStarted);
+          yield* a.threads.stopDelegatedTasks({
+            threadId: parentThreadId,
+            commandId: CommandId.make("command:stop:tail-probe"),
+          });
+          yield* Deferred.succeed(thread.releaseRead, undefined);
+          expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status: "interrupted" });
+          yield* Deferred.await(thread.interruptedOnce);
+          expect(yield* Ref.get(thread.stops)).toContain("thread.stop");
+        } else {
+          expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+            status,
+            result: modelNote
+              ? `Requested model gpt-5.4; the provider reported running gpt-5.4-mini.\n\n${result}`
+              : result,
+          });
+        }
+        const pages = reads.filter((read) => read.itemId === undefined && read.limit === 100);
+        // The thread's final page starts at its canonical 100-item boundary.
+        const tailPosition = Math.floor(timeline.length / 100) * 100 - 1;
+        // Starts after the prompt, a cursor every peer accepts.
+        expect(pages.at(0)?.afterPosition).toBe(0);
+        expect(
+          pages.every(
+            (read) =>
+              read.view === "messages" && read.limit === 100 && read.maxCharsPerItem === 20_000,
+          ),
+        ).toBe(true);
+        if (scenario === "cancelled" || scenario === "interrupted") {
+          // A run that did not complete keeps the established scan, without the probe.
+          expect(pages.map((read) => read.afterPosition)).not.toContain(tailPosition);
+          const forwards = pages.slice(1).map((read) => read.afterPosition ?? -1);
+          expect(forwards.length).toBeGreaterThan(0);
+          expect(forwards).toEqual([...forwards].sort((left, right) => left - right));
+        } else {
+          expect(pages.at(1)?.afterPosition).toBe(tailPosition);
+          const rest = pages.slice(2);
+          if (scenario === "later-run" || scenario === "shrinking" || scenario === "growing") {
+            // An inconclusive tail falls back to scanning from where the first page ended.
+            expect(rest.length).toBeGreaterThan(0);
+            const resumed = rest.map((read) => read.afterPosition ?? -1);
+            expect(resumed[0]).toBeLessThan(tailPosition);
+            expect(resumed).toEqual([...resumed].sort((left, right) => left - right));
+          } else {
+            // A terminal page holding the run's last reply ends the read there.
+            expect(rest).toHaveLength(0);
+          }
+        }
+        const refills = reads.filter((read) => read.itemId !== undefined);
+        expect(refills).toHaveLength(scenario === "long" ? 4 : 0);
+        if (scenario === "long")
+          expect(refills.map((read) => read.textOffset)).toEqual([20_000, 40_000, 60_000, 80_000]);
+      }),
+    ).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
+    );
+  }),
+);
+
 it.effect("keeps a successful remote reply despite an error item in the run's activity", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -2268,6 +2592,37 @@ it.effect("stopping the parent stops its task there", () =>
       // The follower sees it ended here and stops it there.
       yield* Deferred.await(thread.interruptedOnce);
       expect(yield* Ref.get(thread.interrupted)).toBe(1);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("the parent's Stop queues stopping a task that runs only there", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+
+      yield* delegateToBox(a);
+      yield* a.orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("command:thread-stop:remote-only"),
+        threadId: parentThreadId,
+        reason: "User stopped",
+      });
+      const sql = Context.get(database, SqlClient.SqlClient);
+      const outbox = yield* sql<{ readonly effect_type: string }>`
+        SELECT effect_type
+        FROM orchestration_v2_effect_outbox
+        WHERE thread_id = ${parentThreadId}
+      `;
+      expect(outbox.some((row) => row.effect_type === "delegated-tasks.stop")).toBe(true);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
@@ -4192,6 +4547,7 @@ it.effect.each(["pass", "hold"] as const)(
             boxToolkitLayer(thread),
             McpHttpServer.toolkitRegistration(AdmissionCancel.toolkit, AdmissionCancel.handlers),
           ).pipe(Layer.provide(Layer.succeedContext(admissionContext))),
+          Layer.empty,
           Layer.succeedContext(admissionContext),
         );
         receivingAuth = b.auth;

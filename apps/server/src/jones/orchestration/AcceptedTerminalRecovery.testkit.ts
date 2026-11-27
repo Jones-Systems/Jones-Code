@@ -1,5 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
+  CheckpointScopeId,
+  CommandId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -43,6 +45,36 @@ const busyWrite = () =>
     cause: new SqlError.SqlError({ reason: new SqlError.LockTimeoutError({ cause: null }) }),
   });
 
+function assertCheckpointWork(
+  result: Effect.Success<ReturnType<typeof captureRootRunTermination>>,
+  key: string,
+  status: "completed" | "failed",
+  completedAt: DateTime.Utc,
+) {
+  const run = result.finalEvents.find((event) => event.type === "run.updated")?.payload;
+  assert.isDefined(run);
+  assert.equal(run.status, status);
+  assert.deepEqual(run.completedAt, completedAt);
+  assert.isNull(run.checkpointId);
+  assert.deepEqual(
+    result.committedEffects,
+    status === "completed"
+      ? [
+          {
+            id: `effect:checkpoint.capture:${run.id}`,
+            commandId: CommandId.make(`command:effect:checkpoint.capture:${run.id}`),
+            threadId: run.threadId,
+            request: {
+              type: "checkpoint.capture",
+              runId: run.id,
+              scopeId: CheckpointScopeId.make(`checkpoint-scope:${key}`),
+            },
+          },
+        ]
+      : [],
+  );
+}
+
 // The upstream harness owns its consumer lifetime; registration avoids copying it.
 export function registerAcceptedTerminalRecoveryTests(
   capture: typeof captureRootRunTermination,
@@ -63,8 +95,9 @@ export function registerAcceptedTerminalRecoveryTests(
       const ingests = yield* Ref.make(0);
       const writes = yield* Ref.make(0);
       const interrupts = yield* Ref.make(0);
+      const key = `accepted:${scenario.driver}:${scenario.status}:${scenario.seam}`;
       const result = yield* capture({
-        key: `accepted:${scenario.driver}:${scenario.status}:${scenario.seam}`,
+        key,
         driver,
         shouldFinalizeRun: () =>
           Effect.gen(function* () {
@@ -137,10 +170,7 @@ export function registerAcceptedTerminalRecoveryTests(
         interruptTurn: () => Ref.update(interrupts, (n) => n + 1),
       });
       yield* drain.awaitIngested;
-      assert.deepEqual(result.observed, [
-        `run:${scenario.status === "completed" ? "waiting" : "failed"}`,
-        "pull-requests-refreshed",
-      ]);
+      assert.deepEqual(result.observed, [`run:${scenario.status}`, "pull-requests-refreshed"]);
       const attempt = result.finalEvents.find(
         (event) => event.type === "run-attempt.updated",
       )?.payload;
@@ -155,7 +185,7 @@ export function registerAcceptedTerminalRecoveryTests(
       );
       assert.deepEqual(turn?.completedAt, completedAt);
       assert.equal(yield* Ref.get(interrupts), 0);
-      assert.equal(result.committedEffects.length, scenario.status === "completed" ? 1 : 0);
+      assertCheckpointWork(result, key, scenario.status, completedAt);
       assert.equal(
         result.finalEvents.filter((event) => event.type === "run-attempt.updated").length,
         1,
@@ -203,8 +233,9 @@ export function registerAcceptedTerminalRecoveryTests(
         let writes = 0;
         let starts = 0;
         let interrupts = 0;
+        const key = `accepted-lifetime:${scenario.status}:${scenario.seam}`;
         const result = yield* capture({
-          key: `accepted-lifetime:${scenario.status}:${scenario.seam}`,
+          key,
           shouldFinalizeRun: () =>
             Effect.suspend(() =>
               ++ownershipReads === 1 && scenario.seam === "ownership"
@@ -368,6 +399,7 @@ export function registerAcceptedTerminalRecoveryTests(
                 ).pipe(
                   Stream.flatMap(() =>
                     Stream.fromIterable([
+                      original!,
                       { type: "turn_item.updated", driver, turnItem: finalItem! },
                       {
                         type: "node.updated",
@@ -389,7 +421,8 @@ export function registerAcceptedTerminalRecoveryTests(
             Effect.gen(function* () {
               // The provider commit-batch consumer pulls the next source element before the
               // previous one is processed, so the late-event request may precede finalization.
-              // Finalization must still precede closing, with the subscription retained.
+              // The root terminal batch commits before the duplicate and child output arrive.
+              // The checkpoint work remains queued while the subscription consumes them.
               yield* Effect.raceFirst(Deferred.await(finalized), Deferred.await(closed));
               assert.isFalse(yield* Deferred.isDone(closed));
               assert.isTrue(yield* Deferred.isDone(finalized));
@@ -418,19 +451,16 @@ export function registerAcceptedTerminalRecoveryTests(
           1,
         );
         assert.equal(result.finalEvents.filter((event) => event.type === "run.updated").length, 1);
-        assert.deepEqual(result.observed, [
-          `run:${scenario.status === "completed" ? "waiting" : "failed"}`,
-          "pull-requests-refreshed",
-        ]);
+        assert.deepEqual(result.observed, [`run:${scenario.status}`, "pull-requests-refreshed"]);
         const settlement = result.finalEvents.find((event) => event.type === "run-attempt.updated")
           ?.payload.providerSettlement;
         assert.equal(settlement?.status, scenario.status);
         assert.deepEqual(settlement?.completedAt, completedAt);
-        assert.equal(result.committedEffects.length, scenario.status === "completed" ? 1 : 0);
+        assertCheckpointWork(result, key, scenario.status, completedAt);
         assert.equal(starts, 1);
         assert.equal(interrupts, 0);
         assert.equal(subscriptions, 1);
-        assert.equal(terminalIngests, 2);
+        assert.equal(terminalIngests, 3);
         assert.equal(ownershipReads, scenario.seam === "ownership" ? 2 : 1);
         assert.equal(writes, scenario.seam === "write" ? 2 : 1);
       }).pipe(

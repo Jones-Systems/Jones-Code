@@ -13,6 +13,7 @@ import type * as Stream from "effect/Stream";
 import type { JonesAppIdentity } from "@t3tools/contracts/jones/organizationMetadata";
 
 import type { ProviderCredentialError } from "./errors.ts";
+import type { ProviderCompatibilityLookup } from "./compatibility.ts";
 
 export interface ProviderHostPaths {
   readonly cwd: string;
@@ -52,9 +53,16 @@ export class ProviderHost extends Context.Service<
     /** Absolute attachment path, or null if the ID does not resolve inside attachmentsDir. */
     readonly resolveAttachmentPath: (attachment: ChatAttachment) => string | null;
     readonly resolveExtractedTextPath?: (path: string) => Effect.Effect<string | undefined>;
+    /**
+     * Counts a running agent for local server discovery, so listeners carrying its
+     * T3CODE_THREAD_ID show under its thread. Call the returned function when it stops.
+     */
+    readonly trackAgent?: () => () => void;
     readonly credentials: (
       namespace: string,
       bindingId: string,
     ) => Effect.Effect<ProviderCredentials>;
+    /** A driver declares its minimum version in the policy and asks here, not in a constant. */
+    readonly compatibility: ProviderCompatibilityLookup;
   }
 >()("@t3tools/provider-core/server/ProviderHost") {}

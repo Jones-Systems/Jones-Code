@@ -1,4 +1,4 @@
-import { msg, useMessages } from "gt-react";
+import { msg, useGT, useMessages } from "gt-react";
 
 import {
   WorkspaceBreadcrumb,
@@ -16,13 +16,14 @@ const SETTINGS_BREADCRUMB_LABELS: Readonly<Record<string, string>> = {
 };
 
 export function SettingsBreadcrumb({ pathname }: { pathname: string }) {
+  const gt = useGT();
   const m = useMessages();
   const normalizedPathname = pathname.replace(/\/+$/, "") || "/";
   const sectionLabel = SETTINGS_BREADCRUMB_LABELS[normalizedPathname];
   const categoryLabel = settingsSectionCategoryLabel(normalizedPathname);
 
   return (
-    <WorkspaceBreadcrumb ariaLabel="Settings breadcrumb">
+    <WorkspaceBreadcrumb ariaLabel={gt("Settings breadcrumb")}>
       {sectionLabel ? (
         <>
           <WorkspaceBreadcrumbItem>{m(SETTINGS_LABEL)}</WorkspaceBreadcrumbItem>

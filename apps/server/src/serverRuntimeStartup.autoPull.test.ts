@@ -13,6 +13,7 @@ import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
 
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./cloud/serviceProtocol.ts";
 import * as ServerConfig from "./config.ts";
@@ -125,6 +126,7 @@ it.effect("parks automatic pull until activation without delaying command readin
         Layer.succeed(SqlClient.SqlClient, sql),
         FileSystem.layerNoop({}),
         Layer.succeed(HostProcess.Environment, {}),
+        Layer.mock(BackgroundPolicy.BackgroundPolicy)({ shouldRunHostWork: Effect.succeed(true) }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
         Layer.mock(EventSink.EventSinkV2)({
           supersededTerminalTrace: SupersededTerminalTrace.make(),
@@ -198,7 +200,7 @@ it.effect("parks automatic pull until activation without delaying command readin
               Effect.onInterrupt(() => Deferred.succeed(statusInterrupted, undefined)),
             ),
         }),
-        Layer.mock(AnalyticsService.AnalyticsService)({ record: () => Effect.void }),
+        Layer.mock(AnalyticsService.AnalyticsService)({ record: () => Effect.succeed(false) }),
         // No provider logins or Connect link, so startup records no owners.
         FileSystem.layerNoop({}),
         Layer.mock(ServerSecretStore.ServerSecretStore)({ get: () => Effect.succeedNone }),

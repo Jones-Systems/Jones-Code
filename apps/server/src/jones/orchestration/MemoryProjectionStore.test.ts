@@ -113,6 +113,8 @@ it.effect.each(cases)(
       const store = yield* ProjectionStore.ProjectionStoreV2;
       const now = DateTime.makeUnsafe("2026-01-01T00:00:00Z");
       const thread = makeThread(ThreadId.make("memory-held-thread"), now);
+      assert.isNull(yield* store.findThread(thread.id));
+      assert.equal(yield* store.getRunCount(thread.id), 0);
       yield* store.apply({
         id: EventId.make("held-create"),
         type: "thread.created",
@@ -146,6 +148,8 @@ it.effect.each(cases)(
         occurredAt: now,
         payload: run,
       });
+      assert.equal((yield* store.findThread(thread.id))?.id, thread.id);
+      assert.equal(yield* store.getRunCount(thread.id), 1);
       assert.deepEqual(
         (yield* store.getHeldQueuedRuns(thread.id)).map((entry) => entry.id),
         [run.id],
@@ -162,6 +166,24 @@ it.effect.each(cases)(
       });
       assert.deepEqual(yield* store.getHeldQueuedRuns(thread.id), []);
       assert.equal((yield* store.listActiveShellIndex())[0]?.mayBeLive, false);
+      const fork = makeThread(ThreadId.make("memory-held-fork"), now);
+      yield* store.apply({
+        id: EventId.make("held-run-fork"),
+        type: "thread.created",
+        threadId: fork.id,
+        occurredAt: now,
+        payload: { ...fork, forkedFrom: { type: "run", threadId: thread.id, runId: run.id } },
+      });
+      yield* store.apply({
+        id: EventId.make("held-run-rewind"),
+        type: "run.updated",
+        threadId: thread.id,
+        runId: run.id,
+        occurredAt: now,
+        payload: { ...run, status: "rolled_back", completedAt: now },
+      });
+      assert.deepEqual(yield* store.getForkSourceRunIds(fork.id), [run.id]);
+      assert.equal(yield* store.getRunCount(fork.id), 0);
     }).pipe(Effect.provide(layer)),
 );
 

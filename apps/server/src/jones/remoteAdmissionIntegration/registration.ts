@@ -11,6 +11,7 @@ import { REMOTE_ADMISSION_EVALUATION_TIMEOUT_MS } from "../remoteAdmission/evalu
 import * as RemoteAdmissionIntake from "./RemoteAdmissionIntake.ts";
 import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as ServerConfig from "../../config.ts";
+import * as RequestManagement from "./RequestManagement.ts";
 
 const admissionLayer = Layer.unwrap(
   Effect.gen(function* () {
@@ -74,6 +75,7 @@ import { ReceiverInspection, inspectionStatus } from "./Inspection.ts";
 
 /** Parent supplies evidence/read adapters bound to this same receiver; no orchestrator construction cycle. */
 const reviewServicesLayer = Layer.mergeAll(
+  RequestManagement.layer,
   Layer.effect(
     RemoteAdmissionReviewService,
     Effect.gen(function* () {

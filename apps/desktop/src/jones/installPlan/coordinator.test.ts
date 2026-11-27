@@ -1342,6 +1342,81 @@ describe("ordinary recovery proof", () => {
     return f;
   };
 
+  it("starts a host-only match after guided recovery of the running Laptop", async () => {
+    const f = recovered();
+    const result = await f.coordinator.request({
+      type: "start",
+      origin: "connections",
+      target,
+      select: [selection],
+      expectedRunningGeneration: transaction,
+    });
+    expect(result.refused).toBeUndefined();
+    expect(result.state.current).toMatchObject({
+      hostOnly: true,
+      target,
+      devices: [{ environmentId: remote }],
+      laptop: {
+        operations: [],
+        gate: { basis: "prior-verified", verificationKind: "ordinary-recovery" },
+      },
+    });
+    expect(f.controller.download).not.toHaveBeenCalled();
+    expect(f.controller.install).not.toHaveBeenCalled();
+    expect(f.snapshot().dispositions.targets).toEqual([]);
+    const request = { type: "publication", acceptOrdinaryRecovery: 1 } as const;
+    expect((await f.coordinator.request(request)).publication).toMatchObject({
+      kind: "withheld",
+      code: "plan-managed",
+    });
+    expect(
+      (await f.coordinator.request({ ...request, acceptHostOnlyHolds: 1 })).publication,
+    ).toEqual({
+      kind: "ordinary-verified",
+      source: { repository: target.repository, sha: source, tree },
+      heldEnvironments: [remote],
+    });
+  });
+
+  it.each(["stale", "changed-generation", "missing-proof", "activation-blocked"] as const)(
+    "refuses a match with %s native evidence before persisting intent",
+    async (change) => {
+      const f = recovered();
+      if (change === "stale") f.advance();
+      if (change === "missing-proof") f.setEvidence({ ordinaryRecovery: undefined });
+      if (change === "activation-blocked") f.setEvidence({ activationBlocked: true });
+      const result = await f.coordinator.request({
+        type: "start",
+        origin: "connections",
+        target,
+        select: [selection],
+        expectedRunningGeneration: change === "changed-generation" ? "7".repeat(64) : transaction,
+      });
+      expect(result.refused?.code).toBe("invalid-evidence");
+      expect(result.state.current).toBeNull();
+      expect(f.snapshot().dispositions.targets).toEqual([]);
+      if (change !== "changed-generation")
+        expect(
+          (await f.coordinator.request({ type: "publication", acceptOrdinaryRecovery: 1 }))
+            .publication?.kind,
+        ).toBe("withheld");
+    },
+  );
+
+  it("keeps a plan that appeared before a host-only match reached native admission", async () => {
+    const f = recovered();
+    const current = await f.start([]);
+    const result = await f.coordinator.request({
+      type: "start",
+      origin: "connections",
+      target,
+      select: [selection],
+      expectedRunningGeneration: transaction,
+    });
+    expect(result.refused?.code).toBe("plan-active");
+    expect(result.state.current).toEqual(current);
+  });
+
   it("requires publication opt-in and preserves plan dispositions after Done", async () => {
     const f = recovered();
     expect((await f.coordinator.request({ type: "publication" })).publication).toMatchObject({

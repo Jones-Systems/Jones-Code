@@ -1,7 +1,6 @@
 import { claimThreadOpen } from "@t3tools/client-runtime/state/thread-search";
 import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
 import { act, fakeTimers, render } from "../../../test/render";
@@ -40,6 +39,7 @@ vi.mock(import("../../connection/catalog"), async (original) => {
 });
 
 import { ThreadVisitWatermark } from "./ThreadVisitWatermark";
+import * as Effect from "effect/Effect";
 
 // Kept alive so a shell set before its tracker mounts is still there when it does.
 const shellAtom = Atom.family((_key: string) => Atom.make<unknown>(null).pipe(Atom.keepAlive));
@@ -71,9 +71,10 @@ function visitedThreadIds() {
 
 it("records each thread after its own visible focused dwell when switching threads", async () => {
   mocks.visitRun.mockReset();
-  mocks.visitRun.mockResolvedValue(AsyncResult.success(undefined));
+  mocks.visitRun.mockReturnValue(Effect.void);
   setShell(threadA, "2026-01-02T00:00:00.000Z");
   setShell(threadB, "2026-01-03T00:00:00.000Z");
+  using _focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
   using _timers = fakeTimers();
   vi.setSystemTime(NOW);
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -139,8 +140,8 @@ it("retries a rejected dwell visit, with its open, once after the session reconn
       appAtomRegistry.update(sessionGeneration(ENVIRONMENT), (generation) => generation + 1),
     );
   mocks.visitRun.mockReset();
-  mocks.visitRun.mockResolvedValueOnce(AsyncResult.failure(Cause.fail("disconnected")));
-  mocks.visitRun.mockResolvedValue(AsyncResult.success(undefined));
+  mocks.visitRun.mockReturnValueOnce(Effect.fail("disconnected"));
+  mocks.visitRun.mockReturnValue(Effect.void);
   setShell(threadC, "2026-01-02T00:00:00.000Z");
   using _timers = fakeTimers();
   vi.setSystemTime(NOW);
@@ -164,4 +165,54 @@ it("retries a rejected dwell visit, with its open, once after the session reconn
     visibility.mockRestore();
     focus.mockRestore();
   }
+});
+
+it("does not mark a run that finishes in a background window as seen", async () => {
+  mocks.visitRun.mockReset();
+  mocks.visitRun.mockReturnValue(Effect.void);
+  const threadD: ScopedThreadRef = { environmentId: ENVIRONMENT, threadId: ThreadId.make("d") };
+  setShell(threadD, "2026-01-02T00:00:00.000Z");
+  let focused = true;
+  let visibility: DocumentVisibilityState = "visible";
+  using _focus = vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
+  using _visibility = vi
+    .spyOn(document, "visibilityState", "get")
+    .mockImplementation(() => visibility);
+  using _timers = fakeTimers();
+  vi.setSystemTime(NOW);
+
+  await using _screen = await render(
+    <AppAtomRegistryProvider>
+      <ThreadVisitWatermark threadRef={threadD} />
+    </AppAtomRegistryProvider>,
+  );
+  expect(visitedThreadIds()).toEqual([]);
+  await act(async () => vi.advanceTimersByTime(3000));
+  expect(visitedThreadIds()).toEqual(["d"]);
+
+  // The user switches to another app while the run is still working.
+  focused = false;
+  visibility = "hidden";
+  window.dispatchEvent(new Event("blur"));
+  document.dispatchEvent(new Event("visibilitychange"));
+
+  const completedAt = "2026-01-03T00:00:00.000Z";
+  appAtomRegistry.set(shellAtom(shellKey(threadD)), {
+    environmentId: threadD.environmentId,
+    id: threadD.threadId,
+    updatedAt: completedAt,
+    lastVisitedAt: "2026-01-02T00:00:00.000Z",
+    latestRun: { completedAt },
+  });
+  await act(async () => vi.advanceTimersByTime(60_000));
+  expect(visitedThreadIds()).toEqual(["d"]);
+
+  focused = true;
+  visibility = "visible";
+  document.dispatchEvent(new Event("visibilitychange"));
+  window.dispatchEvent(new Event("focus"));
+
+  expect(visitedThreadIds()).toEqual(["d"]);
+  await act(async () => vi.advanceTimersByTime(3000));
+  expect(visitedThreadIds()).toEqual(["d", "d"]);
 });

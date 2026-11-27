@@ -16,6 +16,8 @@ import type { Grant } from "./ReceiverAccess.ts";
 import type { SqlError } from "effect/sql/SqlError";
 import type * as SqlClient from "effect/sql/SqlClient";
 import { ownerRequestPredicate } from "./peerBookkeeping.ts";
+import { inboxRequestPredicate, requestManagementTable } from "./RequestManagementStorage.ts";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 
 export class ReviewHistoryUnavailable extends Schema.TaggedError<
   ReviewHistoryUnavailable,
@@ -62,6 +64,7 @@ const encodeCursor = Effect.fn("ReviewProjection.encodeCursor")((cursor: Cursor)
 );
 
 export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
+  const hasTable = makeJonesTablePresence(sql);
   const revision = Effect.fn("ReviewProjection.revision")(function* () {
     return (yield* sql<{ revision: number; prune_revision: number }>`SELECT revision,prune_revision
       FROM jones_remote_admission_review_state WHERE singleton=1`)[0]!;
@@ -103,7 +106,9 @@ export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
     );
     if (!Number.isFinite(limit)) return yield* new ReviewHistoryUnavailable({});
     const view = input.view;
-    const ownerRequest = ownerRequestPredicate(sql);
+    const ownerRequest = (yield* hasTable(requestManagementTable))
+      ? sql`${ownerRequestPredicate(sql)} AND ${inboxRequestPredicate(sql)}`
+      : ownerRequestPredicate(sql);
     const rows = yield* sql<ProjectionRow>`SELECT a.id,a.created_at FROM jones_remote_admissions a
       LEFT JOIN jones_remote_admission_blocked_marks b ON b.admission_id=a.id
       LEFT JOIN jones_remote_admission_extensions e ON e.admission_id=a.id

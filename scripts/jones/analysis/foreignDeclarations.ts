@@ -19,9 +19,9 @@ export const sourcePins = {
     "apps/desktop/src/snapShot/GnomeCaptureSetup.ts":
       "6326cc5a064f263e1d11c30404bb510779307bc15421ea6b8795309a12f3fb1e",
     "apps/desktop/src/snapShot/DesktopSnapShot.ts":
-      "2817c375b8c32820a9a7c3ea82e1d3913a9266aa21cfea842e135f59382dab50",
+      "f255cc9ff0b848e98a8940cca8a1fa36543313e1283c72bae93bd0c40bba357b",
     "scripts/build-desktop-artifact.ts":
-      "4ee0e9d63a28338d31f96b84f54de98e12cac195008edca938f15093470e9873",
+      "02a51dc2f32412cb4638624761ee5683607a98af0591eca146d32f0d674adf32",
   },
   pgrep: {
     "apps/desktop/scripts/electron-launcher.test.mjs":
@@ -35,8 +35,8 @@ export const sourcePins = {
   },
   compiler: {
     "tsconfig.base.json": "68c74b9c2b2295b28221b027a457f3837da638b59d89ee8a88a745cd1c981fe3",
-    "apps/web/tsconfig.json": "87733dd7a4202fad909854cabde0a2970d2377578a10b19875d61641474cf4c0",
-    "apps/web/vite.config.ts": "4505e22976f69bfec3f580562ffa5f1ef12491540cb7b168642e2ac9a99fb673",
+    "apps/web/tsconfig.json": "89df0fbf8b1b79d159772892d1f1111e9d6b41b85610f9a1b78d8d081c9d9bd9",
+    "apps/web/vite.config.ts": "ffb7d9babb8638ff3ae725de94250adcae1845e0e43bb2b76000e5b2a6caadfb",
     "scripts/jones/tsrs/typecheck.ts":
       "b9035485249e0e8c48a28554ea9f250de1efadf6e9b74a9c1e99a667d91bfd77",
     "scripts/jones/tsrs/local-mac-capacity.ts":

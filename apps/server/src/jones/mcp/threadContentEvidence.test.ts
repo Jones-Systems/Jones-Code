@@ -400,7 +400,7 @@ const serviceLayer = (
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([]),
         }),
-        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -458,6 +458,7 @@ function readFixture() {
   let acknowledgements = 0;
   const selections: Array<unknown> = [];
   const layer = serviceLayer({
+    getRunCount: (id) => Effect.succeed((id === f.parent.thread.id ? f.parent : child).runs.length),
     getThreadRecords: (id) => Effect.succeed(id === f.parent.thread.id ? f.parent : child),
     getThreadShell: () => Effect.succeed(liveThreadShell(child.thread.id, { activeRunId: null })),
     getProjectThreadRecords: () => Effect.succeed(child),

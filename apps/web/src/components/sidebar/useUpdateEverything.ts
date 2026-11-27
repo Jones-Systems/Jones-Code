@@ -1,6 +1,7 @@
 import { supportsServerUpdateThreadContinuation } from "~/versionSkew";
 import { useJonesBulkUpdates } from "../../jones/installStatus/bulkUpdates";
 import { useAtomValue } from "@effect/atom-react";
+import { connectionErrorText } from "@t3tools/client-runtime/connection";
 import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
 import type { JonesUpdateProvenance } from "@t3tools/contracts/jones/jonesUpdates";
 
@@ -35,6 +36,7 @@ import {
   waitForServerUpdateHandoff,
   waitForUpdateRestart,
 } from "./updateEverythingRun";
+import { useMessages } from "gt-react";
 
 const UPDATE_RESTART_DELAY_MS = 5_000;
 
@@ -59,6 +61,7 @@ export function useUpdateEverything(
 ) {
   const targetVersion = localUpdateVersion ?? APP_VERSION;
   const { environments } = useEnvironments();
+  const resolve = useMessages();
   const environmentIds = environmentIdsKey(environments.map(({ environmentId }) => environmentId));
   const sessionStates = useAtomValue(environmentSessionStatesAtom(environmentIds));
   const updateStates = useAtomValue(environmentUpdateStatesAtom(environmentIds));
@@ -67,6 +70,8 @@ export function useUpdateEverything(
     label: environment.label,
     serverConfig: environment.serverConfig,
     connected: environment.connection.phase === "connected",
+    connectionError: connectionErrorText(environment.connection, resolve),
+    turnedOff: !environment.entry.enabled,
     hostedByThisApp: isHostedByThisApp(environment),
     canMaintain: canUpdateServer(sessionStates[index]!),
     updateState: updateStates[index]!,
@@ -122,6 +127,7 @@ export function useUpdateEverything(
 
   return {
     hasUpdates: servers.length > 0 || providers.machines.length > 0 || jones.hasUpdates,
+    machines,
     skipped,
     ...view,
     restarts,

@@ -1,10 +1,17 @@
 export const LAPTOP_RECEIVER = "8750edf7-486b-41ac-81ce-cd50dfeb71eb";
-export function requestHref(receiver: string, id?: string, digest?: string, access?: string) {
-  const search = new URLSearchParams({ receiver });
-  if (id) search.set("request", id);
-  if (digest) search.set("binding", digest);
-  if (access) search.set("access", access);
-  return `/requests?${search}`;
+
+export interface RequestsSearch {
+  receiver?: string | undefined;
+  request?: string | undefined;
+  binding?: string | null | undefined;
+  access?: string | undefined;
 }
-export const threadHref = (receiver: string, thread: string) =>
-  `/${encodeURIComponent(receiver)}/${encodeURIComponent(thread)}`;
+
+export function requestLink(receiver: string, request?: string, binding?: string) {
+  return { to: "/requests" as const, search: { receiver, request, binding } };
+}
+
+export const threadLink = (environmentId: string, threadId: string) => ({
+  to: "/$environmentId/$threadId" as const,
+  params: { environmentId, threadId },
+});

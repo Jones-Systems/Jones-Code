@@ -1,3 +1,4 @@
+import { unusedAuthorization } from "../jones/connection/unusedAuthorization.ts";
 import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -113,6 +114,7 @@ describe("conversation library HTTP transport", () => {
         },
       };
       const remoteAuthorization = RemoteEnvironmentAuthorization.of({
+        ...unusedAuthorization,
         renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
         rememberCheckedDescriptor: () => Effect.void,
         authorizeBearer: () => Effect.die("unused"),

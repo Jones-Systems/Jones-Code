@@ -122,20 +122,20 @@ test("refuses a prefix that differs from its ID and a name that differs from its
   );
 });
 
-test("refuses an upstream number in the Jones range or equal to a Jones ID", () => {
-  const entered = errorsOf({ upstream: [1, 2, 100], upstreamFiles: [1, 2, 100] });
-  assert.ok(
-    entered.some((error) => /Upstream migration number 100 entered the Jones range/.test(error)),
-  );
-  assert.ok(
-    entered.some((error) =>
-      /Jones migration ID 100 collides with an upstream migration number/.test(error),
-    ),
-  );
-  const fileOnly = errorsOf({ upstream: [1, 2], upstreamFiles: [1, 2, 101] });
-  assert.ok(
-    fileOnly.some((error) => /Upstream migration number 101 entered the Jones range/.test(error)),
-  );
+test("accepts overlapping numbers across the independent ledgers", () => {
+  assert.deepEqual(errorsOf({ upstream: [1, 2, 100, 101, 119] }), []);
+});
+
+test("refuses invalid numbering within the upstream ledger", () => {
+  for (const upstream of [
+    [0, 1, 2],
+    [1, 2, 100, 100],
+    [1, 100, 99],
+  ]) {
+    assert.deepEqual(errorsOf({ upstream }), [
+      "Upstream migration IDs must be positive, unique and ascending",
+    ]);
+  }
 });
 
 test("allows legacy Jones IDs 1-6 beside the same upstream numbers", () => {

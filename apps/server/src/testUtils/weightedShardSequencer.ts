@@ -4,8 +4,10 @@ import * as NodePath from "node:path";
 
 import { BaseSequencer, type TestSpecification } from "vite-plus/test/node";
 
+import { DISCOVERED_SERVER_SPECS } from "../../../../scripts/jones/server-shard-weights/capture.ts";
 import {
   resolveSequencerWeight,
+  TIMINGS_PATH_ENV,
   WEIGHTS_PATH_ENV,
 } from "../../../../scripts/jones/server-shard-weights/envelope.ts";
 import shardWeights from "./shardWeights.json" with { type: "json" };
@@ -18,6 +20,9 @@ const recordedSeconds: Readonly<Record<string, number>> = shardWeights;
 // Include import time (~1/3 of CI shards) in weights; derive identical splits so each file runs once.
 export class WeightedShardSequencer extends BaseSequencer {
   override async shard(files: TestSpecification[]) {
+    if (process.env[TIMINGS_PATH_ENV]) {
+      Object.assign(this.ctx, { [DISCOVERED_SERVER_SPECS]: files.slice() });
+    }
     const { index, count } = this.ctx.config.shard ?? { index: 1, count: 1 };
     const secondsOf = process.env[WEIGHTS_PATH_ENV]
       ? resolveSequencerWeight(process.env, recordedSeconds)

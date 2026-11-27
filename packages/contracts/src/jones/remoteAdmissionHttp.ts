@@ -8,6 +8,8 @@ import {
   RemoteAdmissionRecord,
 } from "./remoteAdmission.ts";
 
+export const REMOTE_ADMISSION_POLICY_PATH = "/api/jones/remote-admission/policy";
+
 export const RemoteAdmissionPolicyUpdate = Schema.Struct({
   expectedRevision: Schema.NonEmptyString,
   enabled: Schema.Boolean,
@@ -56,7 +58,7 @@ export function makeRemoteAdmissionHttpGroup({
       }).middleware(EnvironmentAuthenticatedAuth),
     )
     .add(
-      HttpApiEndpoint.put("policy", "/api/jones/remote-admission/policy", {
+      HttpApiEndpoint.put("policy", REMOTE_ADMISSION_POLICY_PATH, {
         ...common,
         payload: RemoteAdmissionPolicyUpdate,
         success: RemoteAdmissionSnapshot,

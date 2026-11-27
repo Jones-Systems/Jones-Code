@@ -259,6 +259,23 @@ layer("NodeSqliteClient", (it) => {
 
 const largeText = "x".repeat(64 * 1024 + 1);
 
+it.effect("a rowid above 2^53 does not leave a transaction open", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE big (id INTEGER PRIMARY KEY, name TEXT)`;
+    yield* sql`INSERT INTO big (id, name) VALUES (246166233861328896, 'first')`;
+    // BEGIN reports the connection's last insert rowid; a failure to convert it must not
+    // read as a failed BEGIN, or the open transaction is never rolled back.
+    yield* sql.withTransaction(sql`INSERT INTO big (name) VALUES ('second')`);
+    yield* sql.withTransaction(sql`UPDATE big SET name = 'third' WHERE name = 'second'`);
+    const rows = yield* sql<{ name: string }>`SELECT name FROM big ORDER BY id`;
+    assert.deepStrictEqual(
+      rows.map((row) => row.name),
+      ["first", "third"],
+    );
+  }).pipe(Effect.provide(SqliteClient.layer({ filename: ":memory:" }))),
+);
+
 it.effect("reads integers on the values path as the caller asked, cached or not", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -338,6 +355,61 @@ it.effect.each([false, true])("batches worker results without losing rows (reade
     }).pipe(
       Effect.provide(SqliteClient.layer({ filename, writerWorker: true, readerWorker: true })),
     );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("coalesces savepoints with queries and preserves nested rollback", () =>
+  Effect.gen(function* () {
+    const { filename } = yield* makeTempDatabase;
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const worker = startedWorkers.filter((entry) => !checkpointWorkers.includes(entry)).at(-1)!;
+      using messages = vi.spyOn(worker, "postMessage");
+      yield* sql.withTransaction(
+        Effect.forEach(Array.from({ length: 53 }), () => sql.withTransaction(Effect.void)),
+      );
+      assert.equal(messages.mock.calls.length, 2);
+
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`UPDATE counters SET value = 1 WHERE id = 1`;
+          const failure = yield* sql
+            .withTransaction(
+              sql`UPDATE counters SET value = 2 WHERE id = 1`.pipe(
+                Effect.andThen(Effect.fail("bad update")),
+              ),
+            )
+            .pipe(Effect.flip);
+          assert.equal(failure, "bad update");
+          const sent = messages.mock.calls.length;
+          assert.equal(
+            yield* sql.withTransaction(Effect.fail("empty update")).pipe(Effect.flip),
+            "empty update",
+          );
+          assert.equal(messages.mock.calls.length, sent);
+          assert.deepEqual(yield* sql`SELECT value FROM counters WHERE id = 1`, [{ value: 1 }]);
+          assert.deepEqual(messages.mock.calls.at(-1)?.[0].savepoints, []);
+          yield* sql.withTransaction(
+            sql
+              .withTransaction(
+                sql`UPDATE counters SET value = 3 WHERE id = 1`.pipe(
+                  Effect.andThen(Effect.fail("nested update")),
+                ),
+              )
+              .pipe(Effect.flip),
+          );
+          assert.deepEqual(yield* sql`SELECT value FROM counters WHERE id = 1`, [{ value: 1 }]);
+
+          yield* sql.withTransaction(sql`UPDATE counters SET value = 4 WHERE id = 1`);
+          yield* sql`UPDATE counters SET value = 5 WHERE id = 1`;
+          const unsent = yield* sql
+            .withTransaction(sql.unsafe("SELECT ?", [Symbol("uncloneable")]))
+            .pipe(Effect.exit);
+          assert.isTrue(Exit.isFailure(unsent));
+        }),
+      );
+      assert.deepEqual(yield* sql`SELECT value FROM counters WHERE id = 1`, [{ value: 5 }]);
+    }).pipe(Effect.provide(SqliteClient.layer({ filename, writerWorker: true })));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
@@ -1602,7 +1674,7 @@ it.effect.each([2, 3] as const)(
                   yield* sql`PRAGMA cache_size = 321`;
                   yield* Deferred.succeed(snapshot, undefined);
                   yield* Deferred.await(committed);
-                  yield* sql
+                  const failure = yield* sql
                     .withTransaction(
                       Effect.gen(function* () {
                         assert.equal(yield* countEntries(sql), 1);
@@ -1611,6 +1683,7 @@ it.effect.each([2, 3] as const)(
                       }),
                     )
                     .pipe(Effect.flip);
+                  assert.equal(failure, "rollback-savepoint");
                   assert.equal(yield* countEntries(sql), 1);
                 }),
               )
@@ -2008,14 +2081,16 @@ it.effect("Jones pooled reads retain every ordered bigint across upstream chunk 
     (sql) =>
       Effect.gen(function* () {
         yield* sql`PRAGMA journal_mode = WAL`;
+        const base = 9_007_199_254_740_992n;
         const rows = yield* sql<{ ordinal: bigint; payload: string }>`
         WITH RECURSIVE sequence(value) AS (
           SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 33000
-        ) SELECT value AS ordinal, printf('%08d', value) AS payload FROM sequence ORDER BY value
+        ) SELECT value + ${base} AS ordinal, printf('%08d', value) AS payload
+          FROM sequence ORDER BY value
       `.pipe(Effect.provideService(SqlClient.SafeIntegers, true), SqliteClient.readOnly);
         assert.equal(rows.length, 33000);
         for (let index = 0; index < rows.length; index++) {
-          assert.equal(rows[index]!.ordinal, BigInt(index + 1));
+          assert.equal(rows[index]!.ordinal, base + BigInt(index + 1));
           assert.equal(rows[index]!.payload, String(index + 1).padStart(8, "0"));
         }
         assert.deepEqual(yield* sql`SELECT 7 AS value`.pipe(SqliteClient.readOnly), [{ value: 7 }]);

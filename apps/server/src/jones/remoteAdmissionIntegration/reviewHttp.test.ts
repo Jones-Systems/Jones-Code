@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   AuthSessionId,
   AuthAccessWriteScope,
+  AuthRequestsManageScope,
   AuthSettingsWriteScope,
   AuthAdministrativeScopes,
   EnvironmentHttpApi,
@@ -9,6 +10,7 @@ import {
   type ServerAuthSessionMethod,
 } from "@t3tools/contracts";
 import { REMOTE_ADMISSION_REVIEW_VERSION } from "@t3tools/contracts/jones/remoteAdmissionReview";
+import { REQUESTS_CLI_SUBJECT } from "@t3tools/contracts/jones/requestManagement";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as HttpApi from "effect/http-api/HttpApi";
@@ -128,6 +130,7 @@ describe("V2 review HTTP owner boundary", () => {
   );
   it.each([
     ["mcp-client", "bearer-access-token", AuthAdministrativeScopes],
+    [REQUESTS_CLI_SUBJECT, "bearer-access-token", [AuthRequestsManageScope]],
     ["mcp-client", "browser-session-cookie", AuthAdministrativeScopes],
     ["desktop-bootstrap", "browser-session-cookie", [AuthAccessWriteScope]],
     ["desktop-bootstrap", "browser-session-cookie", [AuthSettingsWriteScope]],

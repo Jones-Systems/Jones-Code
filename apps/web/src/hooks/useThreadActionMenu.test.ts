@@ -4,12 +4,11 @@ import {
   EnvironmentId,
   ThreadId,
   type ContextMenuItem,
+  type ContextMenuSource,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-
-import type { ThreadActionMenuId } from "../components/threadActionMenu.logic";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -30,11 +29,13 @@ const state = vi.hoisted(() => ({
   settled: false,
   settlementRestore: true,
   optionalCapabilities: true,
+  hasCompletedRun: true,
   show: vi.fn<
     (
-      items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
+      items: ReadonlyArray<ContextMenuItem<ThreadActionMenuSelection>>,
       position: { x: number; y: number },
-    ) => Promise<ThreadActionMenuId | null>
+      source?: ContextMenuSource,
+    ) => Promise<ThreadActionMenuSelection | null>
   >(),
 }));
 
@@ -55,6 +56,7 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("../state/session", () => ({
   readEnvironmentScope: (environmentId: string, scope: string) =>
     scope === AuthOrchestrationOperateScope && state.granted.has(environmentId),
+  readEnvironmentScopeDenied: (environmentId: string) => !state.granted.has(environmentId),
 }));
 vi.mock("../state/entities", () => ({
   readEnvironmentServerConfigLoaded: () => true,
@@ -73,7 +75,7 @@ vi.mock("../state/entities", () => ({
     branch: "main",
     worktreePath: null,
     runtime: null,
-    latestRun: null,
+    latestRun: state.hasCompletedRun ? { completedAt: "2026-11-25T12:00:00.000Z" } : null,
     settledOverride: state.settled ? "settled" : null,
   }),
   useProjects: () => [{ id: "project", environmentId: "secondary" }],
@@ -192,7 +194,7 @@ vi.mock("./useThreadActions", () => ({
     ),
 }));
 
-import { useThreadActionMenu } from "./useThreadActionMenu";
+import { useThreadActionMenu, type ThreadActionMenuSelection } from "./useThreadActionMenu";
 
 const target = {
   environmentId: EnvironmentId.make("secondary"),
@@ -212,6 +214,7 @@ beforeEach(() => {
   state.settled = false;
   state.settlementRestore = true;
   state.optionalCapabilities = true;
+  state.hasCompletedRun = true;
   state.granted = new Set(["primary"]);
   state.effects = [];
   state.completed = deferred<void>();
@@ -244,17 +247,20 @@ describe("thread menu permissions", () => {
     expect(state.show).toHaveBeenCalledOnce();
   });
 
-  it("opens immediately without waiting for a thread projection", () => {
-    const projection = deferred<unknown>();
-    state.projection.mockReturnValue(projection.promise);
-    try {
-      createMenu().openMenu(position);
-      expect(state.show).toHaveBeenCalledExactlyOnceWith(expect.any(Array), position);
-      expect(state.projection).not.toHaveBeenCalled();
-    } finally {
-      projection.resolve(AsyncResult.success({ providerSessions: [] }));
-    }
-  });
+  it.each([undefined, "keyboard"] as const)(
+    "opens immediately without waiting for a thread projection with source %s",
+    (source) => {
+      const projection = deferred<unknown>();
+      state.projection.mockReturnValue(projection.promise);
+      try {
+        createMenu().openMenu(position, source);
+        expect(state.show).toHaveBeenCalledExactlyOnceWith(expect.any(Array), position, source);
+        expect(state.projection).not.toHaveBeenCalled();
+      } finally {
+        projection.resolve(AsyncResult.success({ providerSessions: [] }));
+      }
+    },
+  );
 
   it("keeps Stop reachable without loaded sessions and uses the authoritative stop command", async () => {
     state.granted.add("secondary");
@@ -333,7 +339,7 @@ describe("thread menu permissions", () => {
     "stop-thread",
   ] as const)("%s rechecks after the native menu closes", async (action) => {
     state.granted.add("secondary");
-    const choice = deferred<ThreadActionMenuId | null>();
+    const choice = deferred<ThreadActionMenuSelection | null>();
     state.show.mockReturnValue(choice.promise);
     createMenu().openMenu(position);
     await state.shown.promise;
@@ -357,12 +363,12 @@ describe("thread menu permissions", () => {
 });
 
 describe("Jones settlement restore menu item", () => {
-  const ids = () => state.show.mock.calls[0]![0].map((item) => item.id as string);
+  const ids = () => state.show.mock.calls[0]![0].map((item) => item.id);
 
   it("offers Undo settle beside Un-settle and restores from the server's record", async () => {
     state.granted.add("secondary");
     state.settled = true;
-    state.show.mockResolvedValue("jones:undo-settle" as ThreadActionMenuId);
+    state.show.mockResolvedValue("jones:undo-settle");
     createMenu().openMenu(position);
     await state.completed.promise;
     expect(ids().slice(ids().indexOf("unsettle"), ids().indexOf("unsettle") + 2)).toEqual([
@@ -381,7 +387,7 @@ describe("Jones settlement restore menu item", () => {
     createMenu().openMenu(position);
     await state.shown.promise;
     for (const call of state.show.mock.calls)
-      expect(call[0].some((item) => (item.id as string) === "jones:undo-settle")).toBe(false);
+      expect(call[0].some((item) => item.id === "jones:undo-settle")).toBe(false);
   });
 
   it("offers find only to a header that can open it, without task permission", async () => {
@@ -408,9 +414,16 @@ it("does not offer optional actions when a loaded server lacks their capabilitie
   await state.shown.promise;
   const items = state.show.mock.calls[0]![0];
   for (const id of ["regenerate-title", "pin", "settle", "snooze"]) {
-    const action = items.find((item) => item.id === id);
-    expect(action === undefined || action.disabled === true).toBe(true);
+    expect(items.find((item) => item.id === id)).toBeUndefined();
   }
-  expect(items.find((item) => item.id === "rename")?.disabled).not.toBe(true);
-  expect(items.find((item) => item.id === "mark-unread")?.disabled).not.toBe(true);
+  expect(items.find((item) => item.id === "rename")?.disabled).toBe(false);
+  const markUnread = items.find((item) => item.id === "mark-unread");
+  expect(markUnread).toBeDefined();
+  expect(markUnread?.disabled).not.toBe(true);
+  state.hasCompletedRun = false;
+  expect(
+    createMenu()
+      .readMenu()
+      ?.items.some((item) => item.id === "mark-unread"),
+  ).toBe(false);
 });

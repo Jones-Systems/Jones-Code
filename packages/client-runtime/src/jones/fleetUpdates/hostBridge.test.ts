@@ -1,3 +1,4 @@
+import { unusedAuthorization } from "../connection/unusedAuthorization.ts";
 import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import { expect, it } from "@effect/vitest";
@@ -62,6 +63,7 @@ it.effect("authenticates relay status reads, plan directives, and the separate e
       rejectedAccessToken?: string;
     }> = [];
     const remote = RemoteEnvironmentAuthorization.of({
+      ...unusedAuthorization,
       renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
       rememberCheckedDescriptor: () => Effect.void,
       authorizeBearer: () => Effect.die("Unexpected bearer authorization"),

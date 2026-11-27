@@ -7,8 +7,11 @@ import {
   setConnectionEnabledInCatalog,
   setRoutesInCatalog,
   removeCatalogValue,
-  replaceCatalogValue,
+  connectionCredentialFromCatalog,
+  putConnectionCredentialInCatalog,
+  removeConnectionCredentialFromCatalog,
   Persistence,
+  ThreadTriageOutboxStore,
 } from "@t3tools/client-runtime/platform";
 import { TokenStore } from "@t3tools/client-runtime/authorization";
 import {
@@ -23,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import { mobileThreadTriageOutboxStore } from "../state/thread-triage-outbox-storage";
 import * as CatalogStore from "./catalog-store";
 
 function targetPersistenceError(
@@ -119,29 +123,14 @@ export const layer = Layer.effectContext(
     const credentialStore = CredentialStore.make({
       get: (connectionId) =>
         catalog.read.pipe(
-          Effect.map((document) =>
-            Option.fromUndefinedOr(
-              document.credentials.find((entry) => entry.connectionId === connectionId)?.credential,
-            ),
-          ),
+          Effect.map((document) => connectionCredentialFromCatalog(document, connectionId)),
         ),
       put: (connectionId, credential) =>
-        catalog.update((document) => ({
-          ...document,
-          credentials: replaceCatalogValue(document.credentials, (value) => value.connectionId, {
-            connectionId,
-            credential,
-          }),
-        })),
+        catalog.update((document) =>
+          putConnectionCredentialInCatalog(document, connectionId, credential),
+        ),
       remove: (connectionId) =>
-        catalog.update((document) => ({
-          ...document,
-          credentials: removeCatalogValue(
-            document.credentials,
-            (value) => value.connectionId,
-            connectionId,
-          ),
-        })),
+        catalog.update((document) => removeConnectionCredentialFromCatalog(document, connectionId)),
     });
     const remoteTokenStore = TokenStore.make({
       get: (environmentId) =>
@@ -169,6 +158,7 @@ export const layer = Layer.effectContext(
       Context.add(ProfileStore.ConnectionProfileStore, profileStore),
       Context.add(CredentialStore.ConnectionCredentialStore, credentialStore),
       Context.add(TokenStore.RemoteDpopAccessTokenStore, remoteTokenStore),
+      Context.add(ThreadTriageOutboxStore, mobileThreadTriageOutboxStore),
     );
   }),
 );

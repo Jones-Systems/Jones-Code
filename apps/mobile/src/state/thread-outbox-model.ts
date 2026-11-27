@@ -1,4 +1,6 @@
 import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime/errors";
+import { msg } from "gt-react-native";
+import { m } from "../i18n/messages";
 import {
   clampFileAttachmentUploadBytes,
   fileAttachmentTooLargeMessage,
@@ -12,6 +14,7 @@ import {
   IsoDateTime,
   MessageId,
   ModelSelection,
+  ORCHESTRATION_V2_WS_METHODS,
   OrchestrationMessageContext,
   OrchestrationV2WorktreeBaseFreshness,
   ProjectId,
@@ -38,7 +41,7 @@ import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/compose
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 
-// Keep current writes until a compatible native baseline includes the v4 reader.
+// Keep writing the embedded baseline's format while accepting newer upstream rows.
 const THREAD_OUTBOX_SCHEMA_VERSION = 3;
 const THREAD_OUTBOX_MAX_RETRY_DELAY_MS = 16_000;
 
@@ -52,6 +55,8 @@ const QueuedThreadCreationSchema = Schema.Struct({
   startFromOrigin: Schema.optional(Schema.Boolean),
   baseFreshness: Schema.optional(OrchestrationV2WorktreeBaseFreshness),
   pullRequestReference: Schema.optional(Schema.String),
+  repositories: Schema.optional(Schema.Array(Schema.String)),
+  startsFromRepositoryDefaults: Schema.optional(Schema.Boolean),
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
@@ -61,6 +66,7 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   messageId: MessageId,
   commandId: CommandId,
   text: Schema.String,
+  restoreToDraft: Schema.optional(Schema.Boolean),
   context: Schema.optional(OrchestrationMessageContext),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   modelSelection: Schema.optional(ModelSelection),
@@ -88,6 +94,10 @@ export interface QueuedThreadCreation {
   readonly startFromOrigin?: boolean;
   readonly baseFreshness?: OrchestrationV2WorktreeBaseFreshness;
   readonly pullRequestReference?: string;
+  /** Tracked repositories the new worktree takes, by path; absent leaves the choice to the server. */
+  readonly repositories?: ReadonlyArray<string>;
+  /** The project folder is no Git repository, so a new worktree needs no base branch. */
+  readonly startsFromRepositoryDefaults?: boolean;
 }
 
 export interface QueuedThreadMessage {
@@ -96,6 +106,7 @@ export interface QueuedThreadMessage {
   readonly messageId: MessageId;
   readonly commandId: CommandId;
   readonly text: string;
+  readonly restoreToDraft?: boolean;
   readonly context?: OrchestrationMessageContext;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly modelSelection?: ModelSelectionType;
@@ -163,7 +174,27 @@ export function modelSelectionsEqual(left: ModelSelectionType, right: ModelSelec
   );
 }
 
+export function queuedCreationNeedsNewerOutboxReader(
+  creation: Pick<QueuedThreadCreation, "repositories" | "startsFromRepositoryDefaults"> | undefined,
+): boolean {
+  return (
+    creation?.repositories !== undefined || creation?.startsFromRepositoryDefaults !== undefined
+  );
+}
+
 export function encodeQueuedThreadMessage(message: QueuedThreadMessage): unknown {
+  const prepared = message.issuance?.state === "issued" ? message.issuance.prepared : undefined;
+  const workspaceStrategy =
+    prepared?.method === ORCHESTRATION_V2_WS_METHODS.launchThread
+      ? prepared.payload.workspaceStrategy
+      : undefined;
+  // The embedded v3 reader drops these fields while keeping the same command ID.
+  if (
+    queuedCreationNeedsNewerOutboxReader(message.creation) ||
+    (workspaceStrategy?.type === "worktree" && workspaceStrategy.repositories !== undefined)
+  ) {
+    throw new Error("Worktree repository settings require a compatible mobile outbox reader.");
+  }
   return encodeStoredQueuedThreadMessage({
     schemaVersion: THREAD_OUTBOX_SCHEMA_VERSION,
     ...message,
@@ -262,7 +293,7 @@ export function resolveThreadOutboxDispatchStep(input: {
   }
   const maxBytes = input.serverConfig.maxFileUploadBytes;
   if (maxBytes === undefined) {
-    return { step: "restore", reason: "This server does not support file attachments." };
+    return { step: "restore", reason: m(msg("This server does not support file attachments.")) };
   }
   const effectiveMaxBytes = clampFileAttachmentUploadBytes(maxBytes);
   const oversized = input.fileAttachments.find(
@@ -274,7 +305,7 @@ export function resolveThreadOutboxDispatchStep(input: {
 }
 
 export function isQueuedThreadCreationSendable(message: QueuedThreadMessage): boolean {
-  if (!message.creation) {
+  if (!message.creation || queuedCreationNeedsNewerOutboxReader(message.creation)) {
     return false;
   }
   const hasContent = message.text.trim().length > 0 || message.attachments.length > 0;
@@ -310,6 +341,9 @@ export function shouldRetryThreadOutboxDelivery(error: unknown): boolean {
       case "EnvironmentRpcUnavailableError":
       case "EnvironmentNotRegisteredError":
         return true;
+      // A shared upload's failure decides by what made the upload fail.
+      case "AttachmentUploadError":
+        return "cause" in error && shouldRetryThreadOutboxDelivery(error.cause);
       default:
         break;
     }

@@ -111,17 +111,19 @@ it.live(
           (entry: { type: string; label?: string }) =>
             entry.type === "emit_inbound" && entry.label === "thread/start",
         );
-        const resumeIndex = raw.entries.findLastIndex(
+        const configIndex = raw.entries.findLastIndex(
           (entry: { type: string; label?: string }) =>
             entry.type === "expect_outbound" && entry.label === "config/read",
         );
-        const resumeId = raw.entries[resumeIndex].frame.id;
-        // The saved selection resumes the thread before reading the second turn's config.
-        for (const entry of raw.entries.slice(resumeIndex)) {
-          if (typeof entry.frame?.id === "number") entry.frame.id += 1;
+        const configRead = raw.entries[configIndex];
+        const configReply = raw.entries[configIndex + 1];
+        const resumeId = configRead.frame.id + 1;
+        // The adapter reads workspace config for both the native resume and the next turn.
+        for (const entry of raw.entries.slice(configIndex + 2)) {
+          if (typeof entry.frame?.id === "number") entry.frame.id += 2;
         }
         raw.entries.splice(
-          resumeIndex,
+          configIndex + 2,
           0,
           {
             type: "expect_outbound",
@@ -148,6 +150,8 @@ it.live(
             label: "thread/resume",
             frame: { id: resumeId, result: threadStart.frame.result },
           },
+          { ...configRead, frame: { ...configRead.frame, id: resumeId + 1 } },
+          { ...configReply, frame: { ...configReply.frame, id: resumeId + 1 } },
         );
         const transcript = yield* Codex.CodexOrchestratorReplayHarness.decodeTranscript(
           materializeReplayTranscriptWorkspace(raw, cwd),
@@ -214,12 +218,10 @@ it.live(
           slashCommands: [],
           skills: [],
         };
-        const service = Service.layer.pipe(
-          Layer.provide(runtime),
-          Layer.provide(
-            Layer.mock(Catalog.ProviderRegistry)({ getProviders: Effect.succeed([catalog]) }),
-          ),
-        );
+        const providers = Layer.mock(Catalog.ProviderRegistry)({
+          getProviders: Effect.succeed([catalog]),
+        });
+        const service = Service.layer.pipe(Layer.provide(runtime), Layer.provide(providers));
         const tools = Layer.mergeAll(
           Mcp.layerThreadToolkit,
           Mcp.layerThreadSelfConfigurationToolkit,
@@ -229,6 +231,7 @@ it.live(
           Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
           Layer.provide(NodeCrypto.layer),
           Layer.provide(runtime),
+          Layer.provide(providers),
           Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
           Layer.provide(Layer.mock(Scheduled.ScheduledTaskService)({})),
           Layer.provide(Layer.mock(Peer.PeerForwarding)({})),
@@ -262,7 +265,7 @@ it.live(
             commandId: CommandId.make("codex:create"),
             threadId,
             projectId: ProjectId.make("test"),
-            title: "Codex",
+            title: "Replay fixture: queued_turn",
             modelSelection: initial,
             runtimeMode: "full-access",
             interactionMode: "default",

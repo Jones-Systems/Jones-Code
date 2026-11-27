@@ -1,5 +1,7 @@
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
+import * as PeerThreadRelay from "../peer/PeerThreadRelay.ts";
+import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as QueueCompatibility from "./QueueCompatibility.ts";
 import * as ScratchThreadPromotion from "../project/ScratchThreadPromotion.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
@@ -16,6 +18,7 @@ import * as WsAgentSessionScanner from "../project/AgentSessionScanner.ts";
 import * as WsDirectEndpoints from "../environment/DirectEndpoints.ts";
 import * as WsPeerLinks from "../peer/PeerLinks.ts";
 import * as WsMcpAppRequests from "../mcpApps/McpAppRequests.ts";
+import * as McpSignIn from "../mcpApps/McpSignIn.ts";
 import * as WsSecretRequests from "../secrets/SecretRequests.ts";
 import * as WsServerBrowser from "../preview/ServerBrowser.ts";
 import * as OrchestrationHttpApi from "./http.ts";
@@ -99,6 +102,17 @@ import * as WsAnalyticsService from "../telemetry/AnalyticsService.ts";
 import * as WsThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as WsScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as WsPullRequestService from "../pullRequest/PullRequestService.ts";
+import * as IssueService from "../issue/IssueService.ts";
+import * as IssueTrackerConnections from "../issue/IssueTrackerConnections.ts";
+import * as ThreadIssueService from "./ThreadIssueService.ts";
+import * as PeerClientPairing from "../peer/PeerClientPairing.ts";
+import * as FeedbackStore from "../feedback/FeedbackStore.ts";
+import * as WorkflowRuntime from "../workflows/WorkflowRuntime.ts";
+import * as Workflows from "../workflows/Workflows.ts";
+import * as TaskFolders from "../workspace/TaskFolders.ts";
+import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
+// oxlint-disable-next-line t3code/no-layout-command-approval-writes -- The WebSocket harness supplies a fail-on-use mock for the client RPC writer.
+import * as LayoutCommandApprovalWrites from "../workspace/LayoutCommandApprovalWrites.ts";
 import * as WsPullRequestSyncReactor from "../orchestration-v2/PullRequestSyncReactor.ts";
 import * as WsDeviceService from "../device/DeviceService.ts";
 import * as WsOrchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -146,6 +160,7 @@ import * as WsServerRuntimeStartup from "../serverRuntimeStartup.ts";
 import * as WsWorkspaceEntries from "../workspace/WorkspaceEntries.ts";
 import * as WsWorkspaceFileSystem from "../workspace/WorkspaceFileSystem.ts";
 import * as WsServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as WorkspacePreviewRevisions from "../assets/WorkspacePreviewRevisions.ts";
 import * as PersonalWorkstreams from "../jones/workstreams/personal/service.ts";
 import * as WsBackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as WsEnvironmentAuth from "../auth/EnvironmentAuth.ts";
@@ -194,6 +209,7 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Threads from "./ThreadManagementService.ts";
+import * as ThreadViewers from "./ThreadViewers.ts";
 import { OrchestratorProjectionError, OrchestratorDispatchError } from "./Orchestrator.ts";
 import {
   LegacyReleaseDecision,
@@ -604,6 +620,24 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
   }
 });
 
+const unrelatedWsOwners = Layer.mergeAll(
+  WorkspacePreviewRevisions.layer,
+  Layer.mock(IssueService.IssueService)({}),
+  Layer.mock(IssueTrackerConnections.IssueTrackerConnections)({}),
+  Layer.mock(ThreadIssueService.ThreadIssueService)({}),
+  Layer.mock(PeerClientPairing.PeerClientPairing)({}),
+  Layer.mock(PeerThreadRelay.PeerThreadRelay)({}),
+  Layer.mock(McpSignIn.McpSignIn)({}),
+  FeatureFlags.layerTest(),
+  ThreadViewers.layer,
+  Layer.mock(FeedbackStore.FeedbackStore)({}),
+  Layer.mock(WorkflowRuntime.WorkflowDefinitions)({}),
+  Workflows.layerDisabled,
+  Layer.mock(TaskFolders.TaskFolders)({}),
+  Layer.mock(WorkspaceFolders.WorkspaceFolders)({}),
+  Layer.mock(LayoutCommandApprovalWrites.LayoutCommandApprovalWrites)({}),
+);
+
 it("rejects unauthenticated and query-token WebSocket ingress at the actual production auth boundary with zero RPC work", async () => {
   let rpcWork = 0;
   const denyRpcWork = () =>
@@ -621,6 +655,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
   );
   // Unrelated owners are deliberately unavailable; rejection must precede any RPC layer construction.
   const deniedRpcOwners = Layer.mergeAll(
+    unrelatedWsOwners,
     Layer.mock(DocumentText.DocumentText)({ ensure: denyRpcWork }),
     Layer.mock(ShellMaterialization.ShellMaterialization)({}),
     Layer.mock(WsGuestShareService.GuestShareService)({}),
@@ -1315,6 +1350,10 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                 projectOwner,
                 runner,
                 WsWorktreeSetupTracker.layer,
+                Layer.mock(TaskFolders.TaskFolders)({
+                  plan: () => Effect.succeed(null),
+                  find: () => Effect.succeed(null),
+                }),
                 Layer.mock(WsProjectCloneTracker.ProjectCloneTracker)({
                   get: () => Effect.succeed(null),
                 }),
@@ -1527,6 +1566,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
         >[0][] = [];
         const order: string[] = [];
         const rpcOwners = Layer.mergeAll(
+          unrelatedWsOwners,
           Layer.mock(DocumentText.DocumentText)({
             ensure: (path) => Effect.succeed(new Map<string, string>().get(path)),
           }),
@@ -1572,7 +1612,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
           Layer.mock(WsThreadSearch.ThreadSearch)({}),
           Layer.mock(WsProviderSessionManager.ProviderSessionManagerV2)({}),
           Layer.mock(WsAnalyticsService.AnalyticsService)({
-            record: () => Effect.void,
+            record: () => Effect.succeed(false),
             recordOwners: () => Effect.void,
           }),
           Layer.mock(WsThreadLaunchService.ThreadLaunchService)({

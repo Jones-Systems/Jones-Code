@@ -12,6 +12,7 @@ import * as NetAddress from "effect/net/NetAddress";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
+import { routineSpan } from "@t3tools/shared/observability";
 
 export interface McpCredentialRequest {
   readonly threadId: ThreadId;
@@ -143,6 +144,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           "orchestration",
           "worktree",
           "pull-requests",
+          "issues",
           ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
         ]),
         issuedAt: issuedAlive.wallMs,
@@ -167,25 +169,25 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     },
   );
 
-  const resolve: McpSessionRegistryShape["resolve"] = Effect.fn("McpSessionRegistry.resolve")(
-    function* (rawToken) {
-      if (rawToken.length === 0) return undefined;
-      const tokenHash = yield* hashToken(rawToken);
-      const alive = yield* currentAliveMark;
-      return yield* SynchronizedRef.modify(state, ({ records }) => {
-        const record = records.get(tokenHash);
-        if (!record || record.expired) return [undefined, { records }] as const;
-        if (idleMs(record.lastAlive, alive) > livenessWindowMs) {
-          const next = new Map(records);
-          next.set(tokenHash, { ...record, expired: true });
-          return [undefined, { records: next }] as const;
-        }
+  const resolve: McpSessionRegistryShape["resolve"] = Effect.fn("McpSessionRegistry.resolve", {
+    attributes: routineSpan,
+  })(function* (rawToken) {
+    if (rawToken.length === 0) return undefined;
+    const tokenHash = yield* hashToken(rawToken);
+    const alive = yield* currentAliveMark;
+    return yield* SynchronizedRef.modify(state, ({ records }) => {
+      const record = records.get(tokenHash);
+      if (!record || record.expired) return [undefined, { records }] as const;
+      if (idleMs(record.lastAlive, alive) > livenessWindowMs) {
         const next = new Map(records);
-        next.set(tokenHash, { ...record, lastAlive: alive });
-        return [record.scope, { records: next }] as const;
-      });
-    },
-  );
+        next.set(tokenHash, { ...record, expired: true });
+        return [undefined, { records: next }] as const;
+      }
+      const next = new Map(records);
+      next.set(tokenHash, { ...record, lastAlive: alive });
+      return [record.scope, { records: next }] as const;
+    });
+  });
 
   const lookupByCredentialId = Effect.fn("McpSessionRegistry.lookupByCredentialId")(function* (
     id: string,

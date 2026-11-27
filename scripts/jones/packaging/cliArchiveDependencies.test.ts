@@ -99,7 +99,7 @@ describe("CLI archive patched dependencies", () => {
       zod: "4.6.7",
     });
     expect(result.patchedDependencies).toEqual({
-      "@cursor/sdk@1.3.1": workspace.patchedDependencies["@cursor/sdk@1.3.1"],
+      "@cursor/sdk@1.5.0": "patches/@cursor__sdk@1.5.0.patch",
       "node-pty@1.2.0-beta.15": workspace.patchedDependencies["node-pty@1.2.0-beta.15"],
       "@ff-labs/fff-node@0.11.0": workspace.patchedDependencies["@ff-labs/fff-node@0.11.0"],
     });

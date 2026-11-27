@@ -566,14 +566,22 @@ export async function runScenario(client, scenario, report) {
   }
 }
 
-export function scenarioFromPrompt(prompt) {
+export async function writeVerifierScenario(reportFile, scenario) {
+  const file = `${reportFile}.scenario`;
+  await atomicJson(file, scenario);
+  return `JONES_PREVIEW_SCENARIO:${milestoneDigest(await NodeFSP.readFile(file))}`;
+}
+
+export async function scenarioFromPrompt(prompt, reportFile) {
   const text = prompt
     .filter((part) => part.type === "text")
     .map((part) => part.text)
     .join("\n");
-  const match = text.match(/(?:^|\n)JONES_PREVIEW_SCENARIO:([A-Za-z0-9+/=]+)(?:\n|$)/);
+  const match = text.match(/(?:^|\n)JONES_PREVIEW_SCENARIO:([a-f0-9]{64})(?:\n|$)/);
   NodeAssert.ok(match, "Owned scenario marker is absent from the normal ACP prompt");
-  return JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
+  const bytes = await NodeFSP.readFile(`${reportFile}.scenario`);
+  NodeAssert.equal(milestoneDigest(bytes), match[1], "Owned scenario differs from the ACP prompt");
+  return JSON.parse(bytes);
 }
 
 export async function processIdentity(pid) {
@@ -645,7 +653,7 @@ export async function runAgent() {
   const runPrompt = async (message) => {
     const session = sessions.get(message.params.sessionId);
     NodeAssert.ok(session, "Unknown ACP session");
-    const scenario = scenarioFromPrompt(message.params.prompt);
+    const scenario = await scenarioFromPrompt(message.params.prompt, reportFile);
     const report = {
       schema: "jones-install-preview/v1",
       providerPid: process.pid,

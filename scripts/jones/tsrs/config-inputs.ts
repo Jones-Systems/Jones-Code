@@ -9,9 +9,9 @@ import {
   object,
 } from "./seed-files.ts";
 type JsonObject = Record<string, unknown>;
-const EXPO_MANIFEST_HASH = "6d461bcd4e874be6b30583b13480fb28e74d9fa2732acba593640415693643f6";
+const EXPO_MANIFEST_HASH = "d31ae95bbfa77080c46056d92209b2f613855ffc81f1de6f0df8e63bcb279e09";
 const EXPO_STORE_PATH =
-  "node_modules/.pnpm/expo@58.0.23_cd565829a691ee5c1abc1f4926fc0c3d/node_modules/expo";
+  "node_modules/.pnpm/expo@58.0.26_94fb6ad0cce1f16546d77ab5b82b0a4d/node_modules/expo";
 export interface ConfigurationProject {
   directory: string;
   configFile?: string;

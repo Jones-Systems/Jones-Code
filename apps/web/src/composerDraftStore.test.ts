@@ -1215,6 +1215,11 @@ describe("composerDraftStore project draft thread mapping", () => {
       envMode: "worktree",
       startFromOrigin: true,
     });
+    store.setDraftThreadContext(draftId, { worktreeRepositories: ["/local/api"] });
+    store.setNewThreadWorkstream(draftId, "workstream-alpha");
+
+    store.setLogicalProjectDraftThreadId("new-logical-key", projectRef, draftId);
+    expect(store.getDraftSession(draftId)?.worktreeRepositories).toEqual(["/local/api"]);
 
     store.setLogicalProjectDraftThreadId(scopedProjectKey(projectRef), remoteProjectRef, draftId, {
       threadId,
@@ -1227,6 +1232,22 @@ describe("composerDraftStore project draft thread mapping", () => {
       worktreePath: null,
       envMode: "worktree",
       startFromOrigin: true,
+      newThreadWorkstreamId: "workstream-alpha",
+    });
+    expect(store.getDraftSession(draftId)?.worktreeRepositories).toBeUndefined();
+  });
+
+  it("keeps a picked workspace marked as picked when a draft moves environment", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId, envMode: "local" });
+    store.setDraftThreadContext(draftId, { envMode: "local", workspaceExplicit: true });
+
+    store.setDraftThreadContext(draftId, { projectRef: remoteProjectRef });
+
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)).toMatchObject({
+      environmentId: OTHER_TEST_ENVIRONMENT_ID,
+      envMode: "local",
+      workspaceExplicit: true,
     });
   });
 
@@ -2965,9 +2986,22 @@ describe("composerDraftStore checkout pull request", () => {
     store().setDraftThreadContext(draftId, { checkoutPullRequest: null });
     expect(store().getDraftSession(draftId)?.checkoutPullRequest).toBeUndefined();
 
-    store().setDraftThreadContext(draftId, { checkoutPullRequest: checkout });
+    store().setDraftThreadContext(draftId, {
+      checkoutPullRequest: checkout,
+      worktreeRepositories: ["/work/api"],
+    });
+    // An unrelated change keeps the repository choice; an empty choice is still a choice.
+    store().setDraftThreadContext(draftId, { envMode: "worktree" });
+    expect(store().getDraftSession(draftId)?.worktreeRepositories).toEqual(["/work/api"]);
+    store().setDraftThreadContext(draftId, { worktreeRepositories: [] });
+    expect(store().getDraftSession(draftId)?.worktreeRepositories).toEqual([]);
+    store().setDraftThreadContext(draftId, { worktreeRepositories: ["/work/api"] });
+    store().setNewThreadWorkstream(draftId, "workstream-checkout");
+
     store().setDraftThreadContext(draftId, { projectRef: otherProjectRef });
     expect(store().getDraftSession(draftId)?.checkoutPullRequest).toBeUndefined();
+    expect(store().getDraftSession(draftId)?.worktreeRepositories).toBeUndefined();
+    expect(store().getDraftSession(draftId)?.newThreadWorkstreamId).toBe("workstream-checkout");
   });
 
   it("persists the pull request and still restores drafts saved without one", async () => {
@@ -2996,7 +3030,13 @@ describe("composerDraftStore checkout pull request", () => {
         state: {
           draftsByThreadKey: {},
           draftThreadsByThreadKey: {
-            [draftId]: { ...persistedDraftThread(threadId), checkoutPullRequest: checkout },
+            [draftId]: {
+              ...persistedDraftThread(threadId),
+              checkoutPullRequest: checkout,
+              worktreeRepositories: ["/work/api"],
+              newThreadWorkstreamId: "workstream-checkout",
+              workspaceExplicit: true,
+            },
             [legacyDraftId]: persistedDraftThread(ThreadId.make("thread-legacy")),
           },
           logicalProjectDraftThreadKeyByLogicalProjectKey: {
@@ -3009,12 +3049,18 @@ describe("composerDraftStore checkout pull request", () => {
       await useComposerDraftStore.persist.rehydrate();
 
       expect(toLink()).toBe(url);
+      expect(store().getDraftSession(draftId)).toMatchObject({
+        worktreeRepositories: ["/work/api"],
+        newThreadWorkstreamId: "workstream-checkout",
+        workspaceExplicit: true,
+      });
       const legacy = store().getDraftSession(legacyDraftId);
       expect(legacy).toMatchObject({ branch: checkout.branch });
       expect(checkoutPullRequestUrlToLink(legacy)).toBeNull();
       expect(
         partializeComposerDraftStoreState(store()).draftThreadsByThreadKey[draftId],
-      ).toMatchObject({ checkoutPullRequest: checkout });
+      ).toMatchObject({ checkoutPullRequest: checkout, worktreeRepositories: ["/work/api"] });
+      expect(legacy).not.toHaveProperty("worktreeRepositories");
     } finally {
       await useComposerDraftStore.persist.clearStorage();
       vi.useRealTimers();

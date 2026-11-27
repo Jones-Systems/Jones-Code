@@ -5,12 +5,17 @@ import { assert, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import {
@@ -391,7 +396,7 @@ it.effect("links left in upstream's table by an unreleased build are never read"
         (yield* links.resolve(residueId).pipe(Effect.flip)).reason,
         "unknown_link",
       );
-      assert.isFalse(yield* links.unlink(residueId));
+      assert.deepStrictEqual(yield* links.unlink(residueId), { removed: false, endedThere: false });
       assert.deepStrictEqual(
         yield* upstreamLinks.pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         upstreamBefore,
@@ -400,10 +405,11 @@ it.effect("links left in upstream's table by an unreleased build are never read"
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("every link lifecycle write lands in the Jones table and none in upstream's", () =>
+it.effect("relabel, renew, replace and revoke a Jones link alongside an upstream copy", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const peer = yield* servePeer(descriptorOf("environment-box", "Box"), Layer.empty);
+      const box = descriptorOf("environment-box", "Box", { linkThreadStream: true });
+      const peer = yield* servePeer(box, Layer.empty);
       const context = yield* Layer.build(
         layerLinkingEnvironment(descriptorOf("environment-laptop", "Laptop")),
       );
@@ -412,14 +418,18 @@ it.effect("every link lifecycle write lands in the Jones table and none in upstr
       const rows = sql<{
         readonly environment_id: string;
         readonly secret_name: string;
+        readonly label: string;
+        readonly expires_at: string;
         readonly last_error: string | null;
         readonly last_reached_at: string | null;
         readonly fenced: number;
-      }>`SELECT environment_id, secret_name, last_error, last_reached_at, fenced FROM ${sql(
+      }>`SELECT environment_id, secret_name, label, expires_at, last_error, last_reached_at, fenced FROM ${sql(
         peerEnvironmentLinksTable,
       )}`;
-      // The fixture database runs every migration, so upstream's table exists and must stay empty.
       const upstreamRows = upstreamLinks.pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      const upstreamCopy = linkRow(box.environmentId, { label: "Upstream copy" });
+      yield* sql`INSERT INTO ${sql(upstreamTable)} ${sql.insert(upstreamCopy)}`;
+      const upstreamBefore = yield* upstreamRows;
       assert.deepStrictEqual(yield* rows, []);
 
       const linked = yield* linkTo(links, peer);
@@ -428,12 +438,29 @@ it.effect("every link lifecycle write lands in the Jones table and none in upstr
       assert.strictEqual(stored[0]?.environment_id, linked.environmentId);
       assert.strictEqual(stored[0]?.fenced, 1);
       assert.match(stored[0]!.secret_name, /^peer-link-[a-f0-9]+$/);
-      assert.deepStrictEqual(yield* upstreamRows, []);
 
       const resolved = yield* links.resolve(linked.environmentId);
       assert.strictEqual(resolved.link.environmentId, linked.environmentId);
-      assert.strictEqual((yield* peer.linkedSessions).length, 1);
-      assert.deepStrictEqual(yield* upstreamRows, []);
+      assert.strictEqual(resolved.generation, stored[0]?.secret_name);
+      assert.isTrue(resolved.capabilities.linkThreadStream);
+      const originalSessions = yield* peer.linkedSessions;
+      assert.lengthOf(originalSessions, 1);
+
+      const laterExpiry = DateTime.add(linked.expiresAt, { days: 20 });
+      yield* links.recordExpiry(linked.environmentId, resolved.generation, laterExpiry);
+      yield* links.recordExpiry(
+        linked.environmentId,
+        resolved.generation,
+        DateTime.add(linked.expiresAt, { days: 10 }),
+      );
+      assert.strictEqual((yield* rows)[0]?.expires_at, DateTime.formatIso(laterExpiry));
+
+      yield* Ref.set(peer.descriptor, { ...box, label: "Box Mini" });
+      assert.deepStrictEqual(
+        (yield* links.list).map(({ label }) => label),
+        ["Box Mini"],
+      );
+      assert.strictEqual((yield* rows)[0]?.label, "Box Mini");
 
       yield* links.recordOutcome(linked.environmentId, resolved.generation, { error: null });
       assert.isNull((yield* rows)[0]?.last_error);
@@ -442,24 +469,70 @@ it.effect("every link lifecycle write lands in the Jones table and none in upstr
         error: "synthetic outage",
       });
       assert.strictEqual((yield* rows)[0]?.last_error, "synthetic outage");
-      assert.deepStrictEqual(yield* upstreamRows, []);
 
-      const relinked = yield* linkTo(links, peer);
+      const pairing = yield* peer.auth.issuePairingCredential();
+      const relinkInput = {
+        url: peer.url,
+        pairingCode: pairing.credential,
+        access: "auto",
+      } as const;
+      assert.isTrue((yield* links.linkUnlessLinked(relinkInput)).alreadyLinked);
+      assert.deepStrictEqual(yield* upstreamRows, upstreamBefore);
+
+      // Pause the old generation's relabel after its descriptor was read.
+      const relabelEntered = yield* Deferred.make<void>();
+      const finishRelabel = yield* Deferred.make<void>();
+      const holdRelabel: Statement.Transformer = (statement) =>
+        statement.compile()[0].includes("SET label")
+          ? Deferred.succeed(relabelEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(finishRelabel)),
+              Effect.as(statement),
+            )
+          : Effect.succeed(statement);
+      yield* Ref.set(peer.descriptor, { ...box, label: "Old descriptor" });
+      const staleResolve = yield* links
+        .resolve(linked.environmentId)
+        .pipe(
+          Effect.flip,
+          Effect.provideService(Statement.CurrentTransformer, holdRelabel),
+          Effect.forkScoped,
+        );
+      yield* Deferred.await(relabelEntered);
+      yield* Ref.set(peer.descriptor, { ...box, label: "Replacement Box" });
+      // The linkUnlessLinked call left this pairing credential available.
+      const relinked = yield* links.link(relinkInput);
+      yield* Deferred.succeed(finishRelabel, undefined);
+      assert.strictEqual((yield* Fiber.join(staleResolve)).reason, "unknown_link");
       assert.strictEqual(relinked.environmentId, linked.environmentId);
       const restored = yield* rows;
       assert.strictEqual(restored.length, 1);
       assert.notStrictEqual(restored[0]?.secret_name, stored[0]?.secret_name);
-      assert.deepStrictEqual(yield* upstreamRows, []);
+      assert.strictEqual(restored[0]?.label, "Replacement Box");
+      yield* links.recordExpiry(linked.environmentId, resolved.generation, laterExpiry);
+      yield* links.recordOutcome(linked.environmentId, resolved.generation, { error: "stale" });
+      assert.deepStrictEqual(yield* rows, restored);
+      assert.deepStrictEqual(yield* upstreamRows, upstreamBefore);
 
-      assert.isTrue(yield* links.unlink(linked.environmentId));
+      assert.lengthOf(yield* peer.linkedSessions, 2);
+      assert.deepStrictEqual(yield* links.unlink(linked.environmentId), {
+        removed: true,
+        endedThere: true,
+      });
+      assert.deepStrictEqual(
+        (yield* peer.linkedSessions).map(({ sessionId }) => sessionId),
+        originalSessions.map(({ sessionId }) => sessionId),
+      );
       assert.deepStrictEqual(yield* rows, []);
       assert.isTrue(Option.isNone(yield* links.get(linked.environmentId)));
       assert.strictEqual(
         (yield* links.resolve(linked.environmentId).pipe(Effect.flip)).reason,
         "unknown_link",
       );
-      assert.isFalse(yield* links.unlink(linked.environmentId));
-      assert.deepStrictEqual(yield* upstreamRows, []);
+      assert.deepStrictEqual(yield* links.unlink(linked.environmentId), {
+        removed: false,
+        endedThere: false,
+      });
+      assert.deepStrictEqual(yield* upstreamRows, upstreamBefore);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

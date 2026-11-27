@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import type { DiagramType, MathResolver } from "pele/lazy";
+import { T, useGT, Var } from "gt-react";
 import { use, useState } from "react";
 
 import { serializeCodeBlockToMarkdown } from "../../markdown-clipboard";
@@ -226,6 +227,7 @@ export function MermaidDiagram({
   source: string;
   onExpand: (imageUrl: string) => void;
 }) {
+  const gt = useGT();
   const [, setAttempt] = useState(0);
   const [renderError, setRenderError] = useState<string | null>(null);
   const trimmedSource = source.trim();
@@ -233,6 +235,7 @@ export function MermaidDiagram({
   const type = core.status === "loaded" ? detectDiagramType(core.pele, trimmedSource) : null;
   const load = core.status === "loaded" && type ? use(loadDiagramType(core.pele, type)) : core;
   const math = trimmedSource.includes("$$") ? use(loadMath()) : null;
+  const fallbackRenderError = gt("The diagram could not be rendered.");
 
   // Re-created, and so remounted, whenever the renderer, math support or source changes.
   const mountDiagram = (container: HTMLSpanElement) => {
@@ -241,14 +244,12 @@ export function MermaidDiagram({
       links: false,
       images: false,
       zoom: false,
-      // Keep the author's direction; a wide diagram scales down to fit instead of turning vertical.
+      // A wide diagram scales down to fit while keeping the author's direction.
       autoDirection: false,
       ...(math ? { math, sanitize: sanitizeMathDiagramSvg } : { sanitize: sanitizeDiagramSvg }),
       onRender: () => setRenderError(null),
       onError: (error) =>
-        setRenderError(
-          error instanceof Error ? error.message : "The diagram could not be rendered.",
-        ),
+        setRenderError(error instanceof Error ? error.message : fallbackRenderError),
     });
     return () => mounted.destroy();
   };
@@ -256,7 +257,7 @@ export function MermaidDiagram({
   if (load.status === "failed") {
     return (
       <DiagramError
-        message="The diagram renderer failed to load."
+        message={gt("The diagram renderer failed to load.")}
         source={source}
         onRetry={() => {
           if (core.status === "failed") coreLoad = null;
@@ -276,7 +277,7 @@ export function MermaidDiagram({
       {renderError ? <DiagramError message={renderError} source={source} /> : null}
       <button
         type="button"
-        aria-label="Expand diagram"
+        aria-label={gt("Expand diagram")}
         hidden={renderError !== null}
         className="block w-full cursor-zoom-in rounded-md focus-visible:outline-2 focus-visible:outline-ring"
         onClick={(event) => {
@@ -302,10 +303,14 @@ function DiagramError({
   return (
     <div>
       <div className="flex items-center justify-between gap-2">
-        <p className="m-0 text-xs text-destructive">Unable to render diagram: {message}</p>
+        <p className="m-0 text-xs text-destructive">
+          <T>
+            Unable to render diagram: <Var>{message}</Var>
+          </T>
+        </p>
         {onRetry ? (
           <Button type="button" variant="ghost" size="xs" onClick={onRetry}>
-            Retry
+            <T>Retry</T>
           </Button>
         ) : null}
       </div>

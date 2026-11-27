@@ -3,7 +3,7 @@ import { CommandId, EnvironmentId, MessageId, ThreadId } from "@t3tools/contract
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 
 const state = vi.hoisted(() => ({
-  dispatching: null as string | null,
+  dispatching: {} as Record<string, true>,
   revision: 1,
   loaded: vi.fn(async () => {}),
   mergePersist: vi.fn(async () => {}),
@@ -19,7 +19,7 @@ vi.mock("./atom-registry", () => ({
   },
 }));
 vi.mock("./use-thread-outbox", () => ({
-  dispatchingQueuedMessageIdAtom: "dispatching",
+  dispatchingQueuedMessageIdsAtom: "dispatching",
   editingQueuedMessageIdsAtom: "editing",
   holdEditingQueuedMessage: (id: string) => {
     state.held[id] = true;
@@ -83,7 +83,7 @@ const message: QueuedThreadMessage = {
 };
 beforeEach(() => {
   vi.clearAllMocks();
-  state.dispatching = null;
+  state.dispatching = {};
   state.revision = 1;
   state.held = {};
   state.loaded.mockResolvedValue(undefined);
@@ -109,7 +109,7 @@ describe("editing a pending message", () => {
     expect(state.held).toEqual({});
   });
   it("does not reclaim a message already being dispatched", async () => {
-    state.dispatching = message.messageId;
+    state.dispatching = { [message.messageId]: true };
     expect(await editPendingThreadMessage(message)).toBe(false);
     expect(state.confirm).not.toHaveBeenCalled();
     expect(state.draft.text).toBe("Existing draft");
@@ -178,7 +178,7 @@ describe("editing a pending message", () => {
   });
   it("rechecks delivery ownership after the durable draft flush", async () => {
     state.flush.mockImplementationOnce(async () => {
-      state.dispatching = message.messageId;
+      state.dispatching = { [message.messageId]: true };
     });
     expect(await editPendingThreadMessage(message)).toBe(false);
     expect(state.confirm).toHaveBeenCalledTimes(1);

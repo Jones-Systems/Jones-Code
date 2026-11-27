@@ -34,6 +34,7 @@ import * as Settings from "../../serverSettings.ts";
 import * as Storage from "../../storageCleanup.ts";
 import * as Terminals from "../../terminal/Manager.ts";
 import * as Git from "../../vcs/GitVcsDriver.ts";
+import * as TaskFolders from "../../workspace/TaskFolders.ts";
 import * as Removal from "../cleanup/DeletionWorktreeRemoval.ts";
 import { fixture, projectId, threadId } from "./ManagedConsumer.testkit.ts";
 
@@ -572,6 +573,13 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
                 Layer.provide(f.configured),
                 Layer.provide(Layer.succeed(Git.GitVcsDriver, f.git)),
                 Layer.provide(Settings.layerTest(cleanupSettings)),
+                Layer.provide(
+                  Layer.mock(TaskFolders.TaskFolders)({
+                    find: () => Effect.succeed(null),
+                    registeredPathReason: (target) =>
+                      Effect.succeed(target === f.repo ? "registered project" : null),
+                  }),
+                ),
                 Layer.provide(
                   Layer.mock(GitManager.GitManager)({ invalidateStatus: () => Effect.void }),
                 ),

@@ -185,6 +185,7 @@ const environments: ReturnType<
     profile: Option.none(),
   },
   connection: { phase: "connected", error: null, traceId: null },
+  refusedRouteIds: [],
   serverConfig: {
     ...decodeServerConfig({
       environment: {
@@ -272,23 +273,25 @@ function setup() {
         : [],
     truncated: false,
   }));
-  state.update.mockReset().mockImplementation(async ({ environmentId, input }) => {
-    state.projects = state.projects.map((project) =>
-      project.environmentId === environmentId && project.id === input.projectId
-        ? {
-            ...project,
-            ...(input.faviconPath !== undefined ? { faviconPath: input.faviconPath } : {}),
-            ...(input.projectIcon !== undefined ? { projectIcon: input.projectIcon } : {}),
-          }
-        : project,
-    );
-    appAtomRegistry.set(fixtureProjectsAtom, state.projects);
-    const updated = state.projects.find(
-      (project) => project.environmentId === environmentId && project.id === input.projectId,
-    );
-    if (!updated) throw new Error("Synthetic update target was not found");
-    return AsyncResult.success({ ...updated, deletedAt: null });
-  });
+  state.update.mockReset().mockImplementation(({ environmentId, input }) =>
+    Effect.sync(() => {
+      state.projects = state.projects.map((project) =>
+        project.environmentId === environmentId && project.id === input.projectId
+          ? {
+              ...project,
+              ...(input.faviconPath !== undefined ? { faviconPath: input.faviconPath } : {}),
+              ...(input.projectIcon !== undefined ? { projectIcon: input.projectIcon } : {}),
+            }
+          : project,
+      );
+      appAtomRegistry.set(fixtureProjectsAtom, state.projects);
+      const updated = state.projects.find(
+        (project) => project.environmentId === environmentId && project.id === input.projectId,
+      );
+      if (!updated) throw new Error("Synthetic update target was not found");
+      return { ...updated, deletedAt: null };
+    }),
+  );
   searchAtoms.clear();
   searchSources.clear();
   for (const id of [primaryId, remoteId]) {

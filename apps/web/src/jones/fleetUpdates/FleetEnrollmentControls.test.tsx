@@ -14,6 +14,11 @@ const h = vi.hoisted(() => ({
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: (atom: string) => (atom === "fleet-state" ? h.state : null),
 }));
+vi.mock("gt-react", () => ({
+  T: ({ children }: { children: ReactNode }) => <>{children}</>,
+  Var: ({ children }: { children: ReactNode }) => <>{children}</>,
+  useGT: () => (text: string) => text,
+}));
 vi.mock("./runtime", () => ({
   fleetDesktopState: "fleet-state",
   fleetStatusError: "fleet-error",

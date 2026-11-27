@@ -107,7 +107,7 @@ export function createProviderUpdateController(deps: {
     };
     const finish = (runs: ReadonlyArray<ProviderUpdateRun>, timedOut = false) => {
       if (!isCurrent()) return;
-      const outcomes = runs.map(getProviderUpdateRunOutcome);
+      const outcomes = runs.map((run) => getProviderUpdateRunOutcome(run));
       const errors = outcomes.flatMap((outcome) =>
         outcome.status === "failed" || outcome.status === "unchanged" ? [outcome.line] : [],
       );

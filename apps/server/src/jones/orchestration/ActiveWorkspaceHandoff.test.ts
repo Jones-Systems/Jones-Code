@@ -10,6 +10,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Failure from "@t3tools/provider-core/server/failure";
 import * as Worker from "../../orchestration-v2/EffectWorker.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { layerNoTaskFolders } from "../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import {
   CommandId,
   EnvironmentId,
@@ -581,6 +582,7 @@ it.live.each([
         Effect.provide(
           Layer.mergeAll(
             Layer.succeed(ThreadManagement.ThreadManagementService, threads),
+            layerNoTaskFolders,
             Layer.succeed(ServerSettings.ServerSettingsService, settings),
             Layer.mock(Projects.ProjectService)({
               getById: () =>

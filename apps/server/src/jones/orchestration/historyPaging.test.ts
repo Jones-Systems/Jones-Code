@@ -463,11 +463,17 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
         SET status = 'cancelled', payload_json = json_set(payload_json, '$.status', 'cancelled')
         WHERE run_id = ${runId(245)}`;
         yield* sql`UPDATE orchestration_v2_projection_runs
+        SET status = 'cancelled', payload_json = json_set(payload_json, '$.status', 'cancelled', '$.startedAt', NULL)
+        WHERE run_id = ${runId(246)}`;
+        yield* sql`UPDATE orchestration_v2_projection_runs
+        SET status = 'queued', payload_json = json_set(payload_json, '$.status', 'queued', '$.startedAt', NULL)
+        WHERE run_id = ${runId(247)}`;
+        yield* sql`UPDATE orchestration_v2_projection_runs
         SET status = 'failed', payload_json = json_set(payload_json, '$.status', 'failed')
         WHERE run_id = ${runId(239)}`;
         yield* sql`UPDATE orchestration_v2_projection_turn_items
         SET payload_json = json_set(payload_json, '$.inputIntent', 'queued_turn')
-        WHERE turn_item_id = ${itemId(982)}`;
+        WHERE turn_item_id IN (${itemId(982)}, ${itemId(986)}, ${itemId(990)})`;
         for (const run of [230, 232]) {
           const nodeId = `node:history-page:visibility:${run}`;
           const attemptId = `attempt:history-page:visibility:${run}`;
@@ -549,7 +555,9 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
             page.items.some((row) => [runId(244), runId(2)].includes(String(row.item.runId))),
           );
           assert.isFalse(page.items.some((row) => row.sourceItemId === itemId(12)));
-          assert.isFalse(page.items.some((row) => row.sourceItemId === itemId(982)));
+          assert.isTrue(page.items.some((row) => row.sourceItemId === itemId(982)));
+          assert.isFalse(page.items.some((row) => row.sourceItemId === itemId(986)));
+          assert.isFalse(page.items.some((row) => row.sourceItemId === itemId(990)));
           assert.isFalse(page.items.some((row) => row.sourceItemId === itemId(931)));
           assert.isTrue(page.items.some((row) => row.sourceItemId === itemId(923)));
           assert.isTrue(page.items.some((row) => row.item.runId === runId(239)));

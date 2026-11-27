@@ -8,6 +8,12 @@ export const unusedAuthorization = RemoteEnvironmentAuthorization.of({
   authorizeDpop: Effect.fn("Fixture.authorizeDpop")(() =>
     Effect.die("Unexpected DPoP authorization in route fixture"),
   ),
+  authorizeDirectDpop: Effect.fn("Fixture.authorizeDirectDpop")(() =>
+    Effect.die("Unexpected direct DPoP authorization in route fixture"),
+  ),
+  authorizeDirectDpopHttp: Effect.fn("Fixture.authorizeDirectDpopHttp")(() =>
+    Effect.die("Unexpected direct DPoP HTTP authorization in route fixture"),
+  ),
   authorizeDpopHttp: Effect.fn("Fixture.authorizeDpopHttp")(() =>
     Effect.die("Unexpected HTTP authorization in route fixture"),
   ),

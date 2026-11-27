@@ -4,9 +4,11 @@ import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 
 import {
+  BearerConnectionCredential,
+  DpopConnectionCredential,
   type ConnectionRegistration,
   type ConnectionRoute,
-  ConnectionCredential,
+  type ConnectionCredential,
   ConnectionProfile,
 } from "../connection/catalog.ts";
 import { type ConnectionTarget, PersistedConnectionTarget } from "../connection/model.ts";
@@ -15,9 +17,14 @@ import { StoredPullRequestRoutingPermission } from "../connection/pullRequestRou
 
 export const StoredConnectionCredential = Schema.Struct({
   connectionId: Schema.String,
-  credential: ConnectionCredential,
+  credential: BearerConnectionCredential,
 });
 export type StoredConnectionCredential = typeof StoredConnectionCredential.Type;
+
+const StoredDirectDpopCredential = Schema.Struct({
+  connectionId: Schema.String,
+  credential: DpopConnectionCredential,
+});
 
 export const MAX_CONNECTION_COMPATIBILITY_HINTS = 128;
 const MAX_COMPATIBILITY_ROUTES = 16;
@@ -138,6 +145,8 @@ export const ConnectionCatalogDocument = Schema.Struct({
   targets: Schema.Array(PersistedConnectionTarget),
   profiles: Schema.Array(ConnectionProfile),
   credentials: Schema.Array(StoredConnectionCredential),
+  // Keep credentials readable by older clients that do not know the direct DPoP tag.
+  directDpopCredentials: Schema.optionalKey(Schema.Array(StoredDirectDpopCredential)),
   remoteDpopTokens: Schema.Array(TokenStore.RemoteDpopAccessToken),
   // Pull request routing grants. The field name predates the rename and stays, so older and
   // newer clients sharing this document keep reading and revoking the same grants.
@@ -227,7 +236,7 @@ export function removeConnectionProfileFromCatalog(
   };
 }
 
-export function replaceCatalogValue<A>(
+function replaceCatalogValue<A>(
   values: ReadonlyArray<A>,
   key: (value: A) => string,
   next: A,
@@ -242,6 +251,54 @@ export function removeCatalogValue<A>(
   removedKey: string,
 ): ReadonlyArray<A> {
   return values.filter((value) => key(value) !== removedKey);
+}
+
+export function connectionCredentialFromCatalog(
+  document: ConnectionCatalogDocument,
+  connectionId: string,
+): Option.Option<ConnectionCredential> {
+  return Option.fromUndefinedOr(
+    document.credentials.find((value) => value.connectionId === connectionId)?.credential ??
+      document.directDpopCredentials?.find((value) => value.connectionId === connectionId)
+        ?.credential,
+  );
+}
+
+function withoutConnectionCredentials(
+  document: ConnectionCatalogDocument,
+  shouldRemove: (connectionId: string) => boolean,
+): ConnectionCatalogDocument {
+  const { directDpopCredentials, ...base } = document;
+  const direct = directDpopCredentials?.filter((value) => !shouldRemove(value.connectionId));
+  return {
+    ...base,
+    credentials: document.credentials.filter((value) => !shouldRemove(value.connectionId)),
+    ...(direct !== undefined && direct.length > 0 ? { directDpopCredentials: direct } : {}),
+  };
+}
+
+export function removeConnectionCredentialFromCatalog(
+  document: ConnectionCatalogDocument,
+  connectionId: string,
+): ConnectionCatalogDocument {
+  return withoutConnectionCredentials(document, (stored) => stored === connectionId);
+}
+
+export function putConnectionCredentialInCatalog(
+  document: ConnectionCatalogDocument,
+  connectionId: string,
+  credential: ConnectionCredential,
+): ConnectionCatalogDocument {
+  const next = removeConnectionCredentialFromCatalog(document, connectionId);
+  return credential._tag === "BearerConnectionCredential"
+    ? { ...next, credentials: [...next.credentials, { connectionId, credential }] }
+    : {
+        ...next,
+        directDpopCredentials: [
+          ...(next.directDpopCredentials ?? []),
+          { connectionId, credential },
+        ],
+      };
 }
 
 function connectionIdOf(target: ConnectionTarget): string | null {
@@ -267,9 +324,8 @@ function removeRouteMetadata(
   const relayRemoved = removed.some((target) => target._tag === "RelayConnectionTarget");
   const environmentIds = new Set(removed.map((target) => target.environmentId));
   return {
-    ...document,
+    ...withoutConnectionCredentials(document, (id) => connectionIds.has(id)),
     profiles: document.profiles.filter((value) => !connectionIds.has(value.connectionId)),
-    credentials: document.credentials.filter((value) => !connectionIds.has(value.connectionId)),
     remoteDpopTokens: relayRemoved
       ? document.remoteDpopTokens.filter((value) => !environmentIds.has(value.environmentId))
       : document.remoteDpopTokens,
@@ -322,13 +378,11 @@ export function registerConnectionInCatalog(
       return next;
     case "BearerConnectionRegistration":
     case "SshConnectionRegistration":
-      return {
-        ...putConnectionProfileInCatalog(next, registration.profile),
-        credentials: replaceCatalogValue(next.credentials, (value) => value.connectionId, {
-          connectionId: registration.target.connectionId,
-          credential: registration.credential,
-        }),
-      };
+      return putConnectionCredentialInCatalog(
+        putConnectionProfileInCatalog(next, registration.profile),
+        registration.target.connectionId,
+        registration.credential,
+      );
   }
 }
 

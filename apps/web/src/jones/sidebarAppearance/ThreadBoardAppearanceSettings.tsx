@@ -3,7 +3,7 @@ import { useState, type CSSProperties } from "react";
 import { SettingsSection } from "../../components/settings/settingsLayout";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { PersonalSidebarGroupHeader } from "../workstreams/PersonalSidebarGroupHeader";
 import type { PersonalStatusFilter } from "../workstreams/personalStatusFilter";
 import { sidebarAppearanceScope, type SidebarAppearance } from "./model";
@@ -326,7 +326,7 @@ export function ThreadBoardAppearanceSettings() {
   const { stored: sidebar } = useSidebarAppearanceStore();
   const [message, setMessage] = useState("");
   const { copyToClipboard, isCopied } = useCopyToClipboard({
-    target: "thread board appearance settings",
+    target: namedClipboardTarget("thread board appearance settings"),
     onCopy: () => setMessage("Appearance settings copied."),
     onError: () => setMessage("Couldn’t copy appearance settings."),
   });

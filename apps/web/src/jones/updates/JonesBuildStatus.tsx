@@ -402,8 +402,8 @@ export function JonesBuildStatus({
       candidate !== undefined && {
         text:
           state.policy?.leaderSource === null
-            ? "Waiting for the laptop's installed build"
-            : `${candidate.label} build is not the laptop's, so it will not install`,
+            ? "Waiting for the laptop to report its build"
+            : `${candidate.label} build differs from the last laptop source this host recorded`,
         tone: "muted",
       },
     (state.launcherRefresh === "recommended" || state.launcherSettlement === "unsupported") && {

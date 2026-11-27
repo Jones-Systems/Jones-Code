@@ -1,8 +1,9 @@
-import { buildQueuedFollowUpStartTurnInput } from "../jones/threadConfiguration/queuedFollowUp";
 import {
   acknowledgedThreadMessagesAtom,
   pruneCaughtUpAcknowledgedThreadMessages,
 } from "./acknowledged-thread-messages";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import {
   CommandId,
   ComposerContextId,
@@ -12,9 +13,8 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
-import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
-import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 
 import type { PreparedTurnAttachments } from "../lib/attachmentUpload";
 
@@ -88,6 +88,7 @@ vi.mock("../lib/uuid", () => ({
 vi.mock("../lib/attachmentUpload", () => ({
   prepareTurnAttachments: harness.prepareTurnAttachments,
 }));
+vi.mock("./composer-attachment-uploads", () => ({ uploadComposerAttachmentShared: vi.fn() }));
 
 vi.mock("./projects", () => ({ environmentProjects: {} }));
 
@@ -123,7 +124,7 @@ vi.mock("./use-thread-outbox", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
     editingQueuedMessageIdsAtom: Atom.make<Record<string, boolean>>({}).pipe(Atom.keepAlive),
-    dispatchingQueuedMessageIdAtom: Atom.make(null).pipe(Atom.keepAlive),
+    dispatchingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
     retryingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
     threadOutboxShellStatusesAtom: Atom.make(new Map()),
   };
@@ -155,22 +156,18 @@ import * as Option from "effect/Option";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
 import { pendingThreadCreationOutcomesAtom } from "./pending-thread-creation";
-import {
-  decodeQueuedThreadMessage,
-  encodeQueuedThreadMessage,
-  resolveQueuedThreadSettings,
-  type QueuedThreadMessage,
-} from "./thread-outbox-model";
+import type { QueuedThreadMessage } from "./thread-outbox-model";
 import { clearThreadComposerError, threadComposerErrorsAtom } from "./thread-composer-error";
 import * as composerDrafts from "./use-composer-drafts";
+import { startComposerDraftOperation } from "./composerDraftOperations";
 import { recoverFailedThreadDraft } from "./recover-failed-thread-draft";
 import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 import {
   buildQueuedThreadCreationStartTurnInput,
   completeQueuedMessageDelivery,
+  type DeliveryRetry,
   prepareQueuedMessageAttachments,
   recoverEditedCreationAfterDelivery,
-  removeAcknowledgedExistingThreadMessage,
   restoreRejectedQueuedMessage,
 } from "./threadOutboxDelivery";
 
@@ -224,6 +221,36 @@ function remainingMessages(): ReadonlyArray<QueuedThreadMessage> {
   return Object.values(appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom)).flat();
 }
 
+it("keeps selected repositories and the plain-folder base when preparing a saved worktree", () => {
+  const message = queuedMessage({ messageId: "multi-repo-task", text: "Search all sources" });
+  const creation = {
+    projectId: ProjectId.make("project-1"),
+    workspaceMode: "worktree",
+    branch: null,
+    worktreePath: null,
+    repositories: ["/workspace/api", "/workspace/client"],
+    startsFromRepositoryDefaults: true,
+  } as const;
+  expect(
+    buildQueuedThreadCreationStartTurnInput({
+      message: { ...message, creation },
+      creation,
+      projectCwd: "/workspace",
+      attachments: [],
+      settings: {
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      },
+      serverResolvesWorktreeBase: true,
+    }).bootstrap.prepareWorktree,
+  ).toMatchObject({
+    projectCwd: "/workspace",
+    baseBranch: "HEAD",
+    repositories: [{ path: "/workspace/api" }, { path: "/workspace/client" }],
+  });
+});
+
 beforeEach(() => {
   appAtomRegistry.set(acknowledgedThreadMessagesAtom, []);
   appAtomRegistry.set(harness.threadState, { data: Option.none(), sequence: 0 });
@@ -244,108 +271,533 @@ afterEach(() => {
   harness.prepareTurnAttachments.mockReset();
 });
 
-describe("queued mobile selection intent", () => {
-  it.each([
-    [true, 3],
-    [false, 3],
-    [undefined, 1],
-    [undefined, 2],
-    [undefined, 3],
-    [undefined, 4],
-  ] as const)(
-    "forwards explicitness %s from version %s storage to delivery",
-    async (flag, version) => {
-      const modelSelection = {
-        instanceId: ProviderInstanceId.make("codex"),
-        model: "gpt-6.1-sol",
-        options: [{ id: "reasoningEffort", value: "high" }],
-      };
-      const encoded = JSON.parse(
-        JSON.stringify(
-          encodeQueuedThreadMessage({
-            ...queuedMessage({ messageId: `selection-${version}-${flag}`, text: "Continue" }),
-            modelSelection,
-            ...(flag === undefined ? {} : { modelSelectionExplicit: flag }),
-          }),
-        ),
+/** True once a delivery step handled its message, false when it asks to retry. */
+const handled = (step: Effect.Effect<void, DeliveryRetry>) =>
+  step.pipe(Effect.as(true), Effect.catchTags({ DeliveryRetry: () => Effect.succeed(false) }));
+
+describe("thread outbox attachment preparation", () => {
+  it.effect("keeps a denied message queued without starting its attachment upload", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({
+        messageId: "denied-queued-message",
+        text: "Keep this queued",
+        fileUri: "file:///documents/keep.pdf",
+      });
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      harness.prepareTurnAttachments.mockReturnValueOnce(
+        Effect.succeed({
+          status: "ready",
+          attachments: [],
+          draftAttachments: message.attachments,
+          pendingAttachmentIds: [],
+        }),
       );
-      expect(encoded.schemaVersion).toBe(3);
-      if (flag === undefined) delete encoded.issuance;
-      const stored = decodeQueuedThreadMessage(
-        JSON.parse(JSON.stringify({ ...encoded, schemaVersion: version })),
+      harness.canOperate = false;
+      expect(yield* prepareQueuedMessageAttachments(message)).toEqual({
+        status: "abandoned",
+      });
+      expect(harness.prepareTurnAttachments).not.toHaveBeenCalled();
+      expect(remainingMessages()).toEqual([message]);
+    }),
+  );
+
+  it.effect("abandons reused uploads when an editor saves changed text during verification", () =>
+    Effect.gen(function* () {
+      const message = withReusedFileUpload(
+        queuedMessage({
+          messageId: "message-reused-upload-race",
+          text: "original text",
+          fileUri: "file:///documents/t3-composer-attachments/reused.pdf",
+        }),
+        "pending-reused-upload",
       );
-      await harness.manager.enqueue(stored);
-      const [enqueued] = remainingMessages();
-      expect(enqueued).toEqual(stored);
-      if (!enqueued) throw new Error("Expected the stored outbox entry");
-      const input = buildQueuedFollowUpStartTurnInput({
-        message: enqueued,
-        settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
+      const preparationStarted = Promise.withResolvers<void>();
+      const preparationBarrier = Promise.withResolvers<PreparedTurnAttachments>();
+      harness.prepareTurnAttachments.mockImplementationOnce(() =>
+        Effect.promise(() => {
+          preparationStarted.resolve();
+          return preparationBarrier.promise;
+        }),
+      );
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+
+      const preparation = yield* Effect.forkChild(prepareQueuedMessageAttachments(message), {
+        startImmediately: true,
+      });
+      yield* Effect.promise(() => preparationStarted.promise);
+      const edited = { ...message, text: "saved editor text" };
+      yield* Effect.promise(() => harness.manager.update(edited));
+      appAtomRegistry.set(editingQueuedMessageIdsAtom, {});
+      preparationBarrier.resolve({
+        status: "ready",
         attachments: [],
-        inlineMessageContext: true,
+        draftAttachments: message.attachments,
+        pendingAttachmentIds: ["pending-reused-upload"],
       });
 
-      // Equal model values carry different intent; delivery must preserve the stored flag.
-      expect(input.modelSelection).toEqual(modelSelection);
-      expect(input.commandId).toBe(stored.commandId);
-      expect(input.message.messageId).toBe(stored.messageId);
-      if (flag === undefined) {
-        expect(stored).not.toHaveProperty("issuance");
-        expect(stored).not.toHaveProperty("modelSelectionExplicit");
-        expect(input).not.toHaveProperty("modelSelectionExplicit");
-      } else {
-        expect(stored.issuance).toEqual({ state: "unissued" });
-        expect(input.modelSelectionExplicit).toBe(flag);
-      }
-    },
+      expect(yield* Fiber.join(preparation)).toEqual({ status: "abandoned" });
+      expect(remainingMessages()).toEqual([edited]);
+    }),
+  );
+
+  it.effect("uses the known next revision after persisting uploaded references", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({
+        messageId: "message-new-upload-revision",
+        text: "upload this file",
+        fileUri: "file:///documents/t3-composer-attachments/new.pdf",
+      });
+      const uploadedAttachments = message.attachments.map((attachment) =>
+        attachment.type === "file"
+          ? {
+              ...attachment,
+              uploadedAttachmentId: "pending-new-upload",
+              uploadEnvironmentId: message.environmentId,
+            }
+          : attachment,
+      );
+      harness.prepareTurnAttachments.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          expect(yield* input.persistUploadedReferences!(uploadedAttachments)).toBe("persisted");
+          return {
+            status: "ready",
+            attachments: [],
+            draftAttachments: uploadedAttachments,
+            pendingAttachmentIds: ["pending-new-upload"],
+          } as const;
+        }),
+      );
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      const revision = harness.manager.revisionOf(message.messageId);
+
+      const result = yield* prepareQueuedMessageAttachments(message);
+
+      expect(result).toMatchObject({
+        status: "ready",
+        persistedMessage: { attachments: uploadedAttachments },
+        deliveryRevision: revision + 1,
+      });
+      expect(harness.manager.revisionOf(message.messageId)).toBe(revision + 1);
+    }),
+  );
+
+  it.effect("does not prepare a payload that was already replaced", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({ messageId: "message-stale-before-upload", text: "old" });
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      const edited = { ...message, text: "new" };
+      yield* Effect.promise(() => harness.manager.update(edited));
+
+      expect(yield* prepareQueuedMessageAttachments(message)).toEqual({
+        status: "abandoned",
+      });
+      expect(harness.prepareTurnAttachments).not.toHaveBeenCalled();
+      expect(remainingMessages()).toEqual([edited]);
+    }),
   );
 });
 
-describe.each(["rejected", "delivered"] as const)("%s outbox selection recovery", (kind) => {
-  const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
-  const newerSelection = { ...selection, model: "gpt-6.1-astra" };
-  const recover = (message: QueuedThreadMessage) =>
-    kind === "rejected"
-      ? restoreRejectedQueuedMessage(message, "rejected")
-      : recoverEditedCreationAfterDelivery(message);
-  const recovered = kind === "rejected" ? "restored" : true;
+describe("thread outbox drain delivery cleanup", () => {
+  it.effect(
+    "drops caught-up acknowledged rows at the next delivery without subscribing to the thread",
+    () =>
+      Effect.gen(function* () {
+        const first = queuedMessage({ messageId: "awaiting-echo", text: "Delivered" });
+        const second = queuedMessage({ messageId: "next-delivery", text: "Also delivered" });
+        yield* Effect.promise(() => harness.manager.enqueue(first));
+        yield* Effect.promise(() => harness.manager.enqueue(second));
 
-  it.each([true, false, undefined])("restores only explicit queued picks (%s)", async (flag) => {
-    const message = decodeQueuedThreadMessage(
-      JSON.parse(
-        JSON.stringify(
-          encodeQueuedThreadMessage({
-            ...queuedMessage({
-              messageId: `restore-selection-${kind}-${flag}`,
-              text: "Recover me",
-            }),
-            modelSelection: selection,
-            ...(flag === undefined ? {} : { modelSelectionExplicit: flag }),
-          }),
+        expect(
+          yield* completeQueuedMessageDelivery(
+            first,
+            harness.manager.revisionOf(first.messageId),
+            7,
+          ),
+        ).toBe("removed");
+        expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([
+          { ...first, sequence: 7 },
+        ]);
+
+        // The thread applied the message, but its bounded window does not hold it.
+        appAtomRegistry.set(harness.threadState, {
+          data: Option.some({ messages: [{ id: "unrelated" }] }),
+          sequence: 7,
+        });
+        expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toHaveLength(1);
+
+        expect(
+          yield* completeQueuedMessageDelivery(
+            second,
+            harness.manager.revisionOf(second.messageId),
+            9,
+          ),
+        ).toBe("removed");
+        expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([
+          { ...second, sequence: 9 },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "drops an acknowledged row once the open thread catches up, so a reload cannot resurrect it",
+    () =>
+      Effect.gen(function* () {
+        const message = queuedMessage({ messageId: "paged-out-later", text: "Delivered" });
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        yield* completeQueuedMessageDelivery(
+          message,
+          harness.manager.revisionOf(message.messageId),
+          7,
+        );
+
+        pruneCaughtUpAcknowledgedThreadMessages(
+          scopedThreadKey(message.environmentId, message.threadId),
+          {
+            sequence: 6,
+            messages: [],
+          },
+        );
+        expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([
+          { ...message, sequence: 7 },
+        ]);
+
+        pruneCaughtUpAcknowledgedThreadMessages(
+          scopedThreadKey(message.environmentId, message.threadId),
+          {
+            sequence: 7,
+            messages: [],
+          },
+        );
+        expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([]);
+      }),
+  );
+
+  it.effect("removes an acknowledged outbox item even when the sign-out archive write fails", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({ messageId: "archive-write-failure", text: "Delivered" });
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      yield* Effect.promise(() =>
+        composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]), [
+          message.environmentId,
+        ]),
+      );
+      harness.draftFile.setWriteError(new Error("Draft storage unavailable"));
+
+      expect(
+        yield* completeQueuedMessageDelivery(
+          message,
+          harness.manager.revisionOf(message.messageId),
+          undefined,
         ),
-      ),
-    );
-    await harness.manager.enqueue(message);
+      ).toBe("removed");
+      expect(remainingMessages()).toEqual([]);
 
-    await expect(recover(message)).resolves.toBe(recovered);
+      harness.draftFile.setWriteError(null);
+      yield* Effect.promise(() => composerDrafts.flushComposerDrafts());
+      appAtomRegistry.set(composerDrafts.composerCloudDraftsAtom, {
+        accountId: null,
+        signedOut: {},
+      });
+      composerDrafts.resetComposerDraftsLoadState();
+      yield* Effect.promise(() => composerDrafts.restoreCloudComposerDrafts("account-a"));
+      expect(remainingMessages()).toEqual([]);
+    }),
+  );
 
-    const draft = composerDrafts.getComposerDraftSnapshot(
-      `${message.environmentId}:${message.threadId}`,
-    );
-    expect(draft.text).toBe(message.text);
-    expect(draft.modelSelection).toEqual(flag === true ? selection : undefined);
-    expect(remainingMessages()).toEqual([]);
-  });
+  it.effect.each([false, true])(
+    "does not restore a message delivered after the sign-out snapshot (outbox already cleared: %s)",
+    (cleared) =>
+      Effect.gen(function* () {
+        const message = queuedMessage({
+          messageId: "delivered-during-sign-out",
+          text: "Already delivered",
+        });
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        const deliveryRevision = harness.manager.revisionOf(message.messageId);
+        yield* Effect.promise(() =>
+          composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]), [
+            message.environmentId,
+          ]),
+        );
+        expect(
+          appAtomRegistry.get(composerDrafts.composerCloudDraftsAtom).signedOut["account-a"]
+            ?.queuedMessages,
+        ).toEqual([message]);
 
-  it.each(["newer", "same", "clear", "clear-content", "clear-all", "other-draft"] as const)(
-    "preserves owner %s interaction while the recovered content persists",
-    async (interaction) => {
+        if (cleared) {
+          yield* Effect.promise(() => harness.manager.clearEnvironment(message.environmentId));
+        }
+        expect(yield* completeQueuedMessageDelivery(message, deliveryRevision, undefined)).toBe(
+          cleared ? "edited" : "removed",
+        );
+
+        appAtomRegistry.set(composerDrafts.composerCloudDraftsAtom, {
+          accountId: null,
+          signedOut: {},
+        });
+        composerDrafts.resetComposerDraftsLoadState();
+        yield* Effect.promise(() => composerDrafts.restoreCloudComposerDrafts("account-a"));
+        expect(remainingMessages()).toEqual([]);
+      }),
+  );
+
+  it.effect("preserves an archived edit when an older payload finishes delivery", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({ messageId: "edited-during-sign-out", text: "Original" });
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      const deliveryRevision = harness.manager.revisionOf(message.messageId);
+      const edited = { ...message, text: "Keep this edit" };
+      yield* Effect.promise(() => harness.manager.update(edited));
+      yield* Effect.promise(() =>
+        composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]), [
+          message.environmentId,
+        ]),
+      );
+      yield* Effect.promise(() => harness.manager.clearEnvironment(message.environmentId));
+      expect(yield* completeQueuedMessageDelivery(message, deliveryRevision, undefined)).toBe(
+        "edited",
+      );
+      yield* Effect.promise(() => composerDrafts.restoreCloudComposerDrafts("account-a"));
+      expect(remainingMessages()).toEqual([edited]);
+    }),
+  );
+
+  it.effect("retries only cleanup after an acknowledged send removal fails", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({ messageId: "message-acknowledged", text: "delivered" });
+      harness.removeOutboxMessage.mockRejectedValueOnce(new Error("storage unavailable"));
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      const revision = harness.manager.revisionOf(message.messageId);
+
+      expect(yield* completeQueuedMessageDelivery(message, revision)).toBe("failed");
+      expect(remainingMessages()).toEqual([message]);
+
+      expect(yield* completeQueuedMessageDelivery(message, revision)).toBe("removed");
+      expect(remainingMessages()).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "keeps an edited message and its files when delivery cleanup loses the revision race",
+    () =>
+      Effect.gen(function* () {
+        const message = queuedMessage({
+          messageId: "message-edited",
+          text: "original",
+          fileUri: "file:///documents/t3-composer-attachments/report.pdf",
+        });
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        const deliveryRevision = harness.manager.revisionOf(message.messageId);
+        const edited = { ...message, text: "edited while the turn delivered" };
+        yield* Effect.promise(() => harness.manager.update(edited));
+
+        expect(yield* completeQueuedMessageDelivery(message, deliveryRevision, undefined)).toBe(
+          "edited",
+        );
+
+        expect(remainingMessages()).toEqual([edited]);
+        expect(harness.removePersistedFile).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect("removes the delivered message when no edit was accepted", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({ messageId: "message-clean", text: "hello" });
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      const deliveryRevision = harness.manager.revisionOf(message.messageId);
+
+      expect(yield* completeQueuedMessageDelivery(message, deliveryRevision, undefined)).toBe(
+        "removed",
+      );
+
+      expect(remainingMessages()).toEqual([]);
+      expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([message]);
+    }),
+  );
+
+  it.effect("keeps a delivered message when its editor opens during storage removal", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({
+        messageId: "message-editor-removal-race",
+        text: "keep editor changes",
+        fileUri: "file:///documents/t3-composer-attachments/editor-race.pdf",
+      });
+      const removeStarted = Promise.withResolvers<void>();
+      const removeBarrier = Promise.withResolvers<void>();
+      harness.removeOutboxMessage.mockImplementationOnce(async () => {
+        removeStarted.resolve();
+        await removeBarrier.promise;
+      });
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      const deliveryRevision = harness.manager.revisionOf(message.messageId);
+
+      const cleanup = yield* Effect.forkChild(
+        completeQueuedMessageDelivery(message, deliveryRevision, undefined),
+        { startImmediately: true },
+      );
+      yield* Effect.promise(() => removeStarted.promise);
+      appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+      removeBarrier.resolve();
+
+      expect(yield* Fiber.join(cleanup)).toBe("edited");
+      expect(remainingMessages()).toEqual([message]);
+      expect(harness.removePersistedFile).not.toHaveBeenCalled();
+    }),
+  );
+});
+
+describe("thread outbox delivered creation recovery", () => {
+  it.effect("keeps an edit accepted while the older payload is persisted to the draft", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({
+        messageId: "message-recovery-race",
+        text: "original queued text",
+        fileUri: "file:///documents/t3-composer-attachments/report.pdf",
+      });
+      const originalMergeComposerDraftContent = composerDrafts.mergeComposerDraftContent;
+      const mergeCompleted = Promise.withResolvers<void>();
+      const releaseRecovery = Promise.withResolvers<void>();
+      const mergeSpy = vi
+        .spyOn(composerDrafts, "mergeComposerDraftContent")
+        .mockImplementation(async (draftKey, content) => {
+          const result = await originalMergeComposerDraftContent(draftKey, content);
+          mergeCompleted.resolve();
+          await releaseRecovery.promise;
+          return result;
+        });
+
+      try {
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        const recovery = yield* Effect.forkChild(
+          handled(recoverEditedCreationAfterDelivery(message)),
+          { startImmediately: true },
+        );
+        yield* Effect.promise(() => mergeCompleted.promise);
+
+        const newer = { ...message, text: "edited while recovery persisted the draft" };
+        yield* Effect.promise(() => harness.manager.update(newer));
+
+        releaseRecovery.resolve();
+        expect(yield* Fiber.join(recovery)).toBe(false);
+
+        expect(remainingMessages()).toEqual([newer]);
+        expect(
+          composerDrafts.getComposerDraftSnapshot(`${message.environmentId}:${message.threadId}`),
+        ).toMatchObject({ text: message.text, attachments: [] });
+        expect(harness.removePersistedFile).not.toHaveBeenCalled();
+      } finally {
+        releaseRecovery.resolve();
+        mergeSpy.mockRestore();
+      }
+    }),
+  );
+
+  it.effect("leaves recovery to an editor that opens while the draft persists", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({
+        messageId: "message-recovery-editor",
+        text: "recover this text",
+        fileUri: "file:///documents/t3-composer-attachments/editor.pdf",
+      });
+      const originalMergeComposerDraftContent = composerDrafts.mergeComposerDraftContent;
+      const mergeCompleted = Promise.withResolvers<void>();
+      const releaseRecovery = Promise.withResolvers<void>();
+      const mergeSpy = vi
+        .spyOn(composerDrafts, "mergeComposerDraftContent")
+        .mockImplementation(async (draftKey, content) => {
+          const result = await originalMergeComposerDraftContent(draftKey, content);
+          mergeCompleted.resolve();
+          await releaseRecovery.promise;
+          return result;
+        });
+
+      try {
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        const recovery = yield* Effect.forkChild(
+          handled(recoverEditedCreationAfterDelivery(message)),
+          { startImmediately: true },
+        );
+        yield* Effect.promise(() => mergeCompleted.promise);
+        appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+
+        releaseRecovery.resolve();
+        expect(yield* Fiber.join(recovery)).toBe(true);
+
+        expect(remainingMessages()).toEqual([message]);
+        expect(
+          composerDrafts.getComposerDraftSnapshot(`${message.environmentId}:${message.threadId}`),
+        ).toMatchObject({ text: message.text, attachments: [] });
+        expect(harness.removePersistedFile).not.toHaveBeenCalled();
+      } finally {
+        releaseRecovery.resolve();
+        mergeSpy.mockRestore();
+      }
+    }),
+  );
+
+  it.effect("retries a failed removal without duplicating recovered draft content", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({
+        messageId: "message-recovery-removal",
+        text: "recover once",
+        fileUri: "file:///documents/t3-composer-attachments/retry.pdf",
+      });
+      const draftKey = `${message.environmentId}:${message.threadId}`;
+      const removeSpy = vi
+        .spyOn(harness.manager, "remove")
+        .mockRejectedValueOnce(new Error("storage unavailable"));
+
+      try {
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+
+        expect(yield* handled(recoverEditedCreationAfterDelivery(message))).toBe(false);
+        expect(remainingMessages()).toEqual([message]);
+
+        expect(yield* handled(recoverEditedCreationAfterDelivery(message))).toBe(true);
+
+        const draft = composerDrafts.getComposerDraftSnapshot(draftKey);
+        expect(draft.text).toBe(message.text);
+        expect(draft.attachments).toEqual(message.attachments);
+        expect(remainingMessages()).toEqual([]);
+        expect(harness.removePersistedFile).not.toHaveBeenCalled();
+      } finally {
+        removeSpy.mockRestore();
+      }
+    }),
+  );
+
+  it.effect("keeps the queue entry when the recovered draft cannot persist", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({
+        messageId: "message-recovery-persistence",
+        text: "recover after persistence returns",
+      });
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      harness.draftFile.setWriteError(new Error("disk full"));
+
+      expect(yield* handled(recoverEditedCreationAfterDelivery(message))).toBe(false);
+
+      expect(remainingMessages()).toEqual([message]);
+    }),
+  );
+});
+
+describe("thread outbox recovery rollback", () => {
+  it.effect("does not restore a submitted pick consumed while recovery content persists", () =>
+    Effect.gen(function* () {
+      const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
       const message: QueuedThreadMessage = {
-        ...queuedMessage({ messageId: `restore-race-${kind}-${interaction}`, text: "Recover me" }),
+        ...queuedMessage({ messageId: "rollback-consumed-pick", text: "Queued text" }),
         modelSelection: selection,
         modelSelectionExplicit: true,
       };
       const draftKey = `${message.environmentId}:${message.threadId}`;
+      composerDrafts.setComposerDraftText(draftKey, "Typed before");
+      const submitted = composerDrafts.updateComposerDraftSettings(draftKey, {
+        modelSelection: selection,
+      }).modelSelection;
+      yield* Effect.promise(() => harness.manager.enqueue(message));
       const originalMerge = composerDrafts.mergeComposerDraftContent;
       const mergeCompleted = Promise.withResolvers<void>();
       const releaseRecovery = Promise.withResolvers<void>();
@@ -357,908 +809,118 @@ describe.each(["rejected", "delivered"] as const)("%s outbox selection recovery"
           await releaseRecovery.promise;
           return result;
         });
-      try {
-        await harness.manager.enqueue(message);
-        const recovery = recover(message);
-        await mergeCompleted.promise;
-        if (interaction === "clear-content") {
-          composerDrafts.clearComposerDraftContent(draftKey, { clearModelSelection: true });
-        } else if (interaction === "clear-all") {
-          composerDrafts.clearComposerDraft(draftKey);
-        } else if (interaction === "other-draft") {
-          composerDrafts.clearComposerDraft(`${draftKey}:other`);
-        } else {
-          composerDrafts.updateComposerDraftSettings(draftKey, {
-            modelSelection:
-              interaction === "newer"
-                ? newerSelection
-                : interaction === "same"
-                  ? selection
-                  : undefined,
-          });
-        }
-        releaseRecovery.resolve();
-        await expect(recovery).resolves.toBe(recovered);
-
-        expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(
-          interaction === "newer"
-            ? newerSelection
-            : interaction === "same" || interaction === "other-draft"
-              ? selection
-              : undefined,
-        );
-        expect(remainingMessages()).toEqual([]);
-      } finally {
-        releaseRecovery.resolve();
-        mergeSpy.mockRestore();
-      }
-    },
-  );
-});
-
-describe("queued follow-up model selection", () => {
-  it.each([false, true, undefined])(
-    "forwards persisted selection intent (%s) with stable replay identity and message content",
-    (modelSelectionExplicit) => {
-      const captured = { instanceId: ProviderInstanceId.make("before"), model: "old-model" };
-      const current = {
-        instanceId: ProviderInstanceId.make("after"),
-        model: "new-model",
-        options: [{ id: "reasoningEffort", value: "high" }],
-      };
-      const message = decodeQueuedThreadMessage(
-        encodeQueuedThreadMessage({
-          ...queuedMessage({
-            messageId: "follow-up",
-            text: "send this",
-            fileUri: "file:///notes.pdf",
-          }),
-          modelSelection: captured,
-          ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
-          runtimeMode: "approval-required",
-          interactionMode: "plan",
-          dispatchMode: "queue",
-          context: {
-            version: 1,
-            records: [
-              {
-                version: 1,
-                kind: "terminal",
-                contextId: ComposerContextId.make("build-output"),
-                label: "Build",
-                terminalId: "main",
-                terminalLabel: "Terminal",
-                lineStart: 1,
-                lineEnd: 1,
-                text: "failed build",
-              },
-            ],
-          },
-        }),
-      );
-      const attachments: PreparedTurnAttachments["attachments"] = [
-        {
-          type: "file",
-          id: "uploaded-file",
-          name: "notes.pdf",
-          mimeType: "application/pdf",
-          sizeBytes: 42,
-        },
-      ];
-      const settings = resolveQueuedThreadSettings(message, {
-        modelSelection: current,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-      });
-      const input = buildQueuedFollowUpStartTurnInput({
-        message,
-        settings,
-        attachments,
-        inlineMessageContext: true,
-      });
-      expect(input).toMatchObject({
-        commandId: message.commandId,
-        threadId: message.threadId,
-        createdAt: message.createdAt,
-        dispatchMode: "queue",
-        modelSelection: modelSelectionExplicit === false ? current : captured,
-        runtimeMode: "approval-required",
-        interactionMode: "plan",
-        message: {
-          messageId: message.messageId,
-          text: message.text,
-          attachments,
-          context: message.context,
-        },
-      });
-      if (modelSelectionExplicit === undefined) {
-        expect(input).not.toHaveProperty("modelSelectionExplicit");
-      } else {
-        expect(input.modelSelectionExplicit).toBe(modelSelectionExplicit);
-      }
-    },
-  );
-
-  it.each([false, true, undefined])(
-    "restores rejected selection intent (%s) without pinning inherited snapshots",
-    async (modelSelectionExplicit) => {
-      const message: QueuedThreadMessage = {
-        ...queuedMessage({ messageId: "rejected-selection", text: "retry me" }),
-        modelSelection: { instanceId: ProviderInstanceId.make("before"), model: "old-model" },
-        ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
-      };
-      await harness.manager.enqueue(message);
-      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
-      const draft = composerDrafts.getComposerDraftSnapshot(
-        `${message.environmentId}:${message.threadId}`,
-      );
-      expect(draft.text).toBe(message.text);
-      expect(draft.modelSelection).toEqual(
-        modelSelectionExplicit === true ? message.modelSelection : undefined,
-      );
-    },
-  );
-
-  it("preserves a later draft pick while restoring an inherited rejected message", async () => {
-    const message: QueuedThreadMessage = {
-      ...queuedMessage({ messageId: "later-pick", text: "retry me" }),
-      modelSelection: { instanceId: ProviderInstanceId.make("before"), model: "old-model" },
-      modelSelectionExplicit: false,
-    };
-    const later = { instanceId: ProviderInstanceId.make("later"), model: "later-model" };
-    const key = `${message.environmentId}:${message.threadId}`;
-    composerDrafts.updateComposerDraftSettings(key, { modelSelection: later });
-    await harness.manager.enqueue(message);
-    await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
-    expect(composerDrafts.getComposerDraftSnapshot(key).modelSelection).toEqual(later);
-  });
-});
-
-describe("queued worktree creation command", () => {
-  it.each([true, false])(
-    "preserves queued context and uploaded attachments at delivery (%s)",
-    (inlineMessageContext) => {
-      const terminal = {
-        version: 1 as const,
-        kind: "terminal" as const,
-        contextId: ComposerContextId.make("build-output"),
-        label: "Build output",
-        terminalId: "main",
-        terminalLabel: "Terminal",
-        lineStart: 4,
-        lineEnd: 5,
-        text: "build failed\nretry",
-      };
-      const image = {
-        version: 1 as const,
-        kind: "image" as const,
-        contextId: ComposerContextId.make("screenshot"),
-        label: "Screenshot",
-        attachmentId: "draft-photo",
-        name: "shot.png",
-        mimeType: "image/png",
-        sizeBytes: 123,
-      };
-      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
-      const uploadedAttachment = {
-        type: "image" as const,
-        id: "server-photo",
-        name: image.name,
-        mimeType: image.mimeType,
-        sizeBytes: image.sizeBytes,
-      };
-      const context = { version: 1 as const, records: [terminal, image] };
-      const creation = {
-        projectId: ProjectId.make("project"),
-        workspaceMode: "worktree" as const,
-        branch: null,
-        worktreePath: null,
-      };
-      const message = decodeQueuedThreadMessage(
-        encodeQueuedThreadMessage({
-          ...queuedMessage({
-            messageId: "context-worktree",
-            text: context.records.map(formatComposerContextReference).join(" "),
-          }),
-          modelSelection,
-          creation,
-          context,
-          attachments: [
-            {
-              ...uploadedAttachment,
-              id: image.attachmentId,
-              fileUri: "file:///draft-photo.png",
-              previewUri: "file:///draft-photo.png",
-            },
-          ],
-        }),
-      );
-      const input = buildQueuedThreadCreationStartTurnInput({
-        message,
-        creation,
-        projectCwd: "/current/workspace",
-        attachments: [uploadedAttachment],
-        settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
-        serverResolvesWorktreeBase: true,
-        inlineMessageContext,
-      });
-
-      expect(input.message.attachments).toEqual([uploadedAttachment]);
-      if (inlineMessageContext) {
-        expect(input.message.text).toBe(message.text);
-        expect(input.message.context?.records).toEqual([
-          terminal,
-          { ...image, attachmentId: uploadedAttachment.id },
-        ]);
-      } else {
-        expect(input.message).not.toHaveProperty("context");
-        expect(input.message.text).not.toContain("t3-context://");
-        expect(
-          upgradeLegacyContextMessage(input.message.text).records.find(
-            (record) => record.kind === "terminal",
-          ),
-        ).toMatchObject({
-          text: terminal.text,
-          lineStart: terminal.lineStart,
-          lineEnd: terminal.lineEnd,
-        });
-      }
-      expect(message.context).toEqual(context);
-    },
-  );
-
-  it.each([true, false])(
-    "delivers persisted automatic intent with current server support (%s)",
-    (serverResolvesWorktreeBase) => {
-      const message = decodeQueuedThreadMessage(
-        encodeQueuedThreadMessage({
-          ...queuedMessage({ messageId: "automatic-worktree", text: "  queued task  " }),
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
-          creation: {
-            projectId: ProjectId.make("project"),
-            workspaceMode: "worktree",
-            branch: null,
-            worktreePath: null,
-            startFromOrigin: true,
-          },
-        }),
-      );
-      const input = buildQueuedThreadCreationStartTurnInput({
-        message,
-        creation: message.creation!,
-        projectCwd: "/current/workspace",
-        attachments: [],
-        settings: {
-          modelSelection: message.modelSelection!,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-        },
-        serverResolvesWorktreeBase,
-      });
-
-      expect(input.bootstrap.prepareWorktree).toMatchObject({
-        projectCwd: "/current/workspace",
-        startFromOrigin: true,
-      });
-      expect(input.bootstrap.prepareWorktree).not.toHaveProperty("baseBranch");
-      expect(input.bootstrap.createThread.branch).toBeNull();
-      expect(input.serverResolvesWorktreeBase).toBe(serverResolvesWorktreeBase);
-      expect(input.commandId).toBe(message.commandId);
-      expect(input.threadId).toBe(message.threadId);
-      expect(input.message.messageId).toBe(message.messageId);
-      expect(input.createdAt).toBe(message.createdAt);
-      expect(input.message.text).toBe("queued task");
-    },
-  );
-
-  it("keeps a persisted explicit base and origin setting when delivered to an older server", () => {
-    const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
-    const message = decodeQueuedThreadMessage(
-      encodeQueuedThreadMessage({
-        ...queuedMessage({ messageId: "explicit-worktree", text: "queued task" }),
-        modelSelection,
-        creation: {
-          projectId: ProjectId.make("project"),
-          workspaceMode: "worktree",
-          branch: "upstream/release",
-          worktreePath: null,
-          startFromOrigin: false,
-        },
-      }),
-    );
-    const input = buildQueuedThreadCreationStartTurnInput({
-      message,
-      creation: message.creation!,
-      projectCwd: "/current/workspace",
-      attachments: [],
-      settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
-      serverResolvesWorktreeBase: false,
-    });
-
-    expect(input.bootstrap.prepareWorktree).toMatchObject({ baseBranch: "upstream/release" });
-    expect(input.bootstrap.prepareWorktree).not.toHaveProperty("startFromOrigin");
-    expect(input.bootstrap.createThread.branch).toBe("upstream/release");
-  });
-});
-
-describe("thread outbox attachment preparation", () => {
-  it("keeps a denied message queued without starting its attachment upload", async () => {
-    const message = queuedMessage({
-      messageId: "denied-queued-message",
-      text: "Keep this queued",
-      fileUri: "file:///documents/keep.pdf",
-    });
-    await harness.manager.enqueue(message);
-    harness.prepareTurnAttachments.mockResolvedValueOnce({
-      status: "ready",
-      attachments: [],
-      draftAttachments: message.attachments,
-      pendingAttachmentIds: [],
-    });
-    harness.canOperate = false;
-    await expect(prepareQueuedMessageAttachments(message)).resolves.toEqual({
-      status: "abandoned",
-    });
-    expect(harness.prepareTurnAttachments).not.toHaveBeenCalled();
-    expect(remainingMessages()).toEqual([message]);
-  });
-
-  it("abandons reused uploads when an editor saves changed text during verification", async () => {
-    const message = withReusedFileUpload(
-      queuedMessage({
-        messageId: "message-reused-upload-race",
-        text: "original text",
-        fileUri: "file:///documents/t3-composer-attachments/reused.pdf",
-      }),
-      "pending-reused-upload",
-    );
-    const preparationStarted = Promise.withResolvers<void>();
-    const preparationBarrier = Promise.withResolvers<PreparedTurnAttachments>();
-    harness.prepareTurnAttachments.mockImplementationOnce(async () => {
-      preparationStarted.resolve();
-      return preparationBarrier.promise;
-    });
-    await harness.manager.enqueue(message);
-    appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
-
-    const preparation = prepareQueuedMessageAttachments(message);
-    await preparationStarted.promise;
-    const edited = { ...message, text: "saved editor text" };
-    await harness.manager.update(edited);
-    appAtomRegistry.set(editingQueuedMessageIdsAtom, {});
-    preparationBarrier.resolve({
-      status: "ready",
-      attachments: [],
-      draftAttachments: message.attachments,
-      pendingAttachmentIds: ["pending-reused-upload"],
-    });
-
-    await expect(preparation).resolves.toEqual({ status: "abandoned" });
-    expect(remainingMessages()).toEqual([edited]);
-  });
-
-  it("uses the known next revision after persisting uploaded references", async () => {
-    const message = queuedMessage({
-      messageId: "message-new-upload-revision",
-      text: "upload this file",
-      fileUri: "file:///documents/t3-composer-attachments/new.pdf",
-    });
-    const uploadedAttachments = message.attachments.map((attachment) =>
-      attachment.type === "file"
-        ? {
-            ...attachment,
-            uploadedAttachmentId: "pending-new-upload",
-            uploadEnvironmentId: message.environmentId,
-          }
-        : attachment,
-    );
-    harness.prepareTurnAttachments.mockImplementationOnce(async (input) => {
-      expect(await input.persistUploadedReferences?.(uploadedAttachments)).toBe("persisted");
-      return {
-        status: "ready",
-        attachments: [],
-        draftAttachments: uploadedAttachments,
-        pendingAttachmentIds: ["pending-new-upload"],
-      };
-    });
-    await harness.manager.enqueue(message);
-    const revision = harness.manager.revisionOf(message.messageId);
-
-    const result = await prepareQueuedMessageAttachments(message);
-
-    expect(result).toMatchObject({
-      status: "ready",
-      persistedMessage: { attachments: uploadedAttachments },
-      deliveryRevision: revision + 1,
-    });
-    expect(harness.manager.revisionOf(message.messageId)).toBe(revision + 1);
-  });
-
-  it("does not prepare a payload that was already replaced", async () => {
-    const message = queuedMessage({ messageId: "message-stale-before-upload", text: "old" });
-    await harness.manager.enqueue(message);
-    const edited = { ...message, text: "new" };
-    await harness.manager.update(edited);
-
-    await expect(prepareQueuedMessageAttachments(message)).resolves.toEqual({
-      status: "abandoned",
-    });
-    expect(harness.prepareTurnAttachments).not.toHaveBeenCalled();
-    expect(remainingMessages()).toEqual([edited]);
-  });
-});
-
-describe("thread outbox drain delivery cleanup", () => {
-  it("drops caught-up acknowledged rows at the next delivery without subscribing to the thread", async () => {
-    const first = queuedMessage({ messageId: "awaiting-echo", text: "Delivered" });
-    const second = queuedMessage({ messageId: "next-delivery", text: "Also delivered" });
-    await harness.manager.enqueue(first);
-    await harness.manager.enqueue(second);
-
-    await expect(
-      completeQueuedMessageDelivery(first, harness.manager.revisionOf(first.messageId), 7),
-    ).resolves.toBe("removed");
-    expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([
-      { ...first, sequence: 7 },
-    ]);
-
-    // The thread applied the message, but its bounded window does not hold it.
-    appAtomRegistry.set(harness.threadState, {
-      data: Option.some({ messages: [{ id: "unrelated" }] }),
-      sequence: 7,
-    });
-    expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toHaveLength(1);
-
-    await expect(
-      completeQueuedMessageDelivery(second, harness.manager.revisionOf(second.messageId), 9),
-    ).resolves.toBe("removed");
-    expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([
-      { ...second, sequence: 9 },
-    ]);
-  });
-
-  it("drops an acknowledged row once the open thread catches up, so a reload cannot resurrect it", async () => {
-    const message = queuedMessage({ messageId: "paged-out-later", text: "Delivered" });
-    await harness.manager.enqueue(message);
-    await completeQueuedMessageDelivery(message, harness.manager.revisionOf(message.messageId), 7);
-
-    pruneCaughtUpAcknowledgedThreadMessages(
-      scopedThreadKey(message.environmentId, message.threadId),
-      {
-        sequence: 6,
-        messages: [],
-      },
-    );
-    expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([
-      { ...message, sequence: 7 },
-    ]);
-
-    pruneCaughtUpAcknowledgedThreadMessages(
-      scopedThreadKey(message.environmentId, message.threadId),
-      {
-        sequence: 7,
-        messages: [],
-      },
-    );
-    expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([]);
-  });
-
-  it("removes an acknowledged outbox item even when the sign-out archive write fails", async () => {
-    const message = queuedMessage({ messageId: "archive-write-failure", text: "Delivered" });
-    await harness.manager.enqueue(message);
-    await composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]), [
-      message.environmentId,
-    ]);
-    harness.draftFile.setWriteError(new Error("Draft storage unavailable"));
-
-    await expect(
-      completeQueuedMessageDelivery(
-        message,
-        harness.manager.revisionOf(message.messageId),
-        undefined,
-      ),
-    ).resolves.toBe("removed");
-    expect(remainingMessages()).toEqual([]);
-
-    harness.draftFile.setWriteError(null);
-    await composerDrafts.flushComposerDrafts();
-    appAtomRegistry.set(composerDrafts.composerCloudDraftsAtom, { accountId: null, signedOut: {} });
-    composerDrafts.resetComposerDraftsLoadState();
-    await composerDrafts.restoreCloudComposerDrafts("account-a");
-    expect(remainingMessages()).toEqual([]);
-  });
-
-  it.each([false, true])(
-    "does not restore a message delivered after the sign-out snapshot (outbox already cleared: %s)",
-    async (cleared) => {
-      const message = queuedMessage({
-        messageId: "delivered-during-sign-out",
-        text: "Already delivered",
-      });
-      await harness.manager.enqueue(message);
-      const deliveryRevision = harness.manager.revisionOf(message.messageId);
-      await composerDrafts.archiveCloudComposerDrafts(
-        "account-a",
-        new Set([message.environmentId]),
-        [message.environmentId],
-      );
-      expect(
-        appAtomRegistry.get(composerDrafts.composerCloudDraftsAtom).signedOut["account-a"]
-          ?.queuedMessages,
-      ).toEqual([message]);
-
-      if (cleared) await harness.manager.clearEnvironment(message.environmentId);
-      await expect(
-        completeQueuedMessageDelivery(message, deliveryRevision, undefined),
-      ).resolves.toBe(cleared ? "edited" : "removed");
-
-      appAtomRegistry.set(composerDrafts.composerCloudDraftsAtom, {
-        accountId: null,
-        signedOut: {},
-      });
-      composerDrafts.resetComposerDraftsLoadState();
-      await composerDrafts.restoreCloudComposerDrafts("account-a");
-      expect(remainingMessages()).toEqual([]);
-    },
-  );
-
-  it("preserves an archived edit when an older payload finishes delivery", async () => {
-    const message = queuedMessage({ messageId: "edited-during-sign-out", text: "Original" });
-    await harness.manager.enqueue(message);
-    const deliveryRevision = harness.manager.revisionOf(message.messageId);
-    const edited = { ...message, text: "Keep this edit" };
-    await harness.manager.update(edited);
-    await composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]), [
-      message.environmentId,
-    ]);
-    await harness.manager.clearEnvironment(message.environmentId);
-    await expect(completeQueuedMessageDelivery(message, deliveryRevision, undefined)).resolves.toBe(
-      "edited",
-    );
-    await composerDrafts.restoreCloudComposerDrafts("account-a");
-    expect(remainingMessages()).toEqual([edited]);
-  });
-
-  it("preserves an archived selection-intent edit when an older payload finishes delivery", async () => {
-    const message: QueuedThreadMessage = {
-      ...queuedMessage({ messageId: "intent-edited-during-sign-out", text: "Original" }),
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" },
-      modelSelectionExplicit: false,
-    };
-    await harness.manager.enqueue(message);
-    const deliveryRevision = harness.manager.revisionOf(message.messageId);
-    const edited = { ...message, modelSelectionExplicit: true };
-    await harness.manager.update(edited);
-    await composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]), [
-      message.environmentId,
-    ]);
-    await harness.manager.clearEnvironment(message.environmentId);
-    await expect(completeQueuedMessageDelivery(message, deliveryRevision, undefined)).resolves.toBe(
-      "edited",
-    );
-    await composerDrafts.restoreCloudComposerDrafts("account-a");
-    expect(remainingMessages()).toEqual([edited]);
-  });
-
-  it("retries only cleanup after an acknowledged send removal fails", async () => {
-    const message = queuedMessage({ messageId: "message-acknowledged", text: "delivered" });
-    const acknowledged = new Set([message.messageId]);
-    harness.removeOutboxMessage.mockRejectedValueOnce(new Error("storage unavailable"));
-    await harness.manager.enqueue(message);
-
-    await expect(removeAcknowledgedExistingThreadMessage(message, acknowledged)).resolves.toBe(
-      false,
-    );
-    expect(remainingMessages()).toEqual([message]);
-    expect(acknowledged).toEqual(new Set([message.messageId]));
-
-    await expect(removeAcknowledgedExistingThreadMessage(message, acknowledged)).resolves.toBe(
-      true,
-    );
-    expect(remainingMessages()).toEqual([]);
-    expect(acknowledged).toEqual(new Set());
-  });
-
-  it("keeps an edited message and its files when delivery cleanup loses the revision race", async () => {
-    const message = queuedMessage({
-      messageId: "message-edited",
-      text: "original",
-      fileUri: "file:///documents/t3-composer-attachments/report.pdf",
-    });
-    await harness.manager.enqueue(message);
-    const deliveryRevision = harness.manager.revisionOf(message.messageId);
-    const edited = { ...message, text: "edited while the turn delivered" };
-    await harness.manager.update(edited);
-
-    await expect(completeQueuedMessageDelivery(message, deliveryRevision, undefined)).resolves.toBe(
-      "edited",
-    );
-
-    expect(remainingMessages()).toEqual([edited]);
-    expect(harness.removePersistedFile).not.toHaveBeenCalled();
-  });
-
-  it("removes the delivered message when no edit was accepted", async () => {
-    const message = queuedMessage({ messageId: "message-clean", text: "hello" });
-    await harness.manager.enqueue(message);
-    const deliveryRevision = harness.manager.revisionOf(message.messageId);
-
-    await expect(completeQueuedMessageDelivery(message, deliveryRevision, undefined)).resolves.toBe(
-      "removed",
-    );
-
-    expect(remainingMessages()).toEqual([]);
-    expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([message]);
-  });
-
-  it("keeps a delivered message when its editor opens during storage removal", async () => {
-    const message = queuedMessage({
-      messageId: "message-editor-removal-race",
-      text: "keep editor changes",
-      fileUri: "file:///documents/t3-composer-attachments/editor-race.pdf",
-    });
-    const removeStarted = Promise.withResolvers<void>();
-    const removeBarrier = Promise.withResolvers<void>();
-    harness.removeOutboxMessage.mockImplementationOnce(async () => {
-      removeStarted.resolve();
-      await removeBarrier.promise;
-    });
-    await harness.manager.enqueue(message);
-    const deliveryRevision = harness.manager.revisionOf(message.messageId);
-
-    const cleanup = completeQueuedMessageDelivery(message, deliveryRevision, undefined);
-    await removeStarted.promise;
-    appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
-    removeBarrier.resolve();
-
-    await expect(cleanup).resolves.toBe("edited");
-    expect(remainingMessages()).toEqual([message]);
-    expect(harness.removePersistedFile).not.toHaveBeenCalled();
-  });
-});
-
-describe("thread outbox delivered creation recovery", () => {
-  it("keeps an edit accepted while the older payload is persisted to the draft", async () => {
-    const message = queuedMessage({
-      messageId: "message-recovery-race",
-      text: "original queued text",
-      fileUri: "file:///documents/t3-composer-attachments/report.pdf",
-    });
-    const originalMergeComposerDraftContent = composerDrafts.mergeComposerDraftContent;
-    const mergeCompleted = Promise.withResolvers<void>();
-    const releaseRecovery = Promise.withResolvers<void>();
-    const mergeSpy = vi
-      .spyOn(composerDrafts, "mergeComposerDraftContent")
-      .mockImplementation(async (...args) => {
-        const result = await originalMergeComposerDraftContent(...args);
-        mergeCompleted.resolve();
-        await releaseRecovery.promise;
-        return result;
-      });
-
-    try {
-      await harness.manager.enqueue(message);
-      const recovery = recoverEditedCreationAfterDelivery(message);
-      await mergeCompleted.promise;
-
-      const newer = { ...message, text: "edited while recovery persisted the draft" };
-      await harness.manager.update(newer);
-
-      releaseRecovery.resolve();
-      await expect(recovery).resolves.toBe(false);
-
-      expect(remainingMessages()).toEqual([newer]);
-      expect(
-        composerDrafts.getComposerDraftSnapshot(`${message.environmentId}:${message.threadId}`),
-      ).toMatchObject({ text: message.text, attachments: [] });
-      expect(harness.removePersistedFile).not.toHaveBeenCalled();
-    } finally {
-      releaseRecovery.resolve();
-      mergeSpy.mockRestore();
-    }
-  });
-
-  it("leaves recovery to an editor that opens while the draft persists", async () => {
-    const message = queuedMessage({
-      messageId: "message-recovery-editor",
-      text: "recover this text",
-      fileUri: "file:///documents/t3-composer-attachments/editor.pdf",
-    });
-    const originalMergeComposerDraftContent = composerDrafts.mergeComposerDraftContent;
-    const mergeCompleted = Promise.withResolvers<void>();
-    const releaseRecovery = Promise.withResolvers<void>();
-    const mergeSpy = vi
-      .spyOn(composerDrafts, "mergeComposerDraftContent")
-      .mockImplementation(async (...args) => {
-        const result = await originalMergeComposerDraftContent(...args);
-        mergeCompleted.resolve();
-        await releaseRecovery.promise;
-        return result;
-      });
-
-    try {
-      await harness.manager.enqueue(message);
-      const recovery = recoverEditedCreationAfterDelivery(message);
-      await mergeCompleted.promise;
-      appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
-
-      releaseRecovery.resolve();
-      await expect(recovery).resolves.toBe(true);
-
-      expect(remainingMessages()).toEqual([message]);
-      expect(
-        composerDrafts.getComposerDraftSnapshot(`${message.environmentId}:${message.threadId}`),
-      ).toMatchObject({ text: message.text, attachments: [] });
-      expect(harness.removePersistedFile).not.toHaveBeenCalled();
-    } finally {
-      releaseRecovery.resolve();
-      mergeSpy.mockRestore();
-    }
-  });
-
-  it("retries a failed removal without duplicating recovered draft content", async () => {
-    const message = queuedMessage({
-      messageId: "message-recovery-removal",
-      text: "recover once",
-      fileUri: "file:///documents/t3-composer-attachments/retry.pdf",
-    });
-    const draftKey = `${message.environmentId}:${message.threadId}`;
-    const removeSpy = vi
-      .spyOn(harness.manager, "remove")
-      .mockRejectedValueOnce(new Error("storage unavailable"));
-
-    try {
-      await harness.manager.enqueue(message);
-
-      await expect(recoverEditedCreationAfterDelivery(message)).resolves.toBe(false);
-      expect(remainingMessages()).toEqual([message]);
-
-      await expect(recoverEditedCreationAfterDelivery(message)).resolves.toBe(true);
-
-      const draft = composerDrafts.getComposerDraftSnapshot(draftKey);
-      expect(draft.text).toBe(message.text);
-      expect(draft.attachments).toEqual(message.attachments);
-      expect(remainingMessages()).toEqual([]);
-      expect(harness.removePersistedFile).not.toHaveBeenCalled();
-    } finally {
-      removeSpy.mockRestore();
-    }
-  });
-
-  it("keeps the queue entry when the recovered draft cannot persist", async () => {
-    const message = queuedMessage({
-      messageId: "message-recovery-persistence",
-      text: "recover after persistence returns",
-    });
-    await harness.manager.enqueue(message);
-    harness.draftFile.setWriteError(new Error("disk full"));
-
-    await expect(recoverEditedCreationAfterDelivery(message)).resolves.toBe(false);
-
-    expect(remainingMessages()).toEqual([message]);
-  });
-});
-
-describe("thread outbox recovery rollback", () => {
-  it("does not restore a submitted pick consumed while recovery content persists", async () => {
-    const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
-    const message: QueuedThreadMessage = {
-      ...queuedMessage({ messageId: "rollback-consumed-pick", text: "Queued text" }),
-      modelSelection: selection,
-      modelSelectionExplicit: true,
-    };
-    const draftKey = `${message.environmentId}:${message.threadId}`;
-    composerDrafts.setComposerDraftText(draftKey, "Typed before");
-    const submitted = composerDrafts.updateComposerDraftSettings(draftKey, {
-      modelSelection: selection,
-    }).modelSelection;
-    await harness.manager.enqueue(message);
-    const originalMerge = composerDrafts.mergeComposerDraftContent;
-    const mergeCompleted = Promise.withResolvers<void>();
-    const releaseRecovery = Promise.withResolvers<void>();
-    const mergeSpy = vi
-      .spyOn(composerDrafts, "mergeComposerDraftContent")
-      .mockImplementation(async (...args) => {
-        const result = await originalMerge(...args);
-        mergeCompleted.resolve();
-        await releaseRecovery.promise;
-        return result;
-      });
-    harness.removeOutboxMessage.mockImplementationOnce(async () => {
-      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toBeUndefined();
-      appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
-    });
-    try {
-      const recovery = restoreRejectedQueuedMessage(message, "rejected");
-      await mergeCompleted.promise;
-      composerDrafts.consumeSubmittedComposerModelPick(draftKey, submitted);
-      releaseRecovery.resolve();
-      await expect(recovery).resolves.toBe("deferred");
-
-      expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
-        text: "Typed before",
-        attachments: [],
-      });
-      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toBeUndefined();
-      expect(remainingMessages()).toEqual([message]);
-    } finally {
-      releaseRecovery.resolve();
-      mergeSpy.mockRestore();
-    }
-  });
-
-  it.each(["newer", "same", "clear"] as const)(
-    "preserves a %s owner pick when queue removal defers and the merge rolls back",
-    async (interaction) => {
-      const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
-      const ownerSelection =
-        interaction === "newer"
-          ? { ...selection, model: "gpt-6.1-astra" }
-          : interaction === "same"
-            ? selection
-            : undefined;
-      const message: QueuedThreadMessage = {
-        ...queuedMessage({ messageId: `rollback-selection-${interaction}`, text: "Queued text" }),
-        modelSelection: selection,
-        modelSelectionExplicit: true,
-      };
-      const draftKey = `${message.environmentId}:${message.threadId}`;
-      appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
-        [draftKey]: { text: "Typed before", attachments: [] },
-      });
-      await harness.manager.enqueue(message);
       harness.removeOutboxMessage.mockImplementationOnce(async () => {
-        expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(selection);
-        composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: ownerSelection });
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toBeUndefined();
         appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
       });
-
-      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
-
-      expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
-        text: "Typed before",
-        attachments: [],
+      const recovery = yield* Effect.forkChild(restoreRejectedQueuedMessage(message, "rejected"), {
+        startImmediately: true,
       });
-      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(
-        ownerSelection,
+      yield* Effect.gen(function* () {
+        yield* Effect.promise(() => mergeCompleted.promise);
+        composerDrafts.consumeSubmittedComposerModelPick(draftKey, submitted);
+        releaseRecovery.resolve();
+        expect(yield* Fiber.join(recovery)).toBe("deferred");
+
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+          text: "Typed before",
+          attachments: [],
+        });
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toBeUndefined();
+        expect(remainingMessages()).toEqual([message]);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(releaseRecovery.resolve).pipe(
+            Effect.andThen(Fiber.await(recovery)),
+            Effect.ensuring(Effect.sync(() => mergeSpy.mockRestore())),
+          ),
+        ),
       );
-      expect(remainingMessages()).toEqual([message]);
-    },
+    }),
   );
 
-  it("preserves equal-valued reselection by a synchronous subscriber during restoration", async () => {
-    const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
-    const message: QueuedThreadMessage = {
-      ...queuedMessage({ messageId: "rollback-synchronous-pick", text: "Queued text" }),
-      modelSelection: selection,
-      modelSelectionExplicit: true,
-    };
-    const draftKey = `${message.environmentId}:${message.threadId}`;
-    await harness.manager.enqueue(message);
-    let reselected: QueuedThreadMessage["modelSelection"];
-    const unsubscribe = appAtomRegistry.subscribe(composerDrafts.composerDraftsAtom, (drafts) => {
-      const restored = drafts[draftKey]?.modelSelection;
-      if (restored !== undefined) {
-        expect(restored).toEqual(selection);
-        unsubscribe();
-        reselected = composerDrafts.updateComposerDraftSettings(draftKey, {
+  it.effect.each(["newer", "same", "clear"] as const)(
+    "preserves a %s owner pick when queue removal defers and the merge rolls back",
+    (interaction) =>
+      Effect.gen(function* () {
+        const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+        const ownerSelection =
+          interaction === "newer"
+            ? { ...selection, model: "gpt-6.1-astra" }
+            : interaction === "same"
+              ? selection
+              : undefined;
+        const message: QueuedThreadMessage = {
+          ...queuedMessage({ messageId: `rollback-selection-${interaction}`, text: "Queued text" }),
           modelSelection: selection,
-        }).modelSelection;
-        expect(reselected).not.toBe(restored);
-        appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
-      }
-    });
-    try {
-      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
+          modelSelectionExplicit: true,
+        };
+        const draftKey = `${message.environmentId}:${message.threadId}`;
+        appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+          [draftKey]: { text: "Typed before", attachments: [] },
+        });
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        harness.removeOutboxMessage.mockImplementationOnce(async () => {
+          expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(
+            selection,
+          );
+          composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: ownerSelection });
+          appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+        });
 
-      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(selection);
-      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toBe(reselected);
-      expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe("");
-      expect(remainingMessages()).toEqual([message]);
-    } finally {
-      unsubscribe();
-    }
-  });
+        expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("deferred");
+
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+          text: "Typed before",
+          attachments: [],
+        });
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(
+          ownerSelection,
+        );
+        expect(remainingMessages()).toEqual([message]);
+      }),
+  );
+
+  it.effect(
+    "preserves equal-valued reselection by a synchronous subscriber during restoration",
+    () =>
+      Effect.gen(function* () {
+        const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+        const message: QueuedThreadMessage = {
+          ...queuedMessage({ messageId: "rollback-synchronous-pick", text: "Queued text" }),
+          modelSelection: selection,
+          modelSelectionExplicit: true,
+        };
+        const draftKey = `${message.environmentId}:${message.threadId}`;
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        let reselected: QueuedThreadMessage["modelSelection"];
+        const unsubscribe = appAtomRegistry.subscribe(
+          composerDrafts.composerDraftsAtom,
+          (drafts) => {
+            const restored = drafts[draftKey]?.modelSelection;
+            if (restored !== undefined) {
+              expect(restored).toEqual(selection);
+              unsubscribe();
+              reselected = composerDrafts.updateComposerDraftSettings(draftKey, {
+                modelSelection: selection,
+              }).modelSelection;
+              expect(reselected).not.toBe(restored);
+              appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+            }
+          },
+        );
+        yield* Effect.gen(function* () {
+          expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("deferred");
+
+          expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(
+            selection,
+          );
+          expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toBe(reselected);
+          expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe("");
+          expect(remainingMessages()).toEqual([message]);
+        }).pipe(Effect.ensuring(Effect.sync(unsubscribe)));
+      }),
+  );
 
   it("reopens a rejected task with setup edits and every attachment, even above the send cap", async () => {
     const message = queuedMessage({ messageId: "failed-setup", text: "Original prompt" });
@@ -1292,6 +954,99 @@ describe("thread outbox recovery rollback", () => {
     );
   });
 
+  it("keeps a late attachment and its reference when recovery fills the context limit", async () => {
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "failed-full-context", text: "Original prompt" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      creation: {
+        projectId: ProjectId.make("project-1"),
+        workspaceMode: "local",
+        branch: null,
+        worktreePath: null,
+      },
+    };
+    const sourceKey = `${message.environmentId}:${message.threadId}`;
+    const targetKey = "new-task:restored-failed-full-context";
+    await composerDrafts.waitForComposerDraftsLoaded();
+    const contextDraft = (start: number) => {
+      const records = Array.from({ length: 100 }, (_, index) => ({
+        version: 1 as const,
+        contextId: ComposerContextId.make(`skill-${start + index}`),
+        kind: "skill" as const,
+        label: "Skill",
+        name: "skill",
+      }));
+      return {
+        text: records
+          .map((record) => `[Skill](t3-context://v1/skill/${record.contextId})`)
+          .join(" "),
+        context: { version: 1 as const, records },
+        attachments: [],
+      };
+    };
+    appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+      [targetKey]: contextDraft(0),
+      [sourceKey]: contextDraft(100),
+    });
+    const saving = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const write = harness.draftFile.File.prototype.write;
+    const writeSpy = vi
+      .spyOn(harness.draftFile.File.prototype, "write")
+      .mockImplementationOnce(async function (value) {
+        write(value);
+        saving.resolve();
+        await resume.promise;
+      });
+    const attachment = {
+      id: "late-paste",
+      type: "image" as const,
+      name: "pasted.png",
+      mimeType: "image/png",
+      sizeBytes: 1,
+      dataUrl: "data:image/png;base64,AA==",
+      previewUri: "data:image/png;base64,AA==",
+    };
+    try {
+      const recovering = recoverFailedThreadDraft(message);
+      await saving.promise;
+      composerDrafts.appendComposerDraftAttachments(sourceKey, [attachment], {
+        appendReference: true,
+      });
+      resume.resolve();
+      await recovering;
+      const restored = composerDrafts.getComposerDraftSnapshot(targetKey);
+      expect(restored.attachments).toContainEqual(attachment);
+      expect(restored.context?.records).toHaveLength(201);
+      const imageRecord = restored.context?.records.find(
+        (record) => "attachmentId" in record && record.attachmentId === attachment.id,
+      );
+      expect(imageRecord).toBeDefined();
+      expect(restored.text).toContain(`/${imageRecord!.contextId})`);
+      expect(composerDrafts.getComposerDraftSnapshot(sourceKey).attachments).toEqual([]);
+    } finally {
+      resume.resolve();
+      writeSpy.mockRestore();
+      await composerDrafts.flushComposerDrafts();
+    }
+  });
+
+  it("cancels a paste that finishes preparing after recovery returns", async () => {
+    const message = queuedMessage({ messageId: "failed-unfinished-paste", text: "Original" });
+    const sourceKey = `${message.environmentId}:${message.threadId}`;
+    appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+      [sourceKey]: { text: "Follow-up", attachments: [] },
+    });
+    const paste = startComposerDraftOperation(sourceKey);
+    try {
+      await recoverFailedThreadDraft(message);
+      expect(paste.signal.aborted).toBe(true);
+    } finally {
+      paste.finish();
+      await composerDrafts.flushComposerDrafts();
+    }
+  });
+
   it("keeps setup edits recoverable when saving their recovery draft fails", async () => {
     const message = queuedMessage({ messageId: "failed-save", text: "Original prompt" });
     const sourceKey = `${message.environmentId}:${message.threadId}`;
@@ -1309,112 +1064,170 @@ describe("thread outbox recovery rollback", () => {
     );
   });
 
-  it("restores a rejected new task as its own draft for the project", async () => {
-    const message: QueuedThreadMessage = {
-      ...queuedMessage({ messageId: "message-creation-restore", text: "new task text" }),
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
-      modelSelectionExplicit: true,
-      creation: {
-        projectId: ProjectId.make("project-1"),
-        workspaceMode: "local",
-        branch: null,
-        worktreePath: null,
-      },
-    };
-    await harness.manager.enqueue(message);
+  it.effect("restores a rejected new task as its own draft for the project", () =>
+    Effect.gen(function* () {
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({ messageId: "message-creation-restore", text: "new task text" }),
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+        creation: {
+          projectId: ProjectId.make("project-1"),
+          workspaceMode: "local",
+          branch: null,
+          worktreePath: null,
+        },
+      };
+      yield* Effect.promise(() => harness.manager.enqueue(message));
 
-    await expect(restoreRejectedQueuedMessage(message, "rejected by server")).resolves.toBe(
-      "restored",
-    );
+      expect(yield* restoreRejectedQueuedMessage(message, "rejected by server")).toBe("restored");
 
-    expect(
-      composerDrafts.getComposerDraftSnapshot(`new-task:restored-${message.messageId}`),
-    ).toMatchObject({
-      text: message.text,
-      attachments: message.attachments,
-      modelSelection: message.modelSelection,
-      project: {
-        environmentId: message.environmentId,
-        projectId: message.creation!.projectId,
-        createdAt: message.createdAt,
-      },
-    });
-    expect(remainingMessages()).toEqual([]);
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
-    expect(
-      appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[
-        `${message.environmentId}:${message.threadId}`
-      ],
-    ).toEqual({ kind: "failed", message, reason: "rejected by server" });
-  });
+      expect(
+        composerDrafts.getComposerDraftSnapshot(`new-task:restored-${message.messageId}`),
+      ).toMatchObject({
+        text: message.text,
+        attachments: message.attachments,
+        modelSelection: message.modelSelection,
+        project: {
+          environmentId: message.environmentId,
+          projectId: message.creation!.projectId,
+          createdAt: message.createdAt,
+        },
+      });
+      expect(remainingMessages()).toEqual([]);
+      expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
+      expect(
+        appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[
+          `${message.environmentId}:${message.threadId}`
+        ],
+      ).toEqual({ kind: "failed", message, reason: "rejected by server" });
+    }),
+  );
 
-  it("does not record a creation outcome for a rejected follow-up message", async () => {
-    const message = queuedMessage({ messageId: "message-followup-restore", text: "follow up" });
-    await harness.manager.enqueue(message);
+  it.effect("keeps the draft unchanged when a standalone goal command is rejected", () =>
+    Effect.gen(function* () {
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({ messageId: "goal-rejected", text: "/goal clear" }),
+        restoreToDraft: false,
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+        runtimeMode: "full-access",
+      };
+      const threadKey = `${message.environmentId}:${message.threadId}`;
+      appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+        [threadKey]: { text: "Keep my draft", attachments: [], runtimeMode: "approval-required" },
+      });
+      const draft = composerDrafts.getComposerDraftSnapshot(threadKey);
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("restored");
+      expect(composerDrafts.getComposerDraftSnapshot(threadKey)).toEqual(draft);
+      expect(remainingMessages()).toEqual([]);
+      expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]).toEqual({
+        message: "rejected",
+        messageId: message.messageId,
+      });
+    }),
+  );
 
-    await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
+  it.effect.each([true, false, undefined])(
+    "restores a rejected follow-up with its selection intent (%s) and no creation outcome",
+    (modelSelectionExplicit) =>
+      Effect.gen(function* () {
+        const message: QueuedThreadMessage = {
+          ...queuedMessage({ messageId: "message-followup-restore", text: "follow up" }),
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+          ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+        };
+        yield* Effect.promise(() => harness.manager.enqueue(message));
 
-    expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)).toEqual({});
-    expect(
-      appAtomRegistry.get(threadComposerErrorsAtom)[`${message.environmentId}:${message.threadId}`],
-    ).toEqual({ message: "rejected", messageId: message.messageId });
-  });
+        expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("restored");
 
-  it("leaves no error when the restored text is resent before recovery finishes", async () => {
-    const message = queuedMessage({ messageId: "message-resent", text: "resend me" });
-    const threadKey = `${message.environmentId}:${message.threadId}`;
-    await harness.manager.enqueue(message);
-    const unsubscribe = appAtomRegistry.subscribe(composerDrafts.composerDraftsAtom, (drafts) => {
-      if (drafts[threadKey]?.text === "resend me") {
-        unsubscribe();
-        clearThreadComposerError(threadKey);
-        void composerDrafts.clearComposerDraftContent(threadKey);
-      }
-    });
+        const threadKey = `${message.environmentId}:${message.threadId}`;
+        expect(composerDrafts.getComposerDraftSnapshot(threadKey).modelSelection).toEqual(
+          modelSelectionExplicit === true ? message.modelSelection : undefined,
+        );
+        expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)).toEqual({});
+        expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]).toEqual({
+          message: "rejected",
+          messageId: message.messageId,
+        });
+      }),
+  );
 
-    await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
+  it.effect("leaves no error when the restored text is resent before recovery finishes", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({ messageId: "message-resent", text: "resend me" });
+      const threadKey = `${message.environmentId}:${message.threadId}`;
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      const unsubscribe = appAtomRegistry.subscribe(composerDrafts.composerDraftsAtom, (drafts) => {
+        if (drafts[threadKey]?.text === "resend me") {
+          unsubscribe();
+          clearThreadComposerError(threadKey);
+          void composerDrafts.clearComposerDraftContent(threadKey);
+        }
+      });
 
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
-  });
+      expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("restored");
 
-  it("withdraws the error when an edit makes the recovery back out", async () => {
-    const message = queuedMessage({ messageId: "message-edited-mid-recovery", text: "edit me" });
-    const threadKey = `${message.environmentId}:${message.threadId}`;
-    await harness.manager.enqueue(message);
-    const unsubscribe = appAtomRegistry.subscribe(composerDrafts.composerDraftsAtom, (drafts) => {
-      if (drafts[threadKey]?.text === "edit me") {
-        unsubscribe();
-        appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
-      }
-    });
+      expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
+    }),
+  );
 
-    await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
+  it.effect("withdraws the error when an edit makes the recovery back out", () =>
+    Effect.gen(function* () {
+      const message = queuedMessage({ messageId: "message-edited-mid-recovery", text: "edit me" });
+      const threadKey = `${message.environmentId}:${message.threadId}`;
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+      const unsubscribe = appAtomRegistry.subscribe(composerDrafts.composerDraftsAtom, (drafts) => {
+        if (drafts[threadKey]?.text === "edit me") {
+          unsubscribe();
+          appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+        }
+      });
 
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
-    expect(remainingMessages()).toEqual([message]);
-  });
+      expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("deferred");
 
-  it("rolls a failed recovery merge back so the retry cannot duplicate the text", async () => {
-    const message = queuedMessage({ messageId: "message-restore", text: "queued text" });
-    const draftKey = `${message.environmentId}:${message.threadId}`;
-    appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
-      [draftKey]: { text: "typed offline", attachments: [] },
-    });
-    await harness.manager.enqueue(message);
+      expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
+      expect(remainingMessages()).toEqual([message]);
+    }),
+  );
 
-    harness.draftFile.setWriteError(new Error("disk full"));
-    await expect(restoreRejectedQueuedMessage(message, "too large")).resolves.toBe("retry");
+  it.effect("rolls a failed recovery merge back and keeps the queued image for the retry", () =>
+    Effect.gen(function* () {
+      const fileUri = "file:///documents/t3-composer-attachments/queued.png";
+      const attachment = {
+        id: "queued-image",
+        type: "image" as const,
+        name: "queued.png",
+        mimeType: "image/png",
+        sizeBytes: 1,
+        fileUri,
+        previewUri: fileUri,
+      };
+      const message = {
+        ...queuedMessage({ messageId: "message-restore", text: "queued text" }),
+        attachments: [attachment],
+      };
+      const draftKey = `${message.environmentId}:${message.threadId}`;
+      appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+        [draftKey]: { text: "typed offline", attachments: [] },
+      });
+      yield* Effect.promise(() => harness.manager.enqueue(message));
 
-    expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe("typed offline");
-    expect(remainingMessages()).toEqual([message]);
+      harness.draftFile.setWriteError(new Error("disk full"));
+      expect(yield* restoreRejectedQueuedMessage(message, "too large")).toBe("retry");
 
-    harness.draftFile.setWriteError(null);
-    await expect(restoreRejectedQueuedMessage(message, "too large")).resolves.toBe("restored");
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe("typed offline");
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).attachments).toEqual([]);
+      expect(remainingMessages()).toEqual([message]);
 
-    expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe(
-      "typed offline\n\nqueued text",
-    );
-    expect(remainingMessages()).toEqual([]);
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)[draftKey]?.message).toBe("too large");
-  });
+      harness.draftFile.setWriteError(null);
+      expect(yield* restoreRejectedQueuedMessage(message, "too large")).toBe("restored");
+
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe(
+        "typed offline\n\nqueued text",
+      );
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).attachments).toEqual([attachment]);
+      expect(remainingMessages()).toEqual([]);
+      expect(harness.removePersistedFile).not.toHaveBeenCalled();
+      expect(appAtomRegistry.get(threadComposerErrorsAtom)[draftKey]?.message).toBe("too large");
+    }),
+  );
 });

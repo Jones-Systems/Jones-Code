@@ -303,7 +303,7 @@
     {
       "id": "anonymous-checkout",
       "tests": ["scripts/jones/ci/anonymous-checkout.node-test.mjs"],
-      "scope": "Twenty-two public-source checkout bootstraps are byte-bound to the canonical anonymous Git helper. Exact event merge commits and explicit Preview heads retain depth, full branch/tag history, sparse selection and classifier inputs. Empty-workspace/ref/repository guards precede Git; global/system/injected config, prompts and helpers are disabled. Synthetic unmapped gitlinks remain in the tested index on success and injected fetch/checkout failures; metadata-only assertions prove no checkout credential state, no retries or fallback, preserved native failure status and unchanged source. Separate API credentials and existing workflow triggers are unchanged."
+      "scope": "Twenty-three public-source checkout bootstraps are byte-bound to the canonical anonymous Git helper. Exact event merge commits and explicit Preview heads retain depth, full branch/tag history, sparse selection and classifier inputs. Empty-workspace, ref and repository guards precede Git. The ref guard explicitly exits on invalid input in Apple Bash 3.2 and Linux Bash. Global, system and injected config, prompts and helpers are disabled. Synthetic unmapped gitlinks remain in the tested index on success and injected fetch/checkout failures. Metadata-only assertions verify checkout credential state is absent, native failure status is preserved, and the source stays intact. Separate API credentials and workflow triggers retain their existing behavior."
     },
     {
       "id": "server-result-cache",
@@ -1013,6 +1013,8 @@
       "id": "runtime-stop",
       "tests": [
         "apps/server/src/jones/runtime/RuntimeStop.test.ts",
+        "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
         "apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts",
         "packages/contracts/src/jones/runtimeStop.test.ts",
         "packages/client-runtime/src/operations/currentRuntimeStop.test.ts",
@@ -1020,7 +1022,7 @@
         "packages/client-runtime/src/jones/runtimeDetachCompatibility.test.ts",
         "apps/server/src/jones/provider/CapturedRuntimeStop.test.ts"
       ],
-      "scope": "Captured current-runtime stop identity, durable observation and queued-start fencing, adapter-bound stop execution, and saved client correlation. Optional immutable retirement observers retain one invocation across caller timeout, cancellation and inactive producers; exact exit and manager cleanup complete the original receipt. Completed stopped-binding proof selects a fresh logical session for a subsequent ordinary send. Existing completed-unknown receipts stay immutable, unsupported captures remain unavailable, and background coverage remains partial."
+      "scope": "Captured current-runtime Stop owns durable observation, adapter execution, queued-start fences and saved client correlation. Its acceptance settles exact first starts with zero claims or a writer-ordered predispatch witness. Warm prepared releases require the accepted release, original producer generation and persisted root scope. Exact fenced queued runs settle or retain a queue hold. Queue actions revalidate their affected inputs and Stop fences before committing events and effects. Delegated follow-up finalization reads the run and nested work together. The worker keeps the existing retirement and cancellation barriers after executor entry. Completed stopped-binding proof selects a fresh logical session for a subsequent send. Background coverage remains partial."
     },
     {
       "id": "deletion-worktree-removal",
@@ -1741,13 +1743,14 @@
         "packages/client-runtime/src/jones/queue/commands.test.ts",
         "packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts",
         "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts",
+        "apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts",
         "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
         "apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx",
         "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx",
         "packages/contracts/src/jones/orchestrationCompatibility.test.ts",
         "apps/server/src/jones/orchestration/TransientSteer.test.ts"
       ],
-      "scope": "The shared queue presentation keeps its counted heading and bulk controls together, with the drag grip in each message action row and wrapping controls. The small shared-file layout edit avoids duplicating upstream attribution, folding and queue rendering; its Jones browser regression covers aligned controls and narrow containment with long content. Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. Explicit manual promotion uses the unchanged active configuration even for messages queued before account or model changes; automatic tool-boundary delivery retains historical configuration matching. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup. Ordinary web/mobile explicit follow-ups with unchanged effective steer configuration queue across preparing, starting, waiting and missing-native-turn gaps. Inherited owner steers use the active selection for gap eligibility; queued runs retain the saved selection for their eventual next turn, preserving the durable Stop barrier, separate-turn commands, legacy direct modes and selection rejection paths. A narrow Orchestrator hook applies the Jones pure decision after existing late-completion recovery; queued births inherit safe-boundary eligibility while preserving an explicit opt-out. Jones runtime integration verifies accepted receipts, idempotence and original-message promotion; no wire or persisted schema changes."
+      "scope": "The shared queue presentation keeps its counted heading and bulk controls together, with the drag grip in each message action row and wrapping controls. The small shared-file layout edit avoids duplicating upstream attribution, folding and queue rendering; its Jones browser regression covers aligned controls and narrow containment with long content. Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. Explicit manual promotion uses the running turn's configuration even after saving a different model or option for the same account, and accepts messages queued under earlier accounts or models. The versioned batch capability lets newer clients keep the original eligibility checks on older servers. Automatic tool-boundary delivery accepts inherited peer messages recorded for the active Codex or Claude run while preserving their queued next-turn selections. Explicit picks still require a matching active selection. A running goal start or resume accepts compatible follow-ups. An optional recorded run identifier preserves admission through projection and replay. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup. Ordinary web/mobile explicit follow-ups with unchanged effective steer configuration queue across preparing, starting, waiting and missing-native-turn gaps. Inherited owner steers use the active selection for gap eligibility; queued runs retain the saved selection for their eventual next turn, preserving the durable Stop barrier, separate-turn commands, legacy direct modes and selection rejection paths. A narrow Orchestrator hook applies the Jones pure decision after existing late-completion recovery; queued births inherit safe-boundary eligibility while preserving an explicit opt-out. Jones runtime integration verifies accepted receipts, idempotence and original-message promotion; no database migration."
     },
     {
       "id": "client-launch",
@@ -1846,6 +1849,10 @@
     {
       "id": "remote-admission",
       "tests": [
+        "apps/server/src/http.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/RequestManagement.test.ts",
+        "apps/web/src/jones/remoteAdmission/ReviewClientsCoordinator.browser.test.tsx",
+        "packages/client-runtime/src/jones/remoteAdmission/controller.test.ts",
         "apps/server/src/jones/peerTransport/LinkedRequestContext.http.test.ts",
         "apps/server/src/jones/peerTransport/LinkedRequestContext.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
@@ -2108,6 +2115,14 @@
         "scripts/mobile-showcase.test.ts"
       ],
       "scope": "Showcase Metro uses a run-selected available port, preserves intentional config and environment overrides, rejects busy explicit ports, and requires child liveness, Metro status and successful bundle warming. The shared runner passes the selected port to both platforms and retains explicit reuse and keep-running modes. Jones-owned socket and child lifecycle tests cover unrelated listeners, dead children, startup errors, timeouts and cleanup isolation. The scripts package registers the focused Node tests alongside its existing Node suite; the existing showcase tests retain CLI and capture-planning coverage."
+    },
+    {
+      "id": "terminal-close-confirmation",
+      "tests": [
+        "apps/web/src/lib/terminalCloseConfirm.browser.test.tsx",
+        "apps/web/src/components/ui/dialog.browser.test.tsx"
+      ],
+      "scope": "Terminal close explicitly focuses Confirm while preserving the destructive style and warning. The existing terminal helper owns the opt-in. Small shared host and UI-only option edits reuse the alert dialog focus behavior. Browser coverage checks mouse-open, Enter to confirm, Escape to cancel, and existing focus defaults."
     },
     {
       "id": "shell-destination",
@@ -3098,6 +3113,7 @@
         "apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts",
         "packages/provider-cursor/src/server/adapter.test.ts",
         "packages/provider-cursor/src/server/CursorAgentSdk.test.ts",
+        "packages/provider-cursor/src/server/CursorAgentSdkProcessRunner.test.ts",
         "packages/provider-cursor/src/server/driver.test.ts",
         "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
         "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
@@ -3648,6 +3664,14 @@
         "apps/web/src/jones/sidebarAppearance/sidebarAppearanceWorkstreams.browser.test.tsx"
       ],
       "scope": "Device-local sidebar appearance preferences with Selected/Original presets and a Jones Code Appearance settings page. Board-only controls adjust card and section outlines, tint, backgrounds, typography, sizing, and adaptive or fixed filter spacing. Shared sidebar hooks mount the host and launcher and expose semantic card slots. Lifted cards copy allowlisted attributes and variables. The renderer uses existing sidebar context, Workstream color persistence, and theme tokens."
+    },
+    {
+      "id": "linked-thread-workstream-menu",
+      "tests": [
+        "apps/web/src/jones/workstreams/linkedThreadWorkstreamMenu.browser.test.tsx",
+        "apps/desktop/src/ipc/methods/window.test.ts"
+      ],
+      "scope": "A resolved thread link uses the sidebar assignment choices for its own environment and thread ID. The browser fixture exercises assignment, picker removal and read-only access. The desktop window IPC fixture checks the editing roles, assignment placement and sender frame for macOS native text services."
     },
     {
       "id": "workstream-auto-route",

@@ -53,6 +53,9 @@ describe("Jones MCP provider compatibility", () => {
   const projectId = ProjectId.make("project:mcp-providers");
   const codexInstanceId = ProviderInstanceId.make("codex");
   const antigravityInstanceId = ProviderInstanceId.make("antigravity");
+  const layerProjectService = Layer.mock(ProjectService.ProjectService)({
+    getById: () => Effect.succeedNone,
+  });
 
   const scope: McpInvocationScope = {
     environmentId: EnvironmentId.make("environment:mcp-providers"),
@@ -184,7 +187,7 @@ describe("Jones MCP provider compatibility", () => {
           },
         ]),
         adapterRegistryLayer([codexInstanceId]),
-        Layer.mock(ProjectService.ProjectService)({}),
+        layerProjectService,
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -273,7 +276,7 @@ describe("Jones MCP provider compatibility", () => {
             ]),
           }),
           adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
-          Layer.mock(ProjectService.ProjectService)({}),
+          layerProjectService,
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -373,7 +376,7 @@ describe("Jones MCP provider compatibility", () => {
           ]),
         }),
         adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
-        Layer.mock(ProjectService.ProjectService)({}),
+        layerProjectService,
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -518,7 +521,7 @@ describe("Jones MCP provider compatibility", () => {
             }),
         }),
         adapterRegistryLayer([codexInstanceId]),
-        Layer.mock(ProjectService.ProjectService)({}),
+        layerProjectService,
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -624,6 +627,7 @@ it.effect(
             getThreadRecords: () => Effect.succeed(projection),
             getThreadShell: () => Effect.succeed(shell),
             getProjectThreadRecords: () => Effect.succeed(projection),
+            getRunCount: () => Effect.succeed(projection.runs.length),
             listProjectThreads: () => Effect.succeed([shell]),
             getShellSnapshot: (options) =>
               Effect.succeed({

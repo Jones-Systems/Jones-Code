@@ -1,5 +1,9 @@
 import { expect, it } from "@effect/vitest";
+import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Scope from "effect/Scope";
+import * as TestClock from "effect/testing/TestClock";
 import { ServiceLauncherClientError } from "../../cloud/serviceLauncherClient.ts";
 import { make } from "./UpdateAdmissionFence.ts";
 import { launcherHandoffAttempt } from "./launcherHandoff.ts";
@@ -50,6 +54,40 @@ it.effect("keeps accepted and unknown handoffs fenced, but releases a definitive
         yield* ticket.release;
       }
     }
+  }).pipe(Effect.scoped),
+);
+
+it.effect("releases admission when native work stalls before launcher contact", () =>
+  Effect.gen(function* () {
+    const fence = yield* make;
+    yield* fence.attach;
+    const nativeScope = yield* Scope.make();
+    const existing = yield* fence.nativeUse.pipe(Effect.provideService(Scope.Scope, nativeScope));
+    let calls = 0;
+    let reopens = 0;
+    const attempt = launcherHandoffAttempt({
+      fence,
+      quiet: Effect.succeed(true),
+      request: Effect.sync(() => {
+        calls++;
+        return "accepted" as const;
+      }),
+      reopened: Effect.sync(() => void reopens++),
+    });
+    const waiting = yield* Effect.forkChild(attempt);
+    yield* existing.invalidated;
+    yield* TestClock.adjust("1 second");
+    const start = [{ request: { type: "provider-turn.start" } }];
+    expect((yield* fence.admit(start).pipe(Effect.flip)).phase).toBe("handing-off");
+    yield* TestClock.adjust("10 seconds");
+    expect(yield* Fiber.join(waiting)).toBe(true);
+    expect(calls).toBe(0);
+    expect(reopens).toBe(1);
+    yield* fence.admit(start);
+    expect((yield* existing.checkCurrent.pipe(Effect.flip)).phase).toBe("installing");
+    yield* Scope.close(nativeScope, Exit.void);
+    expect(yield* attempt).toBe(false);
+    expect(calls).toBe(1);
   }).pipe(Effect.scoped),
 );
 

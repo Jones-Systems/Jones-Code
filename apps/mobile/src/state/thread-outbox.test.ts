@@ -2,6 +2,7 @@ import { captureFollowUpModelSelection } from "../jones/threadConfiguration/mode
 import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentNotRegisteredError } from "@t3tools/client-runtime/connection";
 import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime/errors";
+import { decodePreparedThreadTurn } from "@t3tools/client-runtime/jones/preparedThreadTurn";
 import { EnvironmentRpcUnavailableError } from "@t3tools/client-runtime/rpc";
 import {
   CommandId,
@@ -10,15 +11,22 @@ import {
   EnvironmentId,
   MessageId,
   type ModelCapabilities,
+  ORCHESTRATION_V2_WS_METHODS,
   OrchestrationDispatchCommandError,
+  OrchestrationV2ThreadLaunchInput,
+  OrchestrationV2WorktreeBaseFreshness,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { AtomRegistry } from "effect/reactivity";
 import * as RpcClientError from "effect/rpc/RpcClientError";
 import * as Socket from "effect/socket/Socket";
 import { onTestFinished, vi } from "vite-plus/test";
+
+import { withIssuedQueuedThreadTurn } from "../jones/threadConfiguration/outboxDelivery";
 
 const outboxFiles = vi.hoisted(() => new Map<string, string | Error>());
 
@@ -81,6 +89,7 @@ import {
   decodeQueuedThreadMessage,
   encodeQueuedThreadMessage,
   isQueuedThreadCreationSendable,
+  QueuedThreadMessageSchema,
   resolveThreadOutboxDeliveryAction,
   resolveThreadOutboxDispatchStep,
   resolveThreadOutboxFailureAction,
@@ -111,6 +120,80 @@ function queuedMessage(input: {
     attachments: [],
     createdAt: input.createdAt,
   };
+}
+
+// Worktree-only projection of the embedded reader at 4ed713e00. That reader retains issuance.
+const embeddedCreation = QueuedThreadMessageSchema.fields.creation.schema.members[0].mapFields(
+  ({ repositories: _repositories, startsFromRepositoryDefaults: _defaults, ...fields }) => fields,
+);
+const embeddedPreparedLaunch = Schema.toCodecJson(
+  Schema.Struct({
+    method: Schema.Literal(ORCHESTRATION_V2_WS_METHODS.launchThread),
+    payload: OrchestrationV2ThreadLaunchInput.mapFields((fields) => ({
+      ...fields,
+      workspaceStrategy: Schema.Struct({
+        type: Schema.Literal("worktree"),
+        baseRef: Schema.optional(TrimmedNonEmptyString),
+        branch: Schema.optional(TrimmedNonEmptyString),
+        startFromOrigin: Schema.optional(Schema.Boolean),
+        baseFreshness: Schema.optional(OrchestrationV2WorktreeBaseFreshness),
+      }),
+    })),
+  }),
+);
+const [unissued, issued] = QueuedThreadMessageSchema.fields.issuance.schema.members[0].members;
+const decodeEmbeddedWorktreeRow = Schema.decodeUnknownSync(
+  QueuedThreadMessageSchema.mapFields(({ restoreToDraft: _, ...fields }) => ({
+    ...fields,
+    creation: Schema.optional(embeddedCreation),
+    issuance: Schema.optional(
+      Schema.Union([
+        unissued,
+        issued.mapFields((fields) => ({ ...fields, prepared: embeddedPreparedLaunch })),
+      ]),
+    ),
+  })),
+);
+const encodeOutboxFixture = Schema.encodeSync(QueuedThreadMessageSchema);
+
+function queuedWorktreeMessage() {
+  return {
+    ...queuedMessage({ messageId: "worktree-task", createdAt: "2026-11-26T12:00:00.000Z" }),
+    text: "Run the task in a worktree",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+    creation: {
+      projectId: ProjectId.make("project-1"),
+      workspaceMode: "worktree",
+      branch: "main",
+      worktreePath: null,
+    },
+    issuance: { state: "unissued" },
+  } satisfies QueuedThreadMessage;
+}
+
+function issuedWorktreeMessage(repositories?: ReadonlyArray<{ readonly path: string }>) {
+  const message = queuedWorktreeMessage();
+  const prepared = decodePreparedThreadTurn({
+    method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+    payload: {
+      commandId: message.commandId,
+      threadId: message.threadId,
+      projectId: message.creation.projectId,
+      creationSource: "mobile",
+      title: "Queued task",
+      generateTitle: true,
+      modelSelection: message.modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      workspaceStrategy: {
+        type: "worktree",
+        baseRef: "main",
+        ...(repositories === undefined ? {} : { repositories }),
+      },
+      initialMessage: { messageId: message.messageId, text: message.text, attachments: [] },
+    },
+  });
+  return withIssuedQueuedThreadTurn(message, prepared);
 }
 
 describe("thread outbox", () => {
@@ -293,7 +376,7 @@ describe("thread outbox", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
-  it("reads file-backed images from v4 queued messages", () => {
+  it("reads v4 file-backed images and saves them in the rollback-readable v3 format", () => {
     const message = {
       ...queuedMessage({
         messageId: "message-image",
@@ -314,7 +397,85 @@ describe("thread outbox", () => {
       ],
     } satisfies QueuedThreadMessage;
 
-    expect(decodeQueuedThreadMessage({ ...message, schemaVersion: 4 })).toEqual(message);
+    const recovered = decodeQueuedThreadMessage({ ...message, schemaVersion: 4 });
+    expect(recovered).toEqual(message);
+    const encoded = encodeQueuedThreadMessage(recovered);
+    expect(encoded).toMatchObject({ schemaVersion: 3, attachments: message.attachments });
+    expect(decodeQueuedThreadMessage(encoded)).toEqual(message);
+  });
+
+  it("writes ordinary v3 worktree rows both readers can replay without changing the request", () => {
+    const message = issuedWorktreeMessage();
+    const encoded = encodeQueuedThreadMessage(message);
+    expect(decodeQueuedThreadMessage(encoded)).toEqual(message);
+    expect(decodeEmbeddedWorktreeRow(encoded)).toEqual({ ...message, schemaVersion: 3 });
+  });
+
+  it.each([
+    { label: "an explicit empty list", scope: { repositories: [] } },
+    { label: "a repository subset", scope: { repositories: ["/workspace/api"] } },
+    { label: "repository default branches", scope: { startsFromRepositoryDefaults: true } },
+  ])("refuses to write a v3 creation with $label", ({ scope }) => {
+    const base = queuedWorktreeMessage();
+    const creation = { ...base.creation, branch: null };
+    const row = encodeOutboxFixture({
+      ...base,
+      schemaVersion: 3,
+      creation: { ...creation, ...scope },
+    });
+    const recovered = decodeQueuedThreadMessage(row);
+    expect(recovered.creation).toEqual({ ...creation, ...scope });
+    expect(decodeEmbeddedWorktreeRow(row)).toEqual({ ...base, schemaVersion: 3, creation });
+    expect(isQueuedThreadCreationSendable(recovered)).toBe(false);
+    expect(() => encodeQueuedThreadMessage(recovered)).toThrow("Worktree repository settings");
+  });
+
+  it("rejects a scoped issued launch before writing and preserves an existing issued row", async () => {
+    onTestFinished(() => outboxFiles.clear());
+    const message = issuedWorktreeMessage([]);
+    const row = encodeOutboxFixture({ ...message, schemaVersion: 3 });
+    const oldProjection = decodeEmbeddedWorktreeRow(row);
+    expect(oldProjection).toMatchObject({
+      commandId: message.commandId,
+      issuance: {
+        state: "issued",
+        prepared: {
+          payload: {
+            commandId: message.commandId,
+            workspaceStrategy: { type: "worktree", baseRef: "main" },
+          },
+        },
+      },
+    });
+    expect(oldProjection).not.toHaveProperty(
+      "issuance.prepared.payload.workspaceStrategy.repositories",
+    );
+    expect(decodeQueuedThreadMessage(row)).toEqual(message);
+    await expect(expoThreadOutboxStorage.write(message)).rejects.toMatchObject({
+      operation: "write",
+    });
+    expect(outboxFiles.size).toBe(0);
+
+    const fileName = `${message.messageId}.json`;
+    const contents = JSON.stringify(row);
+    outboxFiles.set(fileName, contents);
+    await expect(expoThreadOutboxStorage.load()).resolves.toEqual({
+      messages: [message],
+      errors: [],
+    });
+    await expect(
+      expoThreadOutboxStorage.write({ ...message, text: "Edited draft" }),
+    ).rejects.toMatchObject({ operation: "write" });
+    expect([...outboxFiles]).toEqual([[fileName, contents]]);
+  });
+
+  it("reads a scoped upstream v4 row without manufacturing issuance", () => {
+    const { issuance: _, ...base } = queuedWorktreeMessage();
+    const message = { ...base, creation: { ...base.creation, repositories: [] } };
+    const recovered = decodeQueuedThreadMessage({ ...message, schemaVersion: 4 });
+    expect(recovered).toEqual(message);
+    expect(recovered.issuance).toBeUndefined();
+    expect(isQueuedThreadCreationSendable(recovered)).toBe(false);
   });
 
   it("persists the exact selector snapshot while remaining compatible with v1 messages", () => {
@@ -791,6 +952,42 @@ describe("thread outbox", () => {
     await expect(manager.update({ ...message, text: "stale flush" })).resolves.toBe(false);
     expect(registry.get(manager.queuedMessagesByThreadKeyAtom)).toEqual({});
     expect(stored.size).toBe(0);
+    registry.dispose();
+  });
+
+  it("composes concurrent modifications of one message instead of rejecting the later one", async () => {
+    const registry = AtomRegistry.make();
+    const stored = new Map<MessageId, QueuedThreadMessage>();
+    const manager = createThreadOutboxManager({
+      registry,
+      storage: {
+        load: async () => ({ messages: [], errors: [] }),
+        write: async (message) => {
+          stored.set(message.messageId, message);
+        },
+        remove: async () => undefined,
+      },
+    });
+    const message = queuedMessage({
+      messageId: "message-two-uploads",
+      createdAt: "2026-06-08T10:00:01.000Z",
+    });
+    await manager.enqueue(message);
+
+    // Two attachments finishing together each record their upload on the same message.
+    const results = await Promise.all([
+      manager.modify(message.messageId, (current) => ({ ...current, text: `${current.text} a` })),
+      manager.modify(message.messageId, (current) => ({ ...current, text: `${current.text} b` })),
+    ]);
+
+    expect(results).toEqual([true, true]);
+    const composed = { ...message, text: `${message.text} a b` };
+    expect(registry.get(manager.queuedMessagesByThreadKeyAtom)).toEqual({
+      "environment-1:thread-1": [composed],
+    });
+    expect(stored.get(message.messageId)).toEqual(composed);
+    await manager.remove(composed);
+    await expect(manager.modify(message.messageId, (current) => current)).resolves.toBe(false);
     registry.dispose();
   });
 

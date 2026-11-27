@@ -26,7 +26,13 @@ it("initializes React refresh before a shared UI chunk runs in bundled dev", asy
   try {
     await NodeFSP.mkdir(NodePath.join(root, "src/lib"), { recursive: true });
     await NodeFSP.writeFile(NodePath.join(root, "package.json"), '{"type":"module"}');
-    for (const file of ["index.html", "src/bootstrap.ts", "src/env.ts", "src/lib/bootError.ts"]) {
+    for (const file of [
+      "index.html",
+      "src/bootstrap.ts",
+      "src/env.ts",
+      "src/lib/bootError.ts",
+      "src/lib/chunkReloadGuard.ts",
+    ]) {
       await NodeFSP.copyFile(new URL(`../${file}`, import.meta.url), NodePath.join(root, file));
     }
     await NodeFSP.writeFile(
@@ -107,6 +113,7 @@ globalThis.onStarted({ entry: "queue", renderedElement: Shared() });`,
 const started = Promise.withResolvers();
 globalThis.window = globalThis;
 globalThis.window.location = new URL(process.argv[2], "https://preview.example.com");
+globalThis.window.addEventListener = () => {};
 globalThis.document = {
   createElement: () => ({ relList: { supports: () => true } }),
   getElementById: () => null,

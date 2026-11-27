@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.1.9",
+  "version": "0.1.12",
   "private": true,
   "files": [
     "dist"
@@ -22,6 +22,10 @@
     "./jones/remoteAdmissionReview": {
       "types": "./src/jones/remoteAdmissionReview.ts",
       "import": "./src/jones/remoteAdmissionReview.ts"
+    },
+    "./jones/requestManagement": {
+      "types": "./src/jones/requestManagement.ts",
+      "import": "./src/jones/requestManagement.ts"
     },
     "./jones/repoFreshness": {
       "types": "./src/jones/repoFreshness.ts",

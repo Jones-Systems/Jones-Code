@@ -1,7 +1,7 @@
 import type { WorkspaceRetirementOutcome } from "@t3tools/contracts";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   proposalCopy,
   readbackLabel,
@@ -57,7 +57,7 @@ export function ReasonLabels({ codes }: { codes: readonly string[] }) {
 /** The branch that kept this checkout's uncertain content, with the command that restores it. */
 export function PreserveReceipt({ preserve }: { preserve: NonNullable<Retirement["preserve"]> }) {
   const { copyToClipboard, isCopied } = useCopyToClipboard({
-    target: "restore command",
+    target: namedClipboardTarget("restore command"),
     timeout: 1_200,
   });
   return (

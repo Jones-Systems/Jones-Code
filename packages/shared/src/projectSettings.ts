@@ -220,8 +220,9 @@ export function resolveNewThreadEnvMode(
 export function resolveSendEnvMode<Mode extends ThreadEnvMode | "auto">(input: {
   readonly requestedEnvMode: Mode;
   readonly isGitRepo: boolean;
+  readonly tracksGitRepositories?: boolean;
 }): Mode | "local" {
-  return input.isGitRepo ? input.requestedEnvMode : "local";
+  return input.isGitRepo || input.tracksGitRepositories === true ? input.requestedEnvMode : "local";
 }
 
 export function clearProjectSettingsOverrides(

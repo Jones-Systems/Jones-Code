@@ -26,6 +26,7 @@ import {
 } from "../../components/sidebar/updateEverything.logic";
 import { describeJonesBulkTargets } from "./bulkUpdates";
 import {
+  connectionsPlanDispatch,
   routeInstallStatusPill,
   routeLaptopDownload,
   routeLaptopInstall,
@@ -122,6 +123,127 @@ const desktop: DesktopUpdateState = {
     },
   },
 };
+
+describe("Connections Match laptop", () => {
+  const hostId = EnvironmentId.make("test-server");
+  const runningSource = "6".repeat(40);
+  const runningTree = "7".repeat(40);
+  const generation = "8".repeat(64);
+  const observedAt = plan.createdAt;
+  const installed = {
+    repository: target.repository,
+    sha: runningSource,
+    tree: runningTree,
+  };
+  const runningTarget = {
+    repository: target.repository,
+    sourceSha: runningSource,
+    sourceTree: runningTree,
+    version: "0.1.9-preview.20261119.44567304533.1",
+  };
+
+  it.each(["ready", "matching-source", "stale", "different-plan"] as const)(
+    "uses only verified running evidence for exact handoff (%s)",
+    async (scenario) => {
+      const state: JonesInstallPlanState = {
+        ...native(scenario === "different-plan" ? plan : null),
+        view: { complete: false, matchRunningLaptop: 1 },
+        laptop: {
+          ...native(null).laptop,
+          observedAt,
+          activeSource: runningSource,
+          activeTree: runningTree,
+          activeVersion: runningTarget.version,
+          activeGeneration: generation,
+          committedTransactionId: generation,
+        },
+      };
+      const device: InstallStatusDevice = {
+        environmentId: hostId,
+        label: "Test Server",
+        canOperate: true,
+        fleetStatus: null,
+        observation: {
+          freshness: "fresh",
+          state: {
+            ...desktop.jones!,
+            environmentId: hostId,
+            capability: { ...desktop.jones!.capability, operations: 1, exactSource: true },
+            currentVersion: "0.1.9-preview.20261119.44567304618.1",
+            installedSource: {
+              ...installed,
+              sha: scenario === "matching-source" ? runningSource : "4".repeat(40),
+            },
+          },
+        },
+      };
+      const unused = async () => {
+        throw new Error("Unexpected host dispatch during native handoff");
+      };
+      const getUpdateState = vi.fn(async () => desktop);
+      const services: InstallPlanServices = {
+        bridge: {
+          installPlan: vi.fn(async () => ({ state })),
+          getUpdateState,
+          onUpdateState: () => () => {},
+        },
+        devices: () => [device],
+        observe: async () => device,
+        host: unused,
+        legacy: unused,
+        operation: unused,
+        stop: unused,
+        confirm: unused,
+        chooseRecovery: unused,
+        now: () => Date.parse(observedAt) + (scenario === "stale" ? 120_001 : 0),
+      };
+      const dispatch = vi.fn(async (_request: JonesInstallPlanRequest) => ({ state }));
+      const unbind = bindInstallPlanServices(services, createInstallStatusStore());
+      try {
+        const { planGate } = connectionsPlanDispatch(
+          installPlanServices(),
+          { kind: "download-exact", targetSource: runningSource },
+          undefined,
+          () => dispatch,
+          () => true,
+          generation,
+        );
+        const result = planGate(hostId, runningSource);
+        if (scenario === "stale" || scenario === "different-plan")
+          await expect(result).resolves.toMatchObject({
+            kind: "refused",
+            message: expect.stringContaining(
+              scenario === "stale"
+                ? "verified running build changed"
+                : "Review the current Laptop plan",
+            ),
+          });
+        else if (scenario === "matching-source")
+          await expect(result).resolves.toMatchObject({
+            kind: "refused",
+            message: expect.stringContaining("Already on"),
+          });
+        else {
+          await expect(result).resolves.toMatchObject({ kind: "handled" });
+          expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+            {
+              type: "start",
+              origin: "connections",
+              expectedRunningGeneration: generation,
+              target: runningTarget,
+              select: [{ environmentId: hostId, label: "Test Server", route: "operations" }],
+            },
+            state,
+          );
+        }
+        if (scenario !== "ready") expect(dispatch).not.toHaveBeenCalled();
+        expect(getUpdateState).not.toHaveBeenCalled();
+      } finally {
+        unbind();
+      }
+    },
+  );
+});
 
 describe("bound Install status actions", () => {
   const hostId = EnvironmentId.make("stop-host");

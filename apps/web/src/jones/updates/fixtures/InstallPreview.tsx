@@ -18,6 +18,8 @@ import {
 } from "@tanstack/react-router";
 import "../../../index.css";
 import { isElectron } from "../../../env";
+import { I18nProvider } from "../../../i18n/I18nProvider";
+import { initializeI18n } from "../../../i18n/initializeI18n";
 import { AppAtomRegistryProvider } from "../../../rpc/atomRegistry";
 import { useDesktopUpdateState } from "../../../state/desktopUpdate";
 import { AboutVersionSection } from "../../../components/settings/SettingsPanels";
@@ -441,6 +443,7 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
 }
 
 export async function mountInstallPreview(fixture: InstallPreviewFixture) {
+  initializeI18n(() => {});
   const routeTree = createRootRoute({ component: () => <FixtureScreen fixture={fixture} /> });
   const router = createRouter({
     routeTree,
@@ -449,9 +452,11 @@ export async function mountInstallPreview(fixture: InstallPreviewFixture) {
   await router.load();
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <AppAtomRegistryProvider>
-        <RouterProvider router={router} />
-      </AppAtomRegistryProvider>
+      <I18nProvider>
+        <AppAtomRegistryProvider>
+          <RouterProvider router={router} />
+        </AppAtomRegistryProvider>
+      </I18nProvider>
     </StrictMode>,
   );
 }

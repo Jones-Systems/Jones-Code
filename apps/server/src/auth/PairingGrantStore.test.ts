@@ -1,4 +1,4 @@
-import { AuthAdministrativeScopes } from "@t3tools/contracts";
+import { AuthAdministrativeClientScopes } from "@t3tools/contracts";
 import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -16,6 +16,7 @@ import {
 } from "@t3tools/shared/desktopBootstrapToken";
 
 import * as ServerConfig from "../config.ts";
+import { MCP_APPROVAL_SUBJECT_PREFIX } from "../persistence/AuthPairingLinks.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as PairingGrantStore from "./PairingGrantStore.ts";
 
@@ -204,6 +205,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
         ),
       );
       expect(current.method).toBe("desktop-bootstrap");
+      expect(current.scopes).toEqual(AuthAdministrativeClientScopes);
 
       const staleToken = yield* currentDesktopBootstrapToken(
         "desktop-secret",
@@ -237,7 +239,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
       );
       // An app approval code sends no update, issued or spent; the next belongs to a plain code.
       const approval = yield* grants.issueOneTimeToken({ mcpApproval: "auto" });
-      yield* grants.consume(approval.credential, { mcpApproval: "auto" });
+      yield* grants.consume(approval.credential, {
+        allowedSubject: `${MCP_APPROVAL_SUBJECT_PREFIX}auto`,
+      });
       for (const input of [{}, { label: "Synthetic phone" }]) {
         const issued = yield* grants.issueOneTimeToken(input);
         const change = yield* Queue.take(changes);
@@ -280,7 +284,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
       const third = yield* bootstrapCredentials.consume("desktop-bootstrap-token");
 
       expect(first.method).toBe("desktop-bootstrap");
-      expect(first.scopes).toEqual(AuthAdministrativeScopes);
+      expect(first.scopes).toEqual(AuthAdministrativeClientScopes);
       expect(first.subject).toBe("desktop-bootstrap");
       expect(second.method).toBe("desktop-bootstrap");
       expect(third.method).toBe("desktop-bootstrap");

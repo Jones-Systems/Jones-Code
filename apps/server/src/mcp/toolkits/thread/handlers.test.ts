@@ -23,6 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { emptyProjection } from "../../../orchestration-v2/ProjectionStore.ts";
@@ -124,6 +125,7 @@ it.effect("blocks foreign text edits and answers while preserving self controls 
     const commands: OrchestrationV2ServerCommand[] = [];
     const dependencies = Layer.mergeAll(
       Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
       NodeCrypto.layer,
       Layer.mock(ThreadSearch.ThreadSearch)({}),
       Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
@@ -258,6 +260,7 @@ it.effect(
       const batches: unknown[] = [];
       const layer = Layer.mergeAll(
         Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
         NodeCrypto.layer,
         Layer.mock(ThreadSearch.ThreadSearch)({}),
         Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
@@ -369,6 +372,7 @@ const makeControlToolkit = (
     const dependencies = Layer.mergeAll(
       NodeCrypto.layer,
       Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
       Layer.mock(ThreadSearch.ThreadSearch)({}),
       Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
       configuration === undefined

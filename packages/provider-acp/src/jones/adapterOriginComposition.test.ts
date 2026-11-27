@@ -21,6 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import type * as AcpSchema from "effect-acp/compat";
 import * as AcpErrors from "effect-acp/errors";
+import { noCompatibilityPolicy } from "@t3tools/provider-core/server/compatibility";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -47,6 +48,7 @@ const host = ProviderHost.ProviderHost.of({
   shouldRunBackgroundWork: () => Effect.succeed(false),
   resolveAttachmentPath: () => null,
   credentials: () => Effect.die("origin harness does not access credentials"),
+  compatibility: noCompatibilityPolicy,
 });
 const layer = Layer.mergeAll(
   NodeServices.layer,

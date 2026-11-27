@@ -1268,11 +1268,17 @@ export const retirementCases: Record<string, () => Promise<void>> = {
   "settlement replay never starts another script and completion is durable": () =>
     fixture(async ({ base, worktree }) => {
       const f = await fixtureSql(NodePath.join(base, "jones.sqlite3"));
+      f.db.exec(
+        "CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY,payload_json TEXT)",
+      );
       f.db
         .prepare(
           "INSERT INTO jones_workspace_retirement_intents(event_id,thread_id,worktree,settled_at) VALUES(?,?,?,?)",
         )
         .run("event", "thread", worktree, "2026-11-06T00:00:00Z");
+      f.db
+        .prepare("INSERT INTO orchestration_v2_projection_threads VALUES (?,?)")
+        .run("thread", '{"deletedAt":null}');
       try {
         await Effect.runPromise(
           Effect.gen(function* () {
@@ -1285,6 +1291,17 @@ export const retirementCases: Record<string, () => Promise<void>> = {
               "completed",
             );
             NodeAssert.equal(yield* store.startScript("event"), false);
+            f.db
+              .prepare(
+                "INSERT INTO jones_workspace_retirement_intents(event_id,thread_id,worktree,settled_at) VALUES(?,?,?,?)",
+              )
+              .run("deleted", "thread", worktree, "2026-11-07T00:00:00Z");
+            f.db
+              .prepare(
+                "UPDATE orchestration_v2_projection_threads SET payload_json=? WHERE thread_id=?",
+              )
+              .run('{"deletedAt":"2026-11-07T00:00:00Z"}', "thread");
+            NodeAssert.equal(yield* store.startScript("deleted"), false);
           }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
         );
       } finally {
