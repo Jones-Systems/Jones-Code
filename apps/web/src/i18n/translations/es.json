@@ -13080,5 +13080,12 @@
   "26f58319308650a1": "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
   "7fd7bc99180bcfad": "This plan's exact reservation changed or expired. Check the original operation.",
   "096cbc9bd8370186": "The reviewed stage changed. Check the original operation and review again.",
-  "08ff07123c656e31": "The control changed before Stop was sent."
+  "08ff07123c656e31": "The control changed before Stop was sent.",
+  "c60ae06b56e701c9": "El lote se detuvo en el árbol de trabajo {position} de {total}. {detail}",
+  "8a1e289ad6985b8e": "Retirando el árbol de trabajo {position} de {total}…",
+  "a89a98450e7df820": "Consulta el informe guardado antes de volver a intentarlo.",
+  "49829788d8614e93": "¿Retirar {count} árboles de trabajo en {machine}?",
+  "a1a73f4937a67b5c": "Jones Code vuelve a comprobar cada copia de trabajo antes de retirarla. Se conservan las ramas y las referencias de recuperación.\n\nEsto autoriza a retirar las copias de trabajo indicadas y las rutas exactas seleccionadas, incluidas las nuevas incorporaciones dentro de esas rutas.",
+  "65b5658a44e3a780": "No se ha seleccionado contenido local.",
+  "da46c14b50a74119": "Retirar todos"
 }

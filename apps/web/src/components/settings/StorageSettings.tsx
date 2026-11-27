@@ -1,6 +1,9 @@
 import { requestConfirmDialog } from "~/confirmDialog";
 import { CleanupResults } from "../../jones/storageCleanupResults/CleanupResults";
-import { retireConfirmation } from "../../jones/storageCleanupResults/retirementCopy";
+import {
+  retireAllConfirmation,
+  retireConfirmation,
+} from "../../jones/storageCleanupResults/retirementCopy";
 import {
   cleanupFleetTimestamp,
   cleanupReportSummary,
@@ -418,35 +421,51 @@ function CleanupSection() {
     environment: (typeof supported)[number],
     operation: CleanupOperation,
     input: Parameters<typeof run>[0]["input"],
+    batch?: { position: number; total: number },
   ) => {
     const { environmentId } = environment;
     const label = settingsScopeEnvironmentLabel(environment, connectedEnvironments);
     const update = (request: CleanupRequest) =>
       setRequests((current) => ({ ...current, [environmentId]: { ...request, label } }));
-    update({ operation, status: "running" });
-    try {
-      const result = await run({ environmentId, input });
-      if (result._tag === "Success") {
-        update({ operation, status: "completed", report: result.value });
-        if (operation === "propose" || operation === "retire")
-          setArrivedReportKey(
-            JSON.stringify([environmentId, result.value.startedAt, result.value.finishedAt]),
-          );
-      } else {
-        update({
-          operation,
-          status: "unconfirmed",
-          detail: isAtomCommandInterrupted(result)
-            ? "The request was interrupted; check the retained report before trying again."
-            : String(squashAtomCommandFailure(result)),
-        });
-      }
-    } catch (error) {
+    const unconfirmed = (detail: string) => {
       update({
         operation,
         status: "unconfirmed",
-        detail: error instanceof Error ? error.message : String(error),
+        detail: batch
+          ? gt("Batch stopped at worktree {position} of {total}. {detail}", { ...batch, detail })
+          : detail,
       });
+      return false;
+    };
+    update({
+      operation,
+      status: "running",
+      ...(batch ? { detail: gt("Retiring worktree {position} of {total}…", batch) } : {}),
+    });
+    try {
+      const result = await run({ environmentId, input });
+      if (result._tag !== "Success")
+        return unconfirmed(
+          isAtomCommandInterrupted(result)
+            ? "The request was interrupted; check the retained report before trying again."
+            : String(squashAtomCommandFailure(result)),
+        );
+      if (operation === "propose" || operation === "retire")
+        setArrivedReportKey(
+          JSON.stringify([environmentId, result.value.startedAt, result.value.finishedAt]),
+        );
+      if (batch && input.retirement) {
+        const target = input.retirement;
+        const targetState = result.value.entries.find(
+          (entry) => entry.threadId === target.threadId && entry.path === target.worktreePath,
+        )?.retirement?.state;
+        if (targetState !== "retired" && targetState !== "held" && targetState !== "not_retired")
+          return unconfirmed(gt("Check the retained report before trying again."));
+      }
+      update({ operation, status: "completed", report: result.value });
+      return true;
+    } catch (error) {
+      return unconfirmed(error instanceof Error ? error.message : String(error));
     }
   };
   const propose = async () => {
@@ -470,47 +489,72 @@ function CleanupSection() {
         ]),
       ),
     }));
-    await targets
-      .reduce(
-        (previous, environment) =>
-          previous.then(() =>
-            execute(environment, "propose", { retirement: { action: "propose" } }),
-          ),
-        Promise.resolve(),
-      )
-      .finally(() => setPending(false));
+    try {
+      for (const environment of targets)
+        await execute(environment, "propose", { retirement: { action: "propose" } });
+    } finally {
+      setPending(false);
+    }
   };
-  const retireTarget = async (
+  const retireTargets = async (
     environmentId: (typeof supportedIds)[number],
-    entry: StorageCleanupReport["entries"][number],
+    entries: StorageCleanupReport["entries"],
   ) => {
-    if (pending || !entry.threadId || !entry.path || !entry.retirement?.fingerprint) return;
+    if (pending || entries.length === 0) return;
     const environment = supported.find((candidate) => candidate.environmentId === environmentId);
     if (
       !environment ||
       !state.some((entry) => entry.environmentId === environmentId && entry.allowed)
     )
       return;
-    const coveredPaths = entry.retirement.paths;
-    const confirmed = await (requestConfirmDialog(
-      retireConfirmation({
+    const targets = [];
+    for (const entry of entries) {
+      if (!entry.threadId || !entry.path || !entry.retirement?.fingerprint) return;
+      targets.push({
         path: entry.path,
-        coveredPaths,
+        coveredPaths: entry.retirement.paths,
         recoverability: entry.retirement.recoverability,
-      }),
-      { variant: "destructive" },
-    ) ?? Promise.resolve(false));
-    if (!confirmed) return;
-    setPending(true);
-    await execute(environment, "retire", {
-      retirement: {
-        action: "retire",
         threadId: entry.threadId,
-        worktreePath: entry.path,
         expectedFingerprint: entry.retirement.fingerprint,
-        coveredPaths,
-      },
-    }).finally(() => setPending(false));
+      });
+    }
+    const total = targets.length;
+    const message =
+      total === 1
+        ? retireConfirmation(targets[0]!)
+        : retireAllConfirmation(targets, {
+            title: gt("Retire {count} worktrees on {machine}?", {
+              count: total,
+              machine: settingsScopeEnvironmentLabel(environment, connectedEnvironments),
+            }),
+            description: gt(
+              "Jones Code rechecks each checkout before removing it. Branches and recovery references are kept.\n\nThis authorizes disposal of the listed checkouts and their exact selections, including additions within the listed roots.",
+            ),
+            noSelection: gt("No local content selected."),
+          });
+    setPending(true);
+    try {
+      if (!(await requestConfirmDialog(message, { variant: "destructive" }))) return;
+      for (const [index, target] of targets.entries()) {
+        const confirmed = await execute(
+          environment,
+          "retire",
+          {
+            retirement: {
+              action: "retire",
+              threadId: target.threadId,
+              worktreePath: target.path,
+              expectedFingerprint: target.expectedFingerprint,
+              coveredPaths: target.coveredPaths,
+            },
+          },
+          total > 1 ? { position: index + 1, total } : undefined,
+        );
+        if (!confirmed) break;
+      }
+    } finally {
+      setPending(false);
+    }
   };
   const deleteNow = async () => {
     if (pending) return;
@@ -653,13 +697,15 @@ function CleanupSection() {
                     report,
                     timestampFormat,
                     nowMs,
-                    ...(!pending &&
-                    environment?.serverConfig?.environment.capabilities
+                    ...(environment?.serverConfig?.environment.capabilities
                       .settledWorktreeRetirement === true &&
                     state.some((e) => e.environmentId === environment.environmentId && e.allowed)
                       ? {
+                          retirementPending: pending,
                           onRetire: (entry: StorageCleanupReport["entries"][number]) =>
-                            void retireTarget(environment.environmentId, entry),
+                            void retireTargets(environment.environmentId, [entry]),
+                          onRetireAll: (entries: StorageCleanupReport["entries"]) =>
+                            void retireTargets(environment.environmentId, entries),
                         }
                       : {}),
                   },

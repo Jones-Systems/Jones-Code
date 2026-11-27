@@ -143,12 +143,14 @@ export function readbackLabel(readback: Preserve["readback"]) {
   return `Local branch ${local} · remote ${remote}`;
 }
 
-/** The sentence the Retire confirmation shows. Falls back to the original text without a preserve plan. */
-export function retireConfirmation(input: {
+type RetirementSelection = {
   path: string;
   coveredPaths: readonly string[];
   recoverability: Recoverability | undefined;
-}) {
+};
+
+/** The sentence the Retire confirmation shows. Falls back to the original text without a preserve plan. */
+export function retireConfirmation(input: RetirementSelection) {
   const copy = proposalCopy(input.recoverability);
   const covered = `${input.coveredPaths.length ? input.coveredPaths.join("\n") : "No local content selected."}`;
   if (copy?.kind === "preserve")
@@ -160,4 +162,19 @@ Live consumers, nested repositories, secrets and other protections still hold.`;
   return `Retire ${input.path}? Branches and recovery references are kept. This authorizes disposal only of these exact selections, including additions within the listed roots:
 ${covered}
 Live consumers, tracked edits, nested repositories and other protections still hold.`;
+}
+
+export function retireAllConfirmation(
+  selections: readonly RetirementSelection[],
+  strings: { title: string; description: string; noSelection: string },
+) {
+  const checkouts = selections.map((selection) => {
+    const copy = proposalCopy(selection.recoverability);
+    return [
+      selection.path,
+      ...(copy?.kind === "preserve" ? copy.lines : []),
+      selection.coveredPaths.length ? selection.coveredPaths.join("\n") : strings.noSelection,
+    ].join("\n");
+  });
+  return [strings.title, strings.description, ...checkouts].join("\n\n");
 }

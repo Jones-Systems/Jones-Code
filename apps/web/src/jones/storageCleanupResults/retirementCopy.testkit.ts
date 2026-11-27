@@ -6,6 +6,7 @@ import {
   proposalCopy,
   readbackLabel,
   recoverabilityAllowsRetire,
+  retireAllConfirmation,
   retireConfirmation,
   retirementReasonLabel,
   shortSha,
@@ -45,6 +46,32 @@ const preservable = (
 });
 
 export const retirementCopyCases = {
+  "batch confirmation identifies the machine and each exact selection and preserve plan": () => {
+    const text = retireAllConfirmation(
+      [
+        {
+          path: "/checkouts/alpha",
+          coveredPaths: ["/checkouts/alpha/cache"],
+          recoverability: undefined,
+        },
+        {
+          path: "/checkouts/beta",
+          coveredPaths: [],
+          recoverability: preservable({ remote: "origin" }),
+        },
+      ],
+      {
+        title: "Retire 2 worktrees on MacBook Pro?",
+        description: "Jones Code rechecks each checkout before removing it.",
+        noSelection: "No local content selected.",
+      },
+    );
+    NodeAssert.match(text, /^Retire 2 worktrees on MacBook Pro\?/);
+    NodeAssert.match(text, /\/checkouts\/alpha\n\/checkouts\/alpha\/cache/);
+    NodeAssert.match(text, /\/checkouts\/beta\nRetire saves 12 files/);
+    NodeAssert.match(text, /pushed to the remote "origin" and read back/);
+    NodeAssert.match(text, /No local content selected\.$/);
+  },
   "every preserve reason code has its own human label, never the raw code": () => {
     const labels = NEW_REASON_CODES.map((code) => retirementReasonLabel(code));
     for (const [index, label] of labels.entries()) {

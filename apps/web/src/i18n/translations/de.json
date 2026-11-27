@@ -13085,5 +13085,12 @@
   "26f58319308650a1": "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
   "7fd7bc99180bcfad": "This plan's exact reservation changed or expired. Check the original operation.",
   "096cbc9bd8370186": "The reviewed stage changed. Check the original operation and review again.",
-  "08ff07123c656e31": "The control changed before Stop was sent."
+  "08ff07123c656e31": "The control changed before Stop was sent.",
+  "c60ae06b56e701c9": "Der Vorgang wurde bei Arbeitsbaum {position} von {total} angehalten. {detail}",
+  "8a1e289ad6985b8e": "Arbeitsbaum {position} von {total} wird entfernt…",
+  "a89a98450e7df820": "Prüfe vor einem erneuten Versuch den gespeicherten Bericht.",
+  "49829788d8614e93": "{count} Arbeitsbäume auf {machine} entfernen?",
+  "a1a73f4937a67b5c": "Jones Code prüft jedes Checkout vor dem Entfernen erneut. Branches und Wiederherstellungsreferenzen bleiben erhalten.\n\nDu erlaubst damit das Entfernen der aufgeführten Checkouts und der genau angegebenen Pfade einschließlich neuer Inhalte innerhalb dieser Pfade.",
+  "65b5658a44e3a780": "Keine lokalen Inhalte ausgewählt.",
+  "da46c14b50a74119": "Alle entfernen"
 }
