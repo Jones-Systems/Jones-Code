@@ -12,6 +12,7 @@ follow the displayed order.
 | Journey                                           | Surface                                                               | Coverage                                                              |
 | ------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | Create, rename, lifecycle, reorder, delete        | Sidebar group menu; mobile group controls                             | Personal browser and mobile presentation/control tests                |
+| Reorder across the visible sidebar                | Drag a named Workstream header toward the top or bottom edge          | Browser test for edge scrolling and dropping on a revealed group      |
 | Change a Workstream color                         | Sidebar group menu; mobile group controls                             | Web browser tests for mouse, keyboard, and color readback             |
 | Start a thread in a Workstream                    | Right-click a named group or focus its header and press Shift+F10     | Group menu activation and draft seeding tests                         |
 | Set, change or clear a name icon                  | Inline toolbar form and **Change icon** submenu on web and desktop    | Ordered selection, wrapped titles and sync tests                      |

@@ -4,6 +4,7 @@ import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Si
 import { requestCustomSnooze } from "../CustomSnoozeDialog";
 import {
   useEffect,
+  useEffectEvent,
   useId,
   useLayoutEffect,
   useRef,
@@ -98,6 +99,7 @@ import {
   workstreamDragType,
   type WorkstreamReference,
 } from "../../jones/workstreams/workstreamReferenceDrop";
+import { createSidebarDragAutoScroll } from "../../jones/workstreams/sidebarDragAutoScroll";
 
 function currentSnoozePresets(
   timestampFormat: Parameters<typeof resolveSnoozePresets>[1],
@@ -699,48 +701,91 @@ export function WorkstreamSidebarSection({
     setDraggedId(null);
     setInsertion(null);
   };
-  const destination = (event: DragEvent<HTMLDivElement>, targetId: string) => {
+  const destination = (target: HTMLElement, targetId: string, y: number) => {
     const source = draggedRef.current;
-    if (
-      !source ||
-      !state.canCreate ||
-      reorderPending.current ||
-      !event.dataTransfer.types.includes(workstreamDragType)
-    )
-      return null;
+    if (!source || !state.canCreate || reorderPending.current) return null;
     const sourceIndex = openWorkstreams.findIndex((entry) => entry.id === source);
     if (sourceIndex < 0) return null;
     const others = openWorkstreams.filter((entry) => entry.id !== source);
     if (targetId === source) return null;
-    const header = event.currentTarget.querySelector("[data-workstream-header]");
+    const header = target.querySelector("[data-workstream-header]");
     if (!header) return null;
     // Rows can make a group very tall. Header halves must remain reachable
     // drop targets in both directions regardless of the group's member count.
     const rect = header.getBoundingClientRect();
     const index = others.findIndex((entry) => entry.id === targetId);
     if (index < 0) return null;
-    const slot = index + (event.clientY >= rect.top + rect.height / 2 ? 1 : 0);
+    const slot = index + (y >= rect.top + rect.height / 2 ? 1 : 0);
     if (slot === sourceIndex) return null;
     return { beforeId: others[slot - 1]?.id ?? null, afterId: others[slot]?.id ?? null };
   };
+  const updateInsertion = (next: typeof insertion) => {
+    setInsertion((current) =>
+      current?.beforeId === next?.beforeId && current?.afterId === next?.afterId ? current : next,
+    );
+  };
+  const updateScrolledInsertion = useEffectEvent(({ x, y }: { x: number; y: number }) => {
+    const slot = containerRef.current?.ownerDocument
+      .elementFromPoint(x, y)
+      ?.closest<HTMLElement>("[data-workstream-group-slot]");
+    const id = slot?.dataset.workstreamGroupSlot;
+    updateInsertion(
+      id && slot && containerRef.current?.contains(slot) ? destination(slot, id, y) : null,
+    );
+  });
+  const canScrollDrag =
+    state.canCreate && !namedHidden && openWorkstreams.some((entry) => entry.id === draggedId);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Bind native drag listeners and the scroll animation to the active Workstream reorder.
+  useEffect(() => {
+    if (!canScrollDrag) return;
+    const viewport = containerRef.current?.closest<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
+    if (!viewport) return;
+    const scroll = createSidebarDragAutoScroll(viewport, (point) => updateScrolledInsertion(point));
+    const listeners = new AbortController();
+    const { signal } = listeners;
+    viewport.addEventListener(
+      "dragover",
+      (event) => {
+        if (event.dataTransfer?.types.includes(workstreamDragType)) {
+          scroll.move({ x: event.clientX, y: event.clientY });
+        }
+      },
+      { capture: true, signal },
+    );
+    viewport.addEventListener(
+      "dragleave",
+      ({ relatedTarget }) => {
+        if (!(relatedTarget instanceof Node) || !viewport.contains(relatedTarget)) scroll.dispose();
+      },
+      { signal },
+    );
+    return () => {
+      listeners.abort();
+      scroll.dispose();
+    };
+  }, [canScrollDrag, containerRef]);
   const dragOver = (event: DragEvent<HTMLDivElement>, targetId: string) => {
     if (!draggedRef.current) return;
     event.stopPropagation();
-    const next = destination(event, targetId);
+    const next = event.dataTransfer.types.includes(workstreamDragType)
+      ? destination(event.currentTarget, targetId, event.clientY)
+      : null;
     if (next) {
       event.preventDefault();
       event.dataTransfer.dropEffect = "move";
     }
-    setInsertion((current) =>
-      current?.beforeId === next?.beforeId && current?.afterId === next?.afterId ? current : next,
-    );
+    updateInsertion(next);
   };
   const drop = (event: DragEvent<HTMLDivElement>, targetId: string) => {
     if (!draggedRef.current) return;
     event.preventDefault();
     event.stopPropagation();
     const source = draggedRef.current;
-    const next = destination(event, targetId);
+    const next = event.dataTransfer.types.includes(workstreamDragType)
+      ? destination(event.currentTarget, targetId, event.clientY)
+      : null;
     clearDrag();
     if (!next) return;
     reorderPending.current = true;
@@ -855,7 +900,7 @@ export function WorkstreamSidebarSection({
           {drafts}
         </ul>
       ) : null}
-      <div data-workstream-group-slot className="relative py-1">
+      <div data-workstream-group-slot="" className="relative py-1">
         <section
           data-native-workstream="null"
           data-jones-board-section="unassigned"
@@ -895,7 +940,7 @@ export function WorkstreamSidebarSection({
           ? openWorkstreams.map((item) => (
               <div
                 key={item.id}
-                data-workstream-group-slot
+                data-workstream-group-slot={item.id}
                 className="relative py-1"
                 onDragOver={(event) => dragOver(event, item.id)}
                 onDrop={(event) => drop(event, item.id)}

@@ -10,7 +10,7 @@ import {
   type PersonalWorkstreamsTransport,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { EnvironmentId } from "@t3tools/contracts";
-import { act, render } from "../../../test/render";
+import { act, fakeTimers, render } from "../../../test/render";
 import { WorkstreamSidebarSection } from "../../components/workstreams/WorkstreamSidebarSection";
 import { ToastProvider, toastManager } from "../../components/ui/toast";
 import { personalGroupCollapsedKey, personalNamedGroupsHiddenKey } from "./personalSidebarOrder";
@@ -838,6 +838,44 @@ describe("Workstream options and header ordering", () => {
     });
     expect(order(screen.container)).toEqual([null, "menu-Beta", "menu-Alpha", "menu-Gamma"]);
     expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
+  });
+
+  it("scrolls upward and finds an offscreen Workstream beneath a stationary drag", async () => {
+    using setup = fixture();
+    using _timers = fakeTimers();
+    const viewport = document.createElement("div");
+    viewport.dataset.slot = "scroll-area-viewport";
+    viewport.style.cssText =
+      "position:fixed;top:60px;left:8px;width:360px;height:220px;overflow:auto";
+    await using _screen = await render(setup.ui, { container: viewport });
+    const bounds = viewport.getBoundingClientRect();
+    const x = bounds.left + bounds.width / 2;
+    const y = bounds.top + 8;
+    const alpha = section(viewport, "Alpha");
+    const alphaHeader = alpha.querySelector("[data-workstream-header]")!;
+    const alphaBounds = alphaHeader.getBoundingClientRect();
+    const targetScrollTop = alphaBounds.top + alphaBounds.height / 5 - y;
+    viewport.scrollTop = targetScrollTop + 100;
+    expect(alphaHeader.getBoundingClientRect().bottom).toBeLessThan(bounds.top);
+    expect(header(viewport, "Gamma").getBoundingClientRect().top).toBeLessThan(bounds.bottom);
+
+    const transfer = await startDrag(viewport, "Gamma");
+    await act(() => {
+      drag(document.elementFromPoint(x, y)!, "dragover", transfer, y);
+      for (let frame = 0; frame < 60 && viewport.scrollTop > targetScrollTop; frame++) {
+        vi.advanceTimersToNextFrame();
+      }
+    });
+    expect(viewport.scrollTop).toBeLessThanOrEqual(targetScrollTop);
+    expect(viewport.querySelector("[data-workstream-insertion]")?.parentElement).toBe(
+      alpha.parentElement,
+    );
+
+    await act(() => drag(document.elementFromPoint(x, y)!, "drop", transfer, y));
+    expect(order(viewport)).toEqual([null, "menu-Gamma", "menu-Alpha", "menu-Beta"]);
+    const releasedAt = viewport.scrollTop;
+    await act(() => vi.advanceTimersByTime(200));
+    expect(viewport.scrollTop).toBe(releasedAt);
   });
 
   it("keeps Unassigned fixed and supports dropping after the last named Workstream", async () => {
