@@ -31,6 +31,7 @@ import type {
   JonesUpdateInstallInput,
   JonesUpdateState,
 } from "@t3tools/contracts/jones/jonesUpdates";
+import { useGT } from "gt-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
@@ -392,6 +393,7 @@ export function ExactSourceUpdateAction({
   compact = false,
   host,
 }: ExactSourceTarget & { readonly host: ExactSourceHost }) {
+  const gt = useGT();
   const journal = useJonesExecutionJournal();
   const observedReceipt = host.snapshot.observation.state?.operation;
   const observedFreshness = host.snapshot.observation.freshness;
@@ -511,7 +513,7 @@ export function ExactSourceUpdateAction({
               : working === "download"
                 ? "Downloading…"
                 : working === "plan"
-                  ? "Opening plan…"
+                  ? gt("Opening plan…")
                   : (buttonLabel ??
                     (decision.status === "ready" && decision.step.kind === "install"
                       ? `Install ${short}`

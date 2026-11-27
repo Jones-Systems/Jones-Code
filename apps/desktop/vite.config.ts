@@ -5,6 +5,7 @@ import * as NodeOS from "node:os";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite resolves the fixed custody artifact synchronously outside an Effect runtime.
 import * as NodePath from "node:path";
 import { defaultInclude, defineConfig } from "vite-plus";
+import { Rolldown } from "vite-plus/pack";
 
 import { isDesktopRuntimeExternalDependency } from "../../scripts/lib/desktop-external-packages.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
@@ -49,12 +50,34 @@ const publicConfigDefine = {
   ),
 };
 
+const PAGE_WORLD_MODULE = /[\\/]src[\\/]preview[\\/]PageWorld\.ts$/;
+
+/**
+ * The preview preload passes `installPageWorld` to `contextBridge.executeInMainWorld`, which runs
+ * the function's source text in the page. Inline the module's imports into the function body so
+ * that text is complete on its own.
+ */
+const pageWorldFunction = (): Rolldown.Plugin => ({
+  name: "t3code:preview-page-world",
+  async load(id) {
+    if (!PAGE_WORLD_MODULE.test(id)) return null;
+    const bundle = await Rolldown.rolldown({ input: id, platform: "browser" });
+    try {
+      const { output } = await bundle.generate({ format: "iife", name: "pageWorld" });
+      for (const file of await bundle.watchFiles) this.addWatchFile(file);
+      return `export function installPageWorld(host) {\n${output[0].code}\nreturn pageWorld.installPageWorld(host);\n}\n`;
+    } finally {
+      await bundle.close();
+    }
+  },
+});
+
 export default defineConfig({
   run: {
     tasks: {
       build: {
         command:
-          "node scripts/build-browser-secret.mjs && node scripts/build-preview-annotation-css.mjs && vp pack",
+          "node scripts/build-browser-secret.mjs && node scripts/build-apple-speech.mjs && node scripts/build-preview-annotation-css.mjs && vp pack",
         dependsOn: ["t3#build"],
         cache: false,
       },
@@ -66,13 +89,13 @@ export default defineConfig({
       },
       dev: {
         command:
-          "node scripts/build-browser-secret.mjs && node scripts/build-preview-annotation-css.mjs && cross-env T3CODE_DESKTOP_DEV=1 vp pack --watch",
+          "node scripts/build-browser-secret.mjs && node scripts/build-apple-speech.mjs && node scripts/build-preview-annotation-css.mjs && cross-env T3CODE_DESKTOP_DEV=1 vp pack --watch",
         dependsOn: ["t3#build"],
         cache: false,
       },
       "dev:bundle": {
         command:
-          "node scripts/build-browser-secret.mjs && node scripts/build-preview-annotation-css.mjs && vp pack --watch",
+          "node scripts/build-browser-secret.mjs && node scripts/build-apple-speech.mjs && node scripts/build-preview-annotation-css.mjs && vp pack --watch",
         cache: false,
       },
       "dev:electron": {
@@ -110,6 +133,7 @@ export default defineConfig({
       outExtensions: () => ({ js: ".cjs" }),
       define: publicConfigDefine,
       entry: [
+        "src/backend/DesktopBackendRecoveryWorker.ts",
         "src/electron/WindowsForegroundFocusWorker.ts",
         "src/snapShot/GlobalShiftShortcutWorker.ts",
         "src/snapShot/RegionSnapShotWorker.ts",
@@ -231,11 +255,9 @@ export default defineConfig({
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
       entry: ["src/preview-pick-preload.ts"],
+      plugins: [pageWorldFunction()],
       deps: {
-        alwaysBundle: (id) =>
-          id === "react-grab" ||
-          id.startsWith("react-grab/") ||
-          id === "@t3tools/shared/keybindingMatching",
+        alwaysBundle: (id) => id === "@t3tools/shared/keybindingMatching",
       },
     },
     {
@@ -273,6 +295,7 @@ export default defineConfig({
           setupFiles: [
             "../../packages/shared/src/testing/longTempDir.ts",
             "../../packages/shared/src/testing/providerEnv.ts",
+            "../../packages/shared/src/testing/gitEnv.ts",
           ],
         },
       },
@@ -283,7 +306,10 @@ export default defineConfig({
           include: domTests,
           // Guest preloads run in the page; these tests drive them against a DOM.
           environment: "jsdom",
-          setupFiles: ["../../packages/shared/src/testing/providerEnv.ts"],
+          setupFiles: [
+            "../../packages/shared/src/testing/providerEnv.ts",
+            "../../packages/shared/src/testing/gitEnv.ts",
+          ],
         },
       },
     ],

@@ -6,7 +6,8 @@ import {
   SettingsRow,
   SettingsSection,
 } from "~/components/settings/settingsLayout";
-import { searchableSetting } from "~/components/settings/settingsSearch";
+import { useGT } from "gt-react";
+import { useSearchableSetting } from "~/components/settings/settingsSearch";
 import { useSettingsScope } from "~/components/settings/SettingsScopeContext";
 import {
   useScopedSettings,
@@ -22,6 +23,8 @@ const SETTING_KEYS = ["enableAgentDecisionSnapshotAccess"] as const;
  * issued under the previous value is rotated rather than reused.
  */
 export function DecisionSnapshotAccessSettings() {
+  const gt = useGT();
+  const searchableSetting = useSearchableSetting();
   const { scope } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
@@ -44,7 +47,7 @@ export function DecisionSnapshotAccessSettings() {
         resetAction={
           enabled !== DEFAULT_SERVER_SETTINGS.enableAgentDecisionSnapshotAccess ? (
             <SettingResetButton
-              label="default decision snapshot access"
+              ariaLabel={gt("Reset default decision snapshot access to default")}
               onClick={() =>
                 updateSettings({
                   enableAgentDecisionSnapshotAccess:

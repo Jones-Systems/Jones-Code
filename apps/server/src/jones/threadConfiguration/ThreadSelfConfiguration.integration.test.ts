@@ -334,29 +334,25 @@ function scenario<E>(
                 }),
               ).pipe(Layer.provide(runtime)),
             );
-      const service = Service.layer.pipe(
-        Layer.provide(selfConfigurationRuntime),
-        Layer.provide(
-          Layer.mock(Catalog.ProviderRegistry)({
-            getProviders: Effect.succeed([
-              {
-                ...catalog,
-                driver: source === undefined ? driver : ProviderDriverKind.make(source.driver),
-              },
-              ...(target === undefined
-                ? []
-                : [
-                    {
-                      ...catalog,
-                      instanceId: targetId,
-                      driver: ProviderDriverKind.make(target.driver),
-                      enabled: target.enabled ?? true,
-                    },
-                  ]),
-            ]),
-          }),
-        ),
-      );
+      const providers = Layer.mock(Catalog.ProviderRegistry)({
+        getProviders: Effect.succeed([
+          {
+            ...catalog,
+            driver: source === undefined ? driver : ProviderDriverKind.make(source.driver),
+          },
+          ...(target === undefined
+            ? []
+            : [
+                {
+                  ...catalog,
+                  instanceId: targetId,
+                  driver: ProviderDriverKind.make(target.driver),
+                  enabled: target.enabled ?? true,
+                },
+              ]),
+        ]),
+      });
+      const service = Service.layer.pipe(Layer.provide(selfConfigurationRuntime));
       const tools = Layer.mergeAll(
         Mcp.layerThreadToolkit,
         Mcp.layerThreadSelfConfigurationToolkit,
@@ -369,6 +365,7 @@ function scenario<E>(
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
         Layer.provide(Layer.mock(Scheduled.ScheduledTaskService)({})),
         Layer.provide(Layer.mock(Peer.PeerForwarding)({})),
+        Layer.provide(providers),
       );
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;

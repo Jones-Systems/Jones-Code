@@ -93,7 +93,7 @@ it.effect.each([
   {
     name: "later timeline page",
     pages: [
-      page([item({ textTruncated: false })], 0),
+      page([item({ position: 1, textTruncated: false })], 1),
       page([], null, ThreadId.make("other-thread")),
     ],
   },
@@ -167,9 +167,9 @@ it.effect("retrieves every continuation of the exact run's last reply", () =>
   Effect.gen(function* () {
     const requests: Array<Parameters<Parameters<typeof lastReply>[0]>[0]> = [];
     const read = readPages([
-      page([item({ text: "earlier", textTruncated: false })], 0),
+      page([item({ position: 1, text: "earlier", textTruncated: false })], 1),
       page([
-        item({ position: 1 }),
+        item({ position: 2 }),
         item({
           itemId: TurnItemId.make("later"),
           runId: RunId.make("later-run"),
@@ -177,8 +177,8 @@ it.effect("retrieves every continuation of the exact run's last reply", () =>
           textTruncated: false,
         }),
       ]),
-      page([item({ position: 1, text: "-middle", nextTextOffset: 13 })]),
-      page([item({ position: 1, text: "-end", textTruncated: false, nextTextOffset: null })]),
+      page([item({ position: 2, text: "-middle", nextTextOffset: 13 })]),
+      page([item({ position: 2, text: "-end", textTruncated: false, nextTextOffset: null })]),
     ]);
     const result = yield* lastReply(
       (input) => {
@@ -227,7 +227,7 @@ it.effect.each([
   { name: "missing timeline cursor", pages: [{ ...page([item()]), hasMore: true }] },
   {
     name: "nonadvancing timeline cursor",
-    pages: [page([item()], 0), page([item()], 0), page([item({ textTruncated: false })])],
+    pages: [page([item({ position: 1 })], 1), page([item({ position: 1 })], 1)],
   },
   {
     name: "skipped text offset",

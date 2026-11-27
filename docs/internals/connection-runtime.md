@@ -224,8 +224,6 @@ but only selected read bodies use background reader admission. These resources a
   fallback, and reads inside an existing write transaction retain that writer.
   Organization metadata listing marks its complete snapshot transaction, so
   its rows and sequence watermark come from the same committed reader snapshot.
-  [Foreground reads and the SQLite writer](./performance-regressions.md#foreground-reads-and-the-sqlite-writer)
-  lists the foreground reads routed there.
 - Git subprocesses take permits from process-wide FIFO pools: one in
   [GitVcsDriverCore](../../apps/server/src/vcs/GitVcsDriverCore.ts) for Git
   manager, status, and pull-request work, and one in

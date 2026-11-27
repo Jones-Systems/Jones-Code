@@ -16,6 +16,7 @@ import {
   type OrchestrationV2AppThread,
   type ProjectId,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -50,6 +51,7 @@ import {
 import * as ServerSettings from "../serverSettings.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { ProjectLiveServerUndeclaredStatusError } from "./project.ts";
 
 const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer);
 const runCli = (args: ReadonlyArray<string>) =>
@@ -120,24 +122,63 @@ const withProjectService = <A, E>(
 const readProjects = (baseDir: string) =>
   withProjectService(baseDir, (projects) => projects.snapshot);
 
-it.effect("adds, renames, and removes projects through the V2 project CLI domain", () =>
-  Effect.gen(function* () {
-    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-project-cli-"));
-    const workspaceRoot = NodeFS.mkdtempSync(
-      NodePath.join(NodeOS.tmpdir(), "t3-v2-project-workspace-"),
-    );
+it.effect(
+  "adds, renames, and removes projects, and tracks folders on add, through the V2 project CLI domain",
+  () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-project-cli-"));
+      const workspaceRoot = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-v2-project-workspace-"),
+      );
 
-    yield* runCli(["project", "add", workspaceRoot, "--title", "Alpha", "--base-dir", baseDir]);
-    const added = (yield* readProjects(baseDir)).projects[0];
-    assert.equal(added?.title, "Alpha");
-    assert.equal(added?.workspaceRoot, workspaceRoot);
+      yield* runCli(["project", "add", workspaceRoot, "--title", "Alpha", "--base-dir", baseDir]);
+      const added = (yield* readProjects(baseDir)).projects[0];
+      assert.equal(added?.title, "Alpha");
+      assert.equal(added?.workspaceRoot, workspaceRoot);
 
-    yield* runCli(["project", "rename", workspaceRoot, "Beta", "--base-dir", baseDir]);
-    assert.equal((yield* readProjects(baseDir)).projects[0]?.title, "Beta");
+      yield* runCli(["project", "rename", workspaceRoot, "Beta", "--base-dir", baseDir]);
+      assert.equal((yield* readProjects(baseDir)).projects[0]?.title, "Beta");
 
-    yield* runCli(["project", "remove", added?.id ?? "", "--base-dir", baseDir]);
-    assert.deepEqual((yield* readProjects(baseDir)).projects, []);
-  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+      yield* runCli(["project", "remove", added?.id ?? "", "--base-dir", baseDir]);
+      assert.deepEqual((yield* readProjects(baseDir)).projects, []);
+
+      // Repositories inside the folder are found; `--track` adds one from outside it.
+      const shared = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-project-shared-"));
+      const homeShared = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-project-home-"));
+      NodeFS.mkdirSync(NodePath.join(workspaceRoot, "api", ".git"), { recursive: true });
+      NodeFS.mkdirSync(NodePath.join(workspaceRoot, "notes"));
+      // Names are cut to 128 UTF-16 units, never between the halves of an emoji.
+      const named = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-project-names-"));
+      const straddling = NodePath.join(named, `${"a".repeat(127)}🚀`);
+      const fitting = NodePath.join(named, `${"b".repeat(126)}🚀`);
+      const padded = NodePath.join(named, `${" ".repeat(127)}🚀`);
+      for (const folder of [straddling, fitting, padded]) NodeFS.mkdirSync(folder);
+      yield* runCli([
+        "project",
+        "add",
+        workspaceRoot,
+        "--track",
+        `${shared}${NodePath.sep}`,
+        "--track",
+        `~/${NodePath.basename(homeShared)}`,
+        "--track",
+        straddling,
+        "--track",
+        fitting,
+        "--track",
+        padded,
+        "--base-dir",
+        baseDir,
+      ]).pipe(Effect.provideService(HostProcess.HomeDirectory, NodeOS.tmpdir()));
+      assert.deepEqual((yield* readProjects(baseDir)).projects[0]?.trackedFolders, [
+        { path: NodePath.join(workspaceRoot, "api"), name: "api", discovered: true },
+        { path: shared, name: NodePath.basename(shared) },
+        { path: homeShared, name: NodePath.basename(homeShared) },
+        { path: straddling, name: "a".repeat(127) },
+        { path: fitting, name: `${"b".repeat(126)}🚀` },
+        { path: padded, name: "🚀" },
+      ]);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["snapshot", "mutation"] as const)(
@@ -165,7 +206,7 @@ it.effect.each(["snapshot", "mutation"] as const)(
         const isMutation = init?.method === "POST";
         if (isMutation) mutations++;
         else snapshotRequests++;
-        if (slowRequest === "mutation" ? isMutation : !isMutation && snapshotRequests === 2) {
+        if (slowRequest === "mutation" ? isMutation : !isMutation) {
           requestReceived.resolve();
           await releaseResponse.promise;
         }
@@ -189,12 +230,17 @@ it.effect.each(["snapshot", "mutation"] as const)(
         Effect.provideService(FetchHttpClient.Fetch, fetch),
         Effect.forkChild,
       );
-      yield* Effect.promise(() => requestReceived.promise);
+      yield* Effect.raceFirst(
+        Effect.promise(() => requestReceived.promise),
+        Fiber.join(add).pipe(
+          Effect.andThen(Effect.die(`CLI completed before the ${slowRequest} request.`)),
+        ),
+      );
       yield* TestClock.adjust("2 seconds");
       releaseResponse.resolve();
       yield* Fiber.join(add);
 
-      assert.equal(snapshotRequests, 2);
+      assert.equal(snapshotRequests, 1);
       assert.equal(mutations, 1);
       assert.deepEqual((yield* readProjects(baseDir)).projects, []);
     }).pipe(Effect.provide(NodeServices.layer)),
@@ -231,7 +277,16 @@ it.effect("does not send a token to whatever took over a dead server's port", ()
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect("releases fresh auth storage before falling back from an unavailable server", () =>
+it.effect.each([
+  {
+    label: "releases fresh auth storage before falling back from an unavailable server",
+    unavailableMethod: "GET",
+  },
+  {
+    label: "does not fall back after a live project mutation returns 503",
+    unavailableMethod: "POST",
+  },
+] as const)("$label", ({ unavailableMethod }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-unreachable-project-cli-" });
@@ -248,19 +303,32 @@ it.effect("releases fresh auth storage before falling back from an unavailable s
       path: statePath,
       state: { ...state, ownerId: "former-owner" },
     });
-    let requests = 0;
-    const fetch: typeof globalThis.fetch = async () => {
-      requests++;
-      return new Response(null, { status: 503 });
+    const requests: string[] = [];
+    const fetch: typeof globalThis.fetch = async (_input, init) => {
+      const method = init?.method ?? "GET";
+      requests.push(method);
+      return method === unavailableMethod
+        ? new Response(null, { status: 503 })
+        : Response.json({ projects: [], updatedAt: "2026-01-01T00:00:00.000Z" });
     };
 
-    yield* runCli(["project", "add", workspaceRoot, "--base-dir", baseDir]).pipe(
+    const add = runCli(["project", "add", workspaceRoot, "--base-dir", baseDir]).pipe(
       Effect.provideService(FetchHttpClient.Fetch, fetch),
     );
 
-    assert.equal(requests, 1);
-    assert.isFalse(yield* fs.exists(statePath));
-    assert.equal((yield* readProjects(baseDir)).projects[0]?.workspaceRoot, workspaceRoot);
+    if (unavailableMethod === "GET") {
+      yield* add;
+      assert.deepEqual(requests, ["GET"]);
+      assert.isFalse(yield* fs.exists(statePath));
+      assert.equal((yield* readProjects(baseDir)).projects[0]?.workspaceRoot, workspaceRoot);
+    } else {
+      const error = yield* add.pipe(Effect.flip);
+      assert.instanceOf(error, ProjectLiveServerUndeclaredStatusError);
+      assert.propertyVal(error, "status", 503);
+      assert.deepEqual(requests, ["GET", "POST"]);
+      assert.isTrue(yield* fs.exists(statePath));
+      assert.deepEqual((yield* readProjects(baseDir)).projects, []);
+    }
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
@@ -302,22 +370,42 @@ const makeProjectLookupFixture = Effect.fn("ProjectCliTest.makeProjectLookupFixt
 });
 
 it.effect.each([
-  { label: "keeps its title", titleArgs: [], expectedTitle: undefined },
-  { label: "applies --title", titleArgs: ["--title", " Back again "], expectedTitle: "Back again" },
+  { label: "keeps its title", args: [], expectedTitle: undefined, named: false },
+  {
+    label: "applies --title",
+    args: ["--title", " Back again "],
+    expectedTitle: "Back again",
+    named: false,
+  },
+  { label: "adds the --track folders to the ones it had", args: [], named: true },
 ])(
   "adding an archived project's folder again unarchives it and $label",
-  ({ titleArgs, expectedTitle }) =>
+  ({ args, expectedTitle, named }) =>
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
       const { baseDir, workspaceRoot, project } = yield* makeProjectLookupFixture();
+      const kept = { path: NodePath.join(baseDir, "..", "cli-kept"), name: "Kept" };
+      const added = { path: NodePath.join(baseDir, "..", "cli-named"), name: "cli-named" };
+      yield* fs.makeDirectory(kept.path);
+      yield* fs.makeDirectory(added.path);
       yield* withProjectService(baseDir, (projects) =>
         projects.update({
           commandId: CommandId.make("project-cli-archive"),
           projectId: project.id,
           archived: true,
+          trackedFolders: [kept],
         }),
       );
 
-      yield* runCli(["project", "add", workspaceRoot, ...titleArgs, "--base-dir", baseDir]);
+      yield* runCli([
+        "project",
+        "add",
+        workspaceRoot,
+        ...args,
+        ...(named ? ["--track", kept.path, "--track", added.path] : []),
+        "--base-dir",
+        baseDir,
+      ]);
 
       const projects = (yield* readProjects(baseDir)).projects;
       assert.deepEqual(
@@ -325,8 +413,16 @@ it.effect.each([
           id: entry.id,
           title: entry.title,
           archivedAt: entry.archivedAt,
+          trackedFolders: entry.trackedFolders,
         })),
-        [{ id: project.id, title: expectedTitle ?? project.title, archivedAt: null }],
+        [
+          {
+            id: project.id,
+            title: expectedTitle ?? project.title,
+            archivedAt: null,
+            trackedFolders: named ? [kept, added] : [kept],
+          },
+        ],
       );
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)), Effect.scoped),
 );

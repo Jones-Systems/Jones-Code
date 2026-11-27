@@ -82,7 +82,8 @@ const readShape = (table: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     return {
-      columns: yield* sql`SELECT * FROM pragma_table_info(${table}) ORDER BY cid`,
+      columns: yield* sql<{ readonly name: string; readonly pk: number }>`
+        SELECT * FROM pragma_table_info(${table}) ORDER BY cid`,
       foreignKeys: yield* sql<{
         readonly table: string;
         readonly from: string;
@@ -95,10 +96,20 @@ const readShape = (table: string) =>
 const readTable = (table: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    return {
-      ...(yield* readShape(table)),
-      rows: yield* sql.unsafe(`SELECT rowid AS jones_rowid, * FROM "${table}" ORDER BY rowid`),
-    };
+    const shape = yield* readShape(table);
+    const [storage] = yield* sql<{ readonly wr: number }>`
+      SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = ${table}`;
+    if (storage?.wr !== 1) {
+      const rows = yield* sql`
+        SELECT rowid AS jones_rowid, * FROM ${sql(table)} ORDER BY rowid`;
+      return { ...shape, rows, withoutRowId: false };
+    }
+    const primaryKey = shape.columns
+      .filter(({ pk }) => pk > 0)
+      .toSorted((a, b) => a.pk - b.pk)
+      .map(({ name }) => sql`${sql(name)}`);
+    const rows = yield* sql`SELECT * FROM ${sql(table)} ORDER BY ${sql.csv(primaryKey)}`;
+    return { ...shape, rows, withoutRowId: true };
   });
 
 // Fills required columns from the live schema, so later upstream columns
@@ -446,6 +457,8 @@ it.effect(
         [163, "RemoteSendReceipts"],
         [164, "LegacyBootstrap"],
         [165, "RequestManagement"],
+        [166, "TaskFolderTeardown"],
+        [167, "WorkflowAgentJournal"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,
@@ -568,6 +581,8 @@ it.effect("upstream migration 63 preserves Jones rows and durable settlement pro
     });
     yield* sql`INSERT INTO jones_workstreams_settlement_proofs VALUES
       ('settle-command', 'thread', 'settle', ${proof})`;
+    yield* sql`INSERT INTO jones_workflow_agent_journal (run_id, kind, name, binding)
+      VALUES ('workflow-run', 'turn', 'linked-turn', 'pairing-generation')`;
     yield* sql`INSERT INTO projection_thread_messages
       (message_id, thread_id, role, text, is_streaming, created_at, updated_at)
       VALUES ('legacy-message', 'thread', 'user', 'retained transcript', 0, '2026-01-01', '2026-01-01')`;

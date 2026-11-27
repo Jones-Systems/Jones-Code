@@ -9,6 +9,8 @@ import {
   type ImportedHistoryCorrelationStorage,
 } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { useAtomValue } from "@effect/atom-react";
+import { msg } from "gt-react-native";
+import { m } from "../i18n/messages";
 import {
   EnvironmentId as EnvironmentIdSchema,
   ModelSelection as ModelSelectionSchema,
@@ -416,6 +418,7 @@ function draftWithInsertedContext(
   draft: ComposerDraft,
   content: { text: string; context: OrchestrationMessageContext },
   target?: ComposerDraftInsertion,
+  maxContextRecords = COMPOSER_CONTEXT_MAX_RECORDS,
 ): ComposerDraft | null {
   const { start, end } = contextInsertionRange(draftKey, draft, target);
   const before = draft.text.slice(0, start);
@@ -425,7 +428,7 @@ function draftWithInsertedContext(
   const records = new Map(draft.context?.records.map((record) => [record.contextId, record]));
   for (const record of content.context.records) records.set(record.contextId, record);
   const context = referencedComposerContext(text, { version: 1, records: [...records.values()] });
-  if ((context?.records.length ?? 0) > COMPOSER_CONTEXT_MAX_RECORDS) return null;
+  if ((context?.records.length ?? 0) > maxContextRecords) return null;
   rememberComposerDraftSelection(
     draftKey,
     text,
@@ -490,6 +493,11 @@ export interface ComposerDraftWorkspaceSelection {
    * included) until the user picks a branch, rather than pinning the first name refs reported.
    */
   readonly followsCurrentCheckout?: boolean;
+  /**
+   * Tracked repositories a new worktree takes, by path. Absent until the user chooses, so the
+   * server's default applies.
+   */
+  readonly repositories?: ReadonlyArray<string>;
 }
 
 export type ComposerDraftSettingsUpdate = Pick<
@@ -509,6 +517,7 @@ const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
   startFromOrigin: Schema.optional(Schema.Boolean),
   pullRequestReference: Schema.optional(Schema.String),
   followsCurrentCheckout: Schema.optional(Schema.Boolean),
+  repositories: Schema.optional(Schema.Array(Schema.String)),
 });
 
 const ComposerDraftProjectSchema = Schema.Struct({
@@ -1197,7 +1206,8 @@ export async function archiveCloudComposerDrafts(
   knownEnvironmentIds: Iterable<EnvironmentId>,
 ): Promise<void> {
   await waitForComposerDraftsLoaded();
-  if (!(await threadOutboxManager.load())) throw new Error("Could not preserve queued messages.");
+  if (!(await threadOutboxManager.load()))
+    throw new Error(m(msg("Could not preserve queued messages.")));
   await flushThreadOutbox();
   const cloud = appAtomRegistry.get(composerCloudDraftsAtom);
   const owner = accountId ?? cloud.accountId;
@@ -1301,7 +1311,9 @@ export async function removeDeliveredCloudQueuedMessage(
             editor.workspaceSelection.pullRequestReference !==
               message.creation?.pullRequestReference ||
             (editor.workspaceSelection.startFromOrigin ?? false) !==
-              (message.creation?.startFromOrigin ?? false))))
+              (message.creation?.startFromOrigin ?? false) ||
+            JSON.stringify(editor.workspaceSelection.repositories) !==
+              JSON.stringify(message.creation?.repositories))))
     )
       continue;
     const drafts = { ...saved.drafts };
@@ -1329,7 +1341,8 @@ export async function restoreCloudComposerDrafts(accountId: string): Promise<voi
   const cloud = appAtomRegistry.get(composerCloudDraftsAtom);
   const saved = cloud.signedOut[accountId];
   if (saved) {
-    if (!(await threadOutboxManager.load())) throw new Error("Could not restore queued messages.");
+    if (!(await threadOutboxManager.load()))
+      throw new Error(m(msg("Could not restore queued messages.")));
     for (const message of saved.queuedMessages) {
       const alreadyQueued = Object.values(
         appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
@@ -1432,14 +1445,14 @@ export function appendComposerDraftText(draftKey: string, value: string): void {
   });
 }
 
-// Pasted images all share one name, so an image's inline bytes decide whether it is a repeat.
+// Pasted images all share one name, so an image's bytes decide whether it is a repeat.
 function isSameAttachment(a: DraftComposerAttachment, b: DraftComposerAttachment): boolean {
-  return (
-    a.mimeType === b.mimeType &&
-    a.sizeBytes === b.sizeBytes &&
-    a.name === b.name &&
-    (a.type !== "image" || b.type !== "image" || a.dataUrl === b.dataUrl)
-  );
+  if (a.mimeType !== b.mimeType || a.sizeBytes !== b.sizeBytes || a.name !== b.name) return false;
+  if (a.type !== "image" || b.type !== "image") return true;
+  if (a.contentDigest !== undefined && b.contentDigest !== undefined) {
+    return a.contentDigest === b.contentDigest;
+  }
+  return a.dataUrl === b.dataUrl && a.fileUri === b.fileUri;
 }
 
 /**
@@ -1485,9 +1498,10 @@ export function appendComposerDraftAttachments(
             options?.maxAttachments ?? PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
           ) - retained.attachments.length,
         );
-    const contextCapacity = options?.appendReference
-      ? Math.max(0, COMPOSER_CONTEXT_MAX_RECORDS - (retained.context?.records.length ?? 0))
-      : attachments.length;
+    const contextCapacity =
+      options?.appendReference && !options.restore
+        ? Math.max(0, COMPOSER_CONTEXT_MAX_RECORDS - (retained.context?.records.length ?? 0))
+        : attachments.length;
     const accepted = attachments.slice(0, Math.min(remaining, contextCapacity));
     rejected = attachments.slice(accepted.length);
     if (accepted.length === 0) {
@@ -1503,7 +1517,8 @@ export function appendComposerDraftAttachments(
           text: records.map(formatComposerContextReference).join(" "),
           context: { version: 1, records },
         },
-        options?.insertion,
+        options.insertion,
+        options.restore ? Infinity : COMPOSER_CONTEXT_MAX_RECORDS,
       );
       if (!inserted) {
         rejected = attachments;
@@ -1772,6 +1787,7 @@ export function mergeComposerDraftContentState(
   current: Record<string, ComposerDraft>,
   draftKey: string,
   content: ComposerDraftContent,
+  restoreAttachments = false,
 ): Record<string, ComposerDraft> {
   const existing = normalizeDraft(current[draftKey]);
   if (content.sourceShareId && existing.importedShareIds?.includes(content.sourceShareId)) {
@@ -1785,10 +1801,10 @@ export function mergeComposerDraftContentState(
     attachmentIds.add(attachment.id);
     return true;
   });
-  const attachments = [...existing.attachments, ...incomingAttachments].slice(
-    0,
-    PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  );
+  const combinedAttachments = [...existing.attachments, ...incomingAttachments];
+  const attachments = restoreAttachments
+    ? combinedAttachments
+    : combinedAttachments.slice(0, PROVIDER_SEND_TURN_MAX_ATTACHMENTS);
   const text = mergeComposerDraftText(existing.text, content.text);
   const context = mergeReferencedComposerContext(text, existing.context, content.context);
   const importedShareIds = content.sourceShareId
@@ -1825,7 +1841,11 @@ export function mergeComposerDraftContentState(
 export async function mergeComposerDraftContent(
   draftKey: string,
   content: ComposerDraftContent,
-  options?: { readonly onMerged?: (draft: ComposerDraft) => void },
+  options?: {
+    readonly onMerged?: (draft: ComposerDraft) => void;
+    /** Recovery preserves every file and leaves trimming to the editor. */
+    readonly restoreAttachments?: boolean;
+  },
 ): Promise<{ readonly skippedAttachmentCount: number }> {
   ensureComposerDraftsLoaded();
   if (loadPromise !== null) {
@@ -1836,7 +1856,12 @@ export async function mergeComposerDraftContent(
     persistTimer = null;
   }
   const current = appAtomRegistry.get(composerDraftsAtom);
-  const next = mergeComposerDraftContentState(current, draftKey, content);
+  const next = mergeComposerDraftContentState(
+    current,
+    draftKey,
+    content,
+    options?.restoreAttachments,
+  );
   const currentAttachmentIds = new Set(
     normalizeDraft(current[draftKey]).attachments.map((attachment) => attachment.id),
   );
@@ -1927,10 +1952,12 @@ export function undoComposerDraftMergeState(
   return withComposerDraft(current, draftKey, draft);
 }
 
+/** Withdraw a merge and any following recovery merge in one draft write. */
 export async function undoComposerDraftMerge(
   draftKey: string,
   snapshot: ComposerDraft,
   merged: ComposerDraft,
+  followingMerge?: { readonly before: ComposerDraft; readonly after: ComposerDraft },
 ): Promise<void> {
   ensureComposerDraftsLoaded();
   if (loadPromise !== null) {
@@ -1940,12 +1967,11 @@ export async function undoComposerDraftMerge(
     clearTimeout(persistTimer);
     persistTimer = null;
   }
-  const next = undoComposerDraftMergeState(
-    appAtomRegistry.get(composerDraftsAtom),
-    draftKey,
-    snapshot,
-    merged,
-  );
+  const current = appAtomRegistry.get(composerDraftsAtom);
+  const beforeFollowing = followingMerge
+    ? undoComposerDraftMergeState(current, draftKey, followingMerge.before, followingMerge.after)
+    : current;
+  const next = undoComposerDraftMergeState(beforeFollowing, draftKey, snapshot, merged);
   appAtomRegistry.set(composerDraftsAtom, next);
   await persistenceQueue.run(() =>
     writePersistedComposerState(next, appAtomRegistry.get(stickyComposerModelSelectionAtom)),
@@ -2067,13 +2093,15 @@ export function retargetNewTaskDraft(
   });
 }
 
-/** Retargets a saved draft once drafts load; an absent one is not created. */
+/** Retargets a saved draft after loading. Returns false if absent or cancelled before the write. */
 export async function retargetSavedNewTaskDraft(
   draftKey: string,
   project: { readonly environmentId: EnvironmentId; readonly projectId: ProjectId },
+  signal?: AbortSignal,
 ): Promise<boolean> {
   await waitForComposerDraftsLoaded();
-  if (appAtomRegistry.get(composerDraftsAtom)[draftKey] === undefined) return false;
+  if (signal?.aborted || appAtomRegistry.get(composerDraftsAtom)[draftKey] === undefined)
+    return false;
   retargetNewTaskDraft(draftKey, project);
   return true;
 }

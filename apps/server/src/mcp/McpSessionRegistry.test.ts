@@ -70,7 +70,7 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
     const resolved = yield* registry.resolve(token);
     expect(resolved?.thread.threadId).toBe(threadId);
     expect(resolved?.capabilities).toEqual(
-      new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+      new Set(["preview", "orchestration", "worktree", "pull-requests", "issues"]),
     );
 
     yield* registry.revokeThread(threadId);
@@ -104,18 +104,21 @@ it.effect("always grants pull-requests and gates browser and device access indep
         .pipe(Effect.map((scope) => [...(scope?.capabilities ?? [])].sort()));
 
     expect(yield* capabilitiesOf(withPreview)).toEqual([
+      "issues",
       "orchestration",
       "preview",
       "pull-requests",
       "worktree",
     ]);
     expect(yield* capabilitiesOf(withoutPreview)).toEqual([
+      "issues",
       "orchestration",
       "pull-requests",
       "worktree",
     ]);
     expect(yield* capabilitiesOf(withDevice)).toEqual([
       "device",
+      "issues",
       "orchestration",
       "pull-requests",
       "worktree",
@@ -297,10 +300,10 @@ it.effect(
       expect(ordinaryScope).toBeDefined();
       expect(explicitScope).toBeDefined();
       expect(ordinaryScope!.capabilities).toEqual(
-        new Set(["orchestration", "worktree", "pull-requests", "preview"]),
+        new Set(["orchestration", "worktree", "pull-requests", "issues", "preview"]),
       );
       expect(explicitScope!.capabilities).toEqual(
-        new Set(["orchestration", "worktree", "pull-requests", "decision-snapshot"]),
+        new Set(["orchestration", "worktree", "pull-requests", "issues", "decision-snapshot"]),
       );
       let reads = 0;
       let launches = 0;

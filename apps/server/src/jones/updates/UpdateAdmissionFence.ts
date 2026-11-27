@@ -48,8 +48,8 @@ export class UpdateAdmissionBusy extends Schema.TaggedError<UpdateAdmissionBusy>
 /** One installation's hold on the fence. Every method ignores a ticket that no longer holds it. */
 export interface AdmissionTicket {
   /**
-   * Closes admission until acceptance or release. False when new work tripped an automatic fence,
-   * which then stays raised until release.
+   * Closes admission until acceptance or release. Returns false if the ticket cannot hand off,
+   * including when existing native work fails to drain before the deadline.
    */
   readonly handOff: Effect.Effect<boolean>;
   /** The launcher accepted: new work stays refused until this process exits. */
@@ -266,7 +266,11 @@ export const make = Effect.gen(function* () {
               : [true, { phase: "handing-off", ticket, refused: current.refused }],
         );
         if (!ready) return false;
-        yield* awaitNativeDrain;
+        const drained = yield* awaitNativeDrain.pipe(Effect.timeoutOption("10 seconds"));
+        if (Option.isNone(drained)) {
+          yield* Effect.logWarning("Update handoff deferred while existing native work drains.");
+          return false;
+        }
         return yield* Ref.get(state).pipe(
           Effect.map((current) => holds(current) && current.phase === "handing-off"),
         );

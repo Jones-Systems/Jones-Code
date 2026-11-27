@@ -2491,7 +2491,11 @@ export const make = Effect.gen(function* () {
         }
 
         if (persistedPolicy !== undefined) {
-          if (legacyCompletion !== undefined) yield* Deferred.await(legacyCompletion);
+          // Preparation is already owned by the server scope. The socket can stop waiting
+          // without interrupting that worker or skipping the durable launch handoff above.
+          if (legacyCompletion !== undefined) {
+            yield* Deferred.await(legacyCompletion).pipe(Effect.interruptible);
+          }
           const releaseReceipt = yield* readReceipt(input, persistedPolicy.releaseCommandId);
           if (
             Option.isNone(releaseReceipt) ||

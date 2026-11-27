@@ -21,6 +21,7 @@ import {
   CAPTURE_IDENTITY_FILES,
   CAPTURE_SCHEMA,
   CaptureWriter,
+  DISCOVERED_SERVER_SPECS,
   type CaptureFilters,
   type CaptureModule,
   type ModuleEvent,
@@ -38,6 +39,7 @@ import {
 } from "./server-shard-weights/envelope.ts";
 
 type ProgressEntity = TestModule | TestSuite | TestCase;
+type TimingContext = Vitest & { [DISCOVERED_SERVER_SPECS]?: ReadonlyArray<TestSpecification> };
 
 /**
  * Per-case and per-hook events, written next to the timings file instead of
@@ -53,7 +55,7 @@ const serverRoot = NodePath.join(repoRoot, "apps/server");
 export default class CiTestProgressReporter implements Reporter {
   private log: ((line: string) => void) | undefined;
   private runStartedAt = 0;
-  private context: Vitest | undefined;
+  private context: TimingContext | undefined;
   private capture: CaptureWriter | undefined;
   private caseEventsPath: string | undefined;
   private completedFiles: string[] = [];
@@ -129,9 +131,8 @@ export default class CiTestProgressReporter implements Reporter {
   }
 
   /**
-   * Starts this shard's timing capture. Vitest 5 passes the full discovered file
-   * list here, before `--shard` splits it, so every shard records the same list
-   * and the aggregate step can prove the shards covered it exactly once.
+   * Vitest 5.1 reports only the files assigned to this shard. The sequencer
+   * supplies the full discovery list so aggregation can prove exact coverage.
    */
   private startCapture(outputPath: string, specifications: ReadonlyArray<TestSpecification>) {
     const ctx = this.context;
@@ -141,6 +142,11 @@ export default class CiTestProgressReporter implements Reporter {
     }
     if (NodeFS.realpathSync(NodePath.dirname(outputPath)) !== NodeFS.realpathSync(runnerTemp)) {
       throw new Error(`${TIMINGS_PATH_ENV} must name a file directly inside RUNNER_TEMP`);
+    }
+    const discovered = ctx[DISCOVERED_SERVER_SPECS];
+    delete ctx[DISCOVERED_SERVER_SPECS];
+    if (!discovered) {
+      throw new Error("Server timing capture requires the sequencer's full discovery list");
     }
     // Vitest 5 resolves `fileParallelism: false` to one worker.
     if (specifications.some((spec) => spec.project.config.maxWorkers !== 1)) {
@@ -180,9 +186,9 @@ export default class CiTestProgressReporter implements Reporter {
         ]),
       ),
       fileParallelism: false,
-      filters: invocationFilters(ctx, specifications),
+      filters: invocationFilters(ctx, discovered),
       weightsInput: weightsInput(),
-      manifest: specifications.map((spec) => serverPath(spec.moduleId)).toSorted(compareStrings),
+      manifest: discovered.map((spec) => serverPath(spec.moduleId)).toSorted(compareStrings),
     });
     // Created only once the timings file exists; exclusive, like the timings file.
     this.caseEventsPath = NodePath.join(NodePath.dirname(outputPath), CASE_EVENTS_FILE_NAME);

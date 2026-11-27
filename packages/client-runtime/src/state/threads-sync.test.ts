@@ -23,8 +23,8 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
-import * as Scope from "effect/Scope";
 import * as Scheduler from "effect/Scheduler";
+import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -39,6 +39,7 @@ import {
   type PreparedConnection,
   type SupervisorConnectionState,
 } from "../connection/model.ts";
+import { recordServerClock, toServerClock } from "../clock.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
@@ -133,6 +134,9 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   readonly getTurnItem?: (input: {
     readonly itemId: TurnItemId;
   }) => Effect.Effect<{ readonly item: OrchestrationV2TurnItem | null }>;
+  readonly streamFor?: (
+    subscription: number,
+  ) => Stream.Stream<OrchestrationV2ThreadStreamItem> | undefined;
 }) {
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
@@ -177,20 +181,23 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
           Effect.andThen(Ref.set(lastAcceptBoundedSnapshot, input.acceptBoundedSnapshot)),
           Effect.andThen(Ref.set(lastAcceptCompactTurnItems, input.acceptCompactTurnItems)),
           Effect.andThen(Ref.set(lastAcceptCompactThreadVisits, input.acceptCompactThreadVisits)),
-          Effect.andThen(SubscriptionRef.update(subscriptionCount, (count) => count + 1)),
-          Effect.as(
-            options?.completionMarker === true
-              ? streamFrom(inputs)
-              : Stream.concat(Stream.make(synchronized()), streamFrom(inputs)),
+          Effect.andThen(SubscriptionRef.updateAndGet(subscriptionCount, (count) => count + 1)),
+          Effect.map(
+            (count) =>
+              options?.streamFor?.(count) ??
+              (options?.completionMarker === true
+                ? streamFrom(inputs)
+                : Stream.concat(Stream.make(synchronized()), streamFrom(inputs))),
           ),
         ),
       ),
     [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input: { readonly itemId: TurnItemId }) =>
       options?.getTurnItem?.(input) ?? Effect.die("Unexpected getTurnItem request"),
   } as unknown as WsRpcProtocolClient;
-  const sessionConfig =
+  const sessionConfig = (
     options?.initialConfig ??
-    Effect.succeed(options?.socketSnapshots ? { threadSnapshotPagination: true } : {});
+    Effect.succeed(options?.socketSnapshots ? { threadSnapshotPagination: true } : {})
+  ).pipe(Effect.map((config) => ({ threadResumeCompletionMarker: true, ...config })));
   const supervisorSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
     Option.some(testSession(client, sessionConfig)),
   );
@@ -319,6 +326,15 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     ),
   };
 });
+
+const awaitSubscriptionCount = (
+  harness: { readonly subscriptionCount: SubscriptionRef.SubscriptionRef<number> },
+  count: number,
+) =>
+  SubscriptionRef.changes(harness.subscriptionCount).pipe(
+    Stream.filter((current) => current >= count),
+    Stream.runHead,
+  );
 
 const snapshot = (
   projection: OrchestrationV2ThreadProjection,
@@ -685,6 +701,39 @@ describe("EnvironmentThreads", () => {
           latestLocalTurnOrdinal: null,
         },
       ]);
+    }),
+  );
+
+  it.effect("resumes from the applied cursor when a session replaces a blocked update", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ cached: BASE_PROJECTION });
+      yield* awaitThreadState(h.observed, (value) => value.status === "live");
+      const applying = yield* Deferred.make<void>();
+      const sequence = CACHED_SNAPSHOT_SEQUENCE + 1;
+      const update = titleUpdated("Fenced update", sequence);
+      let reads = 0;
+      Object.defineProperty(update, "sequence", {
+        get: () => {
+          if (++reads === 2) Deferred.doneUnsafe(applying, Exit.void);
+          return sequence;
+        },
+      });
+      yield* h.threadState.semaphore.withPermits(1)(
+        Effect.gen(function* () {
+          yield* Queue.offer(h.inputs, update);
+          yield* Deferred.await(applying);
+          yield* h.replaceSession;
+        }),
+      );
+      yield* awaitSubscriptionCount(h, 2);
+      expect(yield* Ref.get(h.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+
+      yield* Queue.offer(h.inputs, titleUpdated("Replayed update", sequence));
+      const applied = yield* awaitThreadState(
+        h.observed,
+        (value) => value.appliedSequence === sequence,
+      );
+      expect(Option.getOrThrow(applied.data).thread.title).toBe("Replayed update");
     }),
   );
 
@@ -2569,34 +2618,94 @@ describe("EnvironmentThreads", () => {
       }),
   );
 
-  it.effect("keeps replayed updates synchronizing until the completion marker arrives", () =>
+  it.effect("reloads the full snapshot after a resumed replay hits a defect", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_PROJECTION, completionMarker: true });
-      yield* awaitThreadState(
-        harness.observed,
-        (value) => value.status === "synchronizing" && Option.isSome(value.data),
-      );
+      const awaitSubscriptions = (count: number) =>
+        SubscriptionRef.changes(harness.subscriptionCount).pipe(
+          Stream.filter((value) => value >= count),
+          Stream.runHead,
+        );
+      yield* awaitSubscriptions(1);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+
+      // The cursor that died would die again, so the retry drops it at once, without an error.
+      yield* Queue.offer(harness.inputs, TEST_DEFECT);
+      yield* awaitSubscriptions(2);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBeUndefined();
+      expect(Option.isNone((yield* Ref.get(harness.latest)).error)).toBe(true);
+
+      // A failed reload backs off, still from the snapshot.
+      yield* Queue.offer(harness.inputs, TEST_DEFECT);
+      yield* awaitThreadState(harness.observed, (value) => Option.isSome(value.error));
+      yield* TestClock.adjust("60 seconds");
+      yield* awaitSubscriptions(3);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBeUndefined();
+
+      yield* Queue.offerAll(harness.inputs, [
+        snapshot(
+          { ...BASE_PROJECTION, thread: { ...BASE_PROJECTION.thread, title: "Reloaded thread" } },
+          CACHED_SNAPSHOT_SEQUENCE + 5,
+        ),
+        synchronized(),
+      ]);
+      const live = yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+      expect(Option.isNone(live.error)).toBe(true);
+      expect(Option.getOrThrow(live.data).thread.title).toBe("Reloaded thread");
+
+      yield* harness.replaceSession;
+      yield* awaitSubscriptions(4);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE + 5);
+    }),
+  );
+
+  it.effect("publishes a 20-event catch-up as one state change at its marker", () =>
+    Effect.gen(function* () {
+      // Replayed events can predate a backward host clock correction, so only live ones
+      // may raise the recorded offset.
+      recordServerClock(PREPARED.environmentId, {
+        serverTimeMs: 0,
+        requestedAtMs: 0,
+        receivedAtMs: 0,
+      });
+      const harness = yield* makeHarness({ cached: BASE_PROJECTION, completionMarker: true });
+      yield* awaitSubscriptionCount(harness, 1);
       expect(yield* Ref.get(harness.lastRequestCompletionMarker)).toBe(true);
-
-      yield* Queue.offer(
-        harness.inputs,
-        titleUpdated("Caught-up title", CACHED_SNAPSHOT_SEQUENCE + 1),
-      );
-      const catchingUp = yield* awaitThreadState(
-        harness.observed,
-        (value) =>
-          value.status === "synchronizing" &&
-          Option.isSome(value.data) &&
-          value.data.value.thread.title === "Caught-up title",
-      );
-      expect(catchingUp.status).toBe("synchronizing");
-
+      // The observer replays the current state when it starts; take it so clearing drops it.
+      yield* Queue.take(harness.observed);
+      yield* Queue.clear(harness.observed);
+      // Separate frames, as the server sends a replay.
+      for (let index = 1; index <= 20; index += 1) {
+        yield* Queue.offer(
+          harness.inputs,
+          titleUpdated(`Title ${index}`, CACHED_SNAPSHOT_SEQUENCE + index),
+        );
+        yield* Effect.yieldNow;
+      }
       yield* Queue.offer(harness.inputs, synchronized());
-      const live = yield* awaitThreadState(
-        harness.observed,
-        (value) => value.status === "live" && Option.isSome(value.data),
+      const live = yield* Queue.take(harness.observed);
+      expect(live.status).toBe("live");
+      expect(Option.getOrThrow(live.data).thread.title).toBe("Title 20");
+      expect(toServerClock(PREPARED.environmentId, 0)).toBe(0);
+
+      yield* Queue.offer(harness.inputs, titleUpdated("Live title", CACHED_SNAPSHOT_SEQUENCE + 21));
+      const next = yield* Queue.take(harness.observed);
+      expect(Option.getOrThrow(next.data).thread.title).toBe("Live title");
+      expect(toServerClock(PREPARED.environmentId, 0)).toBe(
+        DateTime.toEpochMillis(Option.getOrThrow(next.data).thread.updatedAt),
       );
-      expect(Option.getOrThrow(live.data).thread.title).toBe("Caught-up title");
+    }),
+  );
+
+  it.effect("publishes a snapshot from a server without a completion marker", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        initialConfig: Effect.succeed({ threadResumeCompletionMarker: false }),
+        completionMarker: true,
+      });
+      yield* Queue.offer(harness.inputs, snapshot(BASE_PROJECTION));
+      const live = yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+      expect(Option.getOrThrow(live.data)).toEqual(BASE_PROJECTION);
     }),
   );
 
@@ -2629,6 +2738,121 @@ describe("EnvironmentThreads", () => {
         unansweredRequestIds: [],
       });
       expect(yield* Queue.size(announced)).toBe(0);
+    }),
+  );
+
+  it.effect(
+    "does not apply a replaced attempt's snapshot after the next attempt reads its cursor",
+    () =>
+      Effect.gen(function* () {
+        const applying = yield* Deferred.make<void>();
+        const successorStarted = yield* Deferred.make<void>();
+        let attempts = 0;
+        const harness = yield* makeHarness({
+          cached: BASE_PROJECTION,
+          initialConfig: Effect.gen(function* () {
+            if (++attempts === 2) yield* Deferred.succeed(successorStarted, undefined);
+            return {};
+          }),
+        });
+        const sequence = CACHED_SNAPSHOT_SEQUENCE + 1;
+        yield* Queue.offer(harness.inputs, titleUpdated("Committed", sequence));
+        yield* awaitThreadState(harness.observed, (value) => value.appliedSequence === sequence);
+        const stale = snapshot({
+          ...BASE_PROJECTION,
+          thread: { ...BASE_PROJECTION.thread, title: "Stale" },
+        });
+        Object.defineProperty(stale, "snapshotSequence", {
+          get: () => {
+            Deferred.doneUnsafe(applying, Exit.void);
+            return 1;
+          },
+        });
+        yield* harness.threadState.semaphore.withPermits(1)(
+          Effect.gen(function* () {
+            yield* Queue.offer(harness.inputs, stale);
+            yield* Deferred.await(applying);
+            yield* Queue.offer(harness.wakeups, "application-active");
+            yield* Deferred.await(successorStarted);
+          }),
+        );
+        yield* awaitSubscriptionCount(harness, 2);
+        expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(sequence);
+        yield* Queue.offer(harness.inputs, titleUpdated("Live", sequence + 1));
+        const titles: Array<string | undefined> = [];
+        yield* awaitThreadState(harness.observed, (value) => {
+          titles.push(Option.getOrNull(value.data)?.thread.title);
+          return Option.getOrNull(value.data)?.thread.title === "Live";
+        });
+        expect(titles).not.toContain("Stale");
+      }),
+  );
+
+  it.effect("does not apply a replaced attempt's late marker without its dropped prefix", () =>
+    Effect.gen(function* () {
+      const oldItems = yield* Queue.unbounded<OrchestrationV2ThreadStreamItem>();
+      const prefixReceived = yield* Deferred.make<void>();
+      const markerSent = yield* Deferred.make<void>();
+      const successorStarted = yield* Deferred.make<void>();
+      let attempts = 0;
+      const resolvedSequence = CACHED_SNAPSHOT_SEQUENCE + 1;
+      const oldPrefix = questionResolved(resolvedSequence);
+      Object.defineProperty(oldPrefix, "kind", {
+        get: () => {
+          Deferred.doneUnsafe(prefixReceived, Exit.void);
+          return "event";
+        },
+      });
+      const replay = [
+        questionResolved(resolvedSequence),
+        titleUpdated("Recovered prefix", resolvedSequence + 1),
+        synchronized(),
+      ];
+      const harness = yield* makeHarness({
+        cached: PROJECTION_WITH_QUESTION,
+        completionMarker: true,
+        initialConfig: Effect.gen(function* () {
+          if (++attempts === 2) yield* Deferred.succeed(successorStarted, undefined);
+          return {};
+        }),
+        streamFor: (subscription) =>
+          subscription === 1
+            ? Stream.fromQueue(oldItems).pipe(
+                Stream.take(2),
+                Stream.concat(
+                  Stream.fromEffect(Deferred.succeed(markerSent, undefined)).pipe(Stream.drain),
+                ),
+                Stream.concat(Stream.never),
+              )
+            : undefined,
+      });
+      yield* awaitSubscriptionCount(harness, 1);
+      yield* harness.threadState.semaphore.withPermits(1)(
+        Effect.gen(function* () {
+          yield* Queue.offer(oldItems, oldPrefix);
+          yield* Deferred.await(prefixReceived);
+          yield* Queue.offer(oldItems, synchronized());
+          yield* Deferred.await(markerSent);
+          yield* Queue.offer(harness.wakeups, "application-active");
+          yield* Deferred.await(successorStarted);
+        }),
+      );
+      yield* awaitSubscriptionCount(harness, 2);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+      const before = yield* SubscriptionRef.get(harness.threadState);
+      expect(before.status).toBe("synchronizing");
+      expect(Option.getOrThrow(before.data).runtimeRequests[0]?.status).toBe("pending");
+      yield* Queue.offerAll(harness.inputs, [
+        ...replay,
+        titleUpdated("Live", resolvedSequence + 2),
+      ]);
+      const live = yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.getOrNull(value.data)?.thread.title === "Live",
+      );
+      expect(Option.getOrThrow(live.data).runtimeRequests.map((request) => request.status)).toEqual(
+        ["resolved"],
+      );
     }),
   );
 

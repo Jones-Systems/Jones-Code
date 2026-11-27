@@ -151,7 +151,7 @@ describe("provider update controller", () => {
     );
     const runs = await controller.start(machine([old, sibling]), update);
     expect(update.mock.calls.map(([input]) => input.input.instanceId)).toEqual(["work"]);
-    expect(runs.map(getProviderUpdateRunOutcome).map((outcome) => outcome.status)).toEqual([
+    expect(runs.map((run) => getProviderUpdateRunOutcome(run).status)).toEqual([
       "failed",
       "updated",
     ]);
@@ -189,7 +189,12 @@ describe("provider update controller", () => {
       success(kind === "missing" ? [] : [provider("personal", "running")]),
     );
     expect(getProviderUpdateRunOutcome(runs[0]!)).toMatchObject({ status: "failed" });
-    expect(controller.getSnapshot().get(environmentId)?.phase).toBe("failed");
+    expect(controller.getSnapshot().get(environmentId)).toMatchObject({
+      phase: "failed",
+      message: expect.stringContaining(
+        kind === "missing" ? "Provider update did not finish." : "running",
+      ),
+    });
   });
 
   it("retains an unverified warning and every mixed failure", async () => {
@@ -200,7 +205,7 @@ describe("provider update controller", () => {
     const runs = await controller.start(machine(providers), async ({ input }) =>
       success([provider(input.instanceId, input.instanceId === "work" ? "failed" : "unchanged")]),
     );
-    expect(runs.map(getProviderUpdateRunOutcome).map((outcome) => outcome.status)).toEqual([
+    expect(runs.map((run) => getProviderUpdateRunOutcome(run).status)).toEqual([
       "unchanged",
       "failed",
     ]);

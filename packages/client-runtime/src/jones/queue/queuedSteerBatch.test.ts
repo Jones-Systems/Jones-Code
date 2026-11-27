@@ -131,6 +131,16 @@ describe("queued batch client state", () => {
     ).toContain("approval or question");
   });
 
+  it("holds batch promotion for the exact run reached by captured Stop", () => {
+    const state = input();
+    const runId = state.projection.runs[0]!.id;
+    const stopped = { ...state.projection, capturedRuntimeStopRunId: runId };
+    expect(deriveQueuedSteerBatch({ ...state, projection: stopped })?.reason).toContain(
+      "no active",
+    );
+    expect(deriveQueuedSteerBatch(state)?.reason).toBeNull();
+  });
+
   it("labels a bounded prefix and explains oversized first messages", () => {
     const state = input();
     const limited = deriveQueuedSteerBatch({

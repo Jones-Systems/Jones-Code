@@ -3,7 +3,6 @@ import * as ControlAdmission from "../orchestration/ControlAdmission.ts";
 import { materializeCodexReplayAppIdentity } from "../runtimeIdentity/CodexReplayIdentity.ts";
 import * as Guard from "./NativeCreationProviderGuard.ts";
 import * as CodexClient from "effect-codex-app-server/client";
-import * as Predicate from "effect/Predicate";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import {
   makeCodexReplayClientFactory,
@@ -310,6 +309,7 @@ const fixture = Effect.gen(function* () {
           revoke: () => Effect.succeed(false),
           revokeAllExcept: () => Effect.succeed([]),
           setLastConnectedAt: () => Effect.void,
+          extend: () => Effect.succeed(false),
           // The fixture session is not bound to a proof key.
           getProofKeyThumbprint: () => Effect.succeedNone,
           revokeByProofKey: () => Effect.succeed([]),
@@ -408,7 +408,8 @@ function makeCodexReplayTurn(input: {
   };
 }
 
-function codexReplayPreamble(input: {
+function codexTransportEntries(input: {
+  readonly cwd: string;
   readonly nativeThreadId: string;
   readonly nativeTurnId: string;
   readonly prompt: string;
@@ -450,9 +451,14 @@ function codexReplayPreamble(input: {
     { type: "expect_outbound", label: "initialized", frame: { method: "initialized" } },
     {
       type: "expect_outbound",
+      frame: { id: 2, method: "config/read", params: { cwd: input.cwd, includeLayers: false } },
+    },
+    { type: "emit_inbound", frame: { id: 2, result: { config: {}, origins: {} } } },
+    {
+      type: "expect_outbound",
       label: "thread/start",
       frame: {
-        id: 2,
+        id: 3,
         method: "thread/start",
         params: { config: CodexAdapterV2.CODEX_THREAD_CONFIG },
       },
@@ -461,7 +467,7 @@ function codexReplayPreamble(input: {
       type: "emit_inbound",
       label: "thread/start",
       frame: {
-        id: 2,
+        id: 3,
         result: {
           thread: {
             id: input.nativeThreadId,
@@ -474,7 +480,7 @@ function codexReplayPreamble(input: {
             updatedAt: 1782622440,
             status: { type: "idle" },
             path: `/tmp/${input.nativeThreadId}.jsonl`,
-            cwd: "/synthetic/worktree",
+            cwd: input.cwd,
             cliVersion: "0.144.0",
             source: "vscode",
             threadSource: null,
@@ -487,7 +493,7 @@ function codexReplayPreamble(input: {
           model: "synthetic-model",
           modelProvider: "openai",
           serviceTier: null,
-          cwd: "/synthetic/worktree",
+          cwd: input.cwd,
           instructionSources: [],
           approvalPolicy: "on-request",
           approvalsReviewer: "user",
@@ -498,14 +504,40 @@ function codexReplayPreamble(input: {
     },
     {
       type: "expect_outbound",
+      frame: {
+        id: 4,
+        method: "thread/inject_items",
+        params: {
+          threadId: input.nativeThreadId,
+          items: [{ type: "message", role: "user", content: [{ type: "input_text", text: "" }] }],
+        },
+      },
+    },
+    { type: "emit_inbound", frame: { id: 4, result: {} } },
+    {
+      type: "expect_outbound",
+      frame: {
+        id: 5,
+        method: "thread/name/set",
+        params: { threadId: input.nativeThreadId, name: "Synthetic" },
+      },
+    },
+    { type: "emit_inbound", frame: { id: 5, result: {} } },
+    {
+      type: "expect_outbound",
+      frame: { id: 6, method: "config/read", params: { cwd: input.cwd, includeLayers: false } },
+    },
+    { type: "emit_inbound", frame: { id: 6, result: { config: {}, origins: {} } } },
+    {
+      type: "expect_outbound",
       label: "turn/start",
       frame: {
-        id: 3,
+        id: 7,
         method: "turn/start",
         params: {
           threadId: input.nativeThreadId,
           input: [{ type: "text", text: input.sentPrompt ?? input.prompt }],
-          cwd: "/synthetic/worktree",
+          cwd: input.cwd,
           model: "synthetic-model",
           collaborationMode: { mode: "default", settings: { model: "synthetic-model" } },
           approvalPolicy: "never",
@@ -519,7 +551,7 @@ function codexReplayPreamble(input: {
       type: "emit_inbound",
       label: "turn/start",
       frame: {
-        id: 3,
+        id: 7,
         result: { turn: makeCodexReplayTurn({ id: input.nativeTurnId, status: "inProgress" }) },
       },
     },
@@ -654,49 +686,12 @@ const scenario = (mode: Mode) =>
             makeReplayServerConfig(`native-${mode}`).pipe(Effect.orDie),
             (value) => fs.remove(value.baseDir, { recursive: true }).pipe(Effect.orDie),
           );
-          const preamble = codexReplayPreamble({
+          const entries = codexTransportEntries({
+            cwd: resources.worktreePath,
             nativeThreadId: "synthetic-native",
             nativeTurnId: "synthetic-turn",
             prompt: "Synthetic prompt",
           });
-          const startIndex = preamble.findIndex(
-            (entry) => entry.type === "expect_outbound" && entry.label === "turn/start",
-          );
-          const entries: Array<CodexReplay.CodexAppServerReplayEntry> = [
-            ...preamble.slice(0, startIndex),
-            {
-              type: "expect_outbound",
-              frame: {
-                id: 3,
-                method: "thread/inject_items",
-                params: {
-                  threadId: "synthetic-native",
-                  items: [
-                    { type: "message", role: "user", content: [{ type: "input_text", text: "" }] },
-                  ],
-                },
-              },
-            },
-            { type: "emit_inbound", frame: { id: 3, result: {} } },
-            {
-              type: "expect_outbound",
-              frame: {
-                id: 4,
-                method: "config/read",
-                params: { cwd: resources.worktreePath, includeLayers: false },
-              },
-            },
-            { type: "emit_inbound", frame: { id: 4, result: { config: {}, origins: {} } } },
-            ...preamble.slice(startIndex).map((entry) =>
-              (entry.type === "expect_outbound" || entry.type === "emit_inbound") &&
-              Predicate.isObject(entry.frame)
-                ? {
-                    ...entry,
-                    frame: { ...entry.frame, ...(entry.label === "turn/start" ? { id: 5 } : {}) },
-                  }
-                : entry,
-            ),
-          ];
           if (mode === "transport-failure") {
             const index = entries.findIndex(
               (entry) => entry.type === "emit_inbound" && entry.label === "turn/start",
@@ -704,7 +699,7 @@ const scenario = (mode: Mode) =>
             entries.splice(index, entries.length - index, {
               type: "emit_inbound",
               label: "turn/start",
-              frame: { id: 5, error: { code: -32000, message: "Synthetic start rejected" } },
+              frame: { id: 7, error: { code: -32000, message: "Synthetic start rejected" } },
             });
           }
           const transcript = makeCodexReplayTranscript({ scenario: `native-${mode}`, entries });
@@ -883,7 +878,8 @@ const scenario = (mode: Mode) =>
           });
           const result = yield* actual.pipe(Effect.result);
           assert.strictEqual(opened, mode === "transport-spawn-revoked" ? 0 : 1);
-          const expected = mode === "transport-spawn-revoked" ? [] : ["initialize", "thread/start"];
+          const expected =
+            mode === "transport-spawn-revoked" ? [] : ["initialize", "config/read", "thread/start"];
           if (
             mode === "transport-send-revoked" ||
             mode === "transport-success" ||
@@ -891,7 +887,7 @@ const scenario = (mode: Mode) =>
           )
             expected.push("thread/inject_items");
           if (mode === "transport-success" || mode === "transport-failure")
-            expected.push("config/read", "turn/start");
+            expected.push("thread/name/set", "config/read", "turn/start");
           assert.deepEqual(requests, expected);
           const replayState = yield* Ref.get(replay.state);
           assert.isNull(replayState.failure, replayState.failure?.message);

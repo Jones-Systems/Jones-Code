@@ -3,6 +3,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { NativeObservations } from "./jones/workspaceRetirement/NativeObservations.ts";
 import { LifecycleRegistry } from "./jones/workspaceLifecycle/RegistryCli.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Context from "effect/Context";
 import type * as Digest from "effect/crypto/Digest";
@@ -26,6 +27,7 @@ import { checkpointRefForScopeOrdinal } from "./orchestration-v2/CheckpointServi
 import {
   DEFAULT_SERVER_SETTINGS,
   ServerSettingsError,
+  type StorageCleanupReportEntry,
   type WorktreeKeepWhen,
   type StorageCleanupSettings,
   type TerminalMetadataStreamEvent,
@@ -38,7 +40,9 @@ import { runMigrations } from "./persistence/Migrations.ts";
 import { makeDeletionAdmission } from "./jones/cleanup/DeletionAdmission.ts";
 import * as ServerConfig from "./config.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
+import * as CheckpointCaptureIndex from "./vcs/checkpointCaptureIndex.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as TaskFolders from "./workspace/TaskFolders.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as Settings from "./serverSettings.ts";
@@ -385,7 +389,9 @@ const cleanupFixture = (
     let onLiveCheck: Effect.Effect<void> = Effect.void;
     let outboxStatus: string | null = null;
     let scheduledThreadIds: string[] = [];
+    let branchPullRequests: Record<string, GitManager.GitBranchPullRequest> = {};
     let fullStatusCalls = 0;
+    let statusCommands = 0;
     let worktreeRemovalCalls = 0;
     const removalArgs: string[][] = [];
     const deletionRefusals: string[] = [];
@@ -398,6 +404,7 @@ const cleanupFixture = (
     let threadReadFailure: ThreadId | null = null;
     let projectReadFailure: ProjectId | null = null;
     let terminalListener: ((event: TerminalMetadataStreamEvent) => Effect.Effect<void>) | undefined;
+    let findTaskFolder: TaskFolders.TaskFolders["Service"]["find"] = () => Effect.succeed(null);
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
     const lifetime = yield* Effect.scope;
@@ -607,6 +614,7 @@ const cleanupFixture = (
         execute: (input) =>
           Effect.gen(function* () {
             gitInspections++;
+            if (input.args[0] === "status") statusCommands++;
             if (input.args[0] === "worktree" && input.args[1] === "remove") {
               worktreeRemovalCalls++;
               removalArgs.push([...input.args]);
@@ -774,6 +782,8 @@ const cleanupFixture = (
       }),
       Effect.provideService(GitManager.GitManager, {
         invalidateStatus: () => Effect.void,
+        branchPullRequest: (input: { branch: string }) =>
+          Effect.sync(() => branchPullRequests[input.branch] ?? null),
       } as unknown as GitManager.GitManager["Service"]),
       Effect.provideService(TerminalManager.TerminalManager, {
         subscribeMetadata: (
@@ -785,10 +795,17 @@ const cleanupFixture = (
           }),
       } as unknown as TerminalManager.TerminalManager["Service"]),
       Effect.provideService(ServerActivation, Deferred.await(activated)),
+      Effect.provideService(TaskFolders.TaskFolders, {
+        find: (target: string) => findTaskFolder(target),
+        registeredPathReason: () => Effect.succeed(null),
+      } as unknown as TaskFolders.TaskFolders["Service"]),
     );
     return {
       service: Context.get(context, StorageCleanup.StorageCleanup),
       repo,
+      setTaskFolderLookup: (lookup: typeof findTaskFolder) => {
+        findTaskFolder = lookup;
+      },
       setTerminals: (terminals: TerminalSummary[]) =>
         terminalListener?.({ type: "snapshot", terminals }) ?? Effect.void,
       editBeforeRemoval: () => {
@@ -844,6 +861,9 @@ const cleanupFixture = (
       setThreads: (next: typeof threads) => {
         threads = next;
       },
+      setBranchPullRequests: (next: typeof branchPullRequests) => {
+        branchPullRequests = next;
+      },
       threadBranches: () => threads.map((thread) => thread.branch),
       admissionBindings: () => withDeletionOwner((owner) => owner.inspectBindings()),
       setOnLiveCheck: (hook: Effect.Effect<void>) => {
@@ -892,6 +912,7 @@ const cleanupFixture = (
       removalArgs: () => removalArgs,
       gitInspections: () => gitInspections,
       fullStatusCalls: () => fullStatusCalls,
+      statusCommands: () => statusCommands,
       deletionEvidence: () => ({ worktreeRemovalCalls, deletionRefusals, qualifiedDeletions }),
       snapshotReads: () => snapshotReads,
       snapshotReadPriorities: () => [...snapshotReadPriorities],
@@ -1028,18 +1049,29 @@ describe("checkpoint ref cleanup", () => {
       Effect.gen(function* () {
         const { service, repo, worktree, command, addThread, listRefs } =
           yield* checkpointCleanupFixture();
-        yield* addThread("deleted", { deleted: true });
+        const deleted = yield* addThread("deleted", { deleted: true });
         yield* addThread("imported-deleted", { deleted: true, legacyOnly: true });
+        const active = yield* addThread("active");
         const retained = [
-          ...(yield* addThread("active")),
+          ...active,
           ...(yield* addThread("archived", { archived: true })),
           legacyCheckpointRef("unknown-owner", 0),
         ];
+        const fs = yield* FileSystem.FileSystem;
+        const indexRoot = CheckpointCaptureIndex.storeRoot(yield* Path.Path, `${repo}/.git`);
+        const captureIndexOf = (ref: string) =>
+          `${indexRoot}/${CheckpointCaptureIndex.scopeDirectoryPrefix(ref.slice(0, ref.lastIndexOf("/") + 1))}cwd`;
+        for (const ref of [deleted.at(-1)!, active.at(-1)!]) {
+          yield* fs.makeDirectory(captureIndexOf(ref), { recursive: true });
+        }
         yield* command(repo, ["update-ref", retained.at(-1)!, "HEAD"]);
         yield* command(repo, ["pack-refs", "--all"]);
         yield* command(repo, ["worktree", "remove", worktree]);
         yield* service.runNow;
         expect(yield* listRefs()).toEqual(retained.sort());
+        // A deleted thread's capture index goes with its refs; a live thread keeps its own.
+        expect(yield* fs.exists(captureIndexOf(deleted.at(-1)!))).toBe(false);
+        expect(yield* fs.exists(captureIndexOf(active.at(-1)!))).toBe(true);
       }).pipe(Effect.provide(Sqlite.layerMemory)),
     ),
   );
@@ -1170,6 +1202,43 @@ it.live.each(["repository", "uppercase", "bare"] as const)(
         ).toBe(String(kind === "bare"));
       }),
     ),
+);
+
+it.live("keeps a worktree whose ignored folder holds a dangling gitfile", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const { service, fs, worktree, removalArgs } = yield* cleanupFixture();
+      // Packages such as conda-forge's `referencing` ship a test suite's dangling gitlink.
+      const gitfile = `${worktree}/dist/suite/.git`;
+      const contents = "gitdir: ../.git/modules/x\n";
+      yield* fs.makeDirectory(`${worktree}/dist/suite`, { recursive: true });
+      yield* fs.writeFileString(gitfile, contents);
+      const [entry] = (yield* service.runNow).entries;
+      expect(entry, entry?.reason).toMatchObject({
+        path: worktree,
+        outcome: "kept",
+        retirement: {
+          state: "not_retired",
+          reasonCodes: expect.arrayContaining(["nested_repository"]),
+          receiptId: null,
+        },
+      });
+      expect(yield* fs.readFileString(gitfile)).toBe(contents);
+      expect(removalArgs()).toEqual([]);
+    }),
+  ),
+);
+
+it.live("keeps a worktree whose gitfile target exists only with its trailing space", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const { service, fs, worktree } = yield* cleanupFixture();
+      yield* fs.makeDirectory(`${worktree}/dist/suite/git `, { recursive: true });
+      yield* fs.writeFileString(`${worktree}/dist/suite/.git`, "gitdir: git \n");
+      const [entry] = (yield* service.runNow).entries;
+      expect(entry).toMatchObject({ outcome: "kept", reason: "Contains a nested Git repository" });
+    }),
+  ),
 );
 
 const submoduleCleanupFixture = () =>
@@ -1560,6 +1629,87 @@ describe("subagent worktree ownership", () => {
                   : "Not settled",
       });
     }).pipe(Effect.provide(cleanupTestLayer)),
+  );
+
+  it.effect.each(["merge", "squash"] as const)(
+    "removes an isolated subagent worktree whose branch reached the default branch through its parent's merged pull request (%s)",
+    (strategy) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MS);
+        const fixture = yield* cleanupFixture({
+          ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+          worktreeOnMerge: true,
+          worktreeOnDelete: true,
+          worktreeAfterDays: 30,
+        });
+        const { repo, worktree, command, fs } = fixture;
+        const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
+        yield* command(remote, ["init", "--bare", "-b", "main"]);
+        yield* command(repo, ["remote", "add", "origin", remote]);
+        yield* command(repo, ["push", "origin", "main"]);
+        yield* fs.writeFileString(`${worktree}/tracked.txt`, "subagent work\n");
+        yield* command(worktree, ["commit", "-am", "subagent work"]);
+        // The parent merges the subagent's branch into its own and ships one pull request.
+        yield* command(repo, ["branch", "parent-branch", "main"]);
+        yield* command(repo, ["checkout", "parent-branch"]);
+        yield* command(repo, ["merge", "--no-ff", "-m", "merge subagent", "feature"]);
+        yield* command(repo, ["checkout", "main"]);
+        if (strategy === "merge") {
+          yield* command(repo, [
+            "merge",
+            "--no-ff",
+            "-m",
+            "merge parent pull request",
+            "parent-branch",
+          ]);
+        } else {
+          yield* command(repo, ["merge", "--squash", "parent-branch"]);
+          yield* command(repo, ["commit", "-m", "squash parent pull request"]);
+        }
+        yield* command(repo, ["push", "origin", "main"]);
+        const parentHead = (yield* command(repo, ["rev-parse", "parent-branch"])).stdout.trim();
+        fixture.setBranchPullRequests({
+          "parent-branch": {
+            number: 7,
+            title: "Parent work",
+            url: "https://github.com/example/repo/pull/7",
+            baseRef: "main",
+            headRef: "parent-branch",
+            headSha: parentHead,
+            state: "merged",
+            repositoryKey: null,
+            updatedAt: "2026-06-08T12:00:00.000Z",
+          } as GitManager.GitBranchPullRequest,
+        });
+        const parent = shell({
+          branch: "parent-branch",
+          status: "completed",
+          settledAt: at(-DAY_MS),
+          createdAt: at(-3 * DAY_MS),
+          updatedAt: at(-DAY_MS),
+        });
+        const child = shell({
+          id: ThreadId.make("child"),
+          branch: "feature",
+          worktreePath: worktree,
+          status: "completed",
+          createdAt: at(-3 * DAY_MS),
+          latestRunCompletedAt: at(-2 * DAY_MS),
+          updatedAt: at(-2 * DAY_MS),
+          lineage: {
+            parentThreadId: parent.id,
+            rootThreadId: parent.id,
+            relationshipToParent: "subagent",
+          },
+        });
+        fixture.setThreads([child, parent]);
+
+        const report = yield* fixture.service.runNow;
+        expect(report.entries.find((entry) => entry.threadId === child.id)).toMatchObject({
+          outcome: "removed",
+        });
+        expect(yield* fs.exists(worktree)).toBe(false);
+      }).pipe(Effect.provide(cleanupTestLayer)),
   );
 
   it.effect.each([
@@ -2700,6 +2850,100 @@ describe("orphan worktree reports", () => {
     ),
   );
 
+  it.effect(
+    "measures new orphans first and rotates cached refreshes when the budget runs out, not counting discovery",
+    () =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const clock = yield* Clock.Clock;
+          let now = NOW_MS;
+          let parent: string | undefined;
+          let slowDirectory: string | undefined;
+          let slowDiscovery: string | undefined;
+          const fixture = yield* cleanupFixture().pipe(
+            Effect.provideService(Clock.Clock, {
+              ...clock,
+              currentTimeMillis: Effect.sync(() => now),
+            }),
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readDirectory: (directory, options) =>
+                fs.readDirectory(directory, options).pipe(
+                  Effect.map((names) => {
+                    if (directory === slowDirectory || directory === slowDiscovery) now += 30_000;
+                    return directory === parent ? names.sort() : names;
+                  }),
+                ),
+            }),
+          );
+          fixture.setThreads([]);
+          parent = `${fixture.config.worktreesDir}/repository`;
+          const cached = `${parent}/a-cached`;
+          const later = `${parent}/b-cached`;
+          const discovered = `${parent}/c-discovered`;
+          for (const directory of [cached, later]) {
+            yield* fs.makeDirectory(`${directory}/build`, { recursive: true });
+            yield* fs.utimes(directory, 1, 1);
+          }
+          const bundle = `${later}/build/bundle.js`;
+          yield* fs.writeFileString(bundle, "x".repeat(64 * 1024));
+          const size = yield* allocatedBytes(fs, bundle);
+          const first = yield* fixture.service.runNow;
+          expect(first.entries.find((entry) => entry.path === later)?.bytes).toBe(size);
+
+          slowDirectory = `${cached}/build`;
+          yield* fs.remove(bundle);
+          yield* fs.makeDirectory(discovered);
+          yield* fs.utimes(discovered, 1, 1);
+          const second = yield* fixture.service.runNow;
+          expect(second.entries.find((entry) => entry.path === discovered)?.bytes).toBe(0);
+          expect(second.entries.find((entry) => entry.path === later)?.bytes).toBe(size);
+
+          slowDiscovery = parent;
+          const third = yield* fixture.service.runNow;
+          expect(third.entries.find((entry) => entry.path === later)?.bytes).toBe(0);
+        }),
+      ),
+  );
+
+  it.live("retains the last orphan size on a failed refresh and can refresh it later", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        let unreadable: string | undefined;
+        const fixture = yield* cleanupFixture().pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readDirectory: (directory, options) =>
+              fs.readDirectory(
+                directory === unreadable ? `${directory}/missing-directory` : directory,
+                options,
+              ),
+          }),
+        );
+        fixture.setThreads([]);
+        const orphan = `${fixture.config.worktreesDir}/repository/orphan`;
+        const build = `${orphan}/build`;
+        const bundle = `${build}/bundle.js`;
+        yield* fs.makeDirectory(build, { recursive: true });
+        yield* fs.writeFileString(bundle, "build output");
+        yield* fs.utimes(orphan, 1, 1);
+        const size = yield* allocatedBytes(fs, bundle);
+        const orphanBytes = Effect.map(
+          fixture.service.runNow,
+          (report) => report.entries.find((entry) => entry.path === orphan)?.bytes,
+        );
+        expect(yield* orphanBytes).toBe(size);
+        yield* fs.remove(bundle);
+        unreadable = build;
+        expect(yield* orphanBytes).toBe(size);
+        unreadable = undefined;
+        expect(yield* orphanBytes).toBe(0);
+      }),
+    ),
+  );
+
   it.live("continues after an inaccessible directory's git probe", (context) =>
     runCleanupTest(
       Effect.gen(function* () {
@@ -3253,6 +3497,91 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
+
+  const legacyLeftoverReason =
+    "Leftover Git metadata is retained until its checkout custody is verified.";
+  const recordLegacyWorktreeLeftover = Effect.fnUntraced(function* (
+    fixture: Effect.Success<ReturnType<typeof cleanupFixture>>,
+  ) {
+    const { command, config, fs, repo, worktree } = fixture;
+    const adminDir = (yield* command(worktree, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
+    // Seed the saved legacy outcome directly. The runner's permissions can change how Git removes a worktree.
+    yield* command(repo, ["worktree", "remove", "--", worktree]);
+    const record = `${config.stateDir}/storage-cleanup-leftovers.json`;
+    const entry = {
+      kind: "worktree",
+      outcome: "kept",
+      reason: "",
+      path: worktree,
+      projectPath: repo,
+      threadId: ThreadId.make("thread-1"),
+      threadTitle: "Thread",
+      bytes: null,
+      files: null,
+    } satisfies StorageCleanupReportEntry;
+    const recordContents = JSON.stringify([{ adminDir, entry }]);
+    yield* fs.writeFileString(record, recordContents);
+    return { adminDir, record, recordContents };
+  });
+
+  it.live("keeps reporting recorded Git metadata after the checkout is gone", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture();
+        const { fs, service, worktree, removalArgs } = fixture;
+        const { adminDir, record, recordContents } = yield* recordLegacyWorktreeLeftover(fixture);
+        const residue = `${adminDir}/scratch/payload`;
+        yield* fs.makeDirectory(`${adminDir}/scratch`, { recursive: true });
+        yield* fs.writeFileString(residue, "leftover\n");
+
+        const report = yield* service.runNow;
+        expect(report.entries).toMatchObject([
+          { path: worktree, outcome: "kept", reason: legacyLeftoverReason },
+        ]);
+        expect((yield* service.runNow).entries).toEqual(report.entries);
+        expect(yield* fs.exists(worktree)).toBe(false);
+        expect(yield* fs.readFileString(record)).toBe(recordContents);
+        expect(yield* fs.readFileString(residue)).toBe("leftover\n");
+        expect(removalArgs()).toEqual([]);
+
+        // A malformed record can still name leftovers and must be available for repair.
+        yield* fs.writeFileString(record, "{");
+        expect((yield* service.runNow).entries).toEqual([
+          expect.objectContaining({ path: record, outcome: "failed" }),
+        ]);
+        expect(yield* fs.readFileString(record)).toBe("{");
+        expect(yield* fs.readFileString(residue)).toBe("leftover\n");
+      }),
+    ),
+  );
+  it.live("keeps a recreated dirty worktree using the recorded Git metadata path", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture();
+        const { command, fs, repo, service, worktree, removalArgs } = fixture;
+        const { adminDir, record, recordContents } = yield* recordLegacyWorktreeLeftover(fixture);
+        yield* command(repo, ["worktree", "add", worktree, "feature"]);
+        expect((yield* command(worktree, ["rev-parse", "--absolute-git-dir"])).stdout.trim()).toBe(
+          adminDir,
+        );
+        const backlink = yield* fs.readFileString(`${adminDir}/gitdir`);
+        yield* fs.writeFileString(`${worktree}/tracked.txt`, "new local work\n");
+
+        expect((yield* service.runNow).entries).toMatchObject([
+          { path: worktree, outcome: "kept", reason: legacyLeftoverReason },
+          { path: worktree, outcome: "kept", reason: "Has uncommitted changes (1 file)" },
+        ]);
+        expect(removalArgs()).toEqual([]);
+        expect(yield* fs.readFileString(record)).toBe(recordContents);
+        expect(yield* fs.readFileString(`${adminDir}/gitdir`)).toBe(backlink);
+        expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("new local work\n");
+        expect(yield* fs.readFileString(`${repo}/tracked.txt`)).toBe("original\n");
+        expect((yield* command(repo, ["worktree", "list", "--porcelain"])).stdout).toContain(
+          `worktree ${worktree}`,
+        );
+      }),
+    ),
+  );
   it.live("skips a stored worktree path whose parent is a regular file", () =>
     runCleanupTest(
       Effect.gen(function* () {
@@ -3682,8 +4011,6 @@ describe("storage cleanup reports and local file policies", () => {
         const { service, fs, repo, worktree, command, fullStatusCalls, threadBranches } =
           yield* cleanupFixture();
         const changed = { outcome: "kept", reason: "Repository or branch changed" };
-        yield* command(worktree, ["checkout", "--detach"]);
-        expect((yield* service.runNow).entries[0]).toMatchObject(changed);
         yield* command(worktree, ["switch", "--orphan", "other"]);
         expect((yield* service.runNow).entries[0]).toMatchObject(changed);
         yield* command(worktree, ["tag", "feature", "feature"]);
@@ -3715,6 +4042,34 @@ describe("storage cleanup reports and local file policies", () => {
         const entry = (yield* service.runNow).entries[0];
         expect(entry, entry?.reason).toMatchObject({ outcome: "removed" });
         expect(fullStatusCalls()).toBe(0);
+      }),
+    ),
+  );
+  it.live("removes a clean detached worktree only when every commit is on a branch", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, worktree, command } = yield* cleanupFixture();
+        yield* command(worktree, ["checkout", "--detach"]);
+        yield* fs.writeFileString(`${worktree}/tracked.txt`, "unpushed\n");
+        yield* command(worktree, ["commit", "-am", "unpushed"]);
+        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "kept" });
+        yield* command(worktree, ["checkout", "--detach", "main"]);
+        yield* command(worktree, ["-c", "sequence.editor=echo break >>", "rebase", "-i", "--root"]);
+        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "kept" });
+        yield* command(worktree, ["rebase", "--abort"]);
+        yield* command(worktree, ["checkout", "-b", "topic", "main"]);
+        yield* command(worktree, ["commit", "--allow-empty", "-m", "topic"]);
+        yield* command(worktree, ["checkout", "--detach", "main"]);
+        yield* fs.writeFileString(`${worktree}/tracked.txt`, "autostashed\n");
+        yield* command(worktree, ["merge", "--autostash", "--no-ff", "--no-commit", "topic"]);
+        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "kept" });
+        yield* command(worktree, ["merge", "--abort"]);
+        expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("autostashed\n");
+        yield* command(worktree, ["checkout", "--", "tracked.txt"]);
+        yield* command(worktree, ["bisect", "start"]);
+        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "kept" });
+        yield* command(worktree, ["bisect", "reset"]);
+        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
       }),
     ),
   );
@@ -3777,11 +4132,12 @@ describe("storage cleanup reports and local file policies", () => {
     runCleanupTest(
       Effect.gen(function* () {
         yield* TestClock.setTime(NOW_MS);
-        const { service, fs, repo, worktree, command, setThreads } = yield* cleanupFixture({
-          ...DEFAULT_SERVER_SETTINGS.storageCleanup,
-          worktreeUnchanged: state !== "merged-only",
-          worktreeOnMerge: true,
-        });
+        const { service, fs, repo, worktree, command, setThreads, statusCommands } =
+          yield* cleanupFixture({
+            ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+            worktreeUnchanged: state !== "merged-only",
+            worktreeOnMerge: true,
+          });
         yield* command(repo, ["branch", "-m", "main", "trunk"]);
         setThreads([shell({ branch: "feature", worktreePath: worktree, archivedAt: at(-DAY_MS) })]);
         if (state === "unmerged") {
@@ -3793,6 +4149,8 @@ describe("storage cleanup reports and local file policies", () => {
         const report = yield* service.runNow;
         expect(report.entries[0]).toMatchObject({ outcome, reason });
         expect(yield* fs.exists(worktree)).toBe(outcome === "kept");
+        // A full status walks the whole checkout; only a removable worktree pays for it.
+        if (outcome === "kept") expect(statusCommands()).toBe(0);
         expect(
           (yield* command(repo, ["show-ref", "--verify", "refs/heads/feature"])).stdout,
         ).not.toBe("");
@@ -3917,6 +4275,58 @@ describe("storage cleanup reports and local file policies", () => {
           reason: "Default branch is unavailable",
         });
         expect(yield* fs.exists(worktree)).toBe(true);
+      }),
+    ),
+  );
+  it.live("fetches a failing default branch once per sweep and names the broken local ref", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, repo, worktree, command, setThreads, setStoredWorktreePaths } =
+          yield* cleanupFixture({
+            ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+            worktreeUnchanged: true,
+          });
+        const second = `${worktree}-2`;
+        yield* command(repo, ["worktree", "add", "-b", "feature-2", second]);
+        setStoredWorktreePaths([worktree, second]);
+        setThreads([
+          shell({ branch: "feature", worktreePath: worktree, archivedAt: at(-DAY_MS) }),
+          shell({
+            id: ThreadId.make("thread-2"),
+            branch: "feature-2",
+            worktreePath: second,
+            archivedAt: at(-DAY_MS),
+          }),
+        ]);
+        const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
+        yield* command(remote, ["init", "--bare", "-b", "main"]);
+        yield* command(repo, ["remote", "add", "origin", remote]);
+        yield* command(repo, ["push", "origin", "main"]);
+        yield* command(repo, ["remote", "set-head", "origin", "main"]);
+        yield* command(repo, ["commit", "--allow-empty", "-m", "remote only"]);
+        yield* command(repo, ["push", "origin", "main"]);
+        yield* command(repo, ["reset", "--hard", "HEAD~1"]);
+        yield* command(repo, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        const trackingRef = yield* fs.readFileString(`${repo}/.git/refs/remotes/origin/main`);
+        yield* fs.writeFileString(`${repo}/.git/refs/remotes/origin/main 2`, trackingRef);
+        const fetchLog = `${remote}/fetches.log`;
+        const uploadPack = `${remote}/upload-pack.sh`;
+        yield* fs.writeFileString(
+          uploadPack,
+          `#!/bin/sh\necho fetch >> '${fetchLog}'\nexec git-upload-pack "$@"\n`,
+        );
+        yield* fs.chmod(uploadPack, 0o755);
+        yield* command(repo, ["config", "remote.origin.uploadpack", uploadPack]);
+
+        const report = yield* service.runNow;
+        expect((yield* fs.readFileString(fetchLog)).trim().split("\n")).toHaveLength(1);
+        expect(report.entries).toHaveLength(2);
+        for (const entry of report.entries) {
+          expect(entry.outcome).not.toBe("removed");
+          expect(entry.reason).toContain("broken local ref");
+        }
+        expect(yield* fs.exists(worktree)).toBe(true);
+        expect(yield* fs.exists(second)).toBe(true);
       }),
     ),
   );
@@ -4156,6 +4566,36 @@ describe("storage cleanup reports and local file policies", () => {
     ),
   );
   it.live.each([
+    { kind: "logs", name: "server.log.1", label: "rotated logs" },
+    { kind: "browser-artifacts", name: "capture.png", label: "browser artifacts" },
+  ] as const)("skips dangling symlinks during $kind cleanup", ({ kind, name, label }) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, config, enableFiles, disable } = yield* cleanupFixture();
+        disable();
+        enableFiles();
+        const directory = kind === "logs" ? `${config.logsDir}/nested` : config.browserArtifactsDir;
+        yield* fs.makeDirectory(directory, { recursive: true });
+        const expired = `${directory}/${name}`;
+        const dangling = `${directory}/00-dangling-${name}`;
+        const linked = `${directory}/01-linked-${name}`;
+        yield* fs.symlink("missing", dangling);
+        yield* fs.symlink(directory, linked);
+        yield* fs.writeFileString(expired, "expired");
+        yield* fs.utimes(expired, 1, 1);
+
+        const report = yield* service.runNow;
+        expect(report.entries.filter((entry) => entry.kind === kind)).toMatchObject([
+          { outcome: "removed", reason: `Removed 1 ${label}`, files: 1, bytes: 7 },
+        ]);
+        expect((yield* fs.readDirectory(directory)).toSorted()).toEqual([
+          `00-dangling-${name}`,
+          `01-linked-${name}`,
+        ]);
+      }),
+    ),
+  );
+  it.live.each([
     { linked: "home", outcome: "removed", reason: "Removed 1 rotated logs" },
     { linked: "logs folder", outcome: "kept", reason: "No expired files" },
   ] as const)(
@@ -4190,6 +4630,43 @@ describe("storage cleanup reports and local file policies", () => {
           expect(yield* fs.exists(`${disk}/real/logs/server.log.1`)).toBe(outcome === "kept");
         }),
       ),
+  );
+  it.live("keeps external rotated logs when a scanned directory is replaced by a symlink", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig.ServerConfig;
+        yield* fs.makeDirectory(config.logsDir, { recursive: true });
+        const nested = `${yield* fs.realPath(config.logsDir)}/nested`;
+        const outside = yield* fs.makeTempDirectoryScoped();
+        const expired = `${outside}/server.log.1`;
+        yield* fs.makeDirectory(nested);
+        yield* fs.writeFileString(expired, "external log");
+        yield* fs.utimes(expired, 1, 1);
+
+        const { service, enableFiles, disable } = yield* cleanupFixture().pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readDirectory: (directory, options) =>
+              Effect.gen(function* () {
+                if (directory === nested) {
+                  yield* fs.rename(nested, `${nested}-original`);
+                  yield* fs.symlink(outside, nested);
+                }
+                return yield* fs.readDirectory(directory, options);
+              }),
+          }),
+        );
+        disable();
+        enableFiles();
+        const report = yield* service.runNow;
+        expect(yield* fs.exists(expired)).toBe(true);
+        expect(report.entries.find((entry) => entry.kind === "logs")).toMatchObject({
+          outcome: "kept",
+          reason: "No expired files",
+        });
+      }),
+    ),
   );
   it.live("reports git failures without aborting the remaining categories", () =>
     runCleanupTest(
@@ -4243,6 +4720,68 @@ describe("settled worktree rechecks", () => {
           expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
         }),
       ),
+  );
+  const recordedTaskFolder = (fixture: { worktree: string; repo: string }) => ({
+    root: fixture.worktree,
+    projectId: ProjectId.make("project-1"),
+    projectRoot: fixture.repo,
+    anchor: fixture.repo,
+    projectPath: fixture.worktree,
+    projectIsWorktree: true,
+    repositories: [],
+  });
+
+  it.effect("keeps a task folder until every checkout has retirement proof", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MS);
+        const fixture = yield* cleanupFixture();
+        fixture.setSettings({
+          storageCleanup: {
+            ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+            worktreeSettledAfterDays: 0,
+          },
+        });
+        fixture.setThreads([
+          shell({ branch: "feature", worktreePath: fixture.worktree, settledAt: at(0) }),
+        ]);
+        fixture.setTaskFolderLookup(() => Effect.succeed(recordedTaskFolder(fixture)));
+        const report = yield* fixture.service.runNow;
+        expect(report.entries[0]).toMatchObject({
+          outcome: "kept",
+          reason:
+            "Task folder retirement requires preservation and removal proof for every checkout",
+        });
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+      }),
+    ),
+  );
+  it.effect("keeps a checkout registered into a task folder while it is measured", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MS);
+        const fixture = yield* pausedMeasurementFixture();
+        fixture.setSettings({
+          storageCleanup: {
+            ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+            worktreeSettledAfterDays: 0,
+          },
+        });
+        fixture.setThreads([
+          shell({ branch: "feature", worktreePath: fixture.worktree, settledAt: at(0) }),
+        ]);
+        const run = yield* fixture.service.runNow.pipe(Effect.forkChild);
+        yield* Deferred.await(fixture.measuring);
+        fixture.setTaskFolderLookup(() => Effect.succeed(recordedTaskFolder(fixture)));
+        yield* Deferred.succeed(fixture.resume, undefined);
+        const report = yield* Fiber.join(run);
+        expect(report.entries[0]).toMatchObject({
+          outcome: "kept",
+          reason: "Checkout became part of a task folder",
+        });
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+      }),
+    ),
   );
   it.effect.each([{ settledAt: null }, { settledAt: at(DAY_MS) }])(
     "keeps a checkout changed during measurement (%j)",

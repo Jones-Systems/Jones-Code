@@ -77,6 +77,10 @@
       "to": "apps/web/src/jones/settlementRestore/settlementRestore.ts"
     },
     {
+      "from": "apps/web/src/hooks/useThreadActions.undo.test.ts",
+      "to": "apps/web/src/jones/settlementRestore/settlementRestore.ts"
+    },
+    {
       "from": "apps/web/src/hooks/useThreadActionMenu.ts",
       "to": "apps/web/src/jones/settlementRestore/menu.ts"
     },

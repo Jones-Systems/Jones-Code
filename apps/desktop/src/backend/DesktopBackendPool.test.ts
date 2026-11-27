@@ -16,6 +16,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
+import { vi } from "vite-plus/test";
 
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -31,6 +32,11 @@ import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import type { DesktopBackendStartConfig } from "./DesktopBackendManager.ts";
+
+// The recovery worker has its own tests; it must never receive these synthetic PIDs.
+vi.mock("./DesktopBackendRecoveryProcess.ts", () => ({
+  make: () => ({ track: () => Promise.resolve(undefined) }),
+}));
 
 // Models the spawner's release for a backend that ignores SIGTERM, without OS signals.
 const makeFakeBackendProcess = Effect.fn("test.makeFakeBackendProcess")(function* () {

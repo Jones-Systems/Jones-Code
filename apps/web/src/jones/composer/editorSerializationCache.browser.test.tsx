@@ -45,7 +45,16 @@ vi.mock(import("./editorSerializationCache"), async (original) => {
 
 function createHarness(initial: string, options: Partial<ComposerPromptEditorProps> = {}) {
   const editorRef = createRef<ComposerPromptEditorHandle>();
-  const changed = vi.fn<ComposerPromptEditorProps["onChange"]>();
+  const changed =
+    vi.fn<
+      (
+        value: string,
+        cursor: number,
+        expandedCursor: number,
+        suppressTrigger: boolean,
+        contextIds: Parameters<ComposerPromptEditorProps["onChange"]>[4],
+      ) => void
+    >();
   const visibleSelection = vi.fn();
   const controlsRef = createRef<{
     replace: (value: string) => void;
@@ -70,7 +79,8 @@ function createHarness(initial: string, options: Partial<ComposerPromptEditorPro
         {...options}
         skills={skills}
         onChange={(...args) => {
-          changed(...args);
+          const [value, cursor, expandedCursor, suppressTrigger, contextIds] = args;
+          changed(value, cursor, expandedCursor, suppressTrigger, contextIds);
           setValue(args[0]);
           setCursor(args[1]);
           options.onChange?.(...args);

@@ -119,14 +119,14 @@ export default mergeConfig(
           repoEnv,
         }),
       ],
-      // SEA embeds one entry; expose the history worker as a hidden subcommand.
+      // SEA embeds one entry; expose the workers as hidden subcommands.
       entry: packBootstrap
         ? ["src/bin.ts"]
         : packCompute
           ? { serverComputeWorker: "src/jones/serverCompute/worker.ts" }
           : packExecutable
             ? ["src/binMain.ts"]
-            : ["src/bin.ts", "src/claude-history-worker.ts"],
+            : ["src/bin.ts", "src/claude-history-worker.ts", "src/process-launcher.ts"],
       outDir: packBootstrap
         ? "dist-exe"
         : packCompute

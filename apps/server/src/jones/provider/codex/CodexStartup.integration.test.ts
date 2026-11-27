@@ -245,6 +245,20 @@ function replayConfigRead(id: number, cwd: string): Array<Replay.CodexAppServerR
   ];
 }
 
+function replayThreadName(
+  id: number,
+  threadId: string,
+  name: string,
+): Array<Replay.CodexAppServerReplayEntry> {
+  return [
+    {
+      type: "expect_outbound",
+      frame: { id, method: "thread/name/set", params: { threadId, name } },
+    },
+    { type: "emit_inbound", frame: { id, result: {} } },
+  ];
+}
+
 function replayEnsure(
   id: number,
   nativeThreadId: string,
@@ -364,9 +378,11 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
         scenario: "startup-composition-silent",
         entries: [
           ...replayInitialize(home),
-          ...replayEnsure(2, boundNativeId, cwd, home, "bound-control"),
+          ...replayConfigRead(2, cwd),
+          ...replayEnsure(3, boundNativeId, cwd, home, "bound-control"),
+          ...replayConfigRead(4, cwd),
           ...replayEnsure(
-            3,
+            5,
             lateNativeId,
             cwd,
             home,
@@ -376,15 +392,15 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
             explicitRejection && entry.type === "emit_inbound"
               ? {
                   ...entry,
-                  frame: { id: 3, error: { code: -32600, message: "Synthetic fork rejection" } },
+                  frame: { id: 5, error: { code: -32600, message: "Synthetic fork rejection" } },
                 }
               : entry,
           ),
           {
             type: "expect_outbound",
-            frame: { id: 4, method: "thread/unsubscribe", params: { threadId: boundNativeId } },
+            frame: { id: 6, method: "thread/unsubscribe", params: { threadId: boundNativeId } },
           },
-          { type: "emit_inbound", frame: { id: 4, result: { status: "unsubscribed" } } },
+          { type: "emit_inbound", frame: { id: 6, result: { status: "unsubscribed" } } },
           {
             type: "emit_inbound",
             label: "bound-thread-closed",
@@ -400,12 +416,14 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
           scenario: "startup-composition-healthy",
           entries: [
             ...replayInitialize(home),
-            ...replayEnsure(2, healthyNativeId, cwd, home, "healthy-thread"),
-            ...replayConfigRead(3, cwd),
+            ...replayConfigRead(2, cwd),
+            ...replayEnsure(3, healthyNativeId, cwd, home, "healthy-thread"),
+            ...replayThreadName(4, healthyNativeId, "Synthetic startup composition"),
+            ...replayConfigRead(5, cwd),
             {
               type: "expect_outbound",
               frame: {
-                id: 4,
+                id: 6,
                 method: "turn/start",
                 params: {
                   threadId: healthyNativeId,
@@ -420,7 +438,7 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
                 },
               },
             },
-            { type: "emit_inbound", frame: { id: 4, result: { turn: healthyTurn } } },
+            { type: "emit_inbound", frame: { id: 6, result: { turn: healthyTurn } } },
             {
               type: "emit_inbound",
               label: "healthy-turn-started",
@@ -509,7 +527,7 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
                             Effect.andThen(client.request(method, params)),
                             Effect.onExit(() =>
                               method === (fork ? "thread/fork" : "thread/start") &&
-                              requests.length === 3
+                              requests.length === 5
                                 ? Deferred.succeed(observed, undefined)
                                 : Effect.void,
                             ),
@@ -863,7 +881,9 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
         }
         assert.deepEqual(requests, [
           "initialize",
+          "config/read",
           "thread/start",
+          "config/read",
           fork ? "thread/fork" : "thread/start",
           "thread/unsubscribe",
         ]);
@@ -987,24 +1007,26 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         scenario: "publication-new-send",
         entries: [
           ...replayInitialize(home),
-          ...replayEnsure(2, nativeThreadId, cwd, home, "native-success-before-publication"),
+          ...replayConfigRead(2, cwd),
+          ...replayEnsure(3, nativeThreadId, cwd, home, "native-success-before-publication"),
           ...(mode === "unknown-steer"
             ? []
             : ([
                 {
                   type: "expect_outbound",
                   frame: {
-                    id: 3,
+                    id: 4,
                     method: "thread/inject_items",
                     params: { threadId: nativeThreadId, items: historicalItems },
                   },
                 },
-                { type: "emit_inbound", frame: { id: 3, result: {} } },
-                ...replayConfigRead(4, cwd),
+                { type: "emit_inbound", frame: { id: 4, result: {} } },
+                ...replayThreadName(5, nativeThreadId, "Publication recovery"),
+                ...replayConfigRead(6, cwd),
                 {
                   type: "expect_outbound",
                   frame: {
-                    id: 5,
+                    id: 7,
                     method: "turn/start",
                     params: {
                       threadId: nativeThreadId,
@@ -1019,7 +1041,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
                     },
                   },
                 },
-                { type: "emit_inbound", frame: { id: 5, result: { turn } } },
+                { type: "emit_inbound", frame: { id: 7, result: { turn } } },
                 {
                   type: "emit_inbound",
                   frame: { method: "turn/started", params: { threadId: nativeThreadId, turn } },
@@ -1199,7 +1221,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         );
         assert.deepEqual(
           requests.map((request) => request.method),
-          ["initialize", "thread/start"],
+          ["initialize", "config/read", "thread/start"],
         );
         const originalSessionId = failed.providerThreads[0]!.providerSessionId!;
         assert.isTrue(yield* sessions.isLive(originalSessionId));
@@ -1261,7 +1283,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
           assert.equal(cancelledProjection.runs[1]?.status, "failed");
           assert.deepEqual(
             requests.map((request) => request.method),
-            ["initialize", "thread/start"],
+            ["initialize", "config/read", "thread/start"],
           );
         }
         const terminal = yield* orchestrator.streamStoredEvents.pipe(
@@ -1289,10 +1311,12 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         }
         const recovered = yield* orchestrator.getThreadProjection(threadId);
         const replayState = yield* Ref.get(replay.state);
+        assert.isNull(replayState.failure, `Native replay stopped at entry ${replayState.cursor}`);
         assert.equal(recovered.runs[0]?.status, "failed");
         assert.equal(
           recovered.runs[finalOrdinal - 1]?.status,
           mode === "unknown-steer" ? "failed" : "completed",
+          `Native replay reached entry ${replayState.cursor} after ${requests.map(({ method }) => method).join(", ")}`,
         );
         assert.notEqual(recovered.runs[finalOrdinal - 1]?.id, recovered.runs[0]?.id);
         if (mode === "unknown-steer") {
@@ -1326,8 +1350,16 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         assert.deepEqual(
           requests.map((request) => request.method),
           mode === "unknown-steer"
-            ? ["initialize", "thread/start"]
-            : ["initialize", "thread/start", "thread/inject_items", "config/read", "turn/start"],
+            ? ["initialize", "config/read", "thread/start"]
+            : [
+                "initialize",
+                "config/read",
+                "thread/start",
+                "thread/inject_items",
+                "thread/name/set",
+                "config/read",
+                "turn/start",
+              ],
         );
         if (steer !== undefined) {
           assert.deepEqual(yield* admission!.snapshot(instanceId), [
@@ -1339,7 +1371,6 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
             ),
           );
         }
-        assert.isNull(replayState.failure);
         assert.equal(replayState.cursor, replay.transcript.entries.length);
       }).pipe(
         Effect.provide(

@@ -421,24 +421,14 @@ use a separate home directory when a separate server is intended.
 
 ## Update providers
 
-**Settings → Providers** shows provider updates for the selected environment.
-**Update all** updates every outdated provider on every connected environment
-at once. Hover it to see which providers it will update. A provider is left out
-when any of its enabled, outdated instances offers only a manual update command,
-or when its instances use different update commands, such as two instances that
-run different CLI installs. Update those by hand, or point every instance of the
-provider at the same CLI.
-
-After a successful provider CLI update, T3 Code refreshes model discovery for
-every enabled instance of that provider using its own configuration. Connected
-clients receive the refreshed catalogs automatically. Provider update checks
-must be enabled to download the latest T3 Code model catalog.
-
-Provider updates do not restart running chats. An existing session can keep
-using the previous CLI until it ends. If discovery fails, check the provider
-status and refresh it again.
+Open **Settings → Providers** and click **Update now** on individual providers or **Update all** across connected environments. Running chats keep using their current CLI until they end; new sessions and model catalogs refresh automatically. (Provider update checks in **Settings → Maintenance** must be enabled to fetch model catalog updates.)
 
 ## Mobile updates
+
+- Update connected environments and providers from **Settings → Environments** on mobile.
+- Update the mobile app via the App Store or Google Play (background over-the-air updates apply on next app switch and preserve drafts/queued messages).
+
+## Troubleshooting
 
 To update an environment from your phone, open **Settings → Environments** and
 select it. **Check for updates** finds the latest release on that environment's

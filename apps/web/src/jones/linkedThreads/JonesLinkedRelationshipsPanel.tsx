@@ -32,6 +32,7 @@ import {
   orderWebThreadLineageRows,
   resolveMergeBackTargetThreadId,
   type ThreadRelationshipEdge,
+  type ThreadRelationshipWalkRow,
 } from "@t3tools/client-runtime/state/thread-relationships";
 import {
   canDetachThreadProviderSession,
@@ -44,8 +45,10 @@ import {
   type EnvironmentId,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadShell,
+  type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
+import type { SideThreadOpenIntent } from "@t3tools/client-runtime/side-thread";
 import { deriveSubagentElapsedMs } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
 import { useNavigate } from "@tanstack/react-router";
@@ -79,6 +82,8 @@ import {
   threadRelationshipStatusLabel,
 } from "../../components/chat/ThreadRelationshipIcon";
 import { ThreadLineageWorkflowRow } from "../../components/chat/ThreadLineageWorkflowRow";
+import { useSideThreadTrigger } from "../../hooks/useSideThreadTrigger";
+import { openSideThread, resolveThreadOpenRoute } from "../../lib/sideChatPane";
 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { toastManager } from "../../components/ui/toast";
@@ -108,19 +113,29 @@ function ThreadLineageRowList(props: {
   readonly onShowMore: () => void;
   readonly children: ReactNode;
 }) {
+  const listRef = useRef<HTMLUListElement>(null);
+  const showMore = () => {
+    props.onShowMore();
+    // The Show more button unmounts after the last page.
+    if (props.hiddenCount <= THREAD_LINEAGE_PAGE_COUNT) {
+      listRef.current?.focus({ preventScroll: true });
+    }
+  };
   return (
     <>
       {/* ScrollArea's max-height viewport measures badly inside this scrolling panel. */}
       <ul
+        ref={listRef}
+        tabIndex={-1}
         aria-label="Related threads"
-        className="m-0 max-h-[13.5rem] list-none overflow-y-auto p-0 has-data-workflow-expanded:max-h-[min(28rem,55dvh)]"
+        className="m-0 max-h-[13.5rem] list-none overflow-y-auto p-0 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70 has-data-workflow-expanded:max-h-[min(28rem,55dvh)]"
       >
         {props.children}
       </ul>
       {props.hiddenCount > 0 ? (
         <button
           type="button"
-          onClick={props.onShowMore}
+          onClick={showMore}
           className={`flex h-8 w-full cursor-pointer items-center rounded-lg ${THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS} text-sm font-medium text-muted-foreground/70 hover:bg-black/[0.055] hover:text-foreground/80 dark:hover:bg-white/[0.075]`}
         >
           <PlusIcon aria-hidden className="size-4 shrink-0" />
@@ -288,6 +303,7 @@ export function JonesLinkedRelationshipsPanel(props: {
       : null;
   const parentProjection = useThreadProjection(parentRef)?.projection;
   const navigate = useNavigate();
+  const trigger = useSideThreadTrigger();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack);
   const stopSession = useAtomCommand(threadEnvironment.stopSession);
   const interruptTurn = useAtomCommand(threadEnvironment.interruptTurn);
@@ -389,9 +405,13 @@ export function JonesLinkedRelationshipsPanel(props: {
       Object.hasOwn(resolvedThreadTitles, threadId),
   );
   const canDetach = projection ? canDetachThreadProviderSession(projection) : false;
+  const isChildSideChat = ({ threadId, edge }: ThreadRelationshipWalkRow) =>
+    !isParentThreadRelationship(edge, props.threadId) &&
+    graph.nodes.get(threadId)?.thread?.lineage.sideChat === true;
 
   const { related, active, previous, runningCount } = groupLineageRows(
-    visibleRelationships,
+    // Child side chats have their own section in Thread Details.
+    visibleRelationships.filter((row) => !isChildSideChat(row)),
     projected,
     props.threadId,
   );
@@ -404,13 +424,36 @@ export function JonesLinkedRelationshipsPanel(props: {
     snapshots: linked.snapshots,
     ...(parentLink?.remote ? { remoteParent: parentLink.ref } : {}),
   });
-  if (entries.length === 0 && runningCount === 0 && !parentLink?.remote && !linked.visible)
+  // A thread with only side chats still needs the Disconnect action in the Linked heading.
+  const canDetachWithSideChats = canDetach && visibleRelationships.some(isChildSideChat);
+  if (
+    entries.length === 0 &&
+    runningCount === 0 &&
+    !parentLink?.remote &&
+    !linked.visible &&
+    !canDetachWithSideChats
+  )
     return null;
 
-  const openThread = (threadId: ThreadId) => {
+  const navigateToThread = (threadRef: ScopedThreadRef) => {
     void navigate({
       to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
+      params: buildThreadRouteParams(threadRef),
+    });
+  };
+  const openThread = (threadId: ThreadId) => {
+    const route = resolveThreadOpenRoute(
+      scopeThreadRef(props.environmentId, threadId),
+      graph.nodes.get(threadId)?.thread ?? null,
+    );
+    if (route.threadId !== ref.threadId) navigateToThread(route);
+  };
+  const openChild = (threadId: ThreadId, intent: SideThreadOpenIntent) => {
+    openSideThread({
+      threadRef: scopeThreadRef(props.environmentId, threadId),
+      panelRef: ref,
+      intent,
+      navigate: navigateToThread,
     });
   };
 
@@ -543,6 +586,7 @@ export function JonesLinkedRelationshipsPanel(props: {
                       <RemoteSubagentRow
                         key={`${scopedThreadKey(scopeThreadRef(agent.remoteChild.environmentId, agent.remoteChild.threadId))}:${agent.id}`}
                         agent={agent}
+                        parentRef={ref}
                         // Its provider instance belongs to the environment it runs in.
                         provider={providersByEnvironment
                           .get(agent.remoteChild.environmentId)
@@ -626,7 +670,13 @@ export function JonesLinkedRelationshipsPanel(props: {
                   const project = projects.find(
                     (project) => project.id === node?.thread?.projectId,
                   );
-                  const relationshipHint = `Open ${relationship.toLowerCase()} in this chat`;
+                  const isChildAgent = isSubagent && !isParent;
+                  const relationshipHint = isChildAgent
+                    ? "Open subagent"
+                    : `Open ${relationship.toLowerCase()} in this chat`;
+                  const openProps = isChildAgent
+                    ? trigger((intent) => openChild(threadId, intent))
+                    : { onClick: () => openThread(threadId) };
                   const RelationshipPopup = agent ? ThreadHoverCardPopup : TooltipPopup;
                   const relationshipTooltip = agent ? (
                     <SubagentTooltipContent
@@ -708,7 +758,7 @@ export function JonesLinkedRelationshipsPanel(props: {
                             size="sm"
                             variant="ghost"
                             part={workflowGroup ? "primary" : "row"}
-                            onClick={() => openThread(threadId)}
+                            {...openProps}
                           />
                         }
                       >
@@ -727,7 +777,9 @@ export function JonesLinkedRelationshipsPanel(props: {
                         providers={providers}
                         providerEntries={deriveProviderInstanceEntries(providers ?? [])}
                         driver={providerDriver}
-                        onOpenThread={(memberThreadId) => openThread(memberThreadId as ThreadId)}
+                        onOpenThread={(memberThreadId, intent) =>
+                          openChild(memberThreadId as ThreadId, intent)
+                        }
                         onStop={canStopWorkflow ? () => void stopWorkflow(agent.id) : undefined}
                         stopping={stoppingId === agent.id}
                         stopDisabled={stoppingId !== null}

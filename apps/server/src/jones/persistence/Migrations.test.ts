@@ -498,6 +498,8 @@ it.effect(
           [163, "RemoteSendReceipts"],
           [164, "LegacyBootstrap"],
           [165, "RequestManagement"],
+          [166, "TaskFolderTeardown"],
+          [167, "WorkflowAgentJournal"],
         ],
       );
       assert.deepStrictEqual(
@@ -745,6 +747,8 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [163, "RemoteSendReceipts"],
       [164, "LegacyBootstrap"],
       [165, "RequestManagement"],
+      [166, "TaskFolderTeardown"],
+      [167, "WorkflowAgentJournal"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;
@@ -911,7 +915,7 @@ it.effect("current independent Jones history needs no migration write transactio
 it.effect("Jones pending batch rollback leaves the completed upstream head durable", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 96 });
+    yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
     yield* runJonesMigrations(originals);
     const before = yield* readLedger;
     const failedBatch = runJonesMigrations([
@@ -939,7 +943,7 @@ it.effect("Jones pending batch rollback leaves the completed upstream head durab
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("late guarded Jones failure suppresses FINISHED after upstream 96 commits", () =>
+it.effect("late guarded Jones failure suppresses FINISHED after the upstream track commits", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: 80 });
@@ -967,5 +971,13 @@ it.effect("late guarded Jones failure suppresses FINISHED after upstream 96 comm
     );
     yield* sql`DROP TABLE jones_peer_wake_holds`;
     assert.deepStrictEqual(yield* runMigrations(), []);
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM effect_sql_migrations WHERE migration_id = 100`,
+      [{ name: "TurnStartReadIndexes" }],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM jones_sql_migrations WHERE migration_id = 100`,
+      [{ name: "NativeCreationExecution" }],
+    );
   }).pipe(Effect.provide(memory)),
 );

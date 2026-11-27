@@ -1,9 +1,10 @@
 import { SettingsRow, SettingsSection } from "../../components/settings/settingsLayout";
-import { searchableSetting } from "../../components/settings/settingsSearch";
+import { useSearchableSetting } from "../../components/settings/settingsSearch";
 import { Switch } from "../../components/ui/switch";
 import { persistClientSettingsPatch, useClientSettings } from "../../hooks/useSettings";
 
 export function WorkButtonSettings() {
+  const searchableSetting = useSearchableSetting();
   const visible = useClientSettings((settings) => settings.showWorkButton);
   return (
     <SettingsSection title="Sidebar appearance">

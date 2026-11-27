@@ -1,3 +1,4 @@
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { expect, it } from "vite-plus/test";
 
 import {
@@ -10,30 +11,45 @@ const base = {
   prompt: "Audit the timestamps",
   status: "running" as const,
   result: null,
-  childThreadId: "thread-child" as never,
+  childThreadId: ThreadId.make("thread-child"),
 };
 
-it("opens a task in a linked environment there, only when this app knows it", () => {
+it("keeps remote agent navigation bound to the target and the linking environment", () => {
+  const here = EnvironmentId.make("environment-here");
+  const environmentId = EnvironmentId.make("environment-box");
+  const threadId = ThreadId.make("thread-on-box");
   const remote = {
     ...base,
     childThreadId: null,
     remoteChild: {
-      environmentId: "environment-box" as never,
-      threadId: "thread-on-box" as never,
+      environmentId,
+      threadId,
       label: "Box",
     },
   };
   expect(resolveSubagentRowPresentation(remote).runsOn).toBe("Box");
   expect(resolveSubagentRowPresentation(remote, false).canOpenThread).toBe(false);
   expect(resolveSubagentRowPresentation(remote, true).canOpenThread).toBe(true);
-  const here = "environment-here" as never;
-  expect(subagentThreadTarget(remote, here, () => false)).toBeNull();
-  expect(subagentThreadTarget(remote, here, (id) => id === "environment-box")).toEqual({
-    environmentId: "environment-box",
-    threadId: "thread-on-box",
-  });
-  expect(subagentThreadTarget(base, here, () => false)).toEqual({
+  const noLink = () => false;
+  const linked = (id: EnvironmentId) => id === environmentId;
+  const noConnection = () => undefined;
+  const connected = (id: EnvironmentId) => (id === environmentId ? { connected: true } : undefined);
+  const offline = () => ({ connected: false });
+  const directTarget = { environmentId, threadId };
+  const readOnlyTarget = {
+    ...directTarget,
+    linked: { viaEnvironmentId: here, label: "Box" },
+  };
+
+  expect(subagentThreadTarget(remote, here, connected, linked)).toEqual(directTarget);
+  expect(subagentThreadTarget(remote, here, offline, linked)).toEqual(readOnlyTarget);
+  expect(subagentThreadTarget(remote, here, noConnection, linked)).toEqual(readOnlyTarget);
+  expect(subagentThreadTarget(remote, here, offline, noLink)).toEqual(directTarget);
+  // The linked sheet explains the missing link when there is neither route.
+  expect(subagentThreadTarget(remote, here, noConnection, noLink)).toEqual(readOnlyTarget);
+  expect(subagentThreadTarget(base, here, noConnection, noLink)).toEqual({
     environmentId: here,
-    threadId: "thread-child",
+    threadId: base.childThreadId,
   });
+  expect(subagentThreadTarget({ childThreadId: null }, here, noConnection, noLink)).toBeNull();
 });

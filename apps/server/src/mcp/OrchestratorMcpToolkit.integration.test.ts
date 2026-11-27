@@ -75,6 +75,7 @@ import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as GitManager from "../git/GitManager.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -117,6 +118,7 @@ const localChild = (childThreadId: ThreadId | null): ThreadId => {
 // as JSON text, never as `structuredContent`.
 
 const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
+const upstreamActorHeader = `[T3 Code: the agent in T3 thread "${parentThreadId}" sent this message, not the user.]`;
 const projectId = ProjectId.make("project:mcp-orchestrator");
 const foreignProjectId = ProjectId.make("project:mcp-foreign");
 const codexInstanceId = ProviderInstanceId.make("codex");
@@ -150,8 +152,15 @@ const readDelegatedTaskStatusTranscript = Effect.fn("readDelegatedTaskStatusTran
   function* (followupResult: string) {
     const fs = yield* FileSystem.FileSystem;
     const text = yield* fs.readFileString(NodeURL.fileURLToPath(delegatedTaskStatusTranscriptFile));
+    // The recording names the parent, then the child, after the fixture's titles; this test's differ.
+    const threadNames = ["MCP replay parent", delegatedPrompt];
     const transcript = yield* decodeProviderReplayNdjson(
-      text.replaceAll(queuedFollowupResult, followupResult),
+      text
+        .replaceAll(queuedFollowupResult, followupResult)
+        .replace(
+          /"name":"Replay fixture: delegated_task_status"/g,
+          () => `"name":${JSON.stringify(threadNames.shift())}`,
+        ),
     );
     // The recording ends when the recorder closes the app-server while the parent
     // turn is still open. This test keeps acting as that parent afterwards, and
@@ -652,16 +661,27 @@ describe("orchestrator MCP toolkit", () => {
           if (body === undefined) return entry;
           const frame = yield* decodeRecord(entry.frame);
           const params = yield* decodeRecord(frame.params);
-          expect(params.input).toEqual([{ text: body, type: "text" }]);
+          expect(params.input).toEqual([
+            { text: `${upstreamActorHeader}\n\n${body}`, type: "text" },
+          ]);
           return {
             ...entry,
             frame: {
               ...frame,
               params: {
                 ...params,
+                approvalPolicy: {
+                  granular: {
+                    mcp_elicitations: true,
+                    request_permissions: false,
+                    rules: false,
+                    sandbox_approval: false,
+                    skill_approval: false,
+                  },
+                },
                 input: [
                   {
-                    text: `${replayHeader}${entry.label === "child.queued.turn/start" ? "01" : "00"}\n\n${body}`,
+                    text: `${upstreamActorHeader}\n\n${replayHeader}${entry.label === "child.queued.turn/start" ? "01" : "00"}\n\n${body}`,
                     type: "text",
                   },
                 ],
@@ -734,7 +754,9 @@ describe("orchestrator MCP toolkit", () => {
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
         Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
         Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
-        Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+        Layer.provide(
+          Layer.mock(ProjectService.ProjectService)({ workspaceScanDirectory: Effect.succeed }),
+        ),
         Layer.provideMerge(
           SecretRequests.layer.pipe(
             Layer.provide(layerMemorySecretStore),
@@ -1360,7 +1382,7 @@ describe("orchestrator MCP toolkit", () => {
                   ? deliveryTerminalGates.get(turn.threadId)
                   : parentTerminalGates.get(turn.threadId),
               response: (turn) =>
-                turn.message.text === delegatedPrompt
+                turn.message.text === `${upstreamActorHeader}\n\n${delegatedPrompt}`
                   ? delegatedResult
                   : `Claude completed: ${turn.message.text}`,
             }),
@@ -1507,8 +1529,13 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(
               Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
             ),
-            // The watch tool is registered but never called here.
-            Layer.provide(Layer.mock(PullRequestService.PullRequestService)({})),
+            // The fixture links by explicit URL and has no resolved forge for its checkout.
+            Layer.provide(
+              Layer.mock(PullRequestService.PullRequestService)({
+                addressedProject: () => Effect.undefined,
+              }),
+            ),
+            Layer.provide(Layer.mock(GitManager.GitManager)({})),
             Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
             Layer.provideMerge(layerOrchestration),
             Layer.provide(layerRegistry),
@@ -1522,6 +1549,7 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
             Layer.provide(
               Layer.mock(ProjectService.ProjectService)({
+                workspaceScanDirectory: Effect.succeed,
                 getById: (id) =>
                   Effect.succeed(
                     id === projectId || id === foreignProjectId
@@ -1980,7 +2008,7 @@ describe("orchestrator MCP toolkit", () => {
             );
             expect(remainder.items[0]?.nextTextOffset).toBeNull();
             expect(firstChunk.text + (remainder.items[0]?.text ?? "")).toBe(
-              "Claude completed: Complete before a parent reads this child result directly.",
+              `Claude completed: ${upstreamActorHeader}\n\nComplete before a parent reads this child result directly.`,
             );
             expect(
               (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
@@ -1999,7 +2027,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(terminalResultRead.items).toMatchObject([
               {
                 type: "assistant_message",
-                text: "Claude completed: Complete before a parent reads this child result directly.",
+                text: `Claude completed: ${upstreamActorHeader}\n\nComplete before a parent reads this child result directly.`,
                 textTruncated: false,
               },
             ]);
@@ -2369,7 +2397,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(threadInterruptTool?.tool.annotations?.destructiveHint).toBe(true);
 
             const capabilities = yield* invoke("orchestrator_capabilities", {});
-            expect(capabilities.isError).toBe(false);
+            expect(capabilities.isError, JSON.stringify(capabilities.content)).toBe(false);
             expect(capabilities.structuredContent).toMatchObject({
               inheritedProviderInstanceId: codexInstanceId,
               inheritedModel: codexModel,
@@ -2721,7 +2749,7 @@ describe("orchestrator MCP toolkit", () => {
               {
                 instanceId: claudeInstanceId,
                 threadId: localChild(delegated.childThreadId),
-                text: delegatedPrompt,
+                text: `${upstreamActorHeader}\n\n${delegatedPrompt}`,
               },
             ]);
             expect(
@@ -3464,7 +3492,7 @@ describe("orchestrator MCP toolkit", () => {
             ).pipe(Effect.orDie);
             expect(promptedReadNext.items.map((item) => item.type)).toEqual(["assistant_message"]);
             expect(promptedReadNext.items[0]?.text).toBe(
-              `Claude completed: ${createdThreadPrompt}`,
+              `Claude completed: ${upstreamActorHeader}\n\n${createdThreadPrompt}`,
             );
 
             const forkedThreadId = ThreadId.make("thread:mcp-orchestrator-inherited-read");
@@ -3569,7 +3597,7 @@ describe("orchestrator MCP toolkit", () => {
               (yield* Ref.get(capturedTurns))
                 .filter((turn) => turn.threadId === emptyThread.threadId)
                 .map((turn) => turn.text),
-            ).toEqual([sentMessage?.text]);
+            ).toEqual([`${upstreamActorHeader}\n\n${sentMessage?.text}`]);
 
             const activeThreadCall = yield* invoke("create_threads", {
               threads: [{ prompt: cancellationPrompt, title: "Managed active thread" }],

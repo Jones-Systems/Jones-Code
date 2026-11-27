@@ -1,21 +1,26 @@
 # Working with threads
 
-Use a new thread for a separate task. Choose **New worktree** when its code changes
-need a separate branch and working directory.
+Use a separate thread for each task. Choose **New worktree** when a task needs its own Git branch and working directory; threads sharing a checkout share its branch, so T3 Code blocks branch switches while one is running.
 
 ## Start a thread
 
-On web and desktop, **New thread** opens the project picker when you have more than one
-open project in the default or project-grouped sidebar. Archived projects don't count. **Shift-click** to start in
-the current project, or use a project's own new-thread action. A new thread carries
-your model and mode selections, unless the destination project has its own model default.
-Its branch and workspace mode come from your configured defaults. To continue in
-an existing worktree, use **New thread in this worktree** from the branch toolbar.
+- **Web and desktop**: **New thread** opens the project picker when you have multiple open projects (unless the sidebar is filtered to one project). `Shift`-click to start in the current project. To reuse an existing worktree, choose **New thread in this worktree** from the branch toolbar.
+- **Mobile**: **New thread** uses the current, filtered, or last-opened project. Disable **Settings → General → Use last project** to pick every time.
+- **Defaults**: New threads inherit your last model and mode unless the project sets its own model default.
 
 When you change a new thread's project, T3 Code stays in the current environment
 if that project exists there. Otherwise it selects an environment that has it.
 
-### Start without a project
+- Deleting a scratch thread leaves its folder on disk.
+- Git branch, worktree, and diff controls are hidden (and scratch threads are unavailable if your T3 data directory itself is inside a Git repo).
+- Choose **Turn into project** from the thread menu to promote the folder into a real project in place, then **Initialize Git** if needed.
+
+### Start in the background and multi-model runs
+
+- **Background start** (web/desktop): Press `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux) in a new thread to submit it and immediately open another draft with the same workspace mode and base branch.
+- **Same prompt, multiple models** (web/desktop, Git projects): `Shift`-click models in a new thread's model picker to select several. Sending starts a separate thread and worktree for each model.
+
+## Sidebar layout and organization
 
 A thread does not need a project. To start one without a project, click **or
 start without a project** under a new thread's heading, pick **No project** from
@@ -244,18 +249,17 @@ rules to connected environments that support shared settings. Offline environmen
 and older servers keep their previous values. Changing a rule does not reopen
 already settled threads.
 
-## Link a pull request
+## Settle, snooze, and archive
 
-The server finds the PR for each unsettled thread's saved branch, even when your
-apps are closed. Settled threads keep their saved links. Update the server if
-automatic branch links do not appear.
+| Action      | When to use          | Effect                                                                                                                                         |
+| ----------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Settle**  | Task is done for now | Moves to **Settled**; stays searchable; any new message reactivates it. Closes idle terminals (and stops actions with `stopOnSettle: true`).   |
+| **Snooze**  | Defer until later    | Hides until wake time (thread keeps working in the background). Wakes early on approvals, questions, errors, or new messages.                  |
+| **Archive** | Out of the way       | Leaves sidebar and search; lives in **Settings → Archive**. Refuses new messages (including from agents and scheduled tasks) until unarchived. |
 
-On web and desktop, right-click a pull request link in a thread and choose
-**Link to thread** to select a different PR. Use **Unlink from thread** on the
-same link to return to the branch PR, if one exists.
-The linked pull request participates in automatic settlement.
+> Tip: If a scheduled task targets a thread, settle it instead of archiving—archiving causes scheduled runs to fail.
 
-## Find and reference work
+### Settlement rules and hooks
 
 On web and desktop, open the command palette with `Cmd/Ctrl+K` to search threads
 across connected environments by title, branch, pull request, or project.
@@ -344,39 +348,41 @@ To choose what the thread details card shows, right-click the card or open
 shortcuts, such as Open in editor and project scripts. **Reset to default** brings
 back the standard rows.
 
-## Side chats
+### Snooze options
 
-A side chat lets you ask a question about a thread without adding to it. It starts
-with what the thread knows, and the thread keeps working while you ask.
+Customize presets in **Settings → Threads → Snooze options** (durations like `3 hours` or times like `9:00 PM tomorrow`), or pick **Snooze → Custom…** for an exact date/time or duration. Choose **Wake thread** to bring a thread back early.
 
-On web and desktop, start a message with `/side` or `/btw`, then your question.
-You can also choose **Side chat** from the **+** menu in the right panel. The side
-chat opens as a tab there, with its own composer. Side chats do not show in the
-sidebar. Find one again under **Side chats** in thread details.
+## Link a pull request
 
-A side chat works in the same folder as the thread and starts with the permissions,
-model, and reasoning level shown in the thread's composer, including for its first
-reply. Change them for an individual side chat in its composer. Later changes to the
-parent do not change existing side chats.
+The server automatically links open PRs matching an unsettled thread's branch. On web/desktop, right-click any PR link in a thread and choose **Link to thread** or **Unlink from thread** to override it. Linked PRs participate in auto-settlement.
 
-To use what you learned, choose **Bring back**. The thread gets the side chat with
-your next message there. Bring back is available while the thread is idle.
+## Find and reference work
 
-Closing a side chat you never sent a message in deletes it. To delete one you used,
-choose **Delete** at the top of the side chat. Deleting a thread also deletes its
-side chats.
+- **Command palette** (`Cmd/Ctrl+K`): Searches threads across connected environments by title, branch, PR, project, and message contents (use `"exact phrase"` for exact matches). On mobile, use the thread list search (or `Cmd+K` on iPad with a keyboard).
+- **Copy reference**: Copies the linked PR URL if one exists, otherwise a thread link that pastes into any composer as a thread chip. Use **Copy → Thread** (or **Copy thread** on mobile) to force a thread link, or **Thread ID** for scripts and the `t3` CLI.
 
-On mobile, a thread lists its side chats above the composer. Tap one to open it and
-answer its questions.
+## Usage limits, subagents, and thread details
 
-## Snooze until later
+- **Usage limits**: When a provider hits a rate/usage limit (**Limited**), press **Resume** in an empty composer after reset (or send a message). If the provider reports a reset time, choose **Resume at reset** or **Snooze until reset**—or enable defaults in **Settings → Threads** (**Resume after usage limits** / **Snooze until limits reset**).
+- **Subagents**: Follow delegated work from the conversation card or **Agents**. Stopping a parent thread also stops its delegated subagents. Subagents started internally by the provider are read-only; message the parent thread instead.
+- **Running dev servers** (web/desktop): The thread details card lists local servers started by the thread's terminals or Claude agent with their ports. Click one to open it in the browser panel, or **Stop** to end it (macOS/Linux only).
+- **Customize thread details**: Right-click the thread details card or open **Settings → Appearance → Thread details** to show/hide rows.
+
+## Open a thread beside the one you are in
+
+On web and desktop, subagents, side chats, and [threads on linked machines](./remote-access.md#read-a-linked-machines-threads) open as a tab in the right panel by default so your main thread stays visible.
+
+- Hold `Cmd`/`Ctrl` while clicking (or middle-click) to open in the main view instead.
+- Change the default in **Settings → Chat → Open subagents and side chats in**.
+- From a right-panel tab, choose **Open in main view** to promote it.
+- On mobile, they open in the inspector where available, or full screen otherwise.
 
 Choose **Snooze → Custom…** from a thread's menu to pick a date and time in your
 local time zone, or a duration in minutes, hours, or days. Durations start when
 you confirm; one day means 24 hours. On web and desktop, you can also snooze
 several selected threads together. Choose **Wake thread** to bring a thread back early.
 
-A snoozed thread keeps working and stays hidden until its wake time, even while
-its agent wakes itself for background work. It comes back early for an approval,
-a new question, a failed run, or a message or answer you send. You can snooze an existing
-question and answer when the thread wakes; the question stays unanswered.
+- **Start** (web/desktop): Send `/side <question>` or `/btw <question>`, or choose **Side chat** from the right panel's **+** menu.
+- **Find later**: Listed under **Side chats** in thread details (web/desktop) or above the composer (mobile); hidden from the main sidebar.
+- **Bring results back**: Click **Add to chat** in the side chat, or `@`-mention its title in the parent composer (not readable by external OpenCode servers).
+- **Lifecycle**: Closing an unused side chat deletes it. Deleting or archiving the parent thread deletes or archives its side chats.

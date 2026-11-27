@@ -157,6 +157,7 @@ const sessions = (read: () => Effect.Effect<Option.Option<AuthSessions.AuthSessi
       revoke: () => Effect.succeed(false),
       revokeAllExcept: () => Effect.succeed([]),
       setLastConnectedAt: () => Effect.void,
+      extend: () => Effect.succeed(false),
       // The fixture session is not bound to a proof key.
       getProofKeyThumbprint: () => Effect.succeedNone,
       revokeByProofKey: () => Effect.succeed([]),

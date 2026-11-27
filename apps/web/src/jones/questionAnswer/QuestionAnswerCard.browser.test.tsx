@@ -7,11 +7,8 @@ import {
   type UserInputQuestion,
 } from "@t3tools/contracts";
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import {
-  CHAT_MARKDOWN_REMARK_PLUGINS,
-  CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
-} from "@t3tools/shared/markdownPipeline";
+import { toJsxRuntime } from "hast-util-to-jsx-runtime";
+import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { ComposerSurface } from "../../components/chat/ComposerSurface";
@@ -19,6 +16,7 @@ import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPen
 import { ComposerBanner } from "../../components/chat/ComposerBanner";
 import "@fontsource-variable/inter";
 import "../../index.css";
+import { wordsHast } from "../../markdown/wordsHast";
 import {
   buildPendingUserInputAnswers,
   setPendingUserInputCustomAnswer,
@@ -30,13 +28,16 @@ vi.mock(import("../../components/ChatMarkdown"), async (importOriginal) => ({
   ...(await importOriginal()),
   default: (({ text, lineBreaks }: { text: string; lineBreaks?: boolean }) => (
     <div data-testid="question-markdown">
-      <ReactMarkdown
-        remarkPlugins={
-          lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS
-        }
-      >
-        {text}
-      </ReactMarkdown>
+      {toJsxRuntime(
+        wordsHast(text, {
+          breaks: lineBreaks === true,
+          math: false,
+          escapeHtml: true,
+          insights: false,
+          extensions: {},
+        }),
+        { Fragment, jsx, jsxs },
+      )}
     </div>
   )) as never,
 }));

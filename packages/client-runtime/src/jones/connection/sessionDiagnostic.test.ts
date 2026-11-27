@@ -24,6 +24,7 @@ import { HttpClient } from "effect/http";
 import * as Authorization from "../../authorization/service.ts";
 import * as TokenStore from "../../authorization/tokenStore.ts";
 import * as Connectivity from "../../connection/connectivity.ts";
+import * as ConnectionCredentialStore from "../../connection/credentialStore.ts";
 import { connectionDiagnosisText, presentConnectionDiagnosis } from "../../connection/diagnosis.ts";
 import * as Driver from "../../connection/driver.ts";
 import {
@@ -263,6 +264,7 @@ const harness = Effect.fn("ConnectDiagnosticTest.harness")(function* (scenario: 
       );
     },
   });
+  const credentials = ConnectionCredentialStore.layerMemory();
   // Keep the authorization service's renewal scope alive for the whole test.
   const authorizationContext = yield* Layer.build(
     Authorization.layer.pipe(
@@ -270,6 +272,7 @@ const harness = Effect.fn("ConnectDiagnosticTest.harness")(function* (scenario: 
         Layer.mergeAll(
           httpLayer,
           relay,
+          credentials,
           Layer.succeed(Relay.ManagedRelayDpopSigner, signer),
           Layer.succeed(Capabilities.CloudSession, {
             identity: Effect.succeedSome({ accountId: "synthetic-account" }),
@@ -305,6 +308,7 @@ const harness = Effect.fn("ConnectDiagnosticTest.harness")(function* (scenario: 
             Layer.succeed(HttpClient.HttpClient, http),
             Layer.succeed(RpcSession.RpcSessionFactory, sessions),
             Layer.succeed(Authorization.RemoteEnvironmentAuthorization, authorization),
+            credentials,
             Layer.mock(Resolver.ConnectionResolver)({
               prepare: (entry) =>
                 authorization

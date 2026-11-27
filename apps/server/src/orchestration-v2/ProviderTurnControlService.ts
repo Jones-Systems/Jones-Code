@@ -14,6 +14,7 @@ import {
   ProviderTurnId,
   RunAttemptId,
   ThreadId,
+  withMessageSenderNote,
 } from "@t3tools/contracts";
 import type * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
@@ -32,6 +33,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import { awaitRestartTerminal } from "../jones/orchestration/RestartPreparation.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
 import { STOP_CHILD_BUDGET_MS, STOP_RECOVERY_BUDGET_MS } from "../jones/provider/stopBudgets.ts";
+import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 
 export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnControlError>()(
   "ProviderTurnControlError",
@@ -114,6 +116,7 @@ export const layer: Layer.Layer<
   ProviderTurnControlServiceV2,
   never,
   | EventSink.EventSinkV2
+  | McpAppModelContext.McpAppModelContext
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
 > = Layer.effect(
@@ -122,6 +125,7 @@ export const layer: Layer.Layer<
     const eventSink = yield* EventSink.EventSinkV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const mcpAppModelContext = yield* McpAppModelContext.McpAppModelContext;
 
     const load = Effect.fn("ProviderTurnControlService.load")(function* (input: {
       readonly threadId: ThreadId;
@@ -488,16 +492,7 @@ export const layer: Layer.Layer<
                 cause: "The persisted batch membership changed.",
               });
             const plan = planQueuedSteerBatch(
-              messages.map((row) => ({
-                message: {
-                  ...row!,
-                  text: projectComposerContextForProvider({
-                    text: row!.text,
-                    records: row!.context?.records ?? [],
-                  }),
-                },
-                eligible: true,
-              })),
+              messages.map((row) => ({ message: row!, eligible: true })),
             );
             if (plan.count !== messages.length)
               return yield* new ProviderTurnControlError({
@@ -509,6 +504,10 @@ export const layer: Layer.Layer<
             batchPayload = plan;
             capturedMessages = messages.map((row) => row!);
           }
+          const appContext = yield* McpAppModelContext.forProvider(
+            mcpAppModelContext,
+            input.threadId,
+          );
           const fresh = yield* projections.getProviderControlContext(input.threadId, input);
           const live = yield* sessions.get(input.providerSessionId, { touchActivity: false });
           const stopped =
@@ -560,6 +559,14 @@ export const layer: Layer.Layer<
                   ? "The captured steering target or persisted batch changed before dispatch."
                   : new GoalNotificationNotDelivered(),
             });
+          if (yield* eventSink.hasAttributedRuntimeStop(input.threadId, run.id)) {
+            return yield* new ProviderTurnControlError({
+              threadId: input.threadId,
+              operation: "steer",
+              providerTurnId: input.providerTurnId,
+              cause: "Captured runtime Stop reached this turn before native steer dispatch.",
+            });
+          }
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
@@ -569,14 +576,18 @@ export const layer: Layer.Layer<
               ...(input.modelSelection === undefined
                 ? {}
                 : { modelSelection: input.modelSelection }),
+              ...(appContext.length === 0 ? {} : { appContext }),
               message: {
                 messageId: message.id,
                 text:
                   batchPayload?.text ??
-                  projectComposerContextForProvider({
-                    text: message.text,
-                    records: message.context?.records ?? [],
-                  }),
+                  withMessageSenderNote(
+                    message,
+                    projectComposerContextForProvider({
+                      text: message.text,
+                      records: message.context?.records ?? [],
+                    }),
+                  ),
                 attachments: batchPayload?.attachments ?? message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,

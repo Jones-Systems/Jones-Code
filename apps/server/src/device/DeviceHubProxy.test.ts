@@ -10,7 +10,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
-import { SessionStore } from "../auth/SessionStore.ts";
 import {
   DEVICE_HUB_POLICY,
   deviceHubRoutePolicy,
@@ -21,6 +20,7 @@ import * as DeviceDirectGrants from "../jones/device/DeviceDirectGrants.ts";
 
 import { HttpClient, HttpClientResponse, HttpRouter } from "effect/http";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as SessionStore from "../auth/SessionStore.ts";
 import type * as DeviceHost from "./DeviceHost.ts";
 import * as DeviceService from "./DeviceService.ts";
 import * as DeviceHubProxy from "./DeviceHubProxy.ts";
@@ -36,6 +36,8 @@ const fixture = (
   fail = false,
   authError?: EnvironmentAuth.ServerAuthCredentialError | EnvironmentAuth.ServerAuthInternalError,
   upstreamOrDirect?: DeviceHost.DeviceHostReady["upstream"] | boolean,
+  stream?: ReadableStream<Uint8Array>,
+  invalidated?: Promise<void>,
 ) => {
   const direct = upstreamOrDirect === true;
   const upstream = typeof upstreamOrDirect === "function" ? upstreamOrDirect : undefined;
@@ -61,7 +63,14 @@ const fixture = (
       if (fail) return yield* Effect.die(new Error("upstream failed"));
       return HttpClientResponse.fromWeb(
         request,
-        new Response("frame", { headers: { "set-cookie": "upstream=1" } }),
+        new Response(stream ?? "frame", {
+          headers: {
+            "set-cookie": "upstream=1",
+            "clear-site-data": '"*"',
+            "content-type": "text/html",
+            "content-security-policy": "script-src *",
+          },
+        }),
       );
     }),
   );
@@ -87,7 +96,7 @@ const fixture = (
             Effect.succeed({
               hostId: hostId ?? LOCAL_DEVICE_HOST_ID,
               nodePath: "node",
-              hub: { origin: "http://hub.test" },
+              hub: { origin: "http://hub.test", token: "hub-token" },
               devices: {
                 list: unexpectedOperation,
                 boot: () => unexpectedOperation,
@@ -140,7 +149,10 @@ const fixture = (
         }),
       ),
       Layer.provideMerge(
-        Layer.succeed(SessionStore, {
+        Layer.mock(SessionStore.SessionStore, {
+          cookieName: "test",
+          legacyCookieName: undefined,
+          awaitInvalidation: () => (invalidated ? Effect.promise(() => invalidated) : Effect.never),
           issueWebSocketToken: () =>
             DateTime.now.pipe(
               Effect.map((now) => ({
@@ -148,11 +160,18 @@ const fixture = (
                 expiresAt: DateTime.makeUnsafe(now.epochMilliseconds + 300000),
               })),
             ),
-          verifyWebSocketToken: (token: string) =>
+          verifyWebSocketToken: (token) =>
             token !== "private-vps-token" || revoked
-              ? Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError({}))
-              : Effect.succeed({ scopes: tokenScopes }),
-        } as unknown as SessionStore["Service"]),
+              ? Effect.fail(new SessionStore.InvalidWebSocketTokenSignatureError({}))
+              : Effect.succeed({
+                  sessionId: AuthSessionId.make("test"),
+                  token,
+                  method: "bearer-access-token",
+                  client: { deviceType: "bot" },
+                  subject: "test",
+                  scopes: tokenScopes,
+                }),
+        }),
       ),
       Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, client)),
     ),
@@ -208,7 +227,36 @@ describe("device hub proxy", () => {
     );
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("frame");
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(response.headers.get("clear-site-data")).toBeNull();
+    // Opened as a page, a hub response gets an opaque origin and no script.
+    expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(requests).toEqual(["http://hub.test/api/devices"]);
+    expect(finalized()).toBe(1);
+  });
+
+  it("stops an open HTTP stream and releases its upstream on session invalidation", async () => {
+    const invalidated = Promise.withResolvers<void>();
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => controller.enqueue(new Uint8Array([1])),
+    });
+    const { handler, finalized } = fixture(
+      [AuthOrchestrationReadScope],
+      false,
+      undefined,
+      undefined,
+      stream,
+      invalidated.promise,
+    );
+    const response = await handler(
+      new Request("http://t3.test/api/device-hub/vendor/serve-sim/helper/device/stream.avcc"),
+    );
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    expect(await reader.read()).toEqual({ done: false, value: new Uint8Array([1]) });
+    invalidated.resolve();
+    expect((await reader.read()).done).toBe(true);
     expect(finalized()).toBe(1);
   });
 
@@ -276,6 +324,7 @@ describe("device hub proxy", () => {
     await response.text();
     expect(headers).toHaveLength(1);
     expect(headers[0]?.origin).toBe("http://hub.test");
+    expect(headers[0]?.authorization).toBe("Bearer hub-token");
     expect(headers[0]).not.toHaveProperty("x-forwarded-proto");
   });
 
@@ -473,7 +522,7 @@ it("strips client credentials from the shared forwarding surface", async () => {
   expect(response.status).toBe(200);
   await response.text();
   expect(f.requests).toEqual(["http://hub.test/vendor/serve-sim/helper/phone/stream.avcc"]);
-  expect(f.forwardedHeaders[0]).not.toHaveProperty("authorization");
+  expect(f.forwardedHeaders[0]?.authorization).toBe("Bearer hub-token");
   expect(f.forwardedHeaders[0]).not.toHaveProperty("cookie");
   expect(f.forwardedHeaders[0]).not.toHaveProperty("dpop");
   expect(f.forwardedHeaders[0]).not.toHaveProperty("proxy-authorization");

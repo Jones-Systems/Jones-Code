@@ -6,7 +6,7 @@ import type { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation
 import { confirmedNativeCompletion } from "../jones/nativeCreation/NativeEffectCompletion.ts";
 import { sameOperationRequest } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import { makeRuntimeStartDispatch } from "../jones/runtime/RuntimeStartDispatch.ts";
-import { CommandId, ThreadId } from "@t3tools/contracts";
+import { CommandId, MessageId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
@@ -48,6 +48,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "terminal.cleanup",
   "preview.cleanup",
   "attachment.cleanup",
+  "thread-content.purge",
   "thread-title.generate",
   "delegated-tasks.stop",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
@@ -112,6 +113,11 @@ export interface EffectOutboxV2Shape {
   readonly listByCommandId: (
     commandId: CommandId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
+  /** The original steer records which runs were already queued when the message was sent. */
+  readonly firstSteer: (
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly listByThreadId: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
@@ -495,6 +501,24 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             isEffectOutboxError(cause)
               ? cause
               : new EffectOutboxError({ operation: "list", cause }),
+          ),
+        ),
+      firstSteer: (threadId, messageId) =>
+        sql<EffectRow>`
+          SELECT * FROM orchestration_v2_effect_outbox
+          WHERE thread_id = ${threadId}
+            AND effect_type = 'provider-turn.steer'
+            AND json_extract(payload_json, '$.messageId') = ${messageId}
+          ORDER BY rowid ASC
+          LIMIT 1
+        `.pipe(
+          NodeSqliteClient.readOnly,
+          Effect.flatMap((rows) => decodeRows("first-steer", rows)),
+          Effect.map((effects) => Option.fromNullishOr(effects[0])),
+          Effect.mapError((cause) =>
+            isEffectOutboxError(cause)
+              ? cause
+              : new EffectOutboxError({ operation: "first-steer", cause }),
           ),
         ),
       listByThreadId: (threadId) =>

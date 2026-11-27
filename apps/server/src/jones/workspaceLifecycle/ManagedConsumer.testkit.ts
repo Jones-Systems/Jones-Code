@@ -36,10 +36,13 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
+import { layerNoTaskFolders } from "../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as Runtime from "../../orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import * as ProjectSetupScriptRunner from "../../project/ProjectSetupScriptRunner.ts";
+import * as ModelManifest from "../../provider/ModelManifest.ts";
 import * as Registry from "../../provider/ProviderInstanceRegistry.ts";
 import * as Runner from "../../processRunner.ts";
 import * as Settings from "../../serverSettings.ts";
@@ -47,6 +50,7 @@ import * as SourceControl from "../../sourceControl/SourceControlProviderRegistr
 import * as Git from "../../vcs/GitVcsDriver.ts";
 import * as VcsRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
+import { layerThreadWorktreeRestore } from "../../workspace/restoreMissingWorktree.ts";
 import { canonical } from "../ordinaryCheckout/CheckoutProtocol.ts";
 import * as Restore from "../settlementRestore/SettlementRestore.ts";
 import * as LifecycleRuntime from "./RuntimeIntegration.ts";
@@ -399,7 +403,14 @@ export const fixture = Effect.gen(function* () {
     ProjectionStore.layer,
     Outbox.layer,
     ThreadCommandExecutor.layer,
+    layerThreadWorktreeRestore,
   ).pipe(
+    Layer.provideMerge(layerNoTaskFolders),
+    Layer.provideMerge(
+      Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+        runForThread: () => Effect.succeed({ status: "no-script" }),
+      }),
+    ),
     Layer.provide(McpTestkit.layer),
     Layer.provide(McpProviderSessions.layer),
     Layer.provideMerge(LifecycleRuntime.layer),
@@ -408,6 +419,7 @@ export const fixture = Effect.gen(function* () {
     Layer.provideMerge(workflows),
     Layer.provide(configured),
     Layer.provide(Settings.layerTest()),
+    Layer.provide(ModelManifest.layerTest),
     Layer.provide(
       Layer.succeed(Environment.ServerEnvironmentIdentity, {
         getEnvironmentId: Effect.succeed(EnvironmentId.make(settings.environmentId)),

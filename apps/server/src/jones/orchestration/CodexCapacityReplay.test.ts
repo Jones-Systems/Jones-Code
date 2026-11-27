@@ -53,6 +53,13 @@ it.effect("completes a recovered Codex capacity run and dispatches its queued fo
     const retryTurnId = "synthetic-capacity-successor";
     const remapTurn = (entry: ProviderReplayEntry): ProviderReplayEntry =>
       JSON.parse(JSON.stringify(entry).replaceAll(originalTurnId, retryTurnId));
+    const remapThreadTitle = (entry: ProviderReplayEntry): ProviderReplayEntry =>
+      JSON.parse(
+        JSON.stringify(entry).replaceAll(
+          "Replay fixture: queued_turn",
+          `Replay fixture: ${fixtureName}`,
+        ),
+      );
     const retryAck = recorded.entries.find(
       (entry) =>
         entry.type === "emit_inbound" &&
@@ -70,7 +77,7 @@ it.effect("completes a recovered Codex capacity run and dispatches its queued fo
           ...recorded,
           scenario: fixtureName,
           entries: [
-            ...recorded.entries.slice(0, startedIndex + 1),
+            ...recorded.entries.slice(0, startedIndex + 1).map(remapThreadTitle),
             {
               type: "emit_inbound",
               label: "capacity-failure",

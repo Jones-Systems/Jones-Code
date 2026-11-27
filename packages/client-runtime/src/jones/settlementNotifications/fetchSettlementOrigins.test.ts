@@ -1,3 +1,4 @@
+import { unusedAuthorization } from "../connection/unusedAuthorization.ts";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -151,6 +152,7 @@ it.effect(
         };
         const expectedBase = direct ? prepared.httpBaseUrl : "https://renewed-relay.test";
         const authorization = RemoteEnvironmentAuthorization.of({
+          ...unusedAuthorization,
           renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
           rememberCheckedDescriptor: () => Effect.void,
           authorizeBearer: () => Effect.die("Unexpected socket authorization"),

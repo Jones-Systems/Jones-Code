@@ -280,8 +280,8 @@ async function withSidebar(
   });
 }
 
-it("traverses Unassigned before named Workstreams and skips collapsed groups", async () => {
-  await withSidebar(async ({ router, rows, visit, step }) => {
+it("lays out Unassigned before named Workstreams", async () => {
+  await withSidebar(async ({ rows }) => {
     const header = page.getByRole("button", { name: "Hide all Workstreams", exact: true });
     const unassigned = page.getByRole("button", { name: "Collapse Unassigned", exact: true });
     const firstNamed = page.getByRole("button", { name: "Collapse alpha", exact: true });
@@ -295,9 +295,29 @@ it("traverses Unassigned before named Workstreams and skips collapsed groups", a
     expect(order.slice(0, 2).sort()).toEqual(["u1", "u2"]);
     expect(order.slice(2, 7).every((id) => id.startsWith("a"))).toBe(true);
     expect(order[7]).toBe("b1");
+  });
+});
+
+it("traverses Unassigned before named Workstreams", async () => {
+  await withSidebar(async ({ rows, visit, step }) => {
+    const order = rows();
     await visit(order[0]!);
     for (const id of order.slice(1)) await step("next", id);
+  });
+});
+
+it("traverses the visible Workstream order in reverse", async () => {
+  await withSidebar(async ({ rows, visit, step }) => {
+    const order = rows();
+    await visit(order[order.length - 1]!);
     for (const id of order.slice(0, -1).reverse()) await step("previous", id);
+  });
+});
+
+it("skips collapsed groups in traversal and numeric jumps", async () => {
+  await withSidebar(async ({ router, rows, visit, step }) => {
+    const order = rows();
+    await visit(order[0]!);
     // Click the title's gesture layer rather than the background toggle beneath it.
     await userEvent.click(page.getByText("beta", { exact: true }));
     expect(rows()).toEqual(order.slice(0, -1));
@@ -543,7 +563,9 @@ it("offers single-thread actions from the header even when Workstream filters hi
         const previousCalls = assign.mock.calls.length;
         await userEvent.click(trigger, { button: "right", timeout: 3000 });
         await expect
-          .element(page.getByRole("menuitem", { name: "Mark unread" }), { timeout: 3000 })
+          .element(page.getByRole("menuitem", { name: "Rename thread", exact: true }), {
+            timeout: 3000,
+          })
           .toBeVisible();
         await userEvent.click(page.getByRole("menuitem", { name: "Assign thread" }), {
           timeout: 3000,

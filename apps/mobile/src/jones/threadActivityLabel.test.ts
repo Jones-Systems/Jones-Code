@@ -1,6 +1,11 @@
 import { RunId } from "@t3tools/contracts";
 import { expect, it } from "vite-plus/test";
-import { deriveThreadFeedPresentation } from "../lib/threadActivity";
+import {
+  createThreadFeedCache,
+  deriveThreadFeedPresentation,
+  LIVE_ACTIVITY_ROW_ID,
+  type ThreadFeedEntry,
+} from "../lib/threadActivity";
 
 it("updates the same mobile activity slot from connection to startup to confirmed thinking", () => {
   const startedAt = "2026-11-14T13:00:00.000Z";
@@ -10,8 +15,18 @@ it("updates the same mobile activity slot from connection to startup to confirme
     completedAt: null,
     providerActivityStarted: false,
   };
+  const feed: ReadonlyArray<ThreadFeedEntry> = [];
+  const cache = createThreadFeedCache();
   const present = (latestRun: Parameters<typeof deriveThreadFeedPresentation>[1]) =>
-    deriveThreadFeedPresentation([], latestRun, new Set(), new Set(), startedAt)[0];
+    deriveThreadFeedPresentation(
+      feed,
+      latestRun,
+      new Set(),
+      new Set(),
+      startedAt,
+      false,
+      cache,
+    ).find((row) => row.id === LIVE_ACTIVITY_ROW_ID);
 
   const connecting = present(null);
   const starting = present({ ...run, status: "starting" });

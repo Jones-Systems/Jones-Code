@@ -1,3 +1,5 @@
+import { msg } from "gt-react";
+import { m } from "../../i18n/messages";
 import { randomUUID } from "../../lib/utils";
 import type {
   DesktopBridge,
@@ -472,7 +474,9 @@ export async function handOffJonesTargets(
         results.push({
           ...entry,
           handedOff: false,
-          message: "This host’s Auto-update enrollment changed. Check its status and try again.",
+          message: m(
+            msg("This host’s Auto-update enrollment changed. Check its status and try again."),
+          ),
         });
       } else {
         selections.push(selection);
@@ -586,7 +590,7 @@ export async function readLegacyConnectionsAuthority(
   if (typeof window === "undefined" || window.desktopBridge?.installPlan === undefined)
     return matchRunningGeneration === undefined
       ? { kind: "without-native-plan" }
-      : "The Laptop's native verification is unavailable. Check again.";
+      : m(msg("The Laptop's native verification is unavailable. Check again."));
   if (binding === undefined) return "Open Install status on Laptop first.";
   const result = await requestInstallPlan({ type: "read" }, binding);
   const problem = nativePlanIssue(result);
@@ -608,7 +612,7 @@ export async function readLegacyConnectionsAuthority(
       running.target.sourceSha !== targetSource ||
       running.generation !== matchRunningGeneration
     )
-      return "The Laptop's verified running build changed or is unavailable. Check again.";
+      return m(msg("The Laptop's verified running build changed or is unavailable. Check again."));
     const laptopOverlap = retainedRecoveryIssue(result.state, running.environmentId);
     if (laptopOverlap !== undefined) return laptopOverlap;
     if (current === null) return { kind: "verified-running", binding, evidence: running };
@@ -618,7 +622,7 @@ export async function readLegacyConnectionsAuthority(
         (device) => device.environmentId === environmentId && deviceHasRecoveryDuty(device),
       )
     )
-      return "Review this device's outstanding work in Install status first.";
+      return m(msg("Review this device's outstanding work in Install status first."));
   }
   const plan = current ?? result.state.last;
   return plan?.target.sourceSha === targetSource &&

@@ -17,7 +17,7 @@ import {
 export * from "../jones/serverCompute/workspaceErrors.ts";
 import { makeSearchWorkerProxy } from "../jones/workspace/searchWorkerProxy.ts";
 
-const WORKSPACE_INDEX_IDLE_TTL = "15 minutes";
+export const WORKSPACE_INDEX_IDLE_TTL = "15 minutes";
 export class WorkspaceSearchIndex extends Context.Service<
   WorkspaceSearchIndex,
   {

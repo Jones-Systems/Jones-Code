@@ -103,6 +103,7 @@ export function queuedToolBoundaryTarget(
     message.notification !== undefined ||
     message.delegatedCompletion !== undefined ||
     message.scheduledTaskId !== undefined ||
+    queuedRun.outputSchema !== undefined ||
     queuedRun.sourcePlanRef !== undefined ||
     queuedRun.restartContinuationOfRunId !== undefined ||
     (batchDriver

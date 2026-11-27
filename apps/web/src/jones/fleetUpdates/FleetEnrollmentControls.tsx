@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts/jones/installPlan";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import { useGT } from "gt-react";
 import { useNowAfter } from "../../hooks/useDeadline";
 import { runtime } from "../../lib/runtime";
 import { FleetEnrollmentStatus, type FleetHostReadiness } from "./FleetEnrollmentStatus";
@@ -36,6 +37,7 @@ export function FleetEnrollmentControls(props: FleetEnrollmentControlsProps) {
 }
 
 function FleetEnrollmentControlsForHost({ environmentId, label }: FleetEnrollmentControlsProps) {
+  const gt = useGT();
   const state = useAtomValue(fleetDesktopState);
   const storageError = useAtomValue(fleetStatusError);
   const publication = useAtomValue(fleetPublication);
@@ -140,7 +142,9 @@ function FleetEnrollmentControlsForHost({ environmentId, label }: FleetEnrollmen
         setStatusObservedAt(new Date().toISOString());
         setStatusUnavailable(false);
         setMessage(
-          "Automatic updates on. This host follows verified builds reported by this laptop. Builds installed through Install status use that plan’s host selection and review.",
+          gt(
+            "Automatic updates on. This host follows verified builds reported by this laptop. Builds installed through Install status use that plan’s host selection and review.",
+          ),
         );
       }
     })()

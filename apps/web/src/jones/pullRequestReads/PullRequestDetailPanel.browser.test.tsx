@@ -88,13 +88,12 @@ vi.mock(import("~/state/usePullRequestStack"), async (original) => ({
     refresh,
   })) as never,
 }));
-// These cases exercise held detail and panel actions, not the tabs' environment reads.
-vi.mock(import("~/components/pullRequest/PullRequestSummaryTab"), async (original) => ({
-  ...(await original()),
+// These cases exercise held detail and panel actions. Importing the real Summary tab
+// here would load the panel again through workflow references while its mock is pending.
+vi.mock(import("~/components/pullRequest/PullRequestSummaryTab"), () => ({
   PullRequestSummaryTab: (() => <div />) as never,
 }));
-vi.mock(import("~/components/pullRequest/PullRequestCodeTab"), async (original) => ({
-  ...(await original()),
+vi.mock(import("~/components/pullRequest/PullRequestCodeTab"), () => ({
   default: (() => <div />) as never,
 }));
 

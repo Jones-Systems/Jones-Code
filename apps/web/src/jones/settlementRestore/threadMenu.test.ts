@@ -46,6 +46,7 @@ const sidebarMenu = (isSettled: boolean, canOperate = true) =>
     canSnoozeNow: !isSettled,
     isRegeneratingTitle: false,
     isRunning: false,
+    hasCompletedRun: true,
     supports: {
       settlement: true,
       autoSettleOptOut: true,

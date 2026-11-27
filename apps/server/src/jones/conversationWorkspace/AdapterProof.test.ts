@@ -32,6 +32,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as GitWorkflow from "../../git/GitWorkflowService.ts";
 import * as Projects from "../../project/ProjectService.ts";
 import * as Setup from "../../project/ProjectSetupScriptRunner.ts";
+import * as TaskFolders from "../../workspace/TaskFolders.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as VcsStatus from "../../vcs/VcsStatusBroadcaster.ts";
 import * as Worktree from "../../mcp/WorktreeMcpService.ts";
@@ -196,6 +197,7 @@ it.effect.each([
             } as never),
         }),
         setupLayer,
+        Layer.mock(TaskFolders.TaskFolders)({ plan: () => Effect.succeed(null) }),
         Layer.mock(VcsStatus.VcsStatusBroadcaster)({ refreshStatus: () => Effect.void as never }),
         ServerSettings.layerTest({ newWorktreesStartFromOrigin: true }),
       );

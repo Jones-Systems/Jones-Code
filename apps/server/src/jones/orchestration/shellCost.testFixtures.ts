@@ -204,8 +204,8 @@ export const seedForkShell = Effect.fn("shellCost.seedForkShell")(function* () {
   const now = DateTime.makeUnsafe("2026-10-01T00:00:00.000Z");
   const instanceId = ProviderInstanceId.make("codex");
   const modelSelection = { instanceId, model: "synthetic" };
-  for (const id of [sourceId, threadId]) {
-    yield* projections.apply({
+  const createThread = (id: ThreadId) =>
+    projections.apply({
       id: EventId.make(`${id}:created`),
       type: "thread.created",
       threadId: id,
@@ -234,7 +234,7 @@ export const seedForkShell = Effect.fn("shellCost.seedForkShell")(function* () {
         lastVisitedAt: null,
       },
     });
-  }
+  yield* createThread(sourceId);
   yield* projections.apply({
     id: EventId.make("shell-composed:run-created"),
     type: "run.created",
@@ -258,6 +258,8 @@ export const seedForkShell = Effect.fn("shellCost.seedForkShell")(function* () {
       contextHandoffId: null,
     },
   });
+  // The fork freezes the set of inherited runs at creation.
+  yield* createThread(threadId);
   const appendInheritedItem = Effect.fn("shellCost.appendInheritedItem")(function* (index: number) {
     yield* projections.apply({
       id: EventId.make(`shell-composed:item:${index}`),

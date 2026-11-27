@@ -23,6 +23,7 @@ export const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
   threadId: ThreadId,
   runId: RunId,
   failed = false,
+  probeSuccess = false,
 ) {
   const incomplete = new OrchestratorMcpFailure({
     code: "orchestration_error",
@@ -31,15 +32,19 @@ export const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
   });
   let reply: OrchestratorMcpThreadTimelineItem | undefined;
   let error: OrchestratorMcpThreadTimelineItem | undefined;
-  let afterPosition: number | undefined;
+  // Position 0 contains the launch prompt; a cursorless linked read starts at the newest page.
+  let afterPosition = 0;
   let run: OrchestratorMcpThreadRun | undefined;
+  let remainingItems = 0;
+  let tailProbed = false;
   while (true) {
     const read = yield* readThread({
       threadId,
       view: failed ? "activity" : "messages",
       limit: 100,
       runLimit: 50,
-      ...(afterPosition === undefined ? {} : { afterPosition }),
+      maxCharsPerItem: failed && remainingItems > 100 ? 1 : 20_000,
+      afterPosition,
     });
     if (read.thread.threadId !== threadId) return yield* incomplete;
     run ??= read.recentRuns.find((candidate) => candidate.runId === runId);
@@ -50,9 +55,34 @@ export const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
       error = read.items.findLast((item) => item.type === "error" && item.runId === runId) ?? error;
     }
     if (!read.hasMore) break;
-    if (read.nextPosition === null || read.nextPosition <= (afterPosition ?? -1))
-      return yield* incomplete;
+    if (read.nextPosition === null || read.nextPosition <= afterPosition) return yield* incomplete;
+    if (!failed && probeSuccess && !tailProbed) {
+      tailProbed = true;
+      const tailPosition = Math.floor((read.thread.itemCount - 1) / 100) * 100 - 1;
+      if (tailPosition > read.nextPosition) {
+        const tail = yield* readThread({
+          threadId,
+          view: "messages",
+          limit: 100,
+          maxCharsPerItem: 20_000,
+          afterPosition: tailPosition,
+        });
+        if (tail.thread.threadId !== threadId) return yield* incomplete;
+        run ??= tail.recentRuns.find((candidate) => candidate.runId === runId);
+        const tailReply = tail.items.findLast(
+          (item) =>
+            item.position > tailPosition &&
+            item.type === "assistant_message" &&
+            item.runId === runId,
+        );
+        if (!tail.hasMore && tailReply !== undefined) {
+          reply = tailReply;
+          break;
+        }
+      }
+    }
     afterPosition = read.nextPosition;
+    remainingItems = read.thread.itemCount - afterPosition - 1;
   }
   reply = error ?? reply;
   if (reply === undefined) return undefined;
@@ -73,7 +103,7 @@ export const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
       threadId,
       itemId: reply.itemId,
       textOffset,
-      maxCharsPerItem: 50_000,
+      maxCharsPerItem: 20_000,
     });
     const next = rest.items[0];
     if (

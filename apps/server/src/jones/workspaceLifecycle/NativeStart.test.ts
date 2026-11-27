@@ -18,6 +18,8 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import * as Auth from "../../provider/ProviderAuthService.ts";
 import * as Instances from "../../provider/ProviderInstanceRegistry.ts";
 import * as Settings from "../../serverSettings.ts";
+import * as TaskFolderStore from "../../workspace/TaskFolderStore.ts";
+import * as WorkspaceFolders from "../../workspace/WorkspaceFolders.ts";
 import * as Guard from "../nativeCreation/NativeCreationProviderGuard.ts";
 import * as Admission from "../orchestration/ControlAdmission.ts";
 import * as Restart from "../orchestration/RestartPreparation.ts";
@@ -112,7 +114,11 @@ it.effect.each(["current", "revoked", "retired"] as const)(
                 },
               }),
             ),
-            Layer.provide(RuntimePolicy.layer),
+            Layer.provide(
+              RuntimePolicy.layerFromProjectStore.pipe(
+                Layer.provide(WorkspaceFolders.layer.pipe(Layer.provide(TaskFolderStore.layer))),
+              ),
+            ),
             Layer.provide(Settings.layerTest()),
             Layer.provide(
               Layer.mock(Instances.ProviderInstanceRegistry)({

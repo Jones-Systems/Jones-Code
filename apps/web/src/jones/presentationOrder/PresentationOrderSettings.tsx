@@ -7,7 +7,8 @@ import {
   SettingsSection,
   SettingResetButton,
 } from "../../components/settings/settingsLayout";
-import { searchableSetting } from "../../components/settings/settingsSearch";
+import { useGT } from "gt-react";
+import { useSearchableSetting } from "../../components/settings/settingsSearch";
 import {
   Select,
   SelectItem,
@@ -32,6 +33,8 @@ const labels: Record<SidebarProjectSortOrder, string> = {
 };
 
 export function PresentationOrderSettings() {
+  const gt = useGT();
+  const searchableSetting = useSearchableSetting();
   const sortOrder = useClientSettings((settings) => settings.sidebarProjectSortOrder);
   const projectOrder = useUiStateStore((state) => state.projectOrder);
   const environmentOrder = useUiStateStore((state) => state.environmentOrder);
@@ -56,7 +59,7 @@ export function PresentationOrderSettings() {
           sortOrder !== DEFAULT_CLIENT_SETTINGS.sidebarProjectSortOrder ||
           projectOrder.length > 0 ? (
             <SettingResetButton
-              label="project order"
+              ariaLabel={gt("Reset project order to default")}
               onClick={() => {
                 useUiStateStore.getState().setProjectOrder([]);
                 void persistClientSettingsPatch({
@@ -134,7 +137,7 @@ export function PresentationOrderSettings() {
         resetAction={
           environmentOrder.length > 0 ? (
             <SettingResetButton
-              label="environment order"
+              ariaLabel={gt("Reset environment order to default")}
               onClick={() => useUiStateStore.getState().setEnvironmentOrder([])}
             />
           ) : null

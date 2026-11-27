@@ -15,6 +15,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -88,77 +89,89 @@ describe("stop observation isolation evidence", () => {
           ),
         ),
       );
-      const commands = createThreadEnvironmentAtoms(runtime, () => Atom.make(null));
+      const commands = createThreadEnvironmentAtoms(
+        runtime,
+        () => Atom.make(null),
+        () => Atom.make<"live">("live"),
+      );
       const registry = AtomRegistry.make();
       yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
-      const observation = commands.observeCurrentThreadRuntimeStop.run(registry, {
-        environmentId,
-        input: {
-          commandId: CommandId.make("observe"),
-          threadId,
-          target: {
-            evidenceRevision: 1,
-            binding: {
-              threadId,
-              providerThreadId: ProviderThreadId.make("provider-thread"),
-              providerSessionId: ProviderSessionId.make("provider-session"),
-              providerInstanceId: ProviderInstanceId.make("codex"),
-              driver: ProviderDriverKind.make("codex"),
-              nativeThreadId: "native",
-              runtimeGeneration: "generation",
+      const observation = yield* commands.observeCurrentThreadRuntimeStop
+        .run(registry, {
+          environmentId,
+          input: {
+            commandId: CommandId.make("observe"),
+            threadId,
+            target: {
+              evidenceRevision: 1,
+              binding: {
+                threadId,
+                providerThreadId: ProviderThreadId.make("provider-thread"),
+                providerSessionId: ProviderSessionId.make("provider-session"),
+                providerInstanceId: ProviderInstanceId.make("codex"),
+                driver: ProviderDriverKind.make("codex"),
+                nativeThreadId: "native",
+                runtimeGeneration: "generation",
+              },
             },
           },
-        },
-      });
+        })
+        .pipe(Effect.forkChild);
       yield* Deferred.await(entered);
-      const send = commands.startTurn.run(registry, {
-        environmentId,
-        input: {
-          threadId,
-          commandId: CommandId.make("send"),
-          message: {
-            messageId: MessageId.make("message"),
-            role: "user",
-            text: "Continue",
-            attachments: [],
+      const send = yield* commands.startTurn
+        .run(registry, {
+          environmentId,
+          input: {
+            threadId,
+            commandId: CommandId.make("send"),
+            message: {
+              messageId: MessageId.make("message"),
+              role: "user",
+              text: "Continue",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: "start",
           },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          dispatchMode: "start",
-        },
-      });
-      const interrupt = commands.interruptTurn.run(registry, {
-        environmentId,
-        input: {
-          threadId,
-          commandId: CommandId.make("interrupt"),
-          runId: RunId.make("run"),
-        },
-      });
-      const independent = commands.interruptTurn.run(registry, {
-        environmentId,
-        input: {
-          threadId: otherThreadId,
-          commandId: CommandId.make("independent"),
-          runId: RunId.make("other-run"),
-        },
-      });
+        })
+        .pipe(Effect.forkChild);
+      const interrupt = yield* commands.interruptTurn
+        .run(registry, {
+          environmentId,
+          input: {
+            threadId,
+            commandId: CommandId.make("interrupt"),
+            runId: RunId.make("run"),
+          },
+        })
+        .pipe(Effect.forkChild);
+      const independent = yield* commands.interruptTurn
+        .run(registry, {
+          environmentId,
+          input: {
+            threadId: otherThreadId,
+            commandId: CommandId.make("independent"),
+            runId: RunId.make("other-run"),
+          },
+        })
+        .pipe(Effect.forkChild);
       const other = yield* Queue.take(requests);
       expect(other.command).toMatchObject({ type: "run.interrupt", threadId: otherThreadId });
       yield* Deferred.succeed(other.reply, { sequence: 1 });
-      expect((yield* Effect.promise(() => independent))._tag).toBe("Success");
+      expect((yield* Fiber.await(independent))._tag).toBe("Success");
       expect(yield* Queue.poll(requests)).toEqual(Option.none());
       yield* Deferred.succeed(release, undefined);
-      expect((yield* Effect.promise(() => observation))._tag).toBe("Success");
+      expect((yield* Fiber.await(observation))._tag).toBe("Success");
       const sent = yield* Queue.take(requests);
       expect(sent.command.type).toBe("message.dispatch");
       expect(yield* Queue.poll(requests)).toEqual(Option.none());
       yield* Deferred.succeed(sent.reply, { sequence: 2 });
-      expect((yield* Effect.promise(() => send))._tag).toBe("Success");
+      expect((yield* Fiber.await(send))._tag).toBe("Success");
       const stopped = yield* Queue.take(requests);
       expect(stopped.command.type).toBe("run.interrupt");
       yield* Deferred.succeed(stopped.reply, { sequence: 3 });
-      expect((yield* Effect.promise(() => interrupt))._tag).toBe("Success");
+      expect((yield* Fiber.await(interrupt))._tag).toBe("Success");
     }),
   );
 });

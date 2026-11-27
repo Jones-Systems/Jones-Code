@@ -1,3 +1,4 @@
+import { unusedAuthorization } from "./jones/connection/unusedAuthorization.ts";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, VoiceReviewNotConfiguredError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -165,6 +166,7 @@ it.effect(
           }),
       });
       const remoteAuthorization = RemoteEnvironmentAuthorization.of({
+        ...unusedAuthorization,
         renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
         rememberCheckedDescriptor: () => Effect.void,
         authorizeBearer: () => Effect.die("unexpected"),
@@ -237,6 +239,7 @@ it.effect("signs the exact encoded Voice Review and registry request URLs", () =
         }),
     });
     const remoteAuthorization = RemoteEnvironmentAuthorization.of({
+      ...unusedAuthorization,
       renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
       rememberCheckedDescriptor: () => Effect.void,
       authorizeBearer: () => Effect.die("unexpected"),

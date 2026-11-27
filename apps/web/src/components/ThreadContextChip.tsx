@@ -1,9 +1,12 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type { ThreadContextRecord, ProjectId } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { MessagesSquareIcon } from "lucide-react";
+import { useGT } from "gt-react";
 
 import { useLinkedThreadWorkstreamMenu } from "~/jones/workstreams/useLinkedThreadWorkstreamMenu";
+import { resolveThreadOpenRoute } from "~/lib/sideChatPane";
+import { buildThreadRouteParams } from "~/threadRoutes";
 import { useProject, useThreadShell } from "~/state/entities";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { useEnvironmentQuery } from "~/state/query";
@@ -18,6 +21,7 @@ export function ThreadContextChip(props: {
   unreadable?: boolean;
   resolved?: boolean;
 }) {
+  const gt = useGT();
   const { environmentId, threadId } = props.record;
   const shell = useThreadShell({ environmentId, threadId });
   const lookup = useEnvironmentQuery(
@@ -32,6 +36,7 @@ export function ThreadContextChip(props: {
   const projectId = shell?.projectId ?? props.projectId ?? metadata?.projectId;
   const project = useProject(projectId ? scopeProjectRef(environmentId, projectId) : null);
   const title = shell?.title?.trim() || metadata?.title.trim() || props.record.title;
+  const navigate = useNavigate();
   const resolved = props.resolved ?? (shell !== null || metadata !== undefined);
   const workstream = useLinkedThreadWorkstreamMenu(
     resolved && !props.unreadable ? { environmentId, id: threadId } : null,
@@ -47,11 +52,23 @@ export function ThreadContextChip(props: {
               <Link
                 to="/$environmentId/$threadId"
                 params={{ environmentId, threadId }}
+                onClick={(event) => {
+                  if (shell?.lineage.sideChat !== true || event.button !== 0) return;
+                  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  // A side chat opens as a tab beside its parent, not as its own page.
+                  event.preventDefault();
+                  void navigate({
+                    to: "/$environmentId/$threadId",
+                    params: buildThreadRouteParams(
+                      resolveThreadOpenRoute({ environmentId, threadId }, shell),
+                    ),
+                  });
+                }}
                 draggable={false}
                 onContextMenu={workstream.onContextMenu}
               />
             }
-            aria-label={`Thread, ${title}`}
+            aria-label={gt("Thread, {title}", { title })}
             data-markdown-copy={props.copyMarkdown}
             className="no-underline"
           >
@@ -65,7 +82,7 @@ export function ThreadContextChip(props: {
         }
       />
       <TooltipPopup side="top">
-        {resolved ? "Open thread" : "Thread no longer available"}
+        {resolved ? gt("Open thread") : gt("Thread no longer available")}
         {props.record.excerpt?.status === "captured"
           ? ". bounded point-in-time context attached"
           : props.record.excerpt?.status === "unavailable"

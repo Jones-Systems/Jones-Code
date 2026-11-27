@@ -59,6 +59,7 @@ describe("Jones environment HTTP registration", () => {
       "jonesImportedHistory",
       "previewCompanion",
       "webhooks",
+      "peerLink",
     ]);
   });
 

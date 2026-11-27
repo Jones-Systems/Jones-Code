@@ -1,3 +1,4 @@
+import { unusedAuthorization } from "../connection/unusedAuthorization.ts";
 import type {
   JonesUpdateProvenance,
   JonesUpdateState,
@@ -196,6 +197,7 @@ it.effect(
       } as unknown as EnvironmentRegistry["Service"]);
       const authorizations: Array<string | undefined> = [];
       const authorization = RemoteEnvironmentAuthorization.of({
+        ...unusedAuthorization,
         renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
         rememberCheckedDescriptor: () => Effect.void,
         authorizeBearer: () => Effect.die("Unexpected bearer authorization"),
@@ -313,7 +315,7 @@ it.effect(
         operationId: "11111111-1111-4111-8111-111111111111",
         requestId: "22222222-2222-4222-8222-222222222222",
       };
-      const result = yield* Effect.promise(() =>
+      const result = yield* Effect.exit(
         updates.action.run(registry, {
           environmentId: target.environmentId,
           input: { action: "reconcile", input },
@@ -326,7 +328,7 @@ it.effect(
       expect(posts).toEqual([{ url: `${origin}/api/jones-updates/reconcile`, input }]);
       loseReply = true;
       expect(
-        yield* Effect.promise(() =>
+        yield* Effect.exit(
           updates.action.run(registry, {
             environmentId: target.environmentId,
             input: { action: "reconcile", input },
@@ -341,15 +343,13 @@ it.effect("starts observation after an initially disconnected mount prepares its
     const connections = yield* SubscriptionRef.make(Option.none<string>());
     const disconnected = yield* Deferred.make<void>();
     let reads = 0;
-    const observed = yield* observeJonesUpdateState(
-      SubscriptionRef.changes(connections),
-      (after) =>
-        after === undefined
-          ? Effect.sync(() => {
-              reads++;
-              return staged;
-            })
-          : Effect.never,
+    const observed = yield* observeJonesUpdateState(SubscriptionRef.changes(connections), (after) =>
+      after === undefined
+        ? Effect.sync(() => {
+            reads++;
+            return staged;
+          })
+        : Effect.never,
     ).pipe(
       Stream.tap((state) =>
         state === null ? Deferred.succeed(disconnected, undefined) : Effect.void,
@@ -1384,26 +1384,25 @@ it.effect(
         ),
       );
       const registry = AtomRegistry.make();
-      const pending: Array<Promise<unknown>> = [];
+      const pending: Array<Fiber.Fiber<unknown, unknown>> = [];
       yield* Effect.addFinalizer(() =>
-        Effect.promise(async () => {
-          release();
-          try {
-            await Promise.allSettled(pending);
-          } finally {
-            registry.dispose();
-          }
-        }),
+        Effect.sync(release).pipe(
+          Effect.andThen(Effect.forEach(pending, Fiber.await, { discard: true })),
+          Effect.ensuring(Effect.sync(() => registry.dispose())),
+        ),
       );
       const updates = createJonesUpdateAtoms(runtime);
-      const started = updates.operation.run(registry, {
-        environmentId,
-        input: { action: "operationStart", input },
-      });
+      const started = yield* Effect.forkChild(
+        updates.operation.run(registry, {
+          environmentId,
+          input: { action: "operationStart", input },
+        }),
+        { startImmediately: true },
+      );
       pending.push(started);
       yield* Effect.raceFirst(
         Deferred.await(entered),
-        Effect.promise(() => started).pipe(
+        Fiber.await(started).pipe(
           Effect.flatMap((result) =>
             Effect.die(
               new Error("operationStart settled before entering the held fetch", { cause: result }),
@@ -1411,17 +1410,23 @@ it.effect(
           ),
         ),
       );
-      const read = updates.operation.run(registry, {
-        environmentId,
-        input: { action: "operationRead", input: readInput },
-      });
+      const read = yield* Effect.forkChild(
+        updates.operation.run(registry, {
+          environmentId,
+          input: { action: "operationRead", input: readInput },
+        }),
+        { startImmediately: true },
+      );
       pending.push(read);
-      const stopped = updates.stop.run(registry, {
-        environmentId,
-        input: { action: "operationStop", input: stopInput },
-      });
+      const stopped = yield* Effect.forkChild(
+        updates.stop.run(registry, {
+          environmentId,
+          input: { action: "operationStop", input: stopInput },
+        }),
+        { startImmediately: true },
+      );
       pending.push(stopped);
-      expect(yield* Effect.promise(() => stopped)).toMatchObject({
+      expect(yield* Fiber.await(stopped)).toMatchObject({
         _tag: "Success",
         value: stopReceipt,
       });
@@ -1429,18 +1434,21 @@ it.effect(
         "/api/jones-updates/operations/start",
         "/api/jones-updates/operations/stop",
       ]);
-      const checked = updates.action.run(registry, { environmentId, input: { action: "check" } });
+      const checked = yield* Effect.forkChild(
+        updates.action.run(registry, { environmentId, input: { action: "check" } }),
+        { startImmediately: true },
+      );
       pending.push(checked);
-      expect(yield* Effect.promise(() => checked)).toMatchObject({
+      expect(yield* Fiber.await(checked)).toMatchObject({
         _tag: "Success",
         value: staged,
       });
       release();
-      expect(yield* Effect.promise(() => started)).toMatchObject({
+      expect(yield* Fiber.await(started)).toMatchObject({
         _tag: "Success",
         value: receipt,
       });
-      expect(yield* Effect.promise(() => read)).toMatchObject({
+      expect(yield* Fiber.await(read)).toMatchObject({
         _tag: "Success",
         value: { receipts: [{ operationId, receipt }] },
       });

@@ -1,4 +1,5 @@
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import { useGT } from "gt-react";
 
 import { Switch } from "~/components/ui/switch";
 import {
@@ -17,6 +18,7 @@ const TITLE = "Assign queued prompts to a Workstream automatically";
 
 /** Environment switch for routing queue-dispatched threads to a clearly matching Workstream. */
 export function WorkstreamAutoRouteSettings() {
+  const gt = useGT();
   const enabled = useScopedSettings((settings) => settings.workstreamAutoRouteEnabled);
   const updateSettings = useUpdateScopedSettings();
   const mixed = useScopedSettingsMixed(SETTING_KEYS);
@@ -31,7 +33,7 @@ export function WorkstreamAutoRouteSettings() {
         resetAction={
           enabled !== DEFAULT_SERVER_SETTINGS.workstreamAutoRouteEnabled ? (
             <SettingResetButton
-              label="Workstream routing"
+              ariaLabel={gt("Reset Workstream routing to default")}
               onClick={() =>
                 updateSettings({
                   workstreamAutoRouteEnabled: DEFAULT_SERVER_SETTINGS.workstreamAutoRouteEnabled,

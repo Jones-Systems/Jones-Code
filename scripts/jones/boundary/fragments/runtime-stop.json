@@ -18,12 +18,15 @@
   "hookPaths": [
     "apps/server/src/auth/RpcAuthorization.ts",
     "apps/server/src/environment/ServerEnvironment.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
     "apps/server/src/relay/AgentAwarenessRelay.ts",
     "apps/server/src/ws.ts",
     "apps/web/src/components/CommandPalette.tsx",
     "packages/client-runtime/src/operations/index.ts",
     "packages/client-runtime/src/state/orchestrationV2Projection.ts",
     "packages/client-runtime/src/state/threadCommands.ts",
+    "packages/client-runtime/src/state/threadWorkflows.test.ts",
+    "packages/client-runtime/src/state/threadWorkflows.ts",
     "packages/contracts/src/environment.ts",
     "packages/contracts/src/rpc.ts"
   ],
@@ -67,6 +70,14 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
       "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
     },
     {

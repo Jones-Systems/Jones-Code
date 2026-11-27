@@ -29,11 +29,12 @@ import {
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { SidebarFooter, SidebarTrigger } from "../ui/sidebar";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 export { JonesSidebarUtilityMenu as SidebarUtilityMenu } from "../../jones/navigation/JonesSidebarUtilityMenu";
 import { SidebarUpdateArchitectureWarning } from "./SidebarUpdatePill";
 import { observeResize } from "~/lib/observeResize";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import { useGT } from "gt-react";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
@@ -50,6 +51,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
 }) {
   const stageLabel = useEnvironmentStageLabel();
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
+  const gt = useGT();
   const backdropVariant = resolveSidebarStageBackdropVariant(
     stageLabel,
     environmentIdentificationMode,
@@ -71,7 +73,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
         <SidebarTrigger
           variant={backdropVariant ? "media-navigation" : "ghost"}
           className="relative top-auto translate-y-0"
-          aria-label="Toggle main sidebar"
+          aria-label={gt("Toggle main sidebar")}
         />
       </div>
       <CompactSidebarHeader>
@@ -141,43 +143,46 @@ function HistoryNavigationButton({
 }) {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const enabled = useCanNavigateHistory(direction);
-  const label = direction === "back" ? "Go back" : "Go forward";
+  const gt = useGT();
+  const label = direction === "back" ? gt("Go back") : gt("Go forward");
   const shortcutLabel = shortcutLabelForCommand(
     keybindings,
     direction === "back" ? "navigation.back" : "navigation.forward",
   );
   const Icon = direction === "back" ? ArrowLeftIcon : ArrowRightIcon;
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            aria-label={label}
-            className={cn(
-              "[-webkit-app-region:no-drag]",
-              onBackdrop && "relative top-auto translate-y-0",
-            )}
-            disabled={!enabled}
-            onClick={() => navigateHistory(direction)}
-            size="icon-sm"
-            variant={onBackdrop ? "media-navigation" : "ghost"}
-          />
-        }
-      >
-        <Icon className="size-3.5" />
-      </TooltipTrigger>
-      <TooltipPopup side="bottom">
-        {label}
-        {shortcutLabel ? ` (${shortcutLabel})` : ""}
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <Button
+          aria-label={label}
+          className={cn(
+            "[-webkit-app-region:no-drag]",
+            onBackdrop && "relative top-auto translate-y-0",
+          )}
+          disabled={!enabled}
+          onClick={() => navigateHistory(direction)}
+          size="icon-sm"
+          variant={onBackdrop ? "media-navigation" : "ghost"}
+        />
+      }
+      label={
+        <>
+          {label}
+          {shortcutLabel ? ` (${shortcutLabel})` : ""}
+        </>
+      }
+      side="bottom"
+    >
+      <Icon className="size-3.5" />
+    </SharedTooltipTrigger>
   );
 }
 
 function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
+  const gt = useGT();
   return (
     <Link
-      aria-label="T3 Code home"
+      aria-label={gt("T3 Code home")}
       className={cn(
         "relative z-10 ml-[var(--workspace-titlebar-content-left)] hidden h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset md:flex",
         onBackdrop ? "text-white" : "text-foreground",
@@ -200,7 +205,8 @@ function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
           onBackdrop ? "text-white/70" : "text-muted-foreground",
         )}
       >
-        Code
+        {/* oxlint-disable-next-line t3code/no-untranslated-copy -- product wordmark */}
+        {"Code"}
       </span>
     </span>
   );

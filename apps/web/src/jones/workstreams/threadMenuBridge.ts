@@ -1,8 +1,9 @@
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { ContextMenuSource, ScopedThreadRef } from "@t3tools/contracts";
 
 export interface HeaderThreadMenuActions {
   readonly onFind?: ((threadRef: ScopedThreadRef) => void) | undefined;
   readonly onStartRename: () => void;
+  readonly source?: ContextMenuSource;
 }
 
 type ThreadMenuOwner = (

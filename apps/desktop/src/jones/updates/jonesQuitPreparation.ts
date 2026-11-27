@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import type * as Mac from "effect/crypto/Mac";
 import * as Option from "effect/Option";
+import type { DesktopBackendInstance } from "../../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as DesktopObservability from "../../app/DesktopObservability.ts";
 import { jonesNativeBootstrapCredential, prepareJonesQuit } from "./jonesNativePreparation.ts";
@@ -10,9 +11,11 @@ const { logInfo, logWarning } = DesktopObservability.makeComponentLogger(
 );
 
 export const prepareLocalBackendsForQuit = Effect.fn("desktop.quit.prepareLocalBackends")(
-  function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool | Mac.Mac> {
+  function* (
+    target?: DesktopBackendInstance,
+  ): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool | Mac.Mac> {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
-    const instances = yield* pool.list;
+    const instances = target === undefined ? yield* pool.list : [target];
     yield* Effect.forEach(
       instances,
       (instance) =>

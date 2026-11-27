@@ -51,6 +51,7 @@ describe("authorization grants", () => {
 
   it.each([
     ["requests:manage", "access:write"],
+    ["relay:configure", "relay:write"],
     ["workstreams:native:context", "orchestration:read"],
     ["workstreams:native:settlement", "orchestration:operate"],
     ["workstreams:native:reconciliation", "orchestration:operate"],

@@ -65,11 +65,19 @@
       "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
     },
     {
+      "from": "apps/server/src/mcp/toolkits/issues/handlers.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/IdleCompaction.test.ts",
       "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/PullRequestSyncReactor.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadIssueService.test.ts",
       "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
     },
     {

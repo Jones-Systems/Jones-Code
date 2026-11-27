@@ -94,6 +94,7 @@ function keptWarmThread(genuineAgeMs: number, followUp: "keep-warm" | "agent" = 
   const candidate: ProjectionStore.ProjectionSettlementCandidate = {
     ...shell,
     lastSnoozeWakeAt: null,
+    latestResumingMessageAt: null,
     latestUserAuthoredMessageAt: shell.latestUserAuthoredMessageAt ?? null,
   };
   return { projection, candidate, genuineAt, refreshAt };
@@ -157,6 +158,7 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
     Layer.mock(TerminalManager.TerminalManager)({
       closeIdle: () => Effect.void,
       closeOnSettle: () => Effect.void,
+      hasActiveSubprocess: () => Effect.succeed(false),
     }),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
       runForThread: () => Effect.succeed({ status: "no-script" } as const),

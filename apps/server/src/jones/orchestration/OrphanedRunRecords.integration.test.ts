@@ -21,11 +21,14 @@ import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProviderRuntimeRecovery from "../../orchestration-v2/ProviderRuntimeRecoveryService.ts";
+import { layerNoTaskFolders } from "../../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as RuntimeLayer from "../../orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import * as ProjectSetupScriptRunner from "../../project/ProjectSetupScriptRunner.ts";
+import * as ModelManifest from "../../provider/ModelManifest.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as SourceControlProviderRegistry from "../../sourceControl/SourceControlProviderRegistry.ts";
@@ -88,6 +91,9 @@ const TestLayer = Layer.mergeAll(
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),
   Layer.provide(ServerSettings.layerTest()),
+  Layer.provide(ModelManifest.layerTest),
+  Layer.provide(layerNoTaskFolders),
+  Layer.provide(Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({})),
   Layer.provide(
     Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
       getCatalogSource: (id) => (id === instanceId ? providerInstance : undefined),

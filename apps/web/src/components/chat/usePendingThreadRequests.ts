@@ -63,6 +63,9 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { toastManager } from "../ui/toast";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { m } from "~/i18n/messages";
+import { msg } from "gt-react";
 
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const NO_PENDING_REQUESTS = { approvals: [], userInputs: [] } as const;
@@ -373,7 +376,7 @@ export function usePendingThreadRequests(input: {
       const error = squashAtomCommandFailure(result);
       setThreadError(
         activeThreadId,
-        error instanceof Error ? error.message : "Failed to submit approval decision.",
+        thrownErrorMessage(error, m) ?? m(msg("Failed to submit approval decision.")),
       );
     }
     setRespondingRequestIds((existing) => existing.filter((id) => id !== requestId));
@@ -432,7 +435,7 @@ export function usePendingThreadRequests(input: {
         ) {
           setThreadError(
             activeThreadId,
-            "Answer changed while preparing attachments. Review it and send again.",
+            m(msg("Answer changed while preparing attachments. Review it and send again.")),
           );
           return;
         }
@@ -440,7 +443,7 @@ export function usePendingThreadRequests(input: {
         if (!uploaded) {
           setThreadError(
             activeThreadId,
-            "Wait for attachments to finish uploading, or remove failed uploads.",
+            m(msg("Wait for attachments to finish uploading, or remove failed uploads.")),
           );
           return;
         }
@@ -459,7 +462,7 @@ export function usePendingThreadRequests(input: {
       ) {
         setThreadError(
           activeThreadId,
-          "Answer changed while preparing attachments. Review it and send again.",
+          m(msg("Answer changed while preparing attachments. Review it and send again.")),
         );
         return;
       }
@@ -478,7 +481,7 @@ export function usePendingThreadRequests(input: {
         const error = squashAtomCommandFailure(result);
         setThreadError(
           activeThreadId,
-          error instanceof Error ? error.message : "Failed to submit user input.",
+          thrownErrorMessage(error, m) ?? m(msg("Failed to submit user input.")),
         );
       }
       return result;
@@ -503,7 +506,7 @@ export function usePendingThreadRequests(input: {
       const error = squashAtomCommandFailure(result);
       setThreadError(
         activeThreadId,
-        error instanceof Error ? error.message : "Failed to dismiss the question.",
+        thrownErrorMessage(error, m) ?? m(msg("Failed to dismiss the question.")),
       );
     }
     setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
@@ -552,8 +555,8 @@ export function usePendingThreadRequests(input: {
       );
       toastManager.add({
         type: "info",
-        title: "Your typed text was set aside",
-        description: "It will be back in the composer once the question is answered.",
+        title: m(msg("Your typed text was set aside")),
+        description: m(msg("It will be back in the composer once the question is answered.")),
         data: { threadRef: activeThreadId ? { environmentId, threadId: activeThreadId } : null },
       });
       if (activeThreadId) {

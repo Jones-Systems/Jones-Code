@@ -74,9 +74,12 @@ export function queuedSteerBatchCandidates(
           root !== undefined &&
           attempt !== undefined &&
           run.freshContext !== true &&
+          run.outputSchema === undefined &&
           run.sourcePlanRef === undefined &&
           run.restartContinuationOfRunId === undefined &&
-          (!automaticDelivery || queuedSelectionMatchesActive(run, target, true)) &&
+          (!automaticDelivery ||
+            (run.queuedToolBoundaryEligible === true &&
+              queuedSelectionMatchesActive(run, target, true))) &&
           !isQueuedSteerControlMessage(message),
       },
     ];
