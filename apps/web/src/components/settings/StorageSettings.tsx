@@ -489,12 +489,15 @@ function CleanupSection() {
         ]),
       ),
     }));
-    try {
-      for (const environment of targets)
-        await execute(environment, "propose", { retirement: { action: "propose" } });
-    } finally {
-      setPending(false);
-    }
+    await targets
+      .reduce(
+        (previous, environment) =>
+          previous.then(async () => {
+            await execute(environment, "propose", { retirement: { action: "propose" } });
+          }),
+        Promise.resolve(),
+      )
+      .finally(() => setPending(false));
   };
   const retireTargets = async (
     environmentId: (typeof supportedIds)[number],
@@ -533,10 +536,10 @@ function CleanupSection() {
             noSelection: gt("No local content selected."),
           });
     setPending(true);
-    try {
-      if (!(await requestConfirmDialog(message, { variant: "destructive" }))) return;
+    const retireConfirmedTargets = async (confirmed: boolean) => {
+      if (!confirmed) return;
       for (const [index, target] of targets.entries()) {
-        const confirmed = await execute(
+        const resultKnown = await execute(
           environment,
           "retire",
           {
@@ -550,11 +553,12 @@ function CleanupSection() {
           },
           total > 1 ? { position: index + 1, total } : undefined,
         );
-        if (!confirmed) break;
+        if (!resultKnown) break;
       }
-    } finally {
-      setPending(false);
-    }
+    };
+    await (requestConfirmDialog(message, { variant: "destructive" }) ?? Promise.resolve(false))
+      .then(retireConfirmedTargets)
+      .finally(() => setPending(false));
   };
   const deleteNow = async () => {
     if (pending) return;

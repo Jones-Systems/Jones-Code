@@ -1001,9 +1001,11 @@ it("confirms all ready checkouts on one machine, including rows beyond the first
   );
 
   const dialog = await openRetireAll(screen);
-  await expect.element(dialog).toHaveTextContent("Retire 6 worktrees on env-a?");
-  await expect.element(dialog).toHaveTextContent("/cleanup-test/retire/batch-5/cache");
-  await expect.element(dialog).not.toHaveTextContent("/cleanup-test/env-a/worktree-0");
+  await expect
+    .element(dialog.getByRole("heading", { name: "Retire 6 worktrees on env-a?", exact: true }))
+    .toBeVisible();
+  await expect.element(dialog).toHaveTextContent(/\/cleanup-test\/retire\/batch-5\/cache/);
+  await expect.element(dialog).not.toHaveTextContent(/\/cleanup-test\/env-a\/worktree-0/);
   expect(state.run).not.toHaveBeenCalled();
   await dialog.getByRole("button", { name: "Confirm" }).click();
   await expect.poll(() => state.run.mock.calls.length).toBe(1);
