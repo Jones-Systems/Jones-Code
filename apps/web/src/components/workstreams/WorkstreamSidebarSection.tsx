@@ -1,13 +1,13 @@
 import { useClientSettings } from "../../hooks/useSettings";
 import { useEnvironments } from "../../state/environments";
 import "../../jones/sidebarAppearance/sidebarAppearance.workstreams.css";
+import { T, useGT } from "gt-react";
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
 import { requestCustomSnooze } from "../CustomSnoozeDialog";
 import {
   useEffect,
   useId,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -289,14 +289,17 @@ function Group({
   const closeWaitingOn = closeRequest?.peers
     .filter((peer) => peer.state !== "delivered")
     .map((peer) => environmentNames.get(peer.environmentId) ?? peer.environmentId);
+  const gt = useGT();
   const closeStatus =
     closeRequest?.status === "stale"
-      ? "Close requested · environment list changed"
+      ? gt("Close requested · environment list changed")
       : closeRequest?.reason === "unsettled_threads"
-        ? "Close requested · settle or move active threads on the authority"
+        ? gt("Close requested · settle or move active threads on the authority")
         : closeWaitingOn?.length
-          ? `Close requested · waiting for ${closeWaitingOn.join(", ")}`
-          : "Close requested";
+          ? gt("Close requested · waiting for {environments}", {
+              environments: closeWaitingOn.join(", "),
+            })
+          : gt("Close requested");
   const canEdit = state.canCreate && !closeRequest;
   const sectionRef = useRef<HTMLElement>(null);
   const finishRename = (restoreFocus = true) => {
@@ -481,7 +484,7 @@ function Group({
               disabled={!state.canCreate || pending}
               onClick={() => void run(() => controller.cancelOperation!(closeRequest.requestId))}
             >
-              Cancel close request
+              <T>Cancel close request</T>
             </MenuItem>
           ) : null}
           <MenuItem disabled={!canEdit || pending} onClick={startRename}>
@@ -545,7 +548,7 @@ function Group({
               value={item.nameIcon?.projectKey ?? null}
               unavailableReason={
                 closeRequest
-                  ? "A close has been requested."
+                  ? gt("A close has been requested.")
                   : pending
                     ? "A Workstream change is being saved."
                     : !state.canSetNameIcon
@@ -672,9 +675,8 @@ export function WorkstreamSidebarSection({
 }) {
   const state = useAtomValue(controller.state);
   const { environments } = useEnvironments();
-  const environmentNames = useMemo(
-    () => new Map(environments.map(({ environmentId, label }) => [environmentId, label])),
-    [environments],
+  const environmentNames = new Map(
+    environments.map(({ environmentId, label }) => [environmentId, label]),
   );
   const [unassignedCollapsed, setUnassignedCollapsed] = useLocalStorage(
     personalGroupCollapsedKey(null),

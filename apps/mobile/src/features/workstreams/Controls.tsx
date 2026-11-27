@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useGT } from "gt-react-native";
 import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { isClosedPersonalWorkstream } from "@t3tools/contracts/jones/workstreamsPersonal";
 import {
@@ -24,6 +25,7 @@ export function MobileWorkstreamControls(props: {
   perform: <A>(action: () => Promise<PersonalResult<A>>) => Promise<boolean>;
   environmentNames: ReadonlyMap<string, string>;
 }) {
+  const gt = useGT();
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
@@ -115,16 +117,18 @@ export function MobileWorkstreamControls(props: {
           <View>
             <Text accessibilityLiveRegion="polite">
               {closeRequest.status === "stale"
-                ? "Close requested · environment list changed"
+                ? gt("Close requested · environment list changed")
                 : closeRequest.reason === "unsettled_threads"
-                  ? "Close requested · settle or move active threads on the authority"
+                  ? gt("Close requested · settle or move active threads on the authority")
                   : waitingOn?.length
-                    ? `Close requested · waiting for ${waitingOn.join(", ")}`
-                    : "Close requested"}
+                    ? gt("Close requested · waiting for {environments}", {
+                        environments: waitingOn.join(", "),
+                      })
+                    : gt("Close requested")}
             </Text>
             {controller.cancelOperation
               ? button(
-                  "Cancel close request",
+                  gt("Cancel close request"),
                   () => void run(() => controller.cancelOperation!(closeRequest.requestId)),
                   !props.state.canCreate,
                 )

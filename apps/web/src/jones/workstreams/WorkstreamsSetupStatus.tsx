@@ -5,6 +5,7 @@ import type {
   PersonalResult,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { AuthAccessWriteScope, type EnvironmentId } from "@t3tools/contracts";
+import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { useState } from "react";
 import { SettingsRow, SettingsSection } from "../../components/settings/settingsLayout";
 import { Button } from "../../components/ui/button";
@@ -23,21 +24,23 @@ const personalStatusLabels = {
   sync_failed: "Couldn't sync",
 } as const;
 const deliveryReasons: Readonly<Record<string, string>> = {
-  approval_required: "Approve this laptop in Workstreams settings on the receiving environment",
-  different_authority: "This environment follows a different authority",
-  different_definition: "This environment has a different Workstream definition",
-  newer_definition: "This environment has a newer Workstream definition",
-  definition_changed: "The Workstream changed on this environment",
-  peer_access_required: "A writable, approved link is required",
-  peer_only: "This Workstream exists only on that environment",
-  peer_identity_changed: "The environment identity changed",
-  peer_link_changed: "The link changed. Refresh enrollment to use the new link",
-  peer_link_expired: "The link expired. Reconnect it, then refresh enrollment",
-  peer_link_required: "Create a link from the laptop to this environment",
-  peer_unavailable: "Waiting for the environment to respond",
-  peer_update_required: "Update this environment to sync",
-  roster_changed: "The environment list changed. Cancel this request and submit it again",
-  unsettled_threads: "Settle or move active threads before closing",
+  approval_required: msg(
+    "Approve this laptop in Workstreams settings on the receiving environment",
+  ),
+  different_authority: msg("This environment follows a different authority"),
+  different_definition: msg("This environment has a different Workstream definition"),
+  newer_definition: msg("This environment has a newer Workstream definition"),
+  definition_changed: msg("The Workstream changed on this environment"),
+  peer_access_required: msg("A writable, approved link is required"),
+  peer_only: msg("This Workstream exists only on that environment"),
+  peer_identity_changed: msg("The environment identity changed"),
+  peer_link_changed: msg("The link changed. Refresh enrollment to use the new link"),
+  peer_link_expired: msg("The link expired. Reconnect it, then refresh enrollment"),
+  peer_link_required: msg("Create a link from the laptop to this environment"),
+  peer_unavailable: msg("Waiting for the environment to respond"),
+  peer_update_required: msg("Update this environment to sync"),
+  roster_changed: msg("The environment list changed. Cancel this request and submit it again"),
+  unsettled_threads: msg("Settle or move active threads before closing"),
 };
 function FleetControls({
   controller,
@@ -46,6 +49,8 @@ function FleetControls({
   controller: PersonalWorkstreamsController;
   state: PersonalWorkstreamsState;
 }) {
+  const gt = useGT();
+  const m = useMessages();
   const { environments } = useEnvironments();
   const localId = useAtomValue(localEnvironmentIdAtom);
   const access = useEnvironmentsWithScope(environments, AuthAccessWriteScope);
@@ -69,14 +74,14 @@ function FleetControls({
   const proposals = state.environments.flatMap((entry) =>
     (entry.fleetProposals ?? []).map((proposal) => ({ entry, proposal })),
   );
-  const run = async (action: () => Promise<PersonalResult<unknown>>) => {
+  const run = (action: () => Promise<PersonalResult<unknown>>) => {
     setBusy(true);
-    try {
-      const result = await action();
-      if (!result.ok) showPersonalFailure(result.failure);
-    } finally {
-      setBusy(false);
-    }
+    return Promise.resolve()
+      .then(action)
+      .then((result) => {
+        if (!result.ok) showPersonalFailure(result.failure);
+      })
+      .finally(() => setBusy(false));
   };
   const manage = controller.manageFleet;
   const manageReady = authorityReady && !!manage && !busy;
@@ -89,19 +94,22 @@ function FleetControls({
     <>
       {fleet ? (
         <SettingsRow
-          title="Workstream authority"
-          description="Definition changes are saved here and synced to enrolled environments."
+          title={gt("Workstream authority")}
+          description={gt("Definition changes are saved here and synced to enrolled environments.")}
           control={<span className="text-sm">{label(fleet.authorityEnvironmentId)}</span>}
         />
       ) : authorityReady && manage && authorityId !== null ? (
         <SettingsRow
-          title="Use this environment as the Workstream authority"
+          title={gt("Use this environment as the Workstream authority")}
           description={
             linked.isSuccess
               ? links.length
-                ? `Enrolls ${links.map((link) => link.label).join(", ")}. Approve the link in Workstreams settings on each environment.`
-                : "This environment will be the only participant. Add others in Connections."
-              : "Checking which linked environments to enroll."
+                ? gt(
+                    "Enrolls {environments}. Approve the link in Workstreams settings on each environment.",
+                    { environments: links.map((link) => link.label).join(", ") },
+                  )
+                : gt("This environment will be the only participant. Add others in Connections.")
+              : gt("Checking which linked environments to enroll.")
           }
           control={
             <Button
@@ -117,7 +125,9 @@ function FleetControls({
                 )
               }
             >
-              Use {label(authorityId)} as authority
+              <T>
+                Use <Var>{label(authorityId)}</Var> as authority
+              </T>
             </Button>
           }
         />
@@ -125,8 +135,17 @@ function FleetControls({
       {proposals.map(({ entry, proposal }) => (
         <SettingsRow
           key={`${entry.environmentId}:${proposal.sessionId}`}
-          title={`Approve Workstream sync on ${label(entry.environmentId)}`}
-          description={`${proposal.label} (${proposal.authorityEnvironmentId}) is asking to manage Workstream definitions on this environment. Link session ${proposal.sessionId.slice(-8)}.`}
+          title={gt("Approve Workstream sync on {environment}", {
+            environment: label(entry.environmentId),
+          })}
+          description={gt(
+            "{name} ({environmentId}) is asking to manage Workstream definitions on this environment. Link session {session}.",
+            {
+              name: proposal.label,
+              environmentId: proposal.authorityEnvironmentId,
+              session: proposal.sessionId.slice(-8),
+            },
+          )}
           control={
             manage && access.has(entry.environmentId) ? (
               <Button
@@ -143,7 +162,7 @@ function FleetControls({
                   )
                 }
               >
-                Approve authority
+                <T>Approve authority</T>
               </Button>
             ) : null
           }
@@ -169,8 +188,13 @@ function FleetControls({
         return (
           <SettingsRow
             key={`follower:${entry.environmentId}`}
-            title={`${label(entry.environmentId)} follows ${label(following)}`}
-            description="Disconnecting sync here keeps the existing copies. Reload the app to work with this environment independently."
+            title={gt("{environment} follows {authority}", {
+              environment: label(entry.environmentId),
+              authority: label(following),
+            })}
+            description={gt(
+              "Disconnecting sync here keeps the existing copies. Reload the app to work with this environment independently.",
+            )}
             control={
               <Button
                 variant="outline"
@@ -179,14 +203,17 @@ function FleetControls({
                 onClick={() => {
                   if (
                     !window.confirm(
-                      `Stop following ${label(following)} on ${label(entry.environmentId)}?`,
+                      gt("Stop following {authority} on {environment}?", {
+                        authority: label(following),
+                        environment: label(entry.environmentId),
+                      }),
                     )
                   )
                     return;
                   void run(() => release(entry.environmentId, following));
                 }}
               >
-                Stop following
+                <T>Stop following</T>
               </Button>
             }
           />
@@ -207,7 +234,9 @@ function FleetControls({
             <SettingsRow
               key={id}
               title={label(id)}
-              description={enrolled ? "Enrolled for Workstream sync" : "Available to enroll"}
+              description={
+                enrolled ? gt("Enrolled for Workstream sync") : gt("Available to enroll")
+              }
               control={
                 manage ? (
                   <div className="flex gap-2">
@@ -226,7 +255,7 @@ function FleetControls({
                           )
                         }
                       >
-                        Remove from sync
+                        <T>Remove from sync</T>
                       </Button>
                     )}
                     {(!enrolled || refresh) && (
@@ -244,7 +273,11 @@ function FleetControls({
                           )
                         }
                       >
-                        {refresh ? "Refresh enrollment" : "Enroll"}
+                        {refresh
+                          ? gt("Refresh enrollment")
+                          : gt("Enroll", {
+                              $context: "verb, enroll an environment in Workstream sync",
+                            })}
                       </Button>
                     )}
                   </div>
@@ -264,19 +297,30 @@ function FleetControls({
         return (
           <SettingsRow
             key={operation.requestId}
-            title={`${name} · ${discovered ? "Found on an enrolled environment" : operation.kind === "close" ? "Close requested" : operation.kind === "recovery" ? "Restoring a cancelled close" : "Sync pending"}`}
+            title={
+              discovered
+                ? gt("{name} · Found on an enrolled environment", { name })
+                : operation.kind === "close"
+                  ? gt("{name} · Close requested", { name })
+                  : operation.kind === "recovery"
+                    ? gt("{name} · Restoring a cancelled close", { name })
+                    : gt("{name} · Sync pending", { name })
+            }
             description={
               <div className="space-y-2">
-                {operation.reason && <p>{deliveryReasons[operation.reason] ?? operation.reason}</p>}
+                {operation.reason && (
+                  <p>{m(deliveryReasons[operation.reason] ?? operation.reason)}</p>
+                )}
                 {operation.peers
                   .filter((peer) => peer.state !== "delivered")
                   .map((peer) => (
                     <div key={peer.environmentId}>
                       <p>
                         {label(peer.environmentId)} ·{" "}
-                        {peer.reason
-                          ? (deliveryReasons[peer.reason] ?? "Waiting for confirmation")
-                          : "Waiting for confirmation"}
+                        {m(
+                          (peer.reason && deliveryReasons[peer.reason]) ||
+                            msg("Waiting for confirmation"),
+                        )}
                       </p>
                       {peer.state === "conflict" &&
                         peer.observed &&
@@ -303,7 +347,7 @@ function FleetControls({
                                     )
                                   }
                                 >
-                                  Use authority’s version
+                                  <T>Use authority’s version</T>
                                 </Button>
                               )}
                             {(peer.observed?.deleted === true ||
@@ -319,7 +363,9 @@ function FleetControls({
                                   if (
                                     peer.observed?.deleted &&
                                     !window.confirm(
-                                      `Delete ${name} and clear its saved assignments?`,
+                                      gt("Delete {name} and clear its saved assignments?", {
+                                        name,
+                                      }),
                                     )
                                   )
                                     return;
@@ -334,13 +380,15 @@ function FleetControls({
                                 }}
                               >
                                 {peer.observed?.deleted
-                                  ? "Apply peer deletion"
+                                  ? gt("Apply peer deletion")
                                   : discovered
                                     ? peer.observed?.lifecycle === "completed" ||
                                       peer.observed?.lifecycle === "abandoned"
-                                      ? "Import as Active"
-                                      : "Import to authority"
-                                    : `Use ${label(peer.environmentId)}’s version`}
+                                      ? gt("Import as Active")
+                                      : gt("Import to authority")
+                                    : gt("Use {environment}’s version", {
+                                        environment: label(peer.environmentId),
+                                      })}
                               </Button>
                             )}
                           </div>
@@ -357,7 +405,7 @@ function FleetControls({
                   disabled={!actionReady}
                   onClick={() => void run(() => cancel(operation.requestId))}
                 >
-                  Cancel close request
+                  <T>Cancel close request</T>
                 </Button>
               ) : null
             }

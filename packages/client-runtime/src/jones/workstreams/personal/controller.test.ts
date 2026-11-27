@@ -417,11 +417,22 @@ describe("laptop-authoritative personal Workstreams", () => {
       status: "stale",
       requestedLifecycle: "completed",
     });
+    const observed = {
+      key: "a".repeat(64),
+      name: "Peer Workstream",
+      lifecycle: "active",
+      deleted: false,
+    } as const;
     const conflict = operation(
       { ...request, requestId: "conflict" },
       {
         peers: [
-          { environmentId: thread.environmentId, state: "conflict", reason: "definition_changed" },
+          {
+            environmentId: thread.environmentId,
+            state: "conflict",
+            reason: "definition_changed",
+            observed,
+          },
         ],
       },
     );
@@ -472,6 +483,7 @@ describe("laptop-authoritative personal Workstreams", () => {
       const choice = {
         requestId: conflict.requestId,
         environmentId: thread.environmentId,
+        expectedObservationKey: observed.key,
         choice: "use_peer",
       } as const;
       expect(await h.controller.resolveOperation?.(choice)).toMatchObject({
