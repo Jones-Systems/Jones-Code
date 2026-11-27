@@ -619,10 +619,23 @@ describe("bound host operation grants", () => {
     expect(f.snapshot()).toBe(before);
     const exact = await f.coordinator.request(reportRequest(plan.planId, unsupported, true));
     expect(exact.refused).toBeUndefined();
-    expect(exact.state.current?.devices[0]?.operations[0]?.receipt).toEqual(unsupported);
+    expect(exact.state.current?.devices[0]?.operations[0]).toMatchObject({
+      receipt: unsupported,
+      unsupportedReceiptVerified: true,
+    });
+    expect(f.snapshot().document.schema).toBe(3);
+    const confirmed = f.snapshot();
+    const repeat = await f.coordinator.request(reportRequest(plan.planId, unsupported, true));
+    expect(repeat.refused).toBeUndefined();
+    expect(f.snapshot()).toBe(confirmed);
+    expect(
+      (await f.coordinator.request(reportRequest(plan.planId, f.receipt(grant), true))).refused
+        ?.code,
+    ).toBe("invalid-evidence");
+    expect(f.snapshot()).toBe(confirmed);
   });
 
-  it("corrects an archived legacy unsupported result with terminal ledger proof and preserves its replay identity", async () => {
+  it("recovers live work from an archived legacy unsupported reply and preserves replay identity", async () => {
     const f = fixture();
     const plan = await f.start();
     const claim = {
@@ -639,7 +652,7 @@ describe("bound host operation grants", () => {
     } as const;
     const send = f.coordinator.request;
     const issued = await send(claim);
-    const exact = f.receipt(issued.grant!, "completed");
+    const running = f.receipt(issued.grant!);
     f.advance();
     const { acceptedAt: _acceptedAt, ...scope } = f.receipt(issued.grant!);
     const provisional = { ...scope, phase: "refused", code: "unsupported" } as const;
@@ -650,6 +663,10 @@ describe("bound host operation grants", () => {
       ...snapshot,
       document: {
         ...snapshot.document,
+        commands: (snapshot.document.commands ?? []).map((entry) => ({
+          ...entry,
+          receipt: { ...entry.receipt, outcome: "terminal" as const, code: "unsupported" },
+        })),
         current: {
           ...current,
           devices: [
@@ -659,18 +676,51 @@ describe("bound host operation grants", () => {
       },
       result: undefined,
     }));
-    expect((await send(cancelRequest(current))).state.recoveryHistory).toEqual([]);
+    expect((await send(cancelRequest(current))).state.recoveryHistory).toMatchObject([
+      { planId: plan.planId, pendingDevices: [{ environmentId: remote }] },
+    ]);
     expect((await send(claim)).command).toMatchObject({ outcome: "terminal", code: "unsupported" });
     const before = f.snapshot();
-    expect((await send(reportRequest(plan.planId, exact))).refused?.code).toBe("invalid-evidence");
+    expect((await send(reportRequest(plan.planId, running))).refused?.code).toBe(
+      "invalid-evidence",
+    );
     expect(
-      (await send(reportRequest(plan.planId, { ...exact, admission: { kind: "ordinary" } }, true)))
-        .refused?.code,
-    ).toBe("invalid-evidence");
-    expect(
-      (await send(reportRequest(plan.planId, f.receipt(issued.grant!), true))).refused?.code,
+      (
+        await send(
+          reportRequest(plan.planId, { ...running, admission: { kind: "ordinary" } }, true),
+        )
+      ).refused?.code,
     ).toBe("invalid-evidence");
     expect(f.snapshot()).toBe(before);
+    const observed = await send(reportRequest(plan.planId, running, true));
+    expect(observed.refused).toBeUndefined();
+    expect(observed.state.current).toBeNull();
+    expect(observed.state.last?.devices[0]?.operations[0]?.receipt).toEqual(running);
+    expect(observed.state.recoveryHistory).toMatchObject([
+      { planId: plan.planId, pendingDevices: [{ environmentId: remote }] },
+    ]);
+    expect((await send(claim)).command).toEqual(issued.command);
+    const stop = await send({
+      ...downloadRequest(plan.planId),
+      step: "stop",
+      explicit: true,
+      operationId: running.operationId,
+      expectedRevision: observed.state.last!.revision,
+    });
+    expect(stop.grant?.request).toMatchObject({
+      kind: "operation-stop",
+      input: { operationId: running.operationId, environmentId: remote },
+    });
+    const held = {
+      ...f.receipt(issued.grant!, "held"),
+      code: "cleanup-unconfirmed",
+      jobId: id(112),
+    };
+    expect((await send(reportRequest(plan.planId, held, true))).state.recoveryHistory).toHaveLength(
+      1,
+    );
+    f.advance();
+    const exact = { ...f.receipt(issued.grant!, "completed"), jobId: held.jobId };
     const corrected = await send(reportRequest(plan.planId, exact, true));
     expect(corrected.state.last?.devices[0]?.operations[0]?.receipt).toEqual(exact);
     expect(corrected.state.current).toBeNull();
@@ -1052,6 +1102,36 @@ describe("closed plan recovery", () => {
       });
       expect(issued.grant).toBeDefined();
       archived.push({ planId: plan.planId, receipt: f.receipt(issued.grant!, "failed") });
+      if (n === 0) {
+        // A pre-Round-3 archive can carry a synthetic unsupported reply without a ledger read.
+        const { acceptedAt: _acceptedAt, ...scope } = f.receipt(issued.grant!);
+        await f.options.store.transact(async (snapshot) => {
+          const current = snapshot.document.current!;
+          const [device] = current.devices;
+          const [operation] = device!.operations;
+          return {
+            ...snapshot,
+            document: {
+              ...snapshot.document,
+              current: {
+                ...current,
+                devices: [
+                  {
+                    ...device!,
+                    operations: [
+                      {
+                        ...operation!,
+                        receipt: { ...scope, phase: "refused", code: "unsupported" },
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+            result: undefined,
+          };
+        });
+      }
       const closed = await f.coordinator.request(cancelRequest(issued.state.current!));
       expect(closed.refused).toBeUndefined();
       expect(closed.state.recoveryHistory).toHaveLength(n + 1);
@@ -1063,7 +1143,7 @@ describe("closed plan recovery", () => {
     expect(next.state.recoveryHistory).toHaveLength(8);
     const first = archived[0]!;
     expect(
-      (await f.coordinator.request(reportRequest(first.planId, first.receipt))).refused,
+      (await f.coordinator.request(reportRequest(first.planId, first.receipt, true))).refused,
     ).toBeUndefined();
     const admitted = await f.coordinator.request(start);
     expect(admitted.refused).toBeUndefined();

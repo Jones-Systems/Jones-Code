@@ -31,7 +31,6 @@ import {
   validateDirectiveFenceEvidence,
   hasUnconfirmedLauncherOutcome,
   isProvisionalUnsupportedReceipt,
-  isSettledOperationReceipt,
   deviceHasRecoveryDuty,
   planHasLaptopRecoveryDuty,
   deviceActiveOperations,
@@ -289,25 +288,31 @@ function refreshCommands(document: PlanDocument): PlanDocument {
               matchesOperationTarget(plan, device, op),
           )
         : undefined;
+    const remoteReceipt =
+      remote !== undefined && remote.review?.stagedHandle === stagedHandle
+        ? remote.receipt
+        : undefined;
     const settled =
       local !== undefined
         ? !localPending(local) && local.review?.stagedHandle === stagedHandle
-        : remote?.receipt !== undefined &&
-          !outstanding(remote) &&
-          remote.review?.stagedHandle === stagedHandle;
+        : remote !== undefined && remoteReceipt !== undefined && !outstanding(remote);
+    const correctedInFlight =
+      wasUnsupported &&
+      remoteReceipt !== undefined &&
+      !isProvisionalUnsupportedReceipt(remoteReceipt);
+    const code = settled ? (local?.result?.code ?? remoteReceipt?.code) : undefined;
     if (
-      !settled ||
-      (wasUnsupported && (remote?.receipt === undefined || remote.receipt.code === "unsupported"))
+      (!settled && !correctedInFlight) ||
+      (wasUnsupported && (remoteReceipt === undefined || code === receipt.code))
     )
       return receipt === entry.receipt ? entry : { ...entry, receipt };
     changed = true;
-    const code = local?.result?.code ?? remote?.receipt?.code;
     const { code: _previousCode, ...binding } = receipt;
     return {
       ...entry,
       receipt: {
         ...binding,
-        outcome: "terminal" as const,
+        outcome: settled ? ("terminal" as const) : ("reserved" as const),
         ...(code === undefined ? {} : { code }),
       },
     };
@@ -2000,13 +2005,15 @@ export function createInstallPlanCoordinator(options: {
             else if (proof.kind === "receipt") {
               const previous = operation.receipt;
               const validation = { ledgerRead: proof.ledgerRead === true };
+              const transition = {
+                ledgerRead: validation.ledgerRead && operation.unsupportedReceiptVerified !== true,
+              };
+              const confirmUnsupported =
+                validation.ledgerRead && isProvisionalUnsupportedReceipt(proof.receipt);
               if (
                 operation.request.kind !== "operation-start" ||
                 !validateOperationEvidence(operation.request.input, proof.receipt, validation) ||
-                (previous !== undefined &&
-                  (!validateReceipt(previous, proof.receipt, validation) ||
-                    (isProvisionalUnsupportedReceipt(previous) &&
-                      !isSettledOperationReceipt(proof.receipt)))) ||
+                (previous !== undefined && !validateReceipt(previous, proof.receipt, transition)) ||
                 !preservesHeldReason(previous, proof.receipt) ||
                 !receiptDetailsFit(previous, proof.receipt) ||
                 (proof.receipt.staged !== undefined &&
@@ -2014,8 +2021,15 @@ export function createInstallPlanCoordinator(options: {
               )
                 refuse("invalid-evidence", "The target receipt does not match this operation.");
               // The target owns its Stop receipt. The local Stop lease remains separate.
-              else if (!same(previous, proof.receipt))
-                replaceOperation(deviceIndex, index, { ...operation, receipt: proof.receipt });
+              else if (
+                !same(previous, proof.receipt) ||
+                (confirmUnsupported && operation.unsupportedReceiptVerified !== true)
+              )
+                replaceOperation(deviceIndex, index, {
+                  ...operation,
+                  receipt: proof.receipt,
+                  ...(confirmUnsupported ? { unsupportedReceiptVerified: true } : {}),
+                });
             } else if (operation.request.kind !== "plan-directive")
               refuse("invalid-evidence", "A directive cannot settle an operation.");
             else if (proof.kind === "directive-fence") {

@@ -22,7 +22,6 @@ import {
   canReplayDirective,
   deviceActiveOperations,
   hasUnconfirmedLauncherOutcome,
-  isProvisionalUnsupportedReceipt,
   laptopGateIssue,
   laptopInstallNeedsReopen,
   operationOutstanding,
@@ -113,15 +112,7 @@ export type PanelOperationTarget = PlanTarget & {
 
 export function latestPanelOperation(device: JonesInstallPlanDevice, archived: boolean) {
   const operations = archived ? device.operations : deviceActiveOperations(device);
-  return (
-    operations.find(operationOutstanding) ??
-    (archived
-      ? operations.findLast(
-          ({ receipt }) => receipt !== undefined && isProvisionalUnsupportedReceipt(receipt),
-        )
-      : undefined) ??
-    operations.at(-1)
-  );
+  return operations.find(operationOutstanding) ?? operations.at(-1);
 }
 
 export function canFenceArchivedOperation(operation: JonesInstallPlanHostOperation, now: number) {

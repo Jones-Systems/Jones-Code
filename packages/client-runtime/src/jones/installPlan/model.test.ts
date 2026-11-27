@@ -540,7 +540,10 @@ describe("install plan model", () => {
     };
     const { admission: _binding, ...unbound } = retained;
     expect(validateReceipt(input, provisional)).toBe(true);
-    expect(operationOutstanding({ ...reserved, receipt: provisional })).toBe(false);
+    expect(operationOutstanding({ ...reserved, receipt: provisional })).toBe(true);
+    expect(
+      operationOutstanding({ ...reserved, receipt: provisional, unsupportedReceiptVerified: true }),
+    ).toBe(false);
     expect(validateOperationEvidence(input, provisional)).toBe(false);
     expect(validateOperationEvidence(input, provisional, { ledgerRead: true })).toBe(true);
     expect(validateOperationEvidence(provisional, retained)).toBe(false);
@@ -551,7 +554,7 @@ describe("install plan model", () => {
         { ...retained, phase: "running" },
         { ledgerRead: true },
       ),
-    ).toBe(false);
+    ).toBe(true);
     for (const different of [
       unbound,
       { ...retained, admission: { kind: "ordinary" as const } },

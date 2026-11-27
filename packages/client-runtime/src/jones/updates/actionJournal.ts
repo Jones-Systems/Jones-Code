@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts/jones/jonesOperations";
 import {
   isProvisionalUnsupportedReceipt,
+  isSettledOperationReceipt,
   validateOperationEvidence,
   validateReceipt,
 } from "../installPlan/model.ts";
@@ -410,6 +411,7 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
                 d.request === undefined ||
                 d.receipt === undefined ||
                 !isProvisionalUnsupportedReceipt(d.receipt) ||
+                !isSettledOperationReceipt(proof) ||
                 !validateOperationEvidence(d.request, proof, { ledgerRead: true }) ||
                 !validateOperationEvidence(d.receipt, proof, { ledgerRead: true }) ||
                 canonicalJonesCommand(d.receipt) === canonicalJonesCommand(proof)

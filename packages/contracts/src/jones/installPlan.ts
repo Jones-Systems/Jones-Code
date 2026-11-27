@@ -120,6 +120,7 @@ export const JonesInstallPlanHostOperation = Schema.Struct({
   ),
   fence: Schema.optionalKey(Schema.Struct({ lease: JonesInstallPlanLease })),
   receipt: Schema.optionalKey(JonesOperationReceipt), // latest validated target receipt
+  unsupportedReceiptVerified: Schema.optionalKey(Schema.Literal(true)),
   directive: Schema.optionalKey(
     Schema.Union([
       Schema.Struct({

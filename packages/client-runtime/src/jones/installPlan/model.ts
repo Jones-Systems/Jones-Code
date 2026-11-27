@@ -165,7 +165,7 @@ export function validateReceipt(
     !hasExecutionEvidence(prev)
   ) {
     // The synthetic reply's clock does not order the durable ledger.
-    return isSettledOperationReceipt(next);
+    return true;
   }
   if (updatedAt < previousUpdate) return false;
   // A stable field may first appear as work advances, but cannot be removed or rebound.
@@ -599,7 +599,10 @@ export function isSettledOperationReceipt(receipt: JonesOperationReceipt): boole
 function outstanding(operation: JonesInstallPlanHostOperation): boolean {
   return operation.step === "directive"
     ? operation.directive === undefined && operation.directiveFence === undefined
-    : operation.receipt === undefined || !isSettledOperationReceipt(operation.receipt);
+    : operation.receipt === undefined ||
+        !isSettledOperationReceipt(operation.receipt) ||
+        (isProvisionalUnsupportedReceipt(operation.receipt) &&
+          operation.unsupportedReceiptVerified !== true);
 }
 
 /** Recovery follows all retained work, even after visual completion or a membership change. */
@@ -677,7 +680,11 @@ export function deviceLedgerState(
       const receipt = latest.receipt;
       if (receipt === undefined)
         return Date.parse(latest.lease.leaseUntil) > now ? "reserved" : "unknown";
-      if (hasUnconfirmedLauncherOutcome(receipt)) return "unknown";
+      if (
+        hasUnconfirmedLauncherOutcome(receipt) ||
+        (isProvisionalUnsupportedReceipt(receipt) && latest.unsupportedReceiptVerified !== true)
+      )
+        return "unknown";
       if (receipt.phase === "held") return "held";
       if (receipt.phase === "fenced") return "fenced";
       if (receipt.phase === "stop-requested") return "stop-requested";
@@ -887,11 +894,7 @@ export function nextRunnerStep(
     return wait("The selected host identity changed.");
   const operations = deviceActiveOperations(device);
   const latest = operations.at(-1);
-  const pending =
-    operations.find(outstanding) ??
-    (latest?.receipt !== undefined && isProvisionalUnsupportedReceipt(latest.receipt)
-      ? latest
-      : undefined);
+  const pending = operations.find(outstanding);
   if (pending?.request.kind === "operation-start") {
     const leaseUntil = Date.parse(pending.lease.leaseUntil);
     const leaseLive = leaseUntil > now;

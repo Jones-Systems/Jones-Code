@@ -10,19 +10,13 @@ import {
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import {
   deviceHasRecoveryDuty,
-  isProvisionalUnsupportedReceipt,
   isSettledOperationReceipt,
   operationOutstanding,
   orphanReceiptCheck,
   planHasLaptopRecoveryDuty,
   validateOperationEvidence,
 } from "@t3tools/client-runtime/jones/install-plan/model";
-import {
-  closedPlans,
-  requiresBoundAdmissionSchema,
-  retainedPlans,
-  type PlanDocument,
-} from "./store.ts";
+import { closedPlans, requiresV3Schema, retainedPlans, type PlanDocument } from "./store.ts";
 
 const KiB = 1024;
 const ADMISSION_BYTES = JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES - 256 * KiB;
@@ -44,11 +38,9 @@ const asRecoveryDocument = (document: PlanDocument) =>
 export function commitRevision(previous: PlanDocument, next: PlanDocument): PlanDocument {
   if (next === previous) return previous;
   const recovery = asRecoveryDocument(next);
-  // Older readers must stop before they can project a bound intent as a V1 request.
+  // Older readers cannot preserve bound intent or proof of a durable legacy refusal.
   const schema =
-    previous.schema === 3 || recovery.schema === 3 || requiresBoundAdmissionSchema(recovery)
-      ? 3
-      : 2;
+    previous.schema === 3 || recovery.schema === 3 || requiresV3Schema(recovery) ? 3 : 2;
   return { ...recovery, schema, documentRevision: documentRevision(previous) + 1 };
 }
 
@@ -194,11 +186,8 @@ export function receiptDetailsFit(
 function operationRoom(operation: JonesInstallPlanHostOperation): number {
   if (operation.request.kind === "plan-directive")
     return operationOutstanding(operation) ? 8 * KiB : 0;
-  // A legacy unsupported reply can still be replaced with exact settled ledger evidence.
-  const provisional =
-    operation.receipt !== undefined && isProvisionalUnsupportedReceipt(operation.receipt);
   // A terminal operation can still learn its exact late Stop or stage retirement annotation.
-  if (!provisional && !operationOutstanding(operation)) return RECOVERY_ANNOTATION_BYTES;
+  if (!operationOutstanding(operation)) return RECOVERY_ANNOTATION_BYTES;
   // Reserve the repeated intent, including admission, in the eventual receipt.
   return (
     Math.max(0, bytes(operation.request.input) + RECEIPT_DETAILS_BYTES - bytes(operation.receipt)) +

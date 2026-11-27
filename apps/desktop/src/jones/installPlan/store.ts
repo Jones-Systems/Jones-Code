@@ -77,12 +77,13 @@ export const retainedPlans = (document: PlanDocument) => [
   ...closedPlans(document),
 ];
 
-export function requiresBoundAdmissionSchema(document: PlanDocument): boolean {
+export function requiresV3Schema(document: PlanDocument): boolean {
   return (
     retainedPlans(document).some((plan) =>
       plan.devices.some((device) =>
         device.operations.some(
-          ({ request, receipt }) =>
+          ({ request, receipt, unsupportedReceiptVerified }) =>
+            unsupportedReceiptVerified === true ||
             (request.kind === "operation-start" && request.input.admission !== undefined) ||
             receipt?.admission !== undefined,
         ),
@@ -94,7 +95,7 @@ export function requiresBoundAdmissionSchema(document: PlanDocument): boolean {
 
 const validDocument = (value: unknown): value is PlanDocument =>
   isDocument(value) &&
-  (value.schema === 3 || !requiresBoundAdmissionSchema(value)) &&
+  (value.schema === 3 || !requiresV3Schema(value)) &&
   (value.schema === 1 ||
     ((value.last !== null || value.older.length === 0) &&
       new Set(retainedPlans(value).map((plan) => plan.planId)).size ===
