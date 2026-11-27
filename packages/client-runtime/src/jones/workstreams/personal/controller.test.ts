@@ -4,7 +4,9 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   comparePersonalWorkstreams,
   type PersonalWorkstream,
+  type PersonalWorkstreamOperationResult,
   type PersonalWorkstreamsSnapshot,
+  type RequestPersonalWorkstreamOperation,
 } from "@t3tools/contracts/jones/workstreamsPersonal";
 import {
   createPersonalWorkstreamsController,
@@ -61,7 +63,10 @@ const deferred = <T>() => {
 const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
-function harness(overrides: Partial<PersonalWorkstreamsTransport> = {}) {
+function harness(
+  overrides: Partial<PersonalWorkstreamsTransport> = {},
+  randomUUID = () => "new-group",
+) {
   const registry = AtomRegistry.make();
   const frames: {
     c: PersonalConnection;
@@ -95,7 +100,7 @@ function harness(overrides: Partial<PersonalWorkstreamsTransport> = {}) {
     registry,
     origin: "test",
     transport,
-    randomUUID: () => "new-group",
+    randomUUID,
     now: () => "2026-01-02T00:00:00.000Z",
   });
   return {
@@ -109,6 +114,527 @@ function harness(overrides: Partial<PersonalWorkstreamsTransport> = {}) {
     },
   };
 }
+
+const laptop = env("laptop");
+const fleetConnection = (id: string, patch: Partial<PersonalConnection> = {}) =>
+  connection(id, { fleetCapable: true, ...patch });
+const fleetFrame = (
+  id: string,
+  workstreams: readonly PersonalWorkstream[] = [],
+  sequence = 0,
+  operations: NonNullable<PersonalWorkstreamsSnapshot["fleet"]>["operations"] = [],
+): PersonalWorkstreamsSnapshot => ({
+  ...snapshot(id, workstreams, sequence),
+  fleet: {
+    authorityEnvironmentId: laptop,
+    role: id === laptop ? "authority" : "follower",
+    rosterRevision: 1,
+    members: id === laptop ? [thread.environmentId] : [],
+    operations,
+  },
+  supportsNameIcons: true,
+  supportsSnooze: true,
+});
+const operation = (
+  input: RequestPersonalWorkstreamOperation,
+  patch: Partial<PersonalWorkstreamOperationResult["operation"]> = {},
+): PersonalWorkstreamOperationResult["operation"] => ({
+  requestId: input.requestId,
+  workstreamId: input.workstreamId,
+  kind: "put",
+  status: "pending",
+  rosterRevision: 1,
+  requestedLifecycle: null,
+  reason: null,
+  peers: [{ environmentId: thread.environmentId, state: "pending", reason: null }],
+  ...patch,
+});
+
+describe("laptop-authoritative personal Workstreams", () => {
+  it("uses the authority snapshot even when a peer has a higher revision or extra rows", async () => {
+    const requests: { c: PersonalConnection; input: RequestPersonalWorkstreamOperation }[] = [];
+    const base = definition({ name: "Laptop row" });
+    const renamed = definition({ name: "Changed on laptop", rev: 2, origin: "env:laptop" });
+    const h = harness({
+      request: async (c, input) => {
+        requests.push({ c, input });
+        return { workstream: renamed, operation: operation(input), sequence: 5 };
+      },
+    });
+    try {
+      h.controller.setEnvironments([fleetConnection("a"), fleetConnection(laptop)]);
+      h.frames[0]!.emit(
+        fleetFrame("a", [
+          definition({ name: "Peer row", rev: 99 }),
+          definition({ id: "peer-only" }),
+        ]),
+      );
+      expect(h.read()).toMatchObject({ workstreams: [], canCreate: false });
+      expect(await h.controller.rename(base.id, "Too soon")).toMatchObject({
+        failure: { reason: "unconfirmed", environmentId: laptop },
+      });
+      h.frames[1]!.emit(fleetFrame(laptop, [base]));
+      expect(h.read()).toMatchObject({
+        workstreams: [base],
+        canCreate: true,
+        fleetAuthorityStatus: "ready",
+      });
+      expect(await h.controller.rename(base.id, renamed.name)).toEqual({
+        ok: true,
+        value: renamed,
+      });
+      expect(requests).toEqual([
+        {
+          c: h.frames[1]!.c,
+          input: {
+            requestId: "new-group",
+            workstreamId: base.id,
+            expected: base,
+            action: { kind: "edit", patch: { name: renamed.name } },
+          },
+        },
+      ]);
+      expect(h.read().workstreams).toEqual([base]);
+      h.frames[1]!.emit(fleetFrame(laptop, [renamed], 5));
+      expect(h.read().workstreams).toEqual([renamed]);
+      await flush();
+      expect(h.puts).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("keeps cached authority display-only across offline, downgrade and authority removal", async () => {
+    const cached = definition({ name: "Cached laptop" });
+    const h = harness({
+      request: async () => {
+        throw new Error("Unexpected fleet request");
+      },
+    });
+    try {
+      h.controller.setEnvironments([
+        fleetConnection(laptop, { connected: false }),
+        fleetConnection("a"),
+      ]);
+      h.controller.loadCache(fleetFrame(laptop, [cached], 99));
+      h.frames[0]!.emit(snapshot("a", [definition({ name: "Legacy peer", rev: 100 })]));
+      expect(h.read()).toMatchObject({ workstreams: [cached], fleetAuthorityStatus: "offline" });
+      expect(await h.controller.create({ name: "Offline" })).toMatchObject({
+        failure: { reason: "offline", environmentId: laptop },
+      });
+      h.controller.setEnvironments([connection(laptop, { generation: 2 }), fleetConnection("a")]);
+      h.frames[1]!.emit(snapshot(laptop, [definition({ name: "Downgrade" })]));
+      expect(h.read()).toMatchObject({
+        workstreams: [cached],
+        fleetAuthorityStatus: "update_required",
+      });
+      expect(await h.controller.remove(cached.id)).toMatchObject({
+        failure: { reason: "update_required", environmentId: laptop },
+      });
+      h.controller.setEnvironments([fleetConnection("a")]);
+      expect(h.read()).toMatchObject({ workstreams: [], fleetAuthorityStatus: "offline" });
+      await flush();
+      expect(h.puts).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("reports read-only and conflicting authority without writing to a writable peer", async () => {
+    const h = harness();
+    try {
+      h.controller.setEnvironments([
+        fleetConnection(laptop, { writable: false }),
+        fleetConnection("a"),
+      ]);
+      h.frames[0]!.emit(fleetFrame(laptop, [definition()]));
+      h.frames[1]!.emit(fleetFrame("a", [definition({ rev: 2 })]));
+      expect(await h.controller.rename("group", "Read-only laptop")).toMatchObject({
+        failure: { reason: "read_only", environmentId: laptop },
+      });
+      const other = fleetFrame("a", [definition()]);
+      h.frames[1]!.emit({
+        ...other,
+        sequence: 1,
+        fleet: { ...other.fleet!, authorityEnvironmentId: thread.environmentId, role: "authority" },
+      });
+      expect(h.read()).toMatchObject({
+        workstreams: [],
+        fleetAuthorityStatus: "changed_elsewhere",
+      });
+      expect(await h.controller.create({ name: "Conflicting laptop identities" })).toMatchObject({
+        failure: { reason: "changed_elsewhere" },
+      });
+      await flush();
+      expect(h.puts).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("keeps an accepted close visible and gates actions until an authoritative final snapshot", async () => {
+    const base = definition();
+    const closed = definition({ lifecycle: "completed", lifecycleRevision: 1, rev: 2 });
+    const receipt = deferred<PersonalWorkstreamOperationResult>();
+    const requests: RequestPersonalWorkstreamOperation[] = [];
+    const assignments: PersonalConnection[] = [];
+    const h = harness({
+      request: (_c, input) => {
+        requests.push(input);
+        return receipt.promise;
+      },
+      assign: (c) => {
+        assignments.push(c);
+        return Promise.reject(new Error("Unexpected assignment"));
+      },
+    });
+    try {
+      h.controller.setEnvironments([fleetConnection(laptop), fleetConnection("a")]);
+      h.frames[0]!.emit(fleetFrame(laptop, [base]));
+      h.frames[1]!.emit({
+        ...fleetFrame("a", [base]),
+        assignments: [{ threadId: thread.id, workstreamId: base.id, revision: 1, updatedAt: null }],
+      });
+      const closing = h.controller.setLifecycle(base.id, "completed");
+      expect(h.read().pendingCloseWorkstreamIds?.has(base.id)).toBe(true);
+      const close = operation(requests[0]!, { kind: "close", requestedLifecycle: "completed" });
+      receipt.resolve({ operation: close, workstream: base, sequence: 1 });
+      expect(await closing).toEqual({ ok: true, value: base });
+      h.frames[1]!.emit({
+        ...fleetFrame("a", [closed], 1),
+        assignments: [{ threadId: thread.id, workstreamId: base.id, revision: 1, updatedAt: null }],
+      });
+      expect(groupPersonalThreads(h.read(), [thread]).groups[0]?.threads).toEqual([thread]);
+      expect(h.read().fleet?.operations).toEqual([close]);
+      expect(await h.controller.rename(base.id, "Wait for close")).toMatchObject({
+        failure: { reason: "changed_elsewhere", environmentId: laptop },
+      });
+      expect(await h.controller.assign(thread, base.id)).toMatchObject({
+        failure: { reason: "changed_elsewhere" },
+      });
+      h.frames[0]!.emit(fleetFrame(laptop, [closed], 2));
+      expect(h.read().pendingCloseWorkstreamIds?.has(base.id)).toBe(false);
+      expect(groupPersonalThreads(h.read(), [thread]).ungrouped).toEqual([thread]);
+      expect(await h.controller.assign(thread, base.id)).toMatchObject({
+        failure: { reason: "workstream_closed", environmentId: laptop },
+      });
+      expect(requests).toHaveLength(1);
+      expect(assignments).toEqual([]);
+      expect(h.puts).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("starts assignment from the exact owner's confirmed revision and ignores a replaced reply", async () => {
+    const base = definition();
+    const assignment = (revision: number) => ({
+      threadId: thread.id,
+      workstreamId: null,
+      revision,
+      updatedAt: null,
+    });
+    const reply = deferred<PersonalAssignResult>();
+    const calls: { c: PersonalConnection; revision: number }[] = [];
+    const h = harness({
+      assign: (c, input) => {
+        calls.push({ c, revision: input.expectedRevision });
+        return reply.promise;
+      },
+    });
+    try {
+      const authority = fleetConnection(laptop);
+      h.controller.setEnvironments([authority, fleetConnection("a")]);
+      h.frames[0]!.emit(fleetFrame(laptop, [base]));
+      h.controller.loadCache({ ...fleetFrame("a", [base], 99), assignments: [assignment(99)] });
+      const cached = h.controller.assign(thread, base.id);
+      h.frames[1]!.emit({ ...fleetFrame("a", [base]), assignments: [assignment(3)] });
+      expect(await cached).toMatchObject({ failure: { reason: "unconfirmed" } });
+      expect(calls).toEqual([]);
+      const first = h.controller.assign(thread, base.id);
+      const queued = h.controller.assign(thread, null);
+      await flush();
+      expect(calls).toEqual([{ c: h.frames[1]!.c, revision: 3 }]);
+      h.controller.setEnvironments([authority, fleetConnection("a", { generation: 2 })]);
+      h.frames[2]!.emit({ ...fleetFrame("a", [base]), assignments: [assignment(8)] });
+      reply.resolve({
+        outcome: "applied",
+        assignment: { ...assignment(4), workstreamId: base.id },
+        workstream: base,
+        sequence: 10,
+      });
+      expect(await first).toMatchObject({ failure: { reason: "unconfirmed" } });
+      expect(await queued).toMatchObject({ failure: { reason: "changed_elsewhere" } });
+      expect(calls).toHaveLength(1);
+      expect(h.read().assignmentsByThreadKey.get(personalThreadKey(thread))).toEqual(assignment(8));
+      expect(h.read().pendingThreadKeys.size).toBe(0);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("rejects an authority reply from a replaced session and refreshes its preimage on the new session", async () => {
+    const result = deferred<PersonalWorkstreamOperationResult>();
+    const inputs: RequestPersonalWorkstreamOperation[] = [];
+    const h = harness({
+      request: async (_c, input) => {
+        inputs.push(input);
+        if (inputs.length === 1) return result.promise;
+        throw { code: "precondition_failed" };
+      },
+    });
+    try {
+      const base = definition();
+      h.controller.setEnvironments([fleetConnection(laptop)]);
+      h.frames[0]!.emit(fleetFrame(laptop, [base], 9));
+      const first = h.controller.rename(base.id, "Old request");
+      h.controller.setEnvironments([fleetConnection(laptop, { generation: 2 })]);
+      const newer = definition({ name: "Replacement baseline" });
+      h.frames[1]!.emit(fleetFrame(laptop, [newer]));
+      result.resolve({ operation: operation(inputs[0]!), workstream: base, sequence: 10 });
+      expect(await first).toMatchObject({ failure: { reason: "unconfirmed" } });
+      expect(await h.controller.rename(base.id, "New request")).toMatchObject({
+        failure: { reason: "changed_elsewhere" },
+      });
+      expect(inputs.map((input) => input.expected)).toEqual([base, newer]);
+      expect(h.read().workstreams).toEqual([newer]);
+      expect(h.read().fleet?.operations).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("routes cancellation, resolution and roster changes to their exact authority session", async () => {
+    const base = definition();
+    const request = {
+      requestId: "close",
+      workstreamId: base.id,
+      expected: base,
+      action: { kind: "delete" },
+    } as const;
+    const stale = operation(request, {
+      kind: "close",
+      status: "stale",
+      requestedLifecycle: "completed",
+    });
+    const observed = {
+      key: "a".repeat(64),
+      name: "Peer Workstream",
+      lifecycle: "active",
+      deleted: false,
+    } as const;
+    const conflict = operation(
+      { ...request, requestId: "conflict" },
+      {
+        peers: [
+          {
+            environmentId: thread.environmentId,
+            state: "conflict",
+            reason: "definition_changed",
+            observed,
+          },
+        ],
+      },
+    );
+    const calls: unknown[] = [];
+    let id = 0;
+    const h = harness(
+      {
+        cancel: async (connection, input) => {
+          calls.push({ connection, input });
+          return {
+            operation: operation({ ...request, requestId: input.cancellationId }),
+            workstream: base,
+            sequence: 2,
+          };
+        },
+        resolve: async (connection, input) => {
+          calls.push({ connection, input });
+          return {
+            operation: operation({ ...request, requestId: input.resolutionId }),
+            workstream: base,
+            sequence: 4,
+          };
+        },
+        manageFleet: async (connection, input) => {
+          calls.push({ connection, input });
+          return {
+            authorityEnvironmentId: laptop,
+            role: "authority",
+            rosterRevision: 2,
+            members: [],
+            operations: [],
+          };
+        },
+      },
+      () => `operation-${++id}`,
+    );
+    try {
+      h.controller.setEnvironments([fleetConnection("a"), fleetConnection(laptop)]);
+      h.frames[0]!.emit(fleetFrame("a", [base]));
+      h.frames[1]!.emit(fleetFrame(laptop, [base], 1, [stale]));
+      expect(h.read().pendingCloseWorkstreamIds?.has(base.id)).toBe(true);
+      expect(await h.controller.cancelOperation?.(stale.requestId)).toMatchObject({
+        ok: true,
+        value: { operation: { requestId: "operation-1" } },
+      });
+      expect(h.read().pendingCloseWorkstreamIds?.has(base.id)).toBe(false);
+      h.frames[1]!.emit(fleetFrame(laptop, [base], 3, [conflict]));
+      const choice = {
+        requestId: conflict.requestId,
+        environmentId: thread.environmentId,
+        expectedObservationKey: observed.key,
+        choice: "use_peer",
+      } as const;
+      expect(await h.controller.resolveOperation?.(choice)).toMatchObject({
+        ok: true,
+        value: { operation: { requestId: "operation-2" } },
+      });
+      expect(h.read().fleet?.operations.map(({ requestId }) => requestId)).toEqual(["operation-2"]);
+      const removePeer = {
+        kind: "remove",
+        environmentId: thread.environmentId,
+        expectedRosterRevision: 1,
+      } as const;
+      expect(await h.controller.manageFleet?.(thread.environmentId, removePeer)).toMatchObject({
+        failure: { reason: "changed_elsewhere" },
+      });
+      expect(await h.controller.manageFleet?.(laptop, removePeer)).toMatchObject({
+        ok: true,
+        value: { rosterRevision: 2, members: [] },
+      });
+      expect(h.read().fleet?.rosterRevision).toBe(1);
+      const connection = h.frames[1]!.c;
+      expect(calls).toEqual([
+        { connection, input: { requestId: stale.requestId, cancellationId: "operation-1" } },
+        { connection, input: { ...choice, resolutionId: "operation-2" } },
+        { connection, input: removePeer },
+      ]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("uses only a live exact follower approval offer", async () => {
+    const proposal = {
+      authorityEnvironmentId: laptop,
+      sessionId: "offered-session",
+      label: "Laptop",
+    };
+    const request = {
+      kind: "follow",
+      authorityEnvironmentId: laptop,
+      sessionId: proposal.sessionId,
+    } as const;
+    const calls: PersonalConnection[] = [];
+    const h = harness({
+      manageFleet: async (connection) => {
+        calls.push(connection);
+        return fleetFrame("a").fleet!;
+      },
+    });
+    try {
+      h.controller.setEnvironments([fleetConnection("a")]);
+      const offered = { ...snapshot("a"), fleetProposals: [proposal] };
+      h.controller.loadCache(offered);
+      expect(h.read().environments[0]?.fleetProposals).toBeUndefined();
+      expect(await h.controller.manageFleet?.(thread.environmentId, request)).toMatchObject({
+        failure: { reason: "unconfirmed" },
+      });
+      h.frames[0]!.emit(offered);
+      expect(h.read().environments[0]?.fleetProposals).toEqual([proposal]);
+      expect(
+        await h.controller.manageFleet?.(thread.environmentId, { ...request, sessionId: "other" }),
+      ).toMatchObject({
+        failure: { reason: "changed_elsewhere" },
+      });
+      expect(await h.controller.manageFleet?.(thread.environmentId, request)).toMatchObject({
+        ok: true,
+        value: { role: "follower", authorityEnvironmentId: laptop },
+      });
+      expect(calls).toEqual([h.frames[0]!.c]);
+      expect(h.read()).toMatchObject({ canCreate: false, fleetAuthorityStatus: "offline" });
+    } finally {
+      h.close();
+    }
+  });
+
+  it("uses a same-session create receipt for laptop-owned create and assign before the frame arrives", async () => {
+    const requests: RequestPersonalWorkstreamOperation[] = [];
+    const assignedTo: string[] = [];
+    let nextId = 0;
+    const h = harness(
+      {
+        request: async (_c, input) => {
+          requests.push(input);
+          if (input.action.kind !== "create") throw new Error("Expected create request");
+          return {
+            operation: operation(input),
+            sequence: 1,
+            workstream: definition({
+              id: input.workstreamId,
+              name: input.action.name,
+              orderKey: input.action.orderKey,
+            }),
+          };
+        },
+        assign: async (c, input) => {
+          assignedTo.push(c.environmentId);
+          return {
+            outcome: "applied",
+            workstream: input.workstream,
+            sequence: 2,
+            assignment: {
+              threadId: input.threadId,
+              workstreamId: input.workstream?.id ?? null,
+              revision: input.expectedRevision + 1,
+              updatedAt: null,
+            },
+          };
+        },
+      },
+      () => `id-${++nextId}`,
+    );
+    try {
+      h.controller.setEnvironments([fleetConnection(laptop)]);
+      h.frames[0]!.emit(fleetFrame(laptop));
+      const localThread = { ...thread, environmentId: laptop };
+      expect(await h.controller.createAndAssign(localThread, "New stream")).toMatchObject({
+        ok: true,
+        value: { id: "id-1" },
+      });
+      expect(requests).toEqual([
+        {
+          workstreamId: "id-1",
+          requestId: "id-2",
+          expected: null,
+          action: { kind: "create", name: "New stream", orderKey: expect.any(String) },
+        },
+      ]);
+      expect(assignedTo).toEqual([laptop]);
+      expect(h.read().workstreams).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("retains legacy repair and writes when fleet-capable servers have no fleet blocks", async () => {
+    const h = harness();
+    try {
+      h.controller.setEnvironments([fleetConnection("a"), fleetConnection("b")]);
+      h.frames[0]!.emit(snapshot("a", [definition()]));
+      h.frames[1]!.emit(snapshot("b"));
+      await flush();
+      expect(h.read().fleet).toBeUndefined();
+      expect(h.puts.map(({ c }) => c.environmentId)).toEqual([env("b")]);
+      expect(await h.controller.rename("group", "Legacy rename")).toMatchObject({ ok: true });
+      expect(h.puts.slice(1).map(({ c }) => c.environmentId)).toEqual([env("a"), env("b")]);
+    } finally {
+      h.close();
+    }
+  });
+});
+
 describe("personal Workstreams controller", () => {
   it("confirms icon-aware creation before replicating a compatible definition to older servers", async () => {
     const h = harness();

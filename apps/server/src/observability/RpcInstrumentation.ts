@@ -293,6 +293,11 @@ const RPC_AGGREGATES = {
   "workstreamsPersonal.members": "workstreamsPersonal",
   "workstreamsPersonal.put": "workstreamsPersonal",
   "workstreamsPersonal.assign": "workstreamsPersonal",
+  "workstreamsPersonal.request": "workstreamsPersonal",
+  "workstreamsPersonal.cancel": "workstreamsPersonal",
+  "workstreamsPersonal.fleet": "workstreamsPersonal",
+  "workstreamsPersonal.release": "workstreamsPersonal",
+  "workstreamsPersonal.resolve": "workstreamsPersonal",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

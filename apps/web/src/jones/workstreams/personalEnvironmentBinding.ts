@@ -75,6 +75,8 @@ function usePersonalWorkstreamsEnvironmentBinding() {
         generation: capture?.generation ?? "disconnected",
         connected: entry.connection.phase === "connected" && capture != null,
         capable: entry.serverConfig?.environment.capabilities.workstreamsPersonal?.version === 1,
+        fleetCapable:
+          entry.serverConfig?.environment.capabilities.workstreamsPersonalFleet?.version === 1,
         writable: writableEnvironments.has(entry.environmentId),
       };
     });

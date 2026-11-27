@@ -9,6 +9,7 @@ import * as ThreadSelfConfigurationTools from "../jones/threadConfiguration/tool
 import * as AgentWorkstreams from "../jones/workstreams/personal/agentService.ts";
 import { WorkstreamToolkit } from "../jones/mcp/workstreams/tools.ts";
 import { handlers as workstreamHandlers } from "../jones/mcp/workstreams/handlers.ts";
+import * as WorkstreamFleetPeerTools from "../jones/workstreams/personal/fleetPeerTools.ts";
 import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
 import * as ThreadResultMcpDependencies from "../jones/threadResultDependencies/McpDependencies.ts";
 import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts";
@@ -1681,7 +1682,7 @@ export const layerWorkstreamToolkit = toolkitRegistration(
   workstreamHandlers,
 ).pipe(Layer.provide(AgentWorkstreams.layer));
 
-/** Every active tool the Jones MCP server advertises. */
+/** The common tool registrations measured by the agent context budget. */
 export const layerTools = Layer.mergeAll(
   Layer.unwrap(
     Effect.gen(function* () {
@@ -1869,6 +1870,12 @@ export const layerMilestoneEvents = Layer.effectDiscard(
   Layer.provide(layerWebhookTransport),
 );
 
+// Workstream fleet tools are only visible to authenticated peer clients.
+const layerWorkstreamFleetPeerTools = toolkitRegistration(
+  WorkstreamFleetPeerTools.toolkit,
+  WorkstreamFleetPeerTools.handlers,
+);
+
 export const layer = layerMcpTransport(
-  Layer.mergeAll(layerTools, layerToolSearch, layerMilestoneEvents),
+  Layer.mergeAll(layerTools, layerWorkstreamFleetPeerTools, layerToolSearch, layerMilestoneEvents),
 );

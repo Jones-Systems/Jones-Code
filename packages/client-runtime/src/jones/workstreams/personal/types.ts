@@ -2,8 +2,12 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type {
   PersonalWorkstreamLifecycle,
   PersonalWorkstreamAssignment,
+  PersonalWorkstreamFleet,
+  PersonalWorkstreamFleetProposal,
   PersonalWorkstreamMembers,
+  PersonalWorkstreamOperationResult,
 } from "@t3tools/contracts/jones/workstreamsPersonal";
+import type { ManagePersonalWorkstreamFleetInput } from "@t3tools/contracts/jones/workstreamsPersonalRpc";
 import type { Atom } from "effect/reactivity";
 
 export type PersonalThreadRef = { readonly environmentId: EnvironmentId; readonly id: ThreadId };
@@ -35,10 +39,13 @@ export interface PersonalEnvironmentState {
   readonly workstreamCount: number; // live definitions on that environment
   /** Live definitions reported by this environment, including its cached snapshot when offline. */
   readonly workstreams?: readonly PersonalWorkstreamView[];
+  /** Approval offers from the current session. Cached offers are omitted. */
+  readonly fleetProposals?: readonly PersonalWorkstreamFleetProposal[];
+  readonly followsAuthority?: EnvironmentId;
 }
 
 export interface PersonalWorkstreamsState {
-  readonly workstreams: readonly PersonalWorkstreamView[]; // merged, live, (orderKey, id)
+  readonly workstreams: readonly PersonalWorkstreamView[]; // live definitions, sorted by (orderKey, id)
   readonly environments: readonly PersonalEnvironmentState[];
   readonly assignmentsByThreadKey: ReadonlyMap<string, PersonalWorkstreamAssignment>;
   readonly pendingThreadKeys: ReadonlySet<string>; // local actions in flight
@@ -50,7 +57,18 @@ export interface PersonalWorkstreamsState {
   readonly canCreate: boolean; // some environment is writable
   readonly canSetNameIcon?: boolean;
   readonly canSnooze?: boolean;
+  readonly fleet?: PersonalWorkstreamFleet;
+  readonly fleetAuthorityStatus?: PersonalWorkstreamFleetAuthorityStatus;
+  readonly pendingCloseWorkstreamIds?: ReadonlySet<string>;
 }
+
+export type PersonalWorkstreamFleetAuthorityStatus =
+  | "ready"
+  | "offline"
+  | "read_only"
+  | "update_required"
+  | "unconfirmed"
+  | "changed_elsewhere";
 
 export interface PersonalWorkstreamsGrouping<T extends PersonalThreadRef> {
   readonly groups: readonly {
@@ -79,7 +97,10 @@ export type PersonalWorkstreamsAction =
   | "reorder"
   | "delete"
   | "assign"
-  | "unassign";
+  | "unassign"
+  | "cancelOperation"
+  | "manageFleet"
+  | "resolveOperation";
 export type PersonalWorkstreamsFailureReason =
   | "offline"
   | "read_only"
@@ -101,6 +122,13 @@ export interface PersonalWorkstreamsFailure {
 export type PersonalResult<A> =
   | { readonly ok: true; readonly value: A }
   | { readonly ok: false; readonly failure: PersonalWorkstreamsFailure };
+
+export interface PersonalWorkstreamConflictChoice {
+  readonly expectedObservationKey: string;
+  readonly requestId: string;
+  readonly environmentId: EnvironmentId;
+  readonly choice: "use_authority" | "use_peer";
+}
 
 export interface PersonalWorkstreamsController {
   readonly state: Atom.Atom<PersonalWorkstreamsState>;
@@ -134,4 +162,16 @@ export interface PersonalWorkstreamsController {
     thread: PersonalThreadRef,
     name: string,
   ): Promise<PersonalResult<PersonalWorkstreamView>>;
+  cancelOperation?(requestId: string): Promise<PersonalResult<PersonalWorkstreamOperationResult>>;
+  manageFleet?(
+    environmentId: EnvironmentId,
+    input: ManagePersonalWorkstreamFleetInput,
+  ): Promise<PersonalResult<PersonalWorkstreamFleet>>;
+  releaseFollower?(
+    environmentId: EnvironmentId,
+    authorityId: EnvironmentId,
+  ): Promise<PersonalResult<void>>;
+  resolveOperation?(
+    input: PersonalWorkstreamConflictChoice,
+  ): Promise<PersonalResult<PersonalWorkstreamOperationResult>>;
 }

@@ -1,5 +1,6 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
+  canonicalPersonalWorkstream,
   comparePersonalWorkstreams,
   isClosedPersonalWorkstream,
   mergePersonalWorkstreams,
@@ -13,7 +14,12 @@ import {
   type PutResult,
   type AssignResult,
   type AssignPersonalWorkstreamInput,
+  type PersonalWorkstreamFleet,
+  type PersonalWorkstreamFleetAction,
+  type PersonalWorkstreamOperationResult,
+  type RequestPersonalWorkstreamOperation,
 } from "@t3tools/contracts/jones/workstreamsPersonal";
+import type { ManagePersonalWorkstreamFleetInput } from "@t3tools/contracts/jones/workstreamsPersonalRpc";
 import { pinOrderKeyBetween } from "@t3tools/shared/jones/pinOrder";
 import * as DateTime from "effect/DateTime";
 import { Atom, type AtomRegistry } from "effect/reactivity";
@@ -27,6 +33,9 @@ import type {
   PersonalWorkstreamsFailureReason,
   PersonalEnvironmentState,
   PersonalWorkstreamHistory,
+  PersonalWorkstreamView,
+  PersonalWorkstreamConflictChoice,
+  PersonalWorkstreamFleetAuthorityStatus,
 } from "./types.ts";
 
 export const personalThreadKey = (t: PersonalThreadRef): string =>
@@ -75,6 +84,7 @@ export interface PersonalConnection {
   readonly generation: string | number;
   readonly connected: boolean;
   readonly capable: boolean;
+  readonly fleetCapable?: boolean;
   readonly writable: boolean;
 }
 export type PersonalPutResult = PutResult;
@@ -94,13 +104,40 @@ export interface PersonalWorkstreamsTransport {
     expected?: PersonalWorkstream,
   ): Promise<PersonalPutResult>;
   assign(connection: PersonalConnection, input: PersonalAssignInput): Promise<PersonalAssignResult>;
+  request?(
+    connection: PersonalConnection,
+    input: RequestPersonalWorkstreamOperation,
+  ): Promise<PersonalWorkstreamOperationResult>;
+  cancel?(
+    connection: PersonalConnection,
+    input: { readonly requestId: string; readonly cancellationId: string },
+  ): Promise<PersonalWorkstreamOperationResult>;
+  manageFleet?(
+    connection: PersonalConnection,
+    input: ManagePersonalWorkstreamFleetInput,
+  ): Promise<PersonalWorkstreamFleet>;
+  releaseFollower?(
+    connection: PersonalConnection,
+    authorityId: EnvironmentId,
+  ): Promise<{ released: true }>;
+  resolve?(
+    connection: PersonalConnection,
+    input: PersonalWorkstreamConflictChoice & { readonly resolutionId: string },
+  ): Promise<PersonalWorkstreamOperationResult>;
+}
+type FleetSnapshot = PersonalWorkstreamsSnapshot & { readonly fleet: PersonalWorkstreamFleet };
+interface FleetObservation {
+  readonly reply: PersonalWorkstreamOperationResult;
+  readonly replacesRequestId?: string;
 }
 interface Entry {
   connection: PersonalConnection;
   snapshot?: PersonalWorkstreamsSnapshot;
+  fleetSnapshot?: FleetSnapshot;
   confirmed: boolean;
   sequence: number;
   observations: Map<string, { sequence: number; reply: PersonalPutResult | PersonalAssignResult }>;
+  fleetReplies: Map<string, FleetObservation>;
   stop?: () => void;
   failed: boolean;
 }
@@ -135,6 +172,52 @@ const errorReason = (error: unknown): PersonalWorkstreamsFailureReason => {
     return code;
   return "unconfirmed";
 };
+const fleetErrorReason = (error: unknown): PersonalWorkstreamsFailureReason => {
+  if (error && typeof error === "object") {
+    if ("_tag" in error && error._tag === "EnvironmentAuthorizationError") return "read_only";
+    if ("code" in error) {
+      switch (error.code) {
+        case "authority_required":
+        case "operation_pending":
+          return "changed_elsewhere";
+        case "closure_unavailable":
+          return "closure_unavailable";
+        case "workstream_not_found":
+          return "workstream_deleted";
+        case "invalid_request":
+          return "failed";
+      }
+    }
+  }
+  return errorReason(error);
+};
+function matchesFleetAction(
+  action: PersonalWorkstreamFleetAction,
+  workstream: PersonalWorkstream,
+): boolean {
+  if (action.kind === "delete") return workstream.deletedAt !== null;
+  if (workstream.deletedAt !== null) return false;
+  const patch =
+    action.kind === "create"
+      ? {
+          name: action.name,
+          orderKey: action.orderKey,
+          nameIconProjectKey: action.nameIconProjectKey,
+        }
+      : action.patch;
+  return (
+    (patch.name === undefined || patch.name === workstream.name) &&
+    (patch.orderKey === undefined || patch.orderKey === workstream.orderKey) &&
+    (patch.nameIconProjectKey === undefined ||
+      patch.nameIconProjectKey === workstream.nameIcon?.projectKey) &&
+    (action.kind === "create" ||
+      ((action.patch.lifecycle === undefined || action.patch.lifecycle === workstream.lifecycle) &&
+        (action.patch.color === undefined || action.patch.color === workstream.color) &&
+        (action.patch.snoozedAt === undefined || action.patch.snoozedAt === workstream.snoozedAt) &&
+        (action.patch.snoozedUntil === undefined ||
+          action.patch.snoozedUntil === workstream.snoozedUntil)))
+  );
+}
 export function createPersonalWorkstreamsController(options: {
   readonly registry: AtomRegistry.AtomRegistry;
   /** Platform-persisted UUID; not an authority identity. */
@@ -150,6 +233,10 @@ export function createPersonalWorkstreamsController(options: {
   const state = Atom.make(empty());
   const entries = new Map<EnvironmentId, Entry>();
   const overlays = new Map<number, Overlay>();
+  // Keep the authority binding across disconnects and version skew within this controller.
+  const observedFleets = new Map<EnvironmentId, PersonalWorkstreamFleet>();
+  const fleetCloses = new Map<string, Entry>();
+  let designating: EnvironmentId | undefined;
   const pendingClosures = new Map<
     string,
     { base: PersonalWorkstream; candidate: PersonalWorkstream }
@@ -171,6 +258,80 @@ export function createPersonalWorkstreamsController(options: {
     e.connection.capable &&
     e.connection.writable &&
     e.confirmed;
+  const fleetMode = () => observedFleets.size > 0 || designating !== undefined;
+  const observeFleet = (entry: Entry, snapshot: PersonalWorkstreamsSnapshot) => {
+    if (!snapshot.fleet) return;
+    entry.fleetSnapshot = { ...snapshot, fleet: snapshot.fleet };
+    observedFleets.set(snapshot.fleet.authorityEnvironmentId, snapshot.fleet);
+    if (designating === snapshot.fleet.authorityEnvironmentId) designating = undefined;
+  };
+  const fleetSessionStatus = (e: Entry | undefined): PersonalWorkstreamFleetAuthorityStatus => {
+    if (!e || !current(e) || !e.connection.connected) return "offline";
+    if (!e.connection.capable || !e.connection.fleetCapable) return "update_required";
+    if (!e.connection.writable) return "read_only";
+    if (!e.confirmed || e.failed) return "unconfirmed";
+    return "ready";
+  };
+  const fleetAuthority = () => {
+    const observed = observedFleets.values().next().value;
+    const id = observed?.authorityEnvironmentId ?? designating;
+    const entry = id === undefined ? undefined : entries.get(id);
+    const snapshot = entry?.fleetSnapshot;
+    const exact =
+      snapshot?.fleet.role === "authority" && snapshot.fleet.authorityEnvironmentId === id
+        ? snapshot
+        : undefined;
+    const live = entry?.snapshot?.fleet;
+    const sessionStatus = fleetSessionStatus(entry);
+    const conflict = observedFleets.size > 1;
+    const status: PersonalWorkstreamFleetAuthorityStatus = conflict
+      ? "changed_elsewhere"
+      : sessionStatus !== "ready"
+        ? sessionStatus
+        : live?.role === "authority" && live.authorityEnvironmentId === id
+          ? "ready"
+          : observed && designating !== id
+            ? "changed_elsewhere"
+            : "unconfirmed";
+    const operations = new Map(
+      exact?.fleet.operations.map((operation) => [operation.requestId, operation]),
+    );
+    if (entry?.confirmed && live === exact?.fleet) {
+      const observations = [...entry.fleetReplies.values()].sort(
+        (a, b) => a.reply.sequence - b.reply.sequence,
+      );
+      for (const { reply, replacesRequestId } of observations) {
+        if (replacesRequestId) operations.delete(replacesRequestId);
+        operations.set(reply.operation.requestId, reply.operation);
+      }
+    }
+    return {
+      id,
+      entry,
+      status,
+      snapshot: conflict ? undefined : exact,
+      fleet: conflict
+        ? undefined
+        : exact
+          ? { ...exact.fleet, operations: [...operations.values()] }
+          : observed,
+    };
+  };
+  const pendingFleetCloses = (authority: ReturnType<typeof fleetAuthority>) => {
+    const pending = new Set(
+      authority.fleet?.operations
+        .filter(
+          ({ kind, requestId, status }) =>
+            kind === "close" &&
+            (status === "pending" ||
+              status === "stale" ||
+              (status === "applied" && authority.entry?.fleetReplies.has(requestId))),
+        )
+        .map(({ workstreamId }) => workstreamId),
+    );
+    for (const [id, entry] of fleetCloses) if (current(entry)) pending.add(id);
+    return pending;
+  };
   const winners = (confirmedOnly = false) => {
     const result = new Map<string, PersonalWorkstream>();
     for (const e of entries.values()) {
@@ -183,6 +344,14 @@ export function createPersonalWorkstreamsController(options: {
     return result;
   };
   const editableWinners = () => {
+    if (fleetMode()) {
+      const authority = fleetAuthority();
+      return new Map(
+        authority.status === "ready"
+          ? authority.snapshot?.workstreams.map((w) => [w.id, w])
+          : undefined,
+      );
+    }
     const merged = winners(true);
     for (const overlay of overlays.values())
       if (overlay.definition) {
@@ -194,7 +363,11 @@ export function createPersonalWorkstreamsController(options: {
   };
   const publish = () => {
     if (disposed) return;
-    const merged = winners();
+    const authority = fleetMode() ? fleetAuthority() : undefined;
+    const merged =
+      authority && observedFleets.size > 0
+        ? new Map(authority.snapshot?.workstreams.map((w) => [w.id, w]))
+        : winners();
     const assignments = new Map<string, PersonalWorkstreamAssignment>();
     const pending = new Set<string>();
     for (const e of entries.values())
@@ -206,7 +379,7 @@ export function createPersonalWorkstreamsController(options: {
           );
       }
     for (const overlay of overlays.values()) {
-      if (overlay.definition) {
+      if (!authority && overlay.definition) {
         const old = merged.get(overlay.definition.id);
         if (!old || comparePersonalWorkstreams(overlay.definition, old) > 0)
           merged.set(overlay.definition.id, overlay.definition);
@@ -222,10 +395,11 @@ export function createPersonalWorkstreamsController(options: {
         });
       }
     }
-    for (const [id, { base, candidate }] of pendingClosures) {
-      const copy = merged.get(id);
-      if (copy && comparePersonalWorkstreams(copy, candidate) === 0) merged.set(id, base);
-    }
+    if (!authority)
+      for (const [id, { base, candidate }] of pendingClosures) {
+        const copy = merged.get(id);
+        if (copy && comparePersonalWorkstreams(copy, candidate) === 0) merged.set(id, base);
+      }
     for (const [key, a] of assignments)
       if (a.workstreamId && merged.get(a.workstreamId)?.deletedAt !== null)
         assignments.set(key, { ...a, workstreamId: null });
@@ -252,11 +426,28 @@ export function createPersonalWorkstreamsController(options: {
       assignmentsByThreadKey: assignments,
       pendingThreadKeys: pending,
       autoAssignedThreadKeys: autoAssigned,
-      canCreate: [...entries.values()].some(writable),
-      canSetNameIcon: [...entries.values()].some(
-        (e) => writable(e) && e.snapshot?.supportsNameIcons,
-      ),
-      canSnooze: [...entries.values()].some((e) => writable(e) && e.snapshot?.supportsSnooze),
+      ...(authority
+        ? {
+            canCreate: authority.status === "ready" && !!options.transport.request,
+            canSetNameIcon:
+              authority.status === "ready" &&
+              !!options.transport.request &&
+              authority.snapshot?.supportsNameIcons === true,
+            canSnooze:
+              authority.status === "ready" &&
+              !!options.transport.request &&
+              authority.snapshot?.supportsSnooze === true,
+            fleetAuthorityStatus: authority.status,
+            ...(authority.fleet ? { fleet: authority.fleet } : {}),
+            pendingCloseWorkstreamIds: pendingFleetCloses(authority),
+          }
+        : {
+            canCreate: [...entries.values()].some(writable),
+            canSetNameIcon: [...entries.values()].some(
+              (e) => writable(e) && e.snapshot?.supportsNameIcons,
+            ),
+            canSnooze: [...entries.values()].some((e) => writable(e) && e.snapshot?.supportsSnooze),
+          }),
       environments: [...entries.values()].map((e): PersonalEnvironmentState => {
         const workstreams = e.connection.capable
           ? (e.snapshot?.workstreams.filter((w) => w.deletedAt === null) ?? [])
@@ -275,6 +466,12 @@ export function createPersonalWorkstreamsController(options: {
           confirmed: e.confirmed,
           workstreamCount: workstreams.length,
           workstreams,
+          ...(e.confirmed && !e.failed && e.connection.fleetCapable && e.snapshot?.fleetProposals
+            ? { fleetProposals: e.snapshot.fleetProposals }
+            : {}),
+          ...(e.confirmed && !e.failed && e.snapshot?.fleet?.role === "follower"
+            ? { followsAuthority: e.snapshot.fleet.authorityEnvironmentId }
+            : {}),
         };
       }),
     });
@@ -291,7 +488,7 @@ export function createPersonalWorkstreamsController(options: {
     if (prior && prior.sequence > reply.sequence) return;
     e.observations.set(observationKey, { sequence: reply.sequence, reply });
     const defs = new Map(e.snapshot.workstreams.map((w) => [w.id, w]));
-    if (reply.workstream) {
+    if (reply.workstream && !fleetMode()) {
       const old = defs.get(reply.workstream.id);
       if (!old || comparePersonalWorkstreams(reply.workstream, old) > 0)
         defs.set(reply.workstream.id, reply.workstream);
@@ -323,7 +520,7 @@ export function createPersonalWorkstreamsController(options: {
     return legacy;
   };
   const repair = () => {
-    if (disposed) return;
+    if (disposed || fleetMode()) return;
     const merged = winners(true);
     for (const e of entries.values()) {
       if (!writable(e)) continue;
@@ -342,15 +539,15 @@ export function createPersonalWorkstreamsController(options: {
         repairInFlight.add(key);
         activeRepairs++;
         void Promise.resolve()
-          .then(() => options.transport.put(e.connection, candidate))
+          .then(() => (fleetMode() ? undefined : options.transport.put(e.connection, candidate)))
           .then((reply) => {
-            if (!current(e)) return;
+            if (!reply || !current(e) || fleetMode()) return;
             mergeReply(e, reply);
             if (comparePersonalWorkstreams(reply.workstream, candidate) < 0)
               throw new Error("Invalid canonical reply");
           })
           .catch(() => {
-            if (current(e)) {
+            if (current(e) && !fleetMode()) {
               e.failed = true;
               repairFailures.add(key);
             }
@@ -381,10 +578,100 @@ export function createPersonalWorkstreamsController(options: {
         : !e.connection.writable
           ? "read_only"
           : "unconfirmed";
+  const observeFleetReply = (
+    entry: Entry,
+    reply: PersonalWorkstreamOperationResult,
+    replacesRequestId?: string,
+  ) => {
+    if (reply.sequence > entry.sequence) {
+      const prior = entry.fleetReplies.get(reply.operation.requestId);
+      if (!prior || prior.reply.sequence <= reply.sequence)
+        entry.fleetReplies.set(reply.operation.requestId, {
+          reply,
+          ...(replacesRequestId === undefined ? {} : { replacesRequestId }),
+        });
+    }
+    publish();
+  };
+  const stillAuthority = (entry: Entry) =>
+    current(entry) &&
+    observedFleets.size === 1 &&
+    entry.snapshot?.fleet?.role === "authority" &&
+    entry.snapshot.fleet.authorityEnvironmentId === entry.connection.environmentId;
+  const requestFleet = async (
+    action: PersonalWorkstreamsAction,
+    id: string,
+    change: PersonalWorkstreamFleetAction,
+    expected: PersonalWorkstream | null,
+  ): Promise<PersonalResult<PersonalWorkstream>> => {
+    const authority = fleetAuthority();
+    const rejected = (reason: PersonalWorkstreamsFailureReason) =>
+      fail<PersonalWorkstream>(action, id, reason, authority.id);
+    const entry = authority.entry;
+    if (authority.status !== "ready" || !entry)
+      return rejected(authority.status === "ready" ? "unconfirmed" : authority.status);
+    const request = options.transport.request;
+    if (
+      !request ||
+      ((action === "nameIcon" ||
+        (change.kind === "create" && change.nameIconProjectKey !== undefined)) &&
+        !authority.snapshot?.supportsNameIcons) ||
+      ((action === "snooze" || action === "unsnooze") && !authority.snapshot?.supportsSnooze)
+    )
+      return rejected("update_required");
+    if (pendingFleetCloses(authority).has(id)) return rejected("changed_elsewhere");
+    const lifecycle = change.kind === "edit" ? change.patch.lifecycle : undefined;
+    const closing =
+      lifecycle !== undefined &&
+      lifecycle !== expected?.lifecycle &&
+      isClosedPersonalWorkstream(lifecycle);
+    const kind = closing ? "close" : change.kind === "delete" ? "delete" : "put";
+    if (closing) {
+      fleetCloses.set(id, entry);
+      publish();
+    }
+    try {
+      if (!stillAuthority(entry)) return rejected("unconfirmed");
+      const requestId = uuid();
+      const reply = await request(entry.connection, {
+        requestId,
+        workstreamId: id,
+        expected,
+        action: change,
+      });
+      if (!stillAuthority(entry)) return rejected("unconfirmed");
+      const { operation, workstream } = reply;
+      if (
+        operation.requestId !== requestId ||
+        operation.workstreamId !== id ||
+        operation.kind !== kind ||
+        (closing && operation.requestedLifecycle !== lifecycle)
+      )
+        return rejected("unconfirmed");
+      observeFleetReply(entry, reply);
+      if (operation.status !== "pending" && operation.status !== "applied")
+        return rejected("changed_elsewhere");
+      if (!workstream || workstream.id !== id) return rejected("unconfirmed");
+      const matches =
+        closing && operation.status === "pending"
+          ? expected !== null &&
+            canonicalPersonalWorkstream(workstream) === canonicalPersonalWorkstream(expected)
+          : matchesFleetAction(change, workstream);
+      return matches ? { ok: true, value: workstream } : rejected("unconfirmed");
+    } catch (error) {
+      return rejected(stillAuthority(entry) ? fleetErrorReason(error) : "unconfirmed");
+    } finally {
+      if (closing && fleetCloses.get(id) === entry) {
+        fleetCloses.delete(id);
+        publish();
+      }
+    }
+  };
   const put = async (
     action: PersonalWorkstreamsAction,
     w: PersonalWorkstream,
   ): Promise<PersonalResult<PersonalWorkstream>> => {
+    if (fleetMode()) return fail(action, w.id, "changed_elsewhere");
     const requireNameIcons =
       action === "nameIcon" || (action === "create" && w.nameIcon !== undefined);
     const requireSnooze = action === "snooze" || action === "unsnooze";
@@ -408,9 +695,10 @@ export function createPersonalWorkstreamsController(options: {
     await Promise.all(
       targets.map(async (e) => {
         try {
+          if (fleetMode()) return;
           const candidate = definitionFor(e, w);
           const reply = await options.transport.put(e.connection, candidate);
-          if (!current(e)) return;
+          if (!current(e) || fleetMode()) return;
           replied = true;
           mergeReply(e, reply);
           if (
@@ -443,7 +731,12 @@ export function createPersonalWorkstreamsController(options: {
     pendingClosures.set(id, { base, candidate });
     try {
       const history = await readHistory(id);
-      if (!history.complete || entries.size !== targets.length || !targets.every(writable))
+      if (
+        fleetMode() ||
+        !history.complete ||
+        entries.size !== targets.length ||
+        !targets.every(writable)
+      )
         return fail("lifecycle", id, "closure_unavailable");
       if (history.members.some(({ settled }) => !settled))
         return fail("lifecycle", id, "unsettled_threads");
@@ -467,7 +760,7 @@ export function createPersonalWorkstreamsController(options: {
               local,
               definitionFor(entry, base),
             );
-            if (!current(entry)) return { entry, reason: "unconfirmed" } as const;
+            if (!current(entry) || fleetMode()) return { entry, reason: "unconfirmed" } as const;
             mergeReply(entry, reply);
             return comparePersonalWorkstreams(reply.workstream, local) === 0
               ? ({ entry, applied: true } as const)
@@ -493,14 +786,14 @@ export function createPersonalWorkstreamsController(options: {
           .filter((result) => "applied" in result)
           .map(async ({ entry }) => {
             try {
-              if (!current(entry)) return false;
+              if (!current(entry) || fleetMode()) return false;
               const local = definitionFor(entry, restore);
               const reply = await options.transport.put(
                 entry.connection,
                 local,
                 definitionFor(entry, candidate),
               );
-              if (!current(entry)) return false;
+              if (!current(entry) || fleetMode()) return false;
               mergeReply(entry, reply);
               return comparePersonalWorkstreams(reply.workstream, local) === 0;
             } catch {
@@ -526,6 +819,15 @@ export function createPersonalWorkstreamsController(options: {
     id: string,
     patch: Parameters<typeof editPersonalWorkstream>[1],
   ) => {
+    if (fleetMode()) {
+      const authority = fleetAuthority();
+      if (authority.status !== "ready")
+        return fail<PersonalWorkstream>(action, id, authority.status, authority.id);
+      const base = authority.snapshot?.workstreams.find((w) => w.id === id);
+      if (!base || base.deletedAt !== null)
+        return fail<PersonalWorkstream>(action, id, "workstream_deleted", authority.id);
+      return requestFleet(action, id, { kind: "edit", patch }, base);
+    }
     const base = editableWinners().get(id);
     if (!base || base.deletedAt !== null)
       return fail<PersonalWorkstream>(action, id, "workstream_deleted");
@@ -540,50 +842,135 @@ export function createPersonalWorkstreamsController(options: {
       return fail<PersonalWorkstream>(action, id, "failed");
     }
   };
+  const fleetOwnerFailure = (
+    e: Entry | undefined,
+  ): PersonalWorkstreamsFailureReason | undefined => {
+    const status = fleetSessionStatus(e);
+    if (status !== "ready") return status;
+    const authority = fleetAuthority();
+    const fleet = e?.snapshot?.fleet;
+    const isAuthority = e?.connection.environmentId === authority.id;
+    if (
+      authority.status === "changed_elsewhere" ||
+      !fleet ||
+      fleet.authorityEnvironmentId !== authority.id ||
+      fleet.role !== (isAuthority ? "authority" : "follower")
+    )
+      return "changed_elsewhere";
+  };
   const assign = (
     thread: PersonalThreadRef,
     target: string | null,
+    created?: PersonalWorkstreamView,
   ): Promise<PersonalResult<void>> => {
     const key = personalThreadKey(thread);
+    const action = target === null ? "unassign" : "assign";
+    const isFleet = fleetMode();
     const id = ++actionId;
     const predecessor = lanes.get(key);
     const submittedEntry = entries.get(thread.environmentId);
+    if (isFleet) {
+      const reason = fleetOwnerFailure(submittedEntry);
+      if (reason) return Promise.resolve(fail(action, key, reason, thread.environmentId));
+    }
     const submittedRevision =
       submittedEntry?.snapshot?.assignments.find((a) => a.threadId === thread.id)?.revision ?? 0;
     let confirmedRevision: number | undefined;
     overlays.set(id, { thread, target });
     publish();
     const run = async (previous?: AssignmentLaneResult): Promise<PersonalResult<void>> => {
-      const action = target === null ? "unassign" : "assign";
       // A queued intent depends on its predecessor's confirmed result, not on a
       // newer snapshot or conflict revision observed while that result was pending.
       if (previous && (!previous.result.ok || previous.confirmedRevision === undefined))
         return fail(action, key, "changed_elsewhere", thread.environmentId);
       const e = submittedEntry;
-      if ((e && !current(e)) || (previous && previous.entry !== e))
+      if (isFleet !== fleetMode() || (e && !current(e)) || (previous && previous.entry !== e))
         return fail(action, key, "unconfirmed", thread.environmentId);
       if (!e || !writable(e)) return fail(action, key, unavailable(e), thread.environmentId);
-      const w = target === null ? null : winners(true).get(target);
-      if (target !== null && (!w || w.deletedAt !== null))
-        return fail(action, key, "workstream_deleted", thread.environmentId);
-      if (w && isClosedPersonalWorkstream(w.lifecycle))
-        return fail(action, key, "workstream_closed", thread.environmentId);
+      let workstream: PersonalWorkstream | null = null;
+      if (isFleet) {
+        const reason = fleetOwnerFailure(e);
+        if (reason) return fail(action, key, reason, thread.environmentId);
+        if (target !== null) {
+          const authority = fleetAuthority();
+          const a = authority.entry;
+          if (
+            (authority.status !== "ready" && authority.status !== "read_only") ||
+            !a?.confirmed ||
+            a.failed ||
+            !stillAuthority(a)
+          )
+            return fail(
+              action,
+              key,
+              authority.status === "ready" ? "unconfirmed" : authority.status,
+              authority.id,
+            );
+          if (a !== e && !authority.snapshot?.fleet.members.includes(thread.environmentId))
+            return fail(action, key, "changed_elsewhere", thread.environmentId);
+          if (pendingFleetCloses(authority).has(target))
+            return fail(action, key, "changed_elsewhere", authority.id);
+          const row = authority.snapshot?.workstreams.find((w) => w.id === target);
+          // A compound create/assign can use its same-session create receipt while the full frame catches up.
+          const createReply =
+            a === e &&
+            created &&
+            [...a.fleetReplies.values()]
+              .map(({ reply }) => reply)
+              .filter(({ operation }) => operation.workstreamId === target)
+              .sort((left, right) => right.sequence - left.sequence)[0];
+          const justCreated =
+            createReply && createReply.workstream === created ? createReply.workstream : undefined;
+          const authoritative = row ?? justCreated;
+          if (!authoritative || authoritative.deletedAt !== null)
+            return fail(action, key, "workstream_deleted", authority.id);
+          if (isClosedPersonalWorkstream(authoritative.lifecycle))
+            return fail(action, key, "workstream_closed", authority.id);
+          const local =
+            a === e ? authoritative : e.snapshot?.workstreams.find((w) => w.id === target);
+          if (
+            !local ||
+            local.deletedAt !== null ||
+            isClosedPersonalWorkstream(local.lifecycle) ||
+            (local.lifecycleRevision ?? 0) !== (authoritative.lifecycleRevision ?? 0)
+          )
+            return fail(action, key, "changed_elsewhere", thread.environmentId);
+          workstream = local;
+        }
+      } else if (target !== null) {
+        const w = winners(true).get(target);
+        if (!w || w.deletedAt !== null)
+          return fail(action, key, "workstream_deleted", thread.environmentId);
+        if (isClosedPersonalWorkstream(w.lifecycle))
+          return fail(action, key, "workstream_closed", thread.environmentId);
+        workstream = definitionFor(e, w);
+      }
       const expectedRevision = previous?.confirmedRevision ?? submittedRevision;
       try {
         const reply = await options.transport.assign(e.connection, {
           threadId: thread.id,
-          workstream: w === null || w === undefined ? null : definitionFor(e, w),
+          workstream,
           expectedRevision,
         });
-        if (!current(e)) return fail(action, key, "unconfirmed", thread.environmentId);
+        if (
+          !current(e) ||
+          isFleet !== fleetMode() ||
+          (isFleet &&
+            (fleetOwnerFailure(e) ||
+              reply.assignment.threadId !== thread.id ||
+              reply.assignment.workstreamId !== target))
+        )
+          return fail(action, key, "unconfirmed", thread.environmentId);
         mergeReply(e, reply);
         confirmedRevision = reply.assignment.revision;
         return { ok: true, value: undefined };
       } catch (error) {
         // Expose the canonical conflict, but never retry against its revision.
+        if (isFleet && (!current(e) || fleetOwnerFailure(e)))
+          return fail(action, key, "unconfirmed", thread.environmentId);
         if (current(e) && error && typeof error === "object" && "currentAssignment" in error) {
           const a = error.currentAssignment as PersonalWorkstreamAssignment | undefined;
-          if (a && e.snapshot) {
+          if (a && e.snapshot && (!isFleet || a.threadId === thread.id)) {
             const old = e.snapshot.assignments.find((x) => x.threadId === a.threadId);
             if (!old || a.revision >= old.revision)
               e.snapshot = {
@@ -595,7 +982,12 @@ export function createPersonalWorkstreamsController(options: {
               };
           }
         }
-        return fail(action, key, errorReason(error), thread.environmentId);
+        return fail(
+          action,
+          key,
+          isFleet ? fleetErrorReason(error) : errorReason(error),
+          thread.environmentId,
+        );
       }
     };
     const pending = predecessor ? predecessor.then(run) : Promise.resolve().then(() => run());
@@ -613,9 +1005,28 @@ export function createPersonalWorkstreamsController(options: {
     return lane.then((completed) => completed.result);
   };
   const readHistory = async (id: string): Promise<PersonalWorkstreamHistory> => {
+    const authority = fleetMode() ? fleetAuthority() : undefined;
+    const roster = authority?.snapshot?.fleet;
+    const targets = [...entries.values()].filter(({ connection, snapshot }) => {
+      if (!authority) return true;
+      if (roster)
+        return (
+          connection.environmentId === authority.id ||
+          roster.members.includes(connection.environmentId)
+        );
+      return authority.id !== undefined && snapshot?.fleet?.authorityEnvironmentId === authority.id;
+    });
     const results = await Promise.all(
-      [...entries.values()].map(async (entry) => {
+      targets.map(async (entry) => {
         if (!entry.connection.connected || !entry.connection.capable || !options.transport.members)
+          return null;
+        if (
+          authority &&
+          (!entry.confirmed ||
+            entry.failed ||
+            !entry.connection.fleetCapable ||
+            entry.snapshot?.fleet?.authorityEnvironmentId !== authority.id)
+        )
           return null;
         try {
           const members = await options.transport.members(entry.connection, id);
@@ -631,38 +1042,195 @@ export function createPersonalWorkstreamsController(options: {
         }
       }),
     );
+    const a = authority?.entry;
+    const confirmedRoster =
+      roster &&
+      a &&
+      a.confirmed &&
+      !a.failed &&
+      a.connection.fleetCapable &&
+      stillAuthority(a) &&
+      a.snapshot?.fleet?.rosterRevision === roster.rosterRevision &&
+      targets.length === roster.members.length + 1;
     return {
       members: results.flatMap((members) => members ?? []),
-      complete: results.every(Boolean),
+      complete: (!authority || !!confirmedRoster) && results.every(Boolean),
     };
+  };
+  const changeFleetOperation = async (
+    action: "cancelOperation" | "resolveOperation",
+    requestId: string,
+    mutate:
+      | ((
+          connection: PersonalConnection,
+          operationId: string,
+        ) => Promise<PersonalWorkstreamOperationResult>)
+      | undefined,
+  ): Promise<PersonalResult<PersonalWorkstreamOperationResult>> => {
+    const authority = fleetAuthority();
+    const entry = authority.entry;
+    const rejected = (reason: PersonalWorkstreamsFailureReason) =>
+      fail<PersonalWorkstreamOperationResult>(action, requestId, reason, authority.id);
+    if (authority.status !== "ready") return rejected(authority.status);
+    if (!entry || !mutate) return rejected("update_required");
+    try {
+      const operationId = uuid();
+      const reply = await mutate(entry.connection, operationId);
+      if (!stillAuthority(entry) || reply.operation.requestId !== operationId)
+        return rejected("unconfirmed");
+      observeFleetReply(entry, reply, requestId);
+      return { ok: true, value: reply };
+    } catch (error) {
+      return rejected(stillAuthority(entry) ? fleetErrorReason(error) : "unconfirmed");
+    }
+  };
+  const manageFleet: NonNullable<PersonalWorkstreamsController["manageFleet"]> = async (
+    id,
+    input,
+  ) => {
+    const entry = entries.get(id);
+    const rejected = (reason: PersonalWorkstreamsFailureReason) =>
+      fail<PersonalWorkstreamFleet>("manageFleet", id, reason, id);
+    const status = fleetSessionStatus(entry);
+    if (status !== "ready") return rejected(status);
+    const manage = options.transport.manageFleet;
+    if (!entry || !manage) return rejected("update_required");
+    const authority = fleetAuthority();
+    const expectedAuthority = input.kind === "follow" ? input.authorityEnvironmentId : id;
+    if (authority.id !== undefined && authority.id !== expectedAuthority)
+      return rejected("changed_elsewhere");
+    if (observedFleets.size > 1 || (input.kind === "follow" && id === expectedAuthority))
+      return rejected("changed_elsewhere");
+    if (
+      input.kind === "follow" &&
+      !entry.snapshot?.fleetProposals?.some(
+        (proposal) =>
+          proposal.authorityEnvironmentId === expectedAuthority &&
+          proposal.sessionId === input.sessionId,
+      )
+    )
+      return rejected("changed_elsewhere");
+    if (input.kind === "designate" && observedFleets.size > 0 && authority.status !== "ready")
+      return rejected(authority.status);
+    if (input.kind === "enroll" || input.kind === "remove") {
+      if (authority.status !== "ready") return rejected(authority.status);
+      if (input.expectedRosterRevision !== authority.snapshot?.fleet.rosterRevision)
+        return rejected("changed_elsewhere");
+    }
+    const establishing =
+      (input.kind === "designate" || input.kind === "follow") && observedFleets.size === 0;
+    if (establishing && designating !== undefined) return rejected("unconfirmed");
+    if (establishing) {
+      designating = expectedAuthority;
+      publish();
+    }
+    try {
+      if (!current(entry)) return rejected("unconfirmed");
+      const result = await manage(entry.connection, input);
+      if (
+        !current(entry) ||
+        result.authorityEnvironmentId !== expectedAuthority ||
+        result.role !== (input.kind === "follow" ? "follower" : "authority")
+      )
+        return rejected("unconfirmed");
+      if (
+        (input.kind === "enroll" && !result.members.includes(input.environmentId)) ||
+        (input.kind === "remove" && result.members.includes(input.environmentId)) ||
+        (input.kind === "designate" &&
+          input.peerEnvironmentIds?.some((peer) => !result.members.includes(peer)))
+      )
+        return rejected("unconfirmed");
+      // The management reply has no snapshot sequence. Keep the write fence until the stream confirms it.
+      if (!observedFleets.has(expectedAuthority)) observedFleets.set(expectedAuthority, result);
+      publish();
+      return { ok: true, value: result };
+    } catch (error) {
+      const reason = current(entry) ? fleetErrorReason(error) : "unconfirmed";
+      const discoveredSkew =
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "authority_required";
+      if (
+        establishing &&
+        designating === expectedAuthority &&
+        reason !== "unconfirmed" &&
+        !discoveredSkew
+      ) {
+        designating = undefined;
+        publish();
+        repair();
+      }
+      return rejected(reason);
+    }
   };
   const controller: ReturnType<typeof createPersonalWorkstreamsController> = {
     state,
     readHistory,
+    manageFleet,
+    releaseFollower: async (id, authorityId) => {
+      const entry = entries.get(id);
+      const rejected = (reason: PersonalWorkstreamsFailureReason) =>
+        fail<void>("manageFleet", id, reason, id);
+      const status = fleetSessionStatus(entry);
+      if (status !== "ready") return rejected(status);
+      const release = options.transport.releaseFollower;
+      if (!entry || !release) return rejected("update_required");
+      if (
+        entry.snapshot?.fleet?.role !== "follower" ||
+        entry.snapshot.fleet.authorityEnvironmentId !== authorityId
+      )
+        return rejected("changed_elsewhere");
+      try {
+        await release(entry.connection, authorityId);
+        return current(entry) ? { ok: true, value: undefined } : rejected("unconfirmed");
+      } catch (error) {
+        return rejected(current(entry) ? fleetErrorReason(error) : "unconfirmed");
+      }
+    },
+    cancelOperation: (requestId) => {
+      const cancel = options.transport.cancel;
+      return changeFleetOperation(
+        "cancelOperation",
+        requestId,
+        cancel &&
+          ((connection, cancellationId) => cancel(connection, { requestId, cancellationId })),
+      );
+    },
+    resolveOperation: (input) => {
+      const resolve = options.transport.resolve;
+      return changeFleetOperation(
+        "resolveOperation",
+        input.requestId,
+        resolve && ((connection, resolutionId) => resolve(connection, { ...input, resolutionId })),
+      );
+    },
     canAssign: (thread) => {
       const e = entries.get(thread.environmentId);
-      return !!e && writable(e);
+      return fleetMode() ? !fleetOwnerFailure(e) : !!e && writable(e);
     },
     create: async ({ name, nameIconProjectKey }) => {
       try {
-        return await put(
-          "create",
-          newPersonalWorkstream({
-            id: uuid(),
-            name: name.trim(),
-            ...(nameIconProjectKey === undefined ? {} : { nameIconProjectKey }),
-            orderKey:
-              pinOrderKeyBetween(
-                [...editableWinners().values()]
-                  .filter((w) => w.deletedAt === null)
-                  .sort((a, b) => compareString(a.orderKey, b.orderKey))
-                  .at(-1)?.orderKey ?? null,
-                null,
-              ) ?? "n",
-            now: now(),
-            origin: options.origin,
-          }),
-        );
+        const id = uuid();
+        const orderKey =
+          pinOrderKeyBetween(
+            [...editableWinners().values()]
+              .filter((w) => w.deletedAt === null)
+              .sort((a, b) => compareString(a.orderKey, b.orderKey))
+              .at(-1)?.orderKey ?? null,
+            null,
+          ) ?? "n";
+        const input = {
+          name: name.trim(),
+          orderKey,
+          ...(nameIconProjectKey === undefined ? {} : { nameIconProjectKey }),
+        };
+        return fleetMode()
+          ? await requestFleet("create", id, { kind: "create", ...input }, null)
+          : await put(
+              "create",
+              newPersonalWorkstream({ id, ...input, now: now(), origin: options.origin }),
+            );
       } catch {
         return fail("create", name, "failed");
       }
@@ -683,6 +1251,17 @@ export function createPersonalWorkstreamsController(options: {
     },
     reorder: (id, { beforeId, afterId }) => {
       const merged = editableWinners();
+      if (fleetMode()) {
+        const authority = fleetAuthority();
+        if (authority.status !== "ready")
+          return Promise.resolve(fail("reorder", id, authority.status, authority.id));
+        if (
+          [beforeId, afterId].some(
+            (neighbor) => neighbor !== null && merged.get(neighbor)?.deletedAt !== null,
+          )
+        )
+          return Promise.resolve(fail("reorder", id, "changed_elsewhere", authority.id));
+      }
       const orderKey = pinOrderKeyBetween(
         beforeId ? (merged.get(beforeId)?.orderKey ?? null) : null,
         afterId ? (merged.get(afterId)?.orderKey ?? null) : null,
@@ -692,6 +1271,15 @@ export function createPersonalWorkstreamsController(options: {
         : Promise.resolve(fail("reorder", id, "failed"));
     },
     remove: async (id) => {
+      if (fleetMode()) {
+        const authority = fleetAuthority();
+        if (authority.status !== "ready") return fail("delete", id, authority.status, authority.id);
+        const base = authority.snapshot?.workstreams.find((w) => w.id === id);
+        if (!base || base.deletedAt !== null)
+          return fail("delete", id, "workstream_deleted", authority.id);
+        const result = await requestFleet("delete", id, { kind: "delete" }, base);
+        return result.ok ? { ok: true, value: undefined } : result;
+      }
       const base = editableWinners().get(id);
       if (!base || base.deletedAt !== null) return fail("delete", id, "workstream_deleted");
       try {
@@ -703,16 +1291,27 @@ export function createPersonalWorkstreamsController(options: {
     },
     assign,
     createAndAssign: async (thread, name) => {
+      const isFleet = fleetMode();
+      const owner = entries.get(thread.environmentId);
+      if (isFleet) {
+        const reason = fleetOwnerFailure(owner);
+        if (reason) return fail("assign", personalThreadKey(thread), reason, thread.environmentId);
+      }
       const created = await controller.create({ name });
       if (!created.ok) return created;
-      const assigned = await assign(thread, created.value.id);
+      if (isFleet !== fleetMode() || (isFleet && (!owner || !current(owner))))
+        return fail("assign", personalThreadKey(thread), "unconfirmed", thread.environmentId);
+      const assigned = await assign(thread, created.value.id, isFleet ? created.value : undefined);
       return assigned.ok ? created : assigned;
     },
     loadCache: (snapshot) => {
       const e = entries.get(snapshot.environmentId);
-      if (!e || e.confirmed || !e.connection.capable) return;
-      e.snapshot = snapshot;
-      publish();
+      if (!e) return;
+      const discoversFleet = snapshot.fleet !== undefined && e.fleetSnapshot === undefined;
+      if (discoversFleet) observeFleet(e, snapshot);
+      const canDisplay = !e.confirmed && e.connection.capable && (!e.snapshot || !fleetMode());
+      if (canDisplay) e.snapshot = snapshot;
+      if (discoversFleet || canDisplay) publish();
     },
     setEnvironments: (connections) => {
       if (disposed) return;
@@ -729,6 +1328,7 @@ export function createPersonalWorkstreamsController(options: {
           old.connection.generation === c.generation &&
           old.connection.connected === c.connected &&
           old.connection.capable === c.capable &&
+          old.connection.fleetCapable === c.fleetCapable &&
           old.connection.writable === c.writable
         )
           continue;
@@ -738,8 +1338,10 @@ export function createPersonalWorkstreamsController(options: {
           confirmed: false,
           sequence: -1,
           observations: new Map(),
+          fleetReplies: new Map(),
           failed: false,
           ...(old?.snapshot ? { snapshot: old.snapshot } : {}),
+          ...(old?.fleetSnapshot ? { fleetSnapshot: old.fleetSnapshot } : {}),
         };
         entries.set(c.environmentId, e);
         for (const key of repairFailures)
@@ -758,6 +1360,9 @@ export function createPersonalWorkstreamsController(options: {
                 e.snapshot = snapshot;
                 e.sequence = snapshot.sequence;
                 e.confirmed = true;
+                observeFleet(e, snapshot);
+                for (const [key, { reply }] of e.fleetReplies)
+                  if (reply.sequence <= snapshot.sequence) e.fleetReplies.delete(key);
                 for (const [key, observation] of e.observations) {
                   if (observation.sequence <= snapshot.sequence) e.observations.delete(key);
                   else mergeReply(e, observation.reply);
@@ -785,6 +1390,8 @@ export function createPersonalWorkstreamsController(options: {
       for (const e of entries.values()) e.stop?.();
       entries.clear();
       overlays.clear();
+      observedFleets.clear();
+      fleetCloses.clear();
     },
   };
   return controller;

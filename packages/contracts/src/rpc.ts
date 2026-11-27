@@ -11,6 +11,11 @@ import {
   PutPersonalWorkstreamRpc,
   ReadPersonalWorkstreamMembersRpc,
   AssignPersonalWorkstreamRpc,
+  RequestPersonalWorkstreamOperationRpc,
+  CancelPersonalWorkstreamOperationRpc,
+  ManagePersonalWorkstreamFleetRpc,
+  ReleasePersonalWorkstreamFollowerRpc,
+  ResolvePersonalWorkstreamConflictRpc,
 } from "./jones/workstreamsPersonalRpc.ts";
 import {
   ThreadReferenceExcerptInput,
@@ -2866,6 +2871,11 @@ export const WsRpcGroup = RpcGroup.make(
   PutPersonalWorkstreamRpc,
   ReadPersonalWorkstreamMembersRpc,
   AssignPersonalWorkstreamRpc,
+  RequestPersonalWorkstreamOperationRpc,
+  CancelPersonalWorkstreamOperationRpc,
+  ManagePersonalWorkstreamFleetRpc,
+  ReleasePersonalWorkstreamFollowerRpc,
+  ResolvePersonalWorkstreamConflictRpc,
   WsReselectProviderConversationRpc,
   WsObserveCurrentThreadRuntimeStopRpc,
   WsReadCurrentRuntimeStopTargetRpc,

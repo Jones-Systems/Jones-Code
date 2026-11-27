@@ -19,15 +19,23 @@ import * as FileSystem from "effect/FileSystem";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Config from "../../../config.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
+import peerLinksMigration from "../../persistence/Migrations/119_JonesPeerEnvironmentLinks.ts";
 import migration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
 import lifecycleMigration from "../../persistence/Migrations/159_JonesWorkstreamLifecycleRevision.ts";
 import snoozeMigration from "../../persistence/Migrations/160_JonesWorkstreamSnooze.ts";
 import nameIconMigration from "../../persistence/Migrations/161_JonesWorkstreamNameIcons.ts";
+import fleetMigration from "../../persistence/Migrations/168_JonesPersonalWorkstreamFleet.ts";
 import * as Personal from "./service.ts";
+import * as FleetWorker from "./fleetWorker.ts";
+import * as FleetProtocol from "./fleetProtocol.ts";
+import * as PeerLinks from "../../../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../../../peer/PeerMcpClient.ts";
 
 const environmentId = EnvironmentId.make("synthetic-personal-server");
 const threadId = ThreadId.make("synthetic-personal-thread");
@@ -44,10 +52,16 @@ const database = Layer.effectDiscard(
     const sql = yield* SqlClient.SqlClient;
     yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT, title TEXT NOT NULL DEFAULT 'Historical conversation', payload_json TEXT NOT NULL DEFAULT '{}')`;
     yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
+    yield* sql`CREATE TABLE auth_sessions (
+      session_id TEXT PRIMARY KEY, subject TEXT NOT NULL, method TEXT NOT NULL,
+      scopes TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT
+    )`;
+    yield* peerLinksMigration;
     yield* migration;
     yield* lifecycleMigration;
     yield* snoozeMigration;
     yield* nameIconMigration;
+    yield* fleetMigration;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 const dependencies = Layer.mergeAll(
@@ -59,6 +73,418 @@ const dependencies = Layer.mergeAll(
 ).pipe(Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)));
 const fixture = Personal.layer.pipe(Layer.provideMerge(dependencies));
 const fresh = Personal.PersonalWorkstreams.pipe(Effect.provide(Personal.layer));
+const decodePeerApply = Schema.decodeUnknownEffect(FleetProtocol.FleetPeerApplyDefinition);
+
+it.effect(
+  "commits a fleet edit on the laptop and keeps an offline close request across service restart",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* Personal.PersonalWorkstreams;
+      const group = w("offline-group");
+      yield* service.put(group);
+      const peer = EnvironmentId.make("offline-peer");
+      yield* service.designateFleet([
+        { environmentId: peer, linkGeneration: "enrolled-generation" },
+      ]);
+      const rename = {
+        requestId: "rename-request",
+        workstreamId: group.id,
+        expected: group,
+        action: { kind: "edit", patch: { name: "Renamed on the laptop" } },
+      } as const;
+      const saved = yield* service.requestOperation(rename);
+      const renamed = saved.workstream!;
+      assert.equal(renamed.name, "Renamed on the laptop");
+      assert.deepEqual(saved.operation.peers, [
+        { environmentId: peer, state: "pending", reason: null },
+      ]);
+      assert.deepEqual(yield* service.requestOperation(rename), saved);
+      assert.equal(
+        (yield* service.put(w("legacy-write")).pipe(Effect.flip)).code,
+        "authority_required",
+      );
+      const requested = yield* service.requestOperation({
+        requestId: "close-request",
+        workstreamId: group.id,
+        expected: renamed,
+        action: { kind: "edit", patch: { lifecycle: "completed" } },
+      });
+      assert.equal(requested.workstream?.lifecycle, "active");
+      assert.equal(requested.operation.requestedLifecycle, "completed");
+      const reloaded = yield* fresh;
+      const snapshot = yield* reloaded.snapshot();
+      assert.deepEqual(snapshot.workstreams, [renamed]);
+      assert.deepEqual(snapshot.fleet?.operations, [requested.operation]);
+      assert.equal(
+        (yield* reloaded
+          .assign({ threadId, workstream: renamed, expectedRevision: 0 })
+          .pipe(Effect.flip)).code,
+        "operation_pending",
+      );
+      const changed = yield* reloaded.changeRoster(peer, requested.operation.rosterRevision, null);
+      assert.equal(changed.operations[0]?.status, "stale");
+      yield* reloaded.finalizeOperation(requested.operation.requestId);
+      assert.equal((yield* reloaded.snapshot()).workstreams[0]?.lifecycle, "active");
+      const input = {
+        requestId: requested.operation.requestId,
+        cancellationId: "cancel-stale-close",
+      };
+      const cancelled = yield* reloaded.cancelOperation(input);
+      assert.deepEqual(yield* reloaded.cancelOperation(input), cancelled);
+      const closed = yield* reloaded.requestOperation({
+        requestId: "close-solo",
+        workstreamId: renamed.id,
+        expected: cancelled.workstream,
+        action: { kind: "edit", patch: { lifecycle: "completed" } },
+      });
+      assert.equal(closed.operation.status, "applied");
+      assert.equal(closed.workstream?.lifecycle, "completed");
+    }).pipe(Effect.provide(fixture)),
+);
+
+it.effect(
+  "a returning fleet recovers a lost close receipt and retains a peer's active assignment on cancellation",
+  () =>
+    Effect.gen(function* () {
+      const laptop = yield* Personal.PersonalWorkstreams;
+      const laptopSql = yield* SqlClient.SqlClient;
+      const eastId = EnvironmentId.make("east-peer");
+      const westId = EnvironmentId.make("west-peer");
+      for (const id of [eastId, westId])
+        yield* laptopSql`INSERT INTO jones_peer_environment_links
+          (environment_id, secret_name, label, urls_json, access, linked_at, expires_at, fenced)
+          VALUES (${id}, 'generation', ${id}, '[]', 'auto', '2026-01-01T00:00:00.000Z',
+            '2999-01-01T00:00:00.000Z', 1)`;
+      const caller = { sessionId: "laptop-mcp-session", label: "Synthetic laptop" };
+      const addPeer = Effect.fn("WorkstreamFleetTest.addPeer")(function* (id: EnvironmentId) {
+        const ctx = yield* Layer.build(
+          Layer.fresh(Personal.layer).pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(
+                Layer.fresh(database),
+                Layer.succeed(Environment.ServerEnvironmentIdentity, {
+                  getEnvironmentId: Effect.succeed(id),
+                }),
+              ),
+            ),
+          ),
+        );
+        const sql = Context.get(ctx, SqlClient.SqlClient);
+        yield* sql`INSERT INTO auth_sessions VALUES (${caller.sessionId}, 'mcp-client',
+        'bearer-access-token', '["orchestration:operate"]', '2999-01-01T00:00:00.000Z', NULL)`;
+        return Context.get(ctx, Personal.PersonalWorkstreams);
+      });
+      const east = yield* addPeer(eastId);
+      const west = yield* addPeer(westId);
+      const group = w("fleet-group");
+      for (const service of [laptop, east, west]) yield* service.put(group);
+      const remoteOnly = w("peer-only-group");
+      yield* east.put(remoteOnly);
+      const westOnly = { ...remoteOnly, name: "West's original Workstream" };
+      yield* west.put(westOnly);
+      for (const peer of [east, west]) {
+        assert.equal(
+          (yield* peer.proposeFollower(environmentId, caller)).state,
+          "approval_required",
+        );
+        assert.equal(
+          (yield* peer.readPeerDefinition(environmentId, group.id, caller).pipe(Effect.flip)).code,
+          "authority_required",
+        );
+        yield* peer.approveFollower(environmentId, caller.sessionId);
+        assert.equal((yield* peer.put(group).pipe(Effect.flip)).code, "authority_required");
+      }
+      yield* west.assign({ threadId, workstream: group, expectedRevision: 0 });
+      const targets = new Map([
+        [eastId, east],
+        [westId, west],
+      ]);
+      let westOffline = true;
+      let eastOffline = false;
+      let dropEastCloseReply = true;
+      let replaceEastDuringFinalClose = false;
+      const networkError = new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: "Synthetic lost route",
+      });
+      const worker = yield* FleetWorker.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(PeerLinks.PeerLinks)({
+              currentGeneration: () => Effect.succeedSome("generation"),
+              resolve: (id) =>
+                Effect.succeed({
+                  generation: "generation",
+                  url: "http://127.0.0.1:12345",
+                  token: "synthetic",
+                  capabilities: {
+                    repositoryIdentity: false,
+                    workstreamsPersonalFleet: { version: 1 },
+                  },
+                  link: {
+                    environmentId: id,
+                    label: id,
+                    urls: ["http://127.0.0.1:12345"],
+                    access: "auto",
+                    linkedAt: DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
+                    expiresAt: DateTime.makeUnsafe("2999-01-01T00:00:00.000Z"),
+                    lastReachedAt: null,
+                    lastError: null,
+                  },
+                }),
+            }),
+            Layer.mock(PeerMcpClient.PeerMcpClient)({
+              call: (input) =>
+                Effect.gen(function* () {
+                  const peer = targets.get(input.environmentId);
+                  if (
+                    !peer ||
+                    (input.environmentId === westId && westOffline) ||
+                    (input.environmentId === eastId && eastOffline)
+                  )
+                    return yield* networkError;
+                  assert.equal(input.expectedGeneration, "generation");
+                  if (input.tool === "t3_workstream_fleet_enroll")
+                    return yield* peer.proposeFollower(environmentId, caller);
+                  if (input.tool === "t3_workstream_definition_read")
+                    return yield* peer.readPeerDefinition(
+                      environmentId,
+                      String(input.arguments.workstreamId),
+                      caller,
+                    );
+                  if (input.tool === "t3_workstream_definitions_list")
+                    return yield* peer.readPeerDefinitions(environmentId, caller);
+                  assert.equal(input.tool, "t3_workstream_definition_apply");
+                  const definition = yield* decodePeerApply(input.arguments);
+                  const result = yield* peer.applyPeerDefinition(definition, caller);
+                  if (definition.closing && input.environmentId === eastId && dropEastCloseReply) {
+                    dropEastCloseReply = false;
+                    return yield* networkError;
+                  }
+                  if (
+                    definition.closing &&
+                    input.environmentId === westId &&
+                    replaceEastDuringFinalClose
+                  )
+                    yield* laptopSql`UPDATE jones_peer_environment_links
+                      SET secret_name = 'replacement' WHERE environment_id = ${eastId}`;
+                  return result;
+                }).pipe(
+                  Effect.mapError(() => networkError),
+                  Effect.map((value) => value as typeof input.success.Type),
+                ),
+            }),
+          ),
+        ),
+      );
+      yield* worker.manage({ kind: "designate", peerEnvironmentIds: [eastId, westId] });
+      yield* laptop.requestOperation({
+        requestId: "close-fleet",
+        workstreamId: group.id,
+        expected: group,
+        action: { kind: "edit", patch: { lifecycle: "completed" } },
+      });
+      yield* worker.reconcile;
+      assert.equal((yield* east.readDefinitions([group.id]))[0]?.lifecycle, "active");
+      westOffline = false;
+      yield* worker.reconcile;
+      assert.equal((yield* east.readDefinitions([group.id]))[0]?.lifecycle, "completed");
+      assert.equal((yield* laptop.snapshot()).fleet?.operations[0]?.peers[0]?.state, "unknown");
+      yield* worker.reconcile;
+      let canonical = yield* laptop.snapshot();
+      assert.equal(canonical.workstreams[0]?.lifecycle, "active");
+      assert.deepEqual(
+        canonical.fleet?.operations[0]?.peers.map(({ state }) => state),
+        ["delivered", "guard_rejected"],
+      );
+      eastOffline = true;
+      const removal = yield* worker.manage({
+        kind: "remove",
+        environmentId: eastId,
+        expectedRosterRevision: canonical.fleet!.rosterRevision,
+      });
+      const restored = yield* laptop.cancelOperation({
+        requestId: "close-fleet",
+        cancellationId: "cancel-fleet-close",
+      });
+      yield* laptop.requestOperation({
+        requestId: "rename-after-cancel",
+        workstreamId: group.id,
+        expected: restored.workstream,
+        action: { kind: "edit", patch: { name: "Laptop renamed during recovery" } },
+      });
+      yield* worker.reconcile;
+      assert.equal((yield* east.readDefinitions([group.id]))[0]?.lifecycle, "completed");
+      assert.equal(
+        (yield* laptop.snapshot()).fleet?.operations
+          .find((operation) => operation.kind === "recovery")
+          ?.peers.find((peer) => peer.environmentId === eastId)?.state,
+        "blocked",
+      );
+      eastOffline = false;
+      yield* worker.reconcile;
+      const [restoredEast] = yield* east.readDefinitions([group.id]);
+      assert.equal(restoredEast?.lifecycle, "active");
+      assert.equal(restoredEast?.name, group.name);
+      assert.equal(
+        (yield* laptop.snapshot()).fleet?.operations.some(
+          (operation) => operation.kind === "recovery",
+        ),
+        false,
+      );
+      yield* worker.manage({
+        kind: "enroll",
+        environmentId: eastId,
+        expectedRosterRevision: removal.rosterRevision,
+      });
+      yield* worker.reconcile;
+      canonical = yield* laptop.snapshot();
+      const discovered = canonical.fleet?.operations.find(
+        (operation) =>
+          operation.status === "discovered" && operation.peers[0]?.environmentId === eastId,
+      );
+      assert.equal(discovered?.peers[0]?.observed?.name, remoteOnly.name);
+      assert.equal(
+        (yield* laptop
+          .resolveOperation({
+            requestId: discovered!.requestId,
+            resolutionId: "stale-observation",
+            environmentId: eastId,
+            expectedObservationKey: "0".repeat(64),
+            choice: "use_peer",
+          })
+          .pipe(Effect.flip)).code,
+        "precondition_failed",
+      );
+      yield* laptop.resolveOperation({
+        requestId: discovered!.requestId,
+        resolutionId: "adopt-peer-only-group",
+        environmentId: eastId,
+        expectedObservationKey: discovered!.peers[0]!.observed!.key,
+        choice: "use_peer",
+      });
+      yield* worker.reconcile;
+      canonical = yield* laptop.snapshot();
+      const conflict = canonical.fleet?.operations.find((operation) =>
+        operation.peers.some((peer) => peer.environmentId === westId && peer.state === "conflict"),
+      );
+      assert.deepEqual(yield* west.readDefinitions([remoteOnly.id]), [westOnly]);
+      assert.equal(
+        conflict?.peers.find((peer) => peer.environmentId === westId)?.observed?.name,
+        westOnly.name,
+      );
+      yield* laptop.resolveOperation({
+        requestId: conflict!.requestId,
+        resolutionId: "use-authority-after-discovery",
+        environmentId: westId,
+        expectedObservationKey: conflict!.peers.find((peer) => peer.environmentId === westId)!
+          .observed!.key,
+        choice: "use_authority",
+      });
+      yield* worker.reconcile;
+      canonical = yield* laptop.snapshot();
+      assert.deepEqual(canonical.fleet?.operations, []);
+      assert.deepEqual(
+        yield* east.readDefinitions([group.id]),
+        yield* laptop.readDefinitions([group.id]),
+      );
+      assert.deepEqual(
+        yield* west.readDefinitions([remoteOnly.id]),
+        yield* laptop.readDefinitions([remoteOnly.id]),
+      );
+      assert.equal((yield* west.readThread(threadId)).assignment.workstreamId, group.id);
+      yield* west.assign({ threadId, workstream: null, expectedRevision: 1 });
+      const [resumed] = yield* laptop.readDefinitions([group.id]);
+      const snoozed = yield* laptop.requestOperation({
+        requestId: "snooze-from-faster-device",
+        workstreamId: group.id,
+        expected: resumed!,
+        action: {
+          kind: "edit",
+          patch: {
+            snoozedAt: "2026-02-02T00:00:00.000Z",
+            snoozedUntil: "2026-02-03T00:00:00.000Z",
+          },
+        },
+      });
+      const unsnoozed = yield* laptop.requestOperation({
+        requestId: "unsnooze-from-slower-device",
+        workstreamId: group.id,
+        expected: snoozed.workstream,
+        action: {
+          kind: "edit",
+          patch: { snoozedAt: "2026-02-01T00:00:00.000Z", snoozedUntil: null },
+        },
+      });
+      assert.equal(unsnoozed.workstream?.snoozedAt, "2026-02-01T00:00:00.000Z");
+      assert.equal(unsnoozed.workstream?.snoozedUntil, null);
+      yield* worker.reconcile;
+      for (const peer of [east, west])
+        assert.deepEqual(yield* peer.readDefinitions([group.id]), [unsnoozed.workstream!]);
+      yield* laptop.requestOperation({
+        requestId: "close-fleet-again",
+        workstreamId: group.id,
+        expected: unsnoozed.workstream,
+        action: { kind: "edit", patch: { lifecycle: "abandoned" } },
+      });
+      replaceEastDuringFinalClose = true;
+      yield* worker.reconcile;
+      assert.equal((yield* laptop.readDefinitions([group.id]))[0]?.lifecycle, "active");
+      assert.equal(
+        (yield* laptop.snapshot()).fleet?.operations[0]?.peers.find(
+          (peer) => peer.environmentId === eastId,
+        )?.reason,
+        "peer_link_changed",
+      );
+      replaceEastDuringFinalClose = false;
+      yield* laptopSql`UPDATE jones_peer_environment_links
+        SET secret_name = 'generation' WHERE environment_id = ${eastId}`;
+      yield* worker.reconcile;
+      assert.equal((yield* laptop.readDefinitions([group.id]))[0]?.lifecycle, "abandoned");
+      assert.deepEqual((yield* laptop.snapshot()).fleet?.operations, []);
+    }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("keeps a cancelled close fenced after release and reapproval of the same peer", () =>
+  Effect.gen(function* () {
+    const follower = yield* Personal.PersonalWorkstreams;
+    const sql = yield* SqlClient.SqlClient;
+    const authorityEnvironmentId = EnvironmentId.make("synthetic-laptop-authority");
+    const caller = { sessionId: "synthetic-link-session", label: "Synthetic laptop" };
+    yield* sql`INSERT INTO auth_sessions VALUES (${caller.sessionId}, 'mcp-client',
+      'bearer-access-token', '["orchestration:operate"]', '2999-01-01T00:00:00.000Z', NULL)`;
+    const group = w("fenced-workstream");
+    yield* follower.put(group);
+    yield* follower.proposeFollower(authorityEnvironmentId, caller);
+    yield* follower.approveFollower(authorityEnvironmentId, caller.sessionId);
+    const input = { authorityEnvironmentId, workstreamId: group.id, expected: group };
+    const recovery = yield* follower.applyPeerDefinition(
+      { ...input, requestId: "close-recovery", ordinal: 2, candidate: group, closing: false },
+      caller,
+    );
+    assert.equal(recovery.state, "delivered");
+    yield* follower.releaseFollower(authorityEnvironmentId);
+    yield* follower.proposeFollower(authorityEnvironmentId, caller);
+    yield* follower.approveFollower(authorityEnvironmentId, caller.sessionId);
+    const lateClose = yield* follower.applyPeerDefinition(
+      {
+        ...input,
+        requestId: "cancelled-close",
+        ordinal: 1,
+        candidate: P.editPersonalWorkstream(
+          group,
+          { lifecycle: "completed" },
+          "2026-02-01T00:00:00.000Z",
+          "synthetic-laptop",
+        ),
+        closing: true,
+      },
+      caller,
+    );
+    assert.equal(lateClose.state, "conflict");
+    assert.deepEqual(yield* follower.readDefinitions([group.id]), [group]);
+  }).pipe(Effect.provide(fixture)),
+);
 
 it.effect("persists a name icon, its explicit clear, and a snooze across legacy writes", () =>
   Effect.gen(function* () {
@@ -438,6 +864,7 @@ it.effect(
         yield* lifecycleMigration;
         yield* snoozeMigration;
         yield* nameIconMigration;
+        yield* fleetMigration;
         yield* stage();
         const s = yield* fresh;
         yield* s.assign({ threadId, workstream: null, expectedRevision: 1 });

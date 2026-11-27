@@ -1,4 +1,5 @@
 import * as PersonalWorkstreams from "./jones/workstreams/personal/service.ts";
+import { WorkstreamFleetWorker } from "./jones/workstreams/personal/fleetWorker.ts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
 import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
@@ -981,6 +982,7 @@ const unusedCorePorts: Pick<
 const layerUnusedConfigRpcServices = Layer.mergeAll(
   // Personal behavior uses real SQLite in its Jones-owned tests; fail if these config tests invoke it.
   Layer.mock(PersonalWorkstreams.PersonalWorkstreams)({}),
+  Layer.mock(WorkstreamFleetWorker)({}),
   Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
   Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(ShellMaterialization.ShellMaterialization)({}),

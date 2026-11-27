@@ -40,7 +40,7 @@ const failure = Schema.Union([
 export const WorkstreamToolkit = Toolkit.make(
   Tool.make("t3_workstreams_list", {
     description:
-      "List live personal Workstreams and local thread counts on this or a linked environment. Definitions replicate only when a writable client bridges servers.",
+      "List live personal Workstreams and local thread counts on this or a linked environment.",
     parameters: Schema.Struct(target),
     success: Schema.Struct({
       environmentId: Schema.String,

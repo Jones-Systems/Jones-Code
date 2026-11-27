@@ -10,7 +10,7 @@ import {
   type PersonalWorkstreamsTransport,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { EnvironmentId } from "@t3tools/contracts";
-import { act, render } from "../../../test/render";
+import { act, fakeTimers, render } from "../../../test/render";
 import { WorkstreamSidebarSection } from "../../components/workstreams/WorkstreamSidebarSection";
 import { ToastProvider, toastManager } from "../../components/ui/toast";
 import { personalGroupCollapsedKey, personalNamedGroupsHiddenKey } from "./personalSidebarOrder";
@@ -643,6 +643,60 @@ describe("Workstream options and header ordering", () => {
       .toBeVisible();
   });
 
+  it("keeps a Workstream visible during an offline close and allows cancellation", async () => {
+    using setup = fixture();
+    const mini = EnvironmentId.make("Mini");
+    const laptop = EnvironmentId.make("Laptop");
+    const operation = {
+      requestId: "closing-alpha",
+      workstreamId: "menu-Alpha",
+      kind: "close",
+      status: "pending",
+      rosterRevision: 1,
+      requestedLifecycle: "completed",
+      reason: null,
+      peers: [{ environmentId: mini, state: "blocked", reason: "peer_unavailable" }],
+    } as const;
+    const fleet = {
+      authorityEnvironmentId: laptop,
+      role: "authority",
+      rosterRevision: 1,
+      members: [mini],
+    } as const;
+    const cancel = vi.fn<NonNullable<PersonalWorkstreamsController["cancelOperation"]>>(
+      async () => {
+        setup.registry.set(setup.state, {
+          ...setup.initial,
+          fleet: { ...fleet, operations: [] },
+        });
+        return {
+          ok: true,
+          value: {
+            operation: { ...operation, status: "cancelled" },
+            workstream: null,
+            sequence: 2,
+          },
+        };
+      },
+    );
+    setup.controller.cancelOperation = cancel;
+    setup.registry.set(setup.state, {
+      ...setup.initial,
+      fleet: { ...fleet, operations: [operation] },
+    });
+    await using _screen = await render(setup.ui);
+    const request = page.getByText("Close requested · waiting for Mini", { exact: true });
+    await expect.element(request).toBeVisible();
+    await expect.element(page.getByText("Members of menu-Alpha", { exact: true })).toBeVisible();
+    await options();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Rename", exact: true }))
+      .toBeDisabled();
+    await page.getByRole("menuitem", { name: "Cancel close request", exact: true }).click();
+    expect(cancel).toHaveBeenCalledWith("closing-alpha");
+    await expect.element(request).not.toBeInTheDocument();
+  });
+
   it("focuses Cancel and cancels deletion through Cancel, Escape and the backdrop", async () => {
     using setup = fixture();
     await using _screen = await render(setup.ui);
@@ -838,6 +892,44 @@ describe("Workstream options and header ordering", () => {
     });
     expect(order(screen.container)).toEqual([null, "menu-Beta", "menu-Alpha", "menu-Gamma"]);
     expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
+  });
+
+  it("scrolls upward and finds an offscreen Workstream beneath a stationary drag", async () => {
+    using setup = fixture();
+    using _timers = fakeTimers();
+    const viewport = document.createElement("div");
+    viewport.dataset.slot = "scroll-area-viewport";
+    viewport.style.cssText =
+      "position:fixed;top:60px;left:8px;width:360px;height:220px;overflow:auto";
+    await using _screen = await render(setup.ui, { container: viewport });
+    const bounds = viewport.getBoundingClientRect();
+    const x = bounds.left + bounds.width / 2;
+    const y = bounds.top + 8;
+    const alpha = section(viewport, "Alpha");
+    const alphaHeader = alpha.querySelector("[data-workstream-header]")!;
+    const alphaBounds = alphaHeader.getBoundingClientRect();
+    const targetScrollTop = alphaBounds.top + alphaBounds.height / 5 - y;
+    viewport.scrollTop = targetScrollTop + 100;
+    expect(alphaHeader.getBoundingClientRect().bottom).toBeLessThan(bounds.top);
+    expect(header(viewport, "Gamma").getBoundingClientRect().top).toBeLessThan(bounds.bottom);
+
+    const transfer = await startDrag(viewport, "Gamma");
+    await act(() => {
+      drag(document.elementFromPoint(x, y)!, "dragover", transfer, y);
+      for (let frame = 0; frame < 60 && viewport.scrollTop > targetScrollTop; frame++) {
+        vi.advanceTimersToNextFrame();
+      }
+    });
+    expect(viewport.scrollTop).toBeLessThanOrEqual(targetScrollTop);
+    expect(viewport.querySelector("[data-workstream-insertion]")?.parentElement).toBe(
+      alpha.parentElement,
+    );
+
+    await act(() => drag(document.elementFromPoint(x, y)!, "drop", transfer, y));
+    expect(order(viewport)).toEqual([null, "menu-Gamma", "menu-Alpha", "menu-Beta"]);
+    const releasedAt = viewport.scrollTop;
+    await act(() => vi.advanceTimersByTime(200));
+    expect(viewport.scrollTop).toBe(releasedAt);
   });
 
   it("keeps Unassigned fixed and supports dropping after the last named Workstream", async () => {

@@ -24,6 +24,7 @@ import * as WsServerBrowser from "../preview/ServerBrowser.ts";
 import * as OrchestrationHttpApi from "./http.ts";
 import * as EnvironmentAuth from "../auth/http.ts";
 import * as WebSocketRpc from "../ws.ts";
+import { WorkstreamFleetWorker } from "../jones/workstreams/personal/fleetWorker.ts";
 import * as WsGuestShareService from "../guest/GuestShareService.ts";
 import * as ShellMaterialization from "../jones/orchestration/shellMaterialization.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -622,6 +623,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
 
 const unrelatedWsOwners = Layer.mergeAll(
   WorkspacePreviewRevisions.layer,
+  Layer.mock(WorkstreamFleetWorker)({}),
   Layer.mock(IssueService.IssueService)({}),
   Layer.mock(IssueTrackerConnections.IssueTrackerConnections)({}),
   Layer.mock(ThreadIssueService.ThreadIssueService)({}),

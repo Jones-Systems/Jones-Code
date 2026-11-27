@@ -58,6 +58,7 @@ export function WorkstreamNativeSidebar({
   controller,
   nameIconProjects,
   newThreadAction,
+  drafts,
   threads,
   summaryThreads = threads,
   rosterThreads = summaryThreads,
@@ -74,6 +75,7 @@ export function WorkstreamNativeSidebar({
   controller: PersonalWorkstreamsController;
   nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
   newThreadAction?: ((workstream: PersonalWorkstreamView) => WorkstreamThreadAction) | undefined;
+  drafts?: ReactNode;
   threads: readonly EnvironmentThreadShell[];
   summaryThreads?: readonly EnvironmentThreadShell[];
   rosterThreads?: readonly EnvironmentThreadShell[];
@@ -493,6 +495,7 @@ export function WorkstreamNativeSidebar({
         controller={controller}
         nameIconProjects={nameIconProjects}
         newThreadAction={newThreadAction}
+        drafts={drafts}
         snoozedIds={snoozedIds}
         onOpenHistoryThread={onOpenHistoryThread}
         rosterTotals={personalSidebarRosterTotals(state, rosterThreads)}

@@ -20,6 +20,11 @@ import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
+  "workstreamsPersonal.request": AuthOrchestrationOperateScope,
+  "workstreamsPersonal.cancel": AuthOrchestrationOperateScope,
+  "workstreamsPersonal.fleet": AuthAccessWriteScope,
+  "workstreamsPersonal.release": AuthAccessWriteScope,
+  "workstreamsPersonal.resolve": AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.linkThreads]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.unlinkThreads]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.acceptThreadHandoff]: AuthOrchestrationOperateScope,

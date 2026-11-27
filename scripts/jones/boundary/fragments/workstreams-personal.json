@@ -29,6 +29,10 @@
     "apps/server/src/jones/workstreams/personal/agentService.ts",
     "apps/server/src/jones/workstreams/personal/bearerHttp.test.ts",
     "apps/server/src/jones/workstreams/personal/bearerHttp.ts",
+    "apps/server/src/jones/workstreams/personal/fleetPeerTools.ts",
+    "apps/server/src/jones/workstreams/personal/fleetProtocol.ts",
+    "apps/server/src/jones/workstreams/personal/fleetStore.ts",
+    "apps/server/src/jones/workstreams/personal/fleetWorker.ts",
     "apps/server/src/jones/workstreams/personal/http.ts",
     "apps/server/src/jones/workstreams/personal/service.test.ts",
     "apps/server/src/jones/workstreams/personal/service.ts",
@@ -858,6 +862,10 @@
       "to": "apps/server/src/jones/workstreams/personal/agentService.ts"
     },
     {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/personal/fleetPeerTools.ts"
+    },
+    {
       "from": "apps/server/src/mcp/McpToolAccess.ts",
       "to": "apps/server/src/jones/mcp/workstreams/personalForward.ts"
     },
@@ -874,6 +882,10 @@
       "to": "apps/server/src/jones/workstreams/personal/service.ts"
     },
     {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/personal/fleetWorker.ts"
+    },
+    {
       "from": "apps/server/src/serviceLauncher.test.ts",
       "to": "apps/server/src/environment/nativeStoreAuthorityPersistence.ts"
     },
@@ -886,8 +898,16 @@
       "to": "apps/server/src/jones/workstreams/personal/service.ts"
     },
     {
+      "from": "apps/server/src/ws.test.ts",
+      "to": "apps/server/src/jones/workstreams/personal/fleetWorker.ts"
+    },
+    {
       "from": "apps/server/src/ws.ts",
       "to": "apps/server/src/jones/workstreams/personal/service.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/workstreams/personal/fleetWorker.ts"
     },
     {
       "from": "apps/web/src/components/Sidebar.logic.ts",
