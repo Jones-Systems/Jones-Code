@@ -427,6 +427,16 @@ describe("Codex inline handoff rejection recovery", () => {
                 Option.isSome(yield* Effect.serviceOption(sql.transactionService))
               )
                 return yield* sql.withTransaction(body);
+              // A late ACK also reads Stop intent. Count only the receipt's
+              // provider batches, so that read cannot move the crash boundary.
+              if (
+                acceptsPrompt &&
+                !(yield* Effect.currentSpan.pipe(
+                  Effect.map((span) => span.name === "orchestrationV2.EventSink.providerBatch"),
+                  Effect.orElseSucceed(() => false),
+                ))
+              )
+                return yield* sql.withTransaction(body);
               commitsUntilPark -= 1;
               if (commitsUntilPark > 0) return yield* sql.withTransaction(body);
               commitIntercepted = true;
