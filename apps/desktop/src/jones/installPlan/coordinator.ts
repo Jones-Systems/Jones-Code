@@ -1446,8 +1446,8 @@ export function createInstallPlanCoordinator(options: {
           const environmentId = options.localEnvironmentId();
           const running = verifiedRunningLaptop(evidence, environmentId, options.now());
           const heldEnvironments = [
-            ...new Set(
-              retainedPlans(document)
+            ...new Set([
+              ...retainedPlans(document)
                 .filter((entry) => entry.hostOnly === true)
                 .flatMap((entry) =>
                   entry.devices
@@ -1458,7 +1458,10 @@ export function createInstallPlanCoordinator(options: {
                     )
                     .map((device) => device.environmentId),
                 ),
-            ),
+              ...orphanedPlanCommands(document)
+                .filter(({ receipt }) => receipt.requestType === "claim")
+                .map(({ receipt }) => receipt.command.environmentId),
+            ]),
           ];
           const holds =
             heldEnvironments.length > 0 && req.acceptHostOnlyHolds === 1

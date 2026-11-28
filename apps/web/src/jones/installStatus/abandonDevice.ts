@@ -26,7 +26,6 @@ import {
   installPlanServices,
   nativePlanIssue,
   readTargetPlan,
-  readWritableTarget,
   requestInstallPlan,
   requireWritablePlan,
   type PlanTarget,
@@ -93,17 +92,32 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
   if (binding === undefined) throw new Error("Install status is not connected.");
   const { services } = binding;
   const { environmentId, planId, archived, attempt } = target;
-  const readExact = async (resume: boolean, expectDisplayedRevision: boolean) => {
-    const { state, plan } = await readWritableTarget(
-      binding,
-      expectDisplayedRevision ? target : { planId, archived: archived === true },
-    );
+  const readExact = async (phase: "review" | "dispatch" | "finish") => {
+    const reviewing = phase === "review";
+    let readArchive = archived === true;
+    let { result, plan } = await readTargetPlan(binding, target);
+    requireWritablePlan(binding, result);
+    // Finishing records evidence from the original attempt even if it closed in flight.
+    if (
+      phase === "finish" &&
+      !readArchive &&
+      plan === null &&
+      result.state.view.recoveryHistory === 1
+    ) {
+      readArchive = true;
+      ({ result, plan } = await readTargetPlan(binding, { planId, archived: true }));
+      requireWritablePlan(binding, result);
+    }
+    if (plan === null || (reviewing && plan.revision !== target.expectedRevision))
+      throw new Error("This update plan or attempt changed. Refresh Install status.");
     const device = plan.devices.find((item) => item.environmentId === environmentId);
     const latest = device === undefined ? undefined : retainedAttempt(device);
     if (
-      (archived ? state.view.recoveryHistory !== 1 : state.view.deviceRecovery !== 1) ||
+      (readArchive
+        ? result.state.view.recoveryHistory !== 1
+        : result.state.view.deviceRecovery !== 1) ||
       device?.membership !== "selected" ||
-      (device.abandoning === true) !== resume ||
+      (device.abandoning === true) !== (reviewing ? target.resume : true) ||
       latest?.addedAt !== attempt.addedAt ||
       latest.route !== attempt.route ||
       latest.enrollmentId !== attempt.enrollmentId ||
@@ -118,9 +132,9 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
           !sameAppliedDirective(latest.directive.applied, attempt.directive.applied))
     )
       throw new Error("The reviewed attempt or staged selection changed. Refresh Install status.");
-    return { plan, device };
+    return { plan, device, archived: readArchive };
   };
-  const first = await readExact(target.resume, true);
+  const first = await readExact("review");
   if (
     !(await services.confirm(
       target.resume
@@ -131,7 +145,7 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
     return;
 
   const observed = await services.observe(environmentId);
-  const { plan, device } = await readExact(target.resume, true);
+  const { plan, device } = await readExact("review");
   const operations = deviceActiveOperations(device);
   if (operations.some(operationOutstanding))
     throw new Error("Check the outstanding operation before abandoning this device.");
@@ -247,7 +261,7 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
   }
 
   if (retireStage && staged.staged !== undefined && original !== undefined) {
-    await readExact(true, false);
+    await readExact("dispatch");
     const live = authorizedStatus();
     if (
       live.capability.abandonStage !== 1 ||
@@ -297,7 +311,7 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
         input: directive,
         beforeSend: async () => {
           const fresh = await services.observe(environmentId);
-          const { device: reserved } = await readExact(true, false);
+          const { device: reserved } = await readExact("dispatch");
           const authority = currentPlanHostAuthority(binding, reserved);
           const currentFleet = services
             .devices()
@@ -317,7 +331,7 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
         throw new Error("The original follower directive release is unconfirmed.");
     }
   }
-  const latest = await readExact(true, false);
+  const latest = await readExact("finish");
   if (directiveRelease === undefined) authorizedStatus();
   else if (!hasOperationReadScope(services, environmentId))
     throw new Error(m(msg("The host confirmed release. Read permission is required to save it.")));
@@ -338,8 +352,8 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
   );
   const issue = nativePlanIssue(finished);
   if (issue !== undefined) throw new Error(issue);
-  const verified = archived
-    ? (await readTargetPlan(binding, target)).plan
+  const verified = latest.archived
+    ? (await readTargetPlan(binding, { planId, archived: true })).plan
     : exactPlan(finished, planId, false);
   const outcome = verified?.devices.find((item) => item.environmentId === environmentId);
   if (

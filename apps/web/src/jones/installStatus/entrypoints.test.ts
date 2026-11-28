@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, type DesktopUpdateState } from "@t3tools/contracts";
 import type {
   JonesInstallPlan,
+  JonesInstallPlanCommandReceipt,
   JonesInstallPlanGrant,
   JonesInstallPlanRequest,
   JonesInstallPlanResult,
@@ -34,6 +35,7 @@ import {
   legacyConnectionsGate,
 } from "./entrypoints";
 import {
+  checkOrphanedPlanCommand,
   fencePanelOperation,
   inspectPanelCleanup,
   performPanelAction,
@@ -51,6 +53,7 @@ import {
 } from "./services";
 import { abandonDevice, deviceAbandonTarget } from "./abandonDevice";
 import { startInstallStatusPoller } from "./InstallStatusPoller";
+import { startInstallPlanController } from "./InstallPlanController";
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -410,6 +413,165 @@ describe("bound Install status actions", () => {
       unbind: bindInstallPlanServices(services, store),
     };
   }
+
+  it.each(["current reservation", "closure observed before stale reply"] as const)(
+    "authorizes setup at the final native read only for a %s",
+    async (scenario) => {
+      const f = bindFixture();
+      const enrollmentId = earlierOperationId;
+      const directive = {
+        directiveId: hostOperationId,
+        environmentId: hostId,
+        enrollmentId,
+        repository: target.repository,
+        targetSource: target.sourceSha,
+        targetTree: target.sourceTree,
+        expectedDirectiveId: null,
+      };
+      const device = {
+        ...f.state.current!.devices[0]!,
+        route: "follower-operations" as const,
+        enrollmentId,
+        operations: [],
+      };
+      let active: JonesInstallPlan = {
+        ...f.state.current!,
+        revision: 7,
+        laptop: {
+          ...plan.laptop,
+          gate: {
+            openedAt: at,
+            basis: "plan-install" as const,
+            transactionId: "committed",
+            activeGeneration: "generation",
+            activeSource: source,
+            activeTree: target.sourceTree,
+          },
+        },
+        devices: [device],
+      };
+      const state = (): JonesInstallPlanState => ({
+        ...native(active),
+        documentRevision: active.revision,
+        view: { complete: false, recoveryHistory: 1 },
+      });
+      const observed = await f.services.observe(hostId);
+      const fleetStatus: FleetHostStatus = {
+        ...enrolledFleet,
+        planDirectiveProtocol: 1,
+        follower: { protocol: 1, leaderSource: null, state: "waiting-for-leader" },
+      };
+      const hostDevice: InstallStatusDevice = {
+        ...observed,
+        fleetStatus,
+        observation: {
+          freshness: "fresh",
+          state: {
+            ...observed.observation.state!,
+            phase: "available",
+            installedSource: {
+              repository: target.repository,
+              sha: "c".repeat(40),
+              tree: "d".repeat(40),
+            },
+          },
+        },
+      };
+      const sendDecision = deferred<boolean>();
+      let onPlan: ((value: JonesInstallPlanState) => void) | undefined;
+      f.installPlan.mockImplementation(async (request) => {
+        if (request.type === "claim") {
+          const reservation = {
+            operationId: directive.directiveId,
+            step: "directive" as const,
+            request: { kind: "plan-directive" as const, input: directive },
+          };
+          active = {
+            ...active,
+            revision: 8,
+            devices: [
+              {
+                ...device,
+                operations: [
+                  {
+                    ...reservation,
+                    lease: {
+                      claimant: request.claimant,
+                      reservedAt: at,
+                      leaseUntil: grant.leaseUntil,
+                    },
+                  },
+                ],
+              },
+            ],
+          };
+          return {
+            state: state(),
+            grant: {
+              ...reservation,
+              planId: plan.planId,
+              environmentId: hostId,
+              leaseUntil: grant.leaseUntil,
+            },
+          };
+        }
+        const reply = state();
+        if (
+          request.type === "read" &&
+          active.revision === 8 &&
+          scenario === "closure observed before stale reply"
+        )
+          onPlan?.({
+            ...reply,
+            current: null,
+            last: { ...active, dismissedAt: at, revision: 9 },
+            documentRevision: 9,
+          });
+        return { state: reply };
+      });
+      const host = vi.fn<InstallPlanServices["host"]>(async (_id, request) => {
+        if (request.action !== "planDirective") throw new Error("Unexpected host command.");
+        const allowed = await Promise.resolve()
+          .then(() => request.beforeSend?.())
+          .catch(() => false);
+        sendDecision.resolve(allowed === true);
+        if (!allowed) throw new Error("The setup did not leave the queue.");
+        return fleetStatus;
+      });
+      const controller = startInstallPlanController(
+        {
+          ...f.services,
+          bridge: {
+            ...f.services.bridge,
+            onInstallPlan: (listener) => {
+              onPlan = listener;
+              return () => {
+                onPlan = undefined;
+              };
+            },
+          },
+          devices: () => [hostDevice],
+          observe: async () => hostDevice,
+          host,
+        },
+        f.store,
+      );
+      try {
+        await expect(sendDecision.promise).resolves.toBe(scenario === "current reservation");
+        expect(host).toHaveBeenCalledExactlyOnceWith(hostId, {
+          action: "planDirective",
+          input: directive,
+          beforeSend: expect.any(Function),
+        });
+        expect(f.store.get().native?.current?.planId ?? null).toBe(
+          scenario === "current reservation" ? plan.planId : null,
+        );
+      } finally {
+        controller.close();
+        f.unbind();
+      }
+    },
+  );
 
   it.each([
     "same route",
@@ -1006,6 +1168,8 @@ describe("bound Install status actions", () => {
     "permission revoked before retry",
     "permission revoked after release",
     "read scope lost after release",
+    "plan closed before release send",
+    "plan closed after release send",
   ] as const)("binds follower abandonment to exact release evidence after %s", async (scenario) => {
     const f = bindFixture();
     const current = f.state.current!;
@@ -1020,6 +1184,8 @@ describe("bound Install status actions", () => {
       expectedDirectiveId: null,
     } as const;
     const resume = scenario !== "unconfirmed fresh abandonment";
+    let closed = resume && !scenario.startsWith("plan closed");
+
     const applied = {
       directiveId: directive.directiveId,
       targetSource: directive.targetSource,
@@ -1044,11 +1210,11 @@ describe("bound Install status actions", () => {
     let retained: JonesInstallPlan = {
       ...current,
       revision: 7,
-      ...(resume ? { dismissedAt: at } : {}),
+      ...(closed ? { dismissedAt: at } : {}),
       devices: [device],
     };
     const state = () => ({
-      ...native(resume ? null : retained, resume ? retained : null),
+      ...native(closed ? null : retained, closed ? retained : null),
       documentRevision: retained.revision,
       view: { complete: false, recoveryHistory: 1 as const, deviceRecovery: 1 as const },
     });
@@ -1094,11 +1260,17 @@ describe("bound Install status actions", () => {
         devices: [{ ...device, ...patch }],
       };
     };
+    const closePlan = () => {
+      closed = true;
+      retained = { ...retained, dismissedAt: at, revision: retained.revision + 1 };
+    };
     const sent = vi.fn();
     const host = vi.fn<InstallPlanServices["host"]>(async (id, request) => {
       if (request.action !== "releaseDirective") throw new Error("Unexpected host command.");
+      if (scenario === "plan closed before release send") closePlan();
       if (!(await request.beforeSend?.())) throw new Error("The release did not leave the queue.");
       sent(id, request.input);
+      if (scenario === "plan closed after release send") closePlan();
       if (scenario.includes("before retry")) {
         if (scenario === "new attempt before retry") revise({ addedAt: grant.leaseUntil });
         if (scenario === "abandonment cleared before retry") {
@@ -1148,10 +1320,11 @@ describe("bound Install status actions", () => {
     f.installPlan.mockImplementation(async (request) => {
       if (request.type === "abandon-device" && request.phase === "finish") {
         expect(request.directiveRelease?.releasedDirectiveId).toBe(directive.directiveId);
+        expect(request.expectedRevision).toBe(retained.revision);
         const { abandoning: _abandoning, ...member } = device;
         retained = {
           ...retained,
-          revision: 8,
+          revision: retained.revision + 1,
           devices: [{ ...member, membership: "removed" }],
         };
       }
@@ -1173,13 +1346,17 @@ describe("bound Install status actions", () => {
     );
     f.store.update({ native: state() });
     try {
-      const attempt = deviceAbandonTarget(retained, hostId, resume)!;
+      const attempt = deviceAbandonTarget(retained, hostId, closed)!;
       const request = {
         action: "releaseDirective",
         input: directive,
         beforeSend: expect.any(Function),
       };
-      if (scenario === "lost release reply" || scenario === "permission revoked after release") {
+      const finishes =
+        scenario === "lost release reply" ||
+        scenario === "permission revoked after release" ||
+        scenario === "plan closed after release send";
+      if (finishes) {
         if (scenario === "lost release reply") {
           await expect(abandonDevice(attempt)).rejects.toThrow("release response was lost");
           expect(retained.devices[0]?.abandoning).toBe(true);
@@ -1188,6 +1365,17 @@ describe("bound Install status actions", () => {
         expect(host).toHaveBeenCalledTimes(scenario === "lost release reply" ? 2 : 1);
         expect(host).toHaveBeenLastCalledWith(hostId, request);
         expect(retained.devices[0]?.membership).toBe("removed");
+        if (scenario === "plan closed after release send") {
+          expect(sent).toHaveBeenCalledExactlyOnceWith(hostId, directive);
+          expect(f.installPlan).toHaveBeenLastCalledWith({
+            type: "read-history",
+            planId: retained.planId,
+          });
+        }
+      } else if (scenario === "plan closed before release send") {
+        await expect(abandonDevice(attempt)).rejects.toThrow("attempt changed");
+        expect(sent).not.toHaveBeenCalled();
+        expect(retained.devices[0]?.abandoning).toBe(true);
       } else if (
         scenario.includes("before retry") ||
         scenario === "read scope lost after release"
@@ -1204,7 +1392,7 @@ describe("bound Install status actions", () => {
         expect(retained.devices[0]?.abandoning).toBe(resume ? true : undefined);
         expect(host).toHaveBeenCalledTimes(scenario === "refused release on resume" ? 1 : 0);
       }
-      if (scenario !== "lost release reply" && scenario !== "permission revoked after release")
+      if (!finishes)
         expect(
           f.installPlan.mock.calls.every(([request]) => request.type !== "abandon-device"),
         ).toBe(true);
@@ -1984,6 +2172,144 @@ describe("bound Install status actions", () => {
         status?.close();
         unbind();
         f.unbind();
+      }
+    },
+  );
+
+  it("keeps an orphan held when read permission is lost during its receipt request", async () => {
+    const f = bindFixture();
+    const command: JonesInstallPlanCommandReceipt = {
+      command: {
+        commandId: localStopId,
+        environmentId: hostId,
+        targetSource: source,
+        action: "download-exact",
+        planId: plan.planId,
+        expectedRevision: 1,
+      },
+      planId: plan.planId,
+      operationId: hostOperationId,
+      bodyHash: "a".repeat(64),
+      requestType: "claim",
+      outcome: "reserved",
+    };
+    const state = {
+      ...native(null),
+      orphanedCommands: [command],
+      view: { complete: false, orphanRecovery: 1 as const },
+    };
+    f.installPlan.mockResolvedValue({ state });
+    const reading = deferred();
+    const reply = deferred();
+    let canRead = true;
+    const unbind = bindInstallPlanServices(
+      {
+        ...f.services,
+        canReadReceipts: () => canRead,
+        operation: async () => {
+          reading.resolve();
+          await reply.promise;
+          return {
+            receipts: [{ operationId: hostOperationId, receipt: { ...running, phase: "failed" } }],
+          };
+        },
+      },
+      f.store,
+    );
+    try {
+      const checking = checkOrphanedPlanCommand(command, installPlanServices());
+      const result = expect(checking).rejects.toThrow("Read permission");
+      await reading.promise;
+      canRead = false;
+      reply.resolve();
+      await result;
+      expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(["read"]);
+    } finally {
+      reply.resolve();
+      unbind();
+      f.unbind();
+    }
+  });
+
+  it.each(["observe", "first report"] as const)(
+    "expires an archive poll during %s without starting more work",
+    async (delay) => {
+      vi.useFakeTimers();
+      const f = bindFixture();
+      const current = f.state.current!;
+      const device = current.devices[0]!;
+      const first = device.operations[0]!;
+      const second = {
+        ...first,
+        operationId: earlierOperationId,
+        request: {
+          kind: "operation-start" as const,
+          input: { ...input, operationId: earlierOperationId },
+        },
+        receipt: { ...running, operationId: earlierOperationId },
+      };
+      const archived = {
+        ...current,
+        dismissedAt: at,
+        devices: [{ ...device, operations: [first, second] }],
+      };
+      const state = {
+        ...native(null, archived),
+        view: { complete: false, recoveryHistory: 1 as const },
+      };
+      const entered = deferred();
+      const release = deferred();
+      f.installPlan.mockImplementation(async (request) => {
+        if (request.type === "report" && request.operationId === first.operationId) {
+          entered.resolve();
+          await release.promise;
+        }
+        return { state, ...(request.type === "read-history" ? { historyPlan: archived } : {}) };
+      });
+      const observed = await f.services.observe(hostId);
+      const operation = vi.fn<InstallPlanServices["operation"]>(async () => ({
+        receipts: [first, second].map(({ operationId }) => ({
+          operationId,
+          receipt: { ...running, operationId, phase: "failed" },
+        })),
+      }));
+      let now = Date.parse(at);
+      const unbind = bindInstallPlanServices(
+        {
+          ...f.services,
+          now: () => now,
+          operation,
+          observe: async () => {
+            if (delay === "observe") {
+              entered.resolve();
+              await release.promise;
+            }
+            return observed;
+          },
+        },
+        f.store,
+      );
+      f.store.update({ native: state, devices: [observed] });
+      f.store.open(true, archived.planId);
+      const status = startInstallStatusPoller(installPlanServices()!.services, { store: f.store });
+      try {
+        now += STATUS_POLL_CADENCE.regainedAfterMs + 1;
+        status.poller.regained();
+        await entered.promise;
+        await vi.advanceTimersByTimeAsync(STATUS_POLL_CADENCE.timeoutMs);
+        expect(status.poller.health(hostId)?.failures).toBe(1);
+        release.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(operation).toHaveBeenCalledTimes(delay === "observe" ? 0 : 1);
+        expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(
+          delay === "observe" ? [] : ["read", "read-history", "report"],
+        );
+      } finally {
+        release.resolve();
+        status.close();
+        unbind();
+        f.unbind();
+        vi.useRealTimers();
       }
     },
   );

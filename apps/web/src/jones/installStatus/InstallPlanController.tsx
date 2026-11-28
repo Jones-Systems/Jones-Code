@@ -14,6 +14,7 @@ import {
   currentPlanHostAuthority,
   installPlanServices,
   requestInstallPlan,
+  requireWritablePlan,
   type InstallPlanServices,
 } from "./services";
 import { claimantId, openInstallStatus } from "./entrypoints";
@@ -45,6 +46,12 @@ export function startInstallPlanController(
       const firstRead = store.get().native === null;
       const result = await requestInstallPlan(request, binding);
       if (!cancelled && firstRead && store.get().native?.current != null) openInstallStatus();
+      if (
+        request.type === "read" &&
+        result.refused === undefined &&
+        result.state.readOnly === undefined
+      )
+        requireWritablePlan(binding, result);
       return result;
     },
     observe: async (id) => {

@@ -89,13 +89,15 @@ export function startInstallStatusPoller(
       (planId !== undefined && pendingArchiveDevice(id, planId))
     );
   };
-  const tick = async (id: string) => {
+  const tick = async (id: string, signal: AbortSignal) => {
+    const stillCurrent = () => current() && !signal.aborted;
+    if (!stillCurrent()) return;
     const environmentId = id as EnvironmentId;
     const before = services.devices().find((d) => d.environmentId === environmentId);
     if (before !== undefined && before.observation.freshness !== "fresh")
       services.kick?.(environmentId);
     const observed = await services.observe(environmentId);
-    if (!current()) return;
+    if (!stillCurrent()) return;
     store.update({
       devices: store.get().devices.map((d) => (d.environmentId === environmentId ? observed : d)),
     });
@@ -103,14 +105,14 @@ export function startInstallStatusPoller(
     if (observed.observation.freshness !== "fresh")
       throw new Error("Status for this device is not fresh.");
     const read = await requestInstallPlan({ type: "read" }, binding);
-    if (!current() || nativePlanIssue(read) !== undefined) return;
+    if (!stillCurrent() || nativePlanIssue(read) !== undefined) return;
     const planId = openArchiveId();
     if (planId !== undefined && pendingArchiveDevice(id, planId)) {
       const selection = store.historySelection();
       const stillShowing = () =>
-        current() && store.historySelection() === selection && openArchiveId() === planId;
+        stillCurrent() && store.historySelection() === selection && openArchiveId() === planId;
       const history = await readTargetPlan(binding, { planId, archived: true });
-      if (history.plan !== null && nativePlanIssue(history.result) === undefined)
+      if (stillShowing() && history.plan !== null && nativePlanIssue(history.result) === undefined)
         await refreshArchivedDeviceEvidence(
           binding,
           environmentId,
@@ -120,9 +122,10 @@ export function startInstallStatusPoller(
         );
     }
     const plan = read.state.current;
-    if (current() && plan !== null && store.get().native?.current?.planId === plan.planId)
+    if (stillCurrent() && plan !== null && store.get().native?.current?.planId === plan.planId)
       await refreshDeviceEvidence(binding, environmentId, plan, observed, {
         refreshInstallOutcome: false,
+        stillCurrent,
       });
   };
   const poller = createStatusPoller({

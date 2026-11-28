@@ -2560,7 +2560,14 @@ describe("native client command reservations", () => {
   it("recovers an evicted legacy V2 unsupported claim only from exact terminal evidence", async () => {
     const f = fixture();
     const peer = { ...selection, environmentId: EnvironmentId.make("peer"), label: "Peer" };
-    const original = await f.start();
+    const start = {
+      type: "start",
+      origin: "connections",
+      target,
+      select: [selection],
+      expectedRunningGeneration: transaction,
+    } as const;
+    const original = (await f.coordinator.request(start)).state.current!;
     const claim = claimedDownload(original, id(601));
     const issued = await f.coordinator.request(claim);
     const entry = f.snapshot().document.commands![0]!;
@@ -2609,6 +2616,15 @@ describe("native client command reservations", () => {
     expect(discovered.command).toEqual(issued.command);
     expect(discovered.state.orphanedCommands).toEqual([issued.command]);
     expect(discovered.state.last).toEqual(last);
+    const publication = await coordinator.request({ type: "publication", acceptHostOnlyHolds: 1 });
+    expect(publication.publication).toMatchObject({
+      kind: "committed",
+      heldEnvironments: [remote],
+    });
+    expect((await coordinator.request({ type: "publication" })).publication).toMatchObject({
+      kind: "withheld",
+      code: "plan-managed",
+    });
     const pendingReplay = await coordinator.request(claim);
     expect(pendingReplay.command).toEqual(issued.command);
     expect(pendingReplay.grant).toBeUndefined();
@@ -2634,7 +2650,6 @@ describe("native client command reservations", () => {
     }
     expect((await settle(terminal, "f".repeat(64))).refused?.code).toBe("invalid-evidence");
     expect((await coordinator.request(query)).state.orphanedCommands).toEqual([issued.command]);
-    const start = { type: "start", origin: "settings", target, select: [selection] } as const;
     expect((await coordinator.request(start)).refused?.code).toBe("outstanding-operation");
     const disjoint = await coordinator.request({ ...start, select: [selection, peer] });
     expect(disjoint.refused).toBeUndefined();
@@ -2658,6 +2673,11 @@ describe("native client command reservations", () => {
     expect(replay.command).toEqual(settled.command);
     expect(replay.grant).toBeUndefined();
     expect(replay.state.orphanedCommands).toBeUndefined();
+    const released = await restarted.request({ type: "publication", acceptHostOnlyHolds: 1 });
+    expect(released.publication).toMatchObject({
+      kind: "committed",
+      heldEnvironments: [peer.environmentId],
+    });
     const edit = await restarted.request({
       type: "edit",
       planId: current.planId,

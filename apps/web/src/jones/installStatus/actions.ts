@@ -576,6 +576,8 @@ export async function checkOrphanedPlanCommand(
       "The host has no retained receipt for this command. Recovery is still on hold.",
     );
   requireWritablePlan(binding);
+  if (!hasOperationReadScope(services, environmentId))
+    throw new Error("Read permission is required to save the exact receipt.");
   const result = await requestInstallPlan(
     { type: "reconcile-orphan", commandId, bodyHash: check.bodyHash, receipt },
     binding,
@@ -828,6 +830,7 @@ export async function refreshArchivedDeviceEvidence(
       archived: true,
       refreshInstallOutcome: false,
       operationId: directive.operationId,
+      stillCurrent: stillShowing,
     });
 
   if (
@@ -888,9 +891,12 @@ export async function refreshDeviceEvidence(
     readonly archived?: boolean;
     readonly explain?: boolean;
     readonly operationId?: string | null;
+    readonly stillCurrent?: () => boolean;
   },
 ) {
   const { services } = binding;
+  const stillCurrent = options.stillCurrent ?? (() => true);
+  if (!stillCurrent()) return undefined;
   const { observation, fleetStatus, label } = observed;
   const archived =
     options.archived ?? (plan.dismissedAt !== undefined || plan.supersededAt !== undefined);
@@ -902,7 +908,8 @@ export async function refreshDeviceEvidence(
       ? latestPanelOperation(device, archived)
       : device.operations.find((item) => item.operationId === options.operationId);
   if (operation === undefined) return undefined;
-  const canWrite = () => options.allowReport !== false && canReportDeviceEvidence(binding);
+  const canWrite = () =>
+    stillCurrent() && options.allowReport !== false && canReportDeviceEvidence(binding);
   const authority = () => currentAuthorizedUpdateStatus(services, environmentId, observed);
   const canRead = () => hasOperationReadScope(services, environmentId);
   const hasReceiptAuthority = () => {
@@ -920,7 +927,7 @@ export async function refreshDeviceEvidence(
       );
       const issue = nativePlanIssue(report);
       if (issue !== undefined) return `Saving the exact evidence failed: ${issue}`;
-      if (archived) {
+      if (archived && stillCurrent()) {
         const updated = await readTargetPlan(binding, { planId: plan.planId, archived: true });
         const saved = updated.plan?.devices
           .find((item) => item.environmentId === environmentId)
@@ -968,6 +975,7 @@ export async function refreshDeviceEvidence(
     }
     if (
       !canWrite() ||
+      !canRead() ||
       !hasReceiptAuthority() ||
       !hasCurrentPlanEnrollment(services, device, observed)
     )
