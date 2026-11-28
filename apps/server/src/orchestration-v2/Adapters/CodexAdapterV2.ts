@@ -41,6 +41,7 @@ import type { PhysicalProcessLease } from "@t3tools/provider-core/server/jones/r
 import * as PhysicalProcess from "../../jones/runtime/PhysicalProcessEvidence.ts";
 import {
   CODEX_START_ACK_TIMEOUT_MS,
+  CodexPendingStartStop,
   codexStartReplyObservationOptions,
   makeCodexLateStartRecovery,
   type CodexStartDispatch,
@@ -3100,6 +3101,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           startSent: boolean;
           lateStartDispatch?: CodexStartDispatch | undefined;
           reconcileLateInline?: Effect.Effect<void> | undefined;
+          forwardPendingStartStop?: Effect.Effect<boolean> | undefined;
           pendingStartCancelled?: Deferred.Deferred<void> | undefined;
           terminalEmitted: boolean;
         };
@@ -3242,6 +3244,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           replay: Effect.Effect<void, CodexErrors.CodexAppServerError>,
         ): Effect.fn.Return<void, CodexErrors.CodexAppServerError> {
           lateStarts.observeTurnActivity(producer.generation, payload, method);
+          if (
+            producer.active &&
+            producer === currentProducer &&
+            (method === "item/started" || method === "item/completed")
+          ) {
+            const notification = payload as
+              | CodexSchema.V2ItemStartedNotification
+              | CodexSchema.V2ItemCompletedNotification;
+            if (notification.item.type === "userMessage")
+              lateStarts.observeUserInput(
+                { runtimeGeneration: producer.generation, nativeThreadId: notification.threadId },
+                notification.turnId,
+              );
+          }
           if (method === "turn/completed") {
             // The client has decoded this method's payload. Reconciliation facts
             // must survive overflow or cancellation of the replayable effects.
@@ -3257,18 +3273,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               !handoffCompaction.ownsTurn(binding, completion.turn.id) &&
               (status === "completed" || status === "failed" || status === "interrupted")
             )
-              lateStarts.complete(binding, completion.turn.id, () =>
-                // A queued start can acknowledge and then stop before consuming input.
-                status === "interrupted" &&
-                !completion.turn.items.some((item) => item.type === "userMessage")
-                  ? undefined
-                  : {
-                      nativeTurnId: completion.turn.id,
-                      status,
-                      startedAt: codexTimestamp(completion.turn.startedAt),
-                      completedAt: codexTimestamp(completion.turn.completedAt),
-                    },
-              );
+              lateStarts.complete(binding, completion.turn.id, () => ({
+                nativeTurnId: completion.turn.id,
+                status,
+                startedAt: codexTimestamp(completion.turn.startedAt),
+                completedAt: codexTimestamp(completion.turn.completedAt),
+                ...(completion.turn.items.some((item) => item.type === "userMessage")
+                  ? { inputObserved: true }
+                  : {}),
+              }));
           }
           const captured = pendingStartNotifications.capture(
             producer.generation,
@@ -9867,6 +9880,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (request.lateStartDispatch === undefined) nativeStartUnknown = true;
               else lateStarts.markUnknown(request.lateStartDispatch);
             }
+            yield* request.forwardPendingStartStop ?? Effect.void;
             const reconcileInline = request.reconcileLateInline;
             request.reconcileLateInline = undefined;
             yield* reconcileInline ?? Effect.void;
@@ -10025,6 +10039,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               : {}),
           };
           const inlineHistory = retryOrdinal === 0 ? yield* CodexInlineHistoryStart : undefined;
+          const stoppedByApp = retryOrdinal === 0 ? yield* CodexPendingStartStop : undefined;
           const promptedInline =
             inlineHistory !== undefined &&
             (request.input.inlineContextLength ?? 0) > 0 &&
@@ -10091,6 +10106,58 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             );
             request.lateStartDispatch = dispatch;
             pendingStartNotifications.begin(dispatch);
+            if (stoppedByApp !== undefined) {
+              let stopEnqueued = false;
+              request.forwardPendingStartStop = Effect.suspend(() => {
+                const turnId = dispatch.nativeTurnId;
+                if (turnId === undefined || currentGeneration() === undefined)
+                  return Effect.succeed(false);
+                const canEnqueue = () =>
+                  !stopEnqueued &&
+                  !dispatch.overflow &&
+                  !dispatch.conflictingTurnActivity &&
+                  (dispatch.observedTurnId === undefined || dispatch.observedTurnId === turnId) &&
+                  !dispatch.completions.has(turnId) &&
+                  currentGeneration() !== undefined &&
+                  replyTurnOwner(turnId) === undefined;
+                // Stop may end the application attempt before it knows the native turn ID.
+                return Effect.gen(function* () {
+                  if (!(yield* stoppedByApp)) return false;
+                  lateStarts.markUnknown(dispatch);
+                  if (canEnqueue()) {
+                    yield* withRequestAdmission(
+                      producer.client.request("turn/interrupt", {
+                        threadId: binding.nativeThreadId,
+                        turnId,
+                      }),
+                      {
+                        canEnqueue,
+                        onEnqueued: () => {
+                          stopEnqueued = true;
+                        },
+                      },
+                    ).pipe(
+                      Effect.timeoutOption(STOP_REQUEST_BUDGET_MS),
+                      Effect.tap((result) =>
+                        Option.isNone(result)
+                          ? Effect.logWarning("Codex did not acknowledge Stop for a late start.")
+                          : Effect.void,
+                      ),
+                      Effect.catch(() =>
+                        stopEnqueued
+                          ? Effect.logWarning(
+                              "Codex could not interrupt an acknowledged late start.",
+                            )
+                          : Effect.void,
+                      ),
+                      Effect.interruptible,
+                      Effect.forkIn(producer.scope, { startImmediately: true }),
+                    );
+                  }
+                  return true;
+                });
+              });
+            }
             if (
               inlineHistory === undefined ||
               inlineBinding === undefined ||
@@ -10153,8 +10220,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 onEnqueued,
               },
             ).pipe(
-              Effect.tap((started) =>
-                Effect.sync(() => {
+              Effect.flatMap((started) =>
+                Effect.gen(function* () {
                   const generation = currentGeneration();
                   const dispatch = request.lateStartDispatch;
                   if (
@@ -10169,10 +10236,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       params.additionalContext,
                       promptedInline ? inlineHistory.markAcknowledged : undefined,
                     );
+                    if (yield* request.forwardPendingStartStop ?? Effect.succeed(false)) {
+                      return { kind: "stopped" as const };
+                    }
                   }
+                  return { kind: "acknowledged" as const, started };
                 }),
               ),
-              Effect.map((started) => ({ kind: "acknowledged" as const, started })),
               Effect.catch(
                 Effect.fnUntraced(function* (error) {
                   const dispatch = request.lateStartDispatch;
@@ -10219,6 +10289,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
           );
           if (reply === undefined) return;
+          if (reply.kind === "stopped")
+            return yield* toProtocolError(
+              "Codex acknowledged the start after the application run was stopped.",
+            );
           if (reply.kind === "rejected") return yield* reconcileRejection(reply.error, reply.proof);
           const dispatch = request.lateStartDispatch;
           if (dispatch === undefined) return yield* unverifiedRejection();

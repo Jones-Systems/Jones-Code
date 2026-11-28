@@ -47,6 +47,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
 import { startFailureCauseMessage } from "../jones/provider/startFailureMessage.ts";
+import { CodexPendingStartStop } from "../jones/provider/codex/CodexLateStartRecovery.ts";
 import {
   CodexInlineHistoryStart,
   makeCodexHistoryDeliveryPersistence,
@@ -571,8 +572,32 @@ export const layer: Layer.Layer<
           );
       const isCurrentAttemptInStatus = (expectedStatus: OrchestrationV2Run["status"]) =>
         isCurrentAttemptIn([expectedStatus]);
+      const loadRunInterruptRequest = () =>
+        projectionStore
+          .getThreadRecords(input.threadId, ["turnItems"], {
+            turnItemTypes: ["run_interrupt_request"],
+            turnItemRunIds: [input.runId],
+          })
+          .pipe(
+            Effect.map(({ turnItems }) =>
+              turnItems.find((item) => item.type === "run_interrupt_request"),
+            ),
+            Effect.catchCause(() => Effect.undefined),
+          );
       return {
         isCurrentAttemptInStatus,
+        wasStopped: Effect.gen(function* () {
+          const run = yield* projectionStore.getRun(input.threadId, input.runId);
+          if (run?.activeAttemptId !== input.attemptId || run.status !== "interrupted")
+            return false;
+          const request = yield* loadRunInterruptRequest();
+          return (
+            request !== undefined &&
+            request.nodeId === run.rootNodeId &&
+            request.providerThreadId === input.providerThreadId &&
+            request.providerTurnId === null
+          );
+        }).pipe(Effect.orElseSucceed(() => false)),
         loadInheritedBackgroundTurnItems: () =>
           projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
             Effect.map((current) =>
@@ -621,18 +646,7 @@ export const layer: Layer.Layer<
               }),
             ),
         loadRunInterruptReason: () =>
-          projectionStore
-            .getThreadRecords(input.threadId, ["turnItems"], {
-              turnItemTypes: ["run_interrupt_request"],
-              turnItemRunIds: [input.runId],
-            })
-            .pipe(
-              Effect.map(({ turnItems }) => {
-                const request = turnItems.find((item) => item.type === "run_interrupt_request");
-                return request?.type === "run_interrupt_request" ? request.message : undefined;
-              }),
-              Effect.catchCause(() => Effect.undefined),
-            ),
+          loadRunInterruptRequest().pipe(Effect.map((request) => request?.message)),
       };
     };
 
@@ -4049,7 +4063,10 @@ export const layer: Layer.Layer<
             // The adapter confirms the captured continuation session at its native boundary.
             yield* (
               compact ? session.compactThread!(dispatchInput) : session.startTurn(dispatchInput)
-            ).pipe(Effect.provideService(RequiredNativeSession, requiredNativeSession));
+            ).pipe(
+              Effect.provideService(RequiredNativeSession, requiredNativeSession),
+              Effect.provideService(CodexPendingStartStop, runControls.wasStopped),
+            );
             return true;
           }),
         Effect.mapError((cause) =>

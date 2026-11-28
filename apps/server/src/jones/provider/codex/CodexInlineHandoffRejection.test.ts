@@ -97,6 +97,8 @@ describe("Codex inline handoff rejection recovery", () => {
     { code: null, late: true, recovery: "late terminal before ACK" },
     { code: null, late: true, recovery: "late ACK without a terminal" },
     { code: null, late: true, recovery: "late ACK and interrupted prompt without input" },
+    { code: null, late: true, recovery: "late ACK and interrupted prompt with observed input" },
+    { code: null, late: false, recovery: "application Stop while awaiting ACK" },
     { code: null, late: true, recovery: "late ACK with a different terminal" },
     { code: null, late: true, recovery: "late acceptance after newer identical marker" },
     { code: null, late: true, recovery: "late acceptance after binding replacement" },
@@ -118,11 +120,22 @@ describe("Codex inline handoff rejection recovery", () => {
       const ackOnly = recovery === "late ACK without a terminal";
       const wrongTerminal = recovery === "late ACK with a different terminal";
       const interruptedWithoutInput = recovery === "late ACK and interrupted prompt without input";
+      const interruptedWithInput =
+        recovery === "late ACK and interrupted prompt with observed input";
+      const stopWhileAwaitingAck = recovery === "application Stop while awaiting ACK";
+      const nativeTerminalStatus =
+        interruptedWithoutInput || interruptedWithInput || stopWhileAwaitingAck
+          ? "interrupted"
+          : "completed";
       const restartReadback = recovery === "readback of restart after COMMIT contradiction";
       const commitsInline = recovery === "on-time ACK and terminal";
       const lostAfterCommit = recovery === "process loss after late receipt commits";
       const recordsLateReceipt =
-        restartReadback || lostAfterCommit || recovery === "late ACK and terminal" || terminalFirst;
+        restartReadback ||
+        lostAfterCommit ||
+        recovery === "late ACK and terminal" ||
+        terminalFirst ||
+        interruptedWithInput;
       const positiveCommitRace =
         restartReadback || recovery === "late acceptance contradicted before COMMIT";
       const atCommit = recovery === "contradiction before outer commit" || positiveCommitRace;
@@ -292,7 +305,7 @@ describe("Codex inline handoff rejection recovery", () => {
             threadId: nativeThreadId,
             turn: makeCodexReplayTurn({
               id: wrongTerminal ? "different-native-turn" : originalNativeTurnId,
-              status: interruptedWithoutInput ? "interrupted" : "completed",
+              status: nativeTerminalStatus,
             }),
           },
         },
@@ -320,6 +333,39 @@ describe("Codex inline handoff rejection recovery", () => {
                 withReplayRequestId(first[5]!, 4),
                 ...(terminalFirst ? [terminal] : []),
                 reply,
+                ...(interruptedWithInput
+                  ? [
+                      {
+                        type: "emit_inbound" as const,
+                        frame: {
+                          method: "item/started",
+                          params: {
+                            threadId: nativeThreadId,
+                            turnId: originalNativeTurnId,
+                            startedAtMs: 1782622440000,
+                            item: {
+                              type: "userMessage",
+                              id: "original-native-input",
+                              content: [],
+                            },
+                          },
+                        },
+                      },
+                    ]
+                  : []),
+                ...(stopWhileAwaitingAck
+                  ? [
+                      {
+                        type: "expect_outbound" as const,
+                        frame: {
+                          id: 5,
+                          method: "turn/interrupt",
+                          params: { threadId: nativeThreadId, turnId: originalNativeTurnId },
+                        },
+                      },
+                      { type: "emit_inbound" as const, frame: { id: 5, result: {} } },
+                    ]
+                  : []),
                 ...(acceptsPrompt && !terminalFirst && !ackOnly ? [terminal] : []),
               ]),
           ...(contradicts
@@ -531,6 +577,33 @@ describe("Codex inline handoff rejection recovery", () => {
           );
           return;
         }
+        if (stopWhileAwaitingAck) {
+          const beforeStop = yield* getProjection();
+          assert.equal(beforeStop.runs[0]?.status, "running");
+          assert.deepEqual(beforeStop.providerTurns, []);
+          yield* orchestrator.dispatch({
+            type: "run.interrupt",
+            commandId: CommandId.make("stop-before-native-ack"),
+            threadId,
+            runId: run.id,
+            holdQueue: true,
+          });
+          const afterStop = yield* getProjection();
+          assert.equal(afterStop.runs[0]?.status, "interrupted");
+          yield* Deferred.succeed(allowRejection, undefined);
+          yield* Deferred.await(rejectionObserved);
+          yield* Fiber.join(starting);
+          const afterTerminal = yield* getProjection();
+          assert.deepEqual(afterTerminal.runs, afterStop.runs);
+          assert.deepEqual(afterTerminal.attempts, afterStop.attempts);
+          assert.deepEqual(afterTerminal.providerTurns, []);
+          assert.equal(afterTerminal.contextHandoffs[0]?.delivery?.status, "pending");
+          assert.deepEqual(yield* Ref.get(driver.state), {
+            failure: null,
+            cursor: effectiveTranscript.entries.length,
+          });
+          return;
+        }
         if (late) {
           yield* TestClock.adjust(CODEX_START_ACK_TIMEOUT_MS);
           yield* Fiber.join(starting);
@@ -612,7 +685,7 @@ describe("Codex inline handoff rejection recovery", () => {
                     : event.type === "provider-turn.updated" &&
                       event.payload.runAttemptId === originalAttemptId &&
                       event.payload.nativeTurnRef?.nativeId === originalNativeTurnId &&
-                      event.payload.status === "completed",
+                      event.payload.status === nativeTerminalStatus,
                 ),
                 Stream.runHead,
                 Effect.forkChild({ startImmediately: true }),
@@ -726,7 +799,7 @@ describe("Codex inline handoff rejection recovery", () => {
           assert.equal(after.providerTurns.length, 1);
           assert.equal(accepted?.nativeTurnRef?.nativeId, originalNativeTurnId);
           assert.equal(accepted?.runAttemptId, originalAttemptId);
-          assert.equal(accepted?.status, "completed");
+          assert.equal(accepted?.status, nativeTerminalStatus);
           return {
             handoffs: after.contextHandoffs,
             runs: after.runs,

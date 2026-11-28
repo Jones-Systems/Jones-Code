@@ -1,5 +1,6 @@
 import type { CodexAppServerClientOptions } from "effect-codex-app-server/client";
 import type * as CodexErrors from "effect-codex-app-server/errors";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type * as DateTime from "effect/DateTime";
 import * as Predicate from "effect/Predicate";
@@ -39,7 +40,13 @@ export interface CodexStartTerminal {
   readonly status: "completed" | "failed" | "interrupted";
   readonly startedAt: DateTime.Utc;
   readonly completedAt: DateTime.Utc;
+  readonly inputObserved?: true;
 }
+
+export const CodexPendingStartStop = Context.Reference<Effect.Effect<boolean>>(
+  "jones/CodexPendingStartStop",
+  { defaultValue: () => Effect.succeed(false) },
+);
 
 export interface CodexStartDispatch extends NativeBinding {
   readonly ordinal: number;
@@ -49,6 +56,7 @@ export interface CodexStartDispatch extends NativeBinding {
   nativeTurnId: string | undefined;
   turnActivityObserved: boolean;
   observedTurnId?: string;
+  observedInputTurnId?: string;
   conflictingTurnActivity?: true;
   unknown: boolean;
   overflow: boolean;
@@ -99,14 +107,22 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>(
     !dispatch.overflow &&
     dispatch.nativeTurnId !== undefined &&
     dispatch.completions.has(dispatch.nativeTurnId);
-  const lateTerminal = (dispatch: CodexStartDispatch) =>
-    dispatches.has(dispatch) &&
-    dispatch.unknown &&
-    settled(dispatch) &&
-    !dispatch.conflictingTurnActivity &&
-    (dispatch.observedTurnId === undefined || dispatch.observedTurnId === dispatch.nativeTurnId)
-      ? dispatch.completions.get(dispatch.nativeTurnId!)
-      : undefined;
+  const lateTerminal = (dispatch: CodexStartDispatch) => {
+    if (
+      !dispatches.has(dispatch) ||
+      !dispatch.unknown ||
+      !settled(dispatch) ||
+      dispatch.conflictingTurnActivity ||
+      (dispatch.observedTurnId !== undefined && dispatch.observedTurnId !== dispatch.nativeTurnId)
+    )
+      return undefined;
+    const terminal = dispatch.completions.get(dispatch.nativeTurnId!);
+    return terminal?.status === "interrupted" &&
+      terminal.inputObserved !== true &&
+      dispatch.observedInputTurnId !== terminal.nativeTurnId
+      ? undefined
+      : terminal;
+  };
   const releaseSettled = (dispatch: CodexStartDispatch) => {
     if (!dispatch.unknown || !settled(dispatch)) return;
     if (dispatch.onLateTerminal === undefined) {
@@ -290,6 +306,19 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>(
       };
     },
     observeTurnActivity,
+    observeUserInput(binding: NativeBinding, nativeTurnId: string) {
+      for (const dispatch of dispatches) {
+        if (
+          dispatch.onLateTerminal === undefined ||
+          !matchesNativeBinding(dispatch, binding) ||
+          dispatch.observedTurnId !== nativeTurnId ||
+          dispatch.conflictingTurnActivity
+        )
+          continue;
+        dispatch.observedInputTurnId = nativeTurnId;
+        releaseSettled(dispatch);
+      }
+    },
     acknowledge(
       dispatch: CodexStartDispatch,
       runtimeGeneration: string,
