@@ -278,6 +278,12 @@ describe("Claude contextual evidence", () => {
         five_hour: { utilization: 33, resets_at: "2026-11-18T17:00:00.000Z" },
         seven_day: { utilization: 20, resets_at: resetAt },
         seven_day_opus: { utilization: 90, resets_at: resetAt },
+        extra_usage: {
+          is_enabled: false,
+          monthly_limit: null,
+          used_credits: null,
+          utilization: null,
+        },
         ...({
           model_scoped: [{ display_name: "Fable", utilization: 95, resets_at: resetAt }],
         } as object),
@@ -291,33 +297,34 @@ describe("Claude contextual evidence", () => {
     expect(claudeProbeAllowance(probe, "claude-fable-5", now, now)?.status).toBe("blocked");
   });
 
-  it("keeps unreadable applicable windows and excludes paid-enabled incomplete observations", () => {
+  it("requires paid fallback disabled even when the subscription windows are complete", () => {
     const usageWith = (fields: Record<string, unknown>): ClaudeCapabilitiesProbe => ({
       ...probe,
       usage: { ...probe.usage, rate_limits: { ...probe.usage.rate_limits, ...fields } },
     });
     const unreadableSonnet = { seven_day_sonnet: { utilization: null, resets_at: resetAt } };
-    expect(
-      claudeProbeAllowance(usageWith(unreadableSonnet), "claude-sonnet-4-6", now, now),
-    ).toBeUndefined();
+    for (const paid of [
+      { extra_usage: { is_enabled: true } },
+      { extra_usage: undefined },
+      { extra_usage: { is_enabled: "false" } },
+      { spend: { enabled: true } },
+    ]) {
+      const complete = usageWith(paid);
+      expect(claudeProbeAllowance(complete, "claude-sonnet-4-6", now, now)).toBeUndefined();
+      expect(claudeProbeAllowance(complete, "claude-opus-4-6", now, now)).toBeUndefined();
+      const incomplete = usageWith({ ...unreadableSonnet, ...paid });
+      expect(claudeProbeAllowance(incomplete, "claude-sonnet-4-6", now, now)).toBeUndefined();
+    }
     expect(
       claudeProbeAllowance(
-        usageWith({ ...unreadableSonnet, spend: { enabled: false } }),
+        usageWith({ ...unreadableSonnet, extra_usage: undefined, spend: { enabled: false } }),
         "claude-sonnet-4-6",
         now,
         now,
       ),
-    ).toEqual({
-      status: "unknown",
-    });
-    for (const paid of [{ extra_usage: { is_enabled: true } }, { spend: { enabled: true } }]) {
-      const incomplete = usageWith({ ...unreadableSonnet, ...paid });
-      expect(claudeProbeAllowance(incomplete, "claude-sonnet-4-6", now, now)).toBeUndefined();
-      expect(claudeProbeAllowance(incomplete, "claude-opus-4-6", now, now)?.status).toBe("blocked");
-    }
+    ).toEqual({ status: "unknown" });
     const malformedScope = usageWith({
       model_scoped: [{ utilization: 1 }],
-      extra_usage: { is_enabled: false },
     });
     expect(claudeProbeAllowance(malformedScope, "claude-sonnet-4-6", now, now)?.status).toBe(
       "unknown",
@@ -384,9 +391,17 @@ describe("Claude contextual evidence", () => {
     ).toBeUndefined();
   });
 
-  it("requires affirmative paid fallback evidence for unreadable usage and actual subscription proof", () => {
+  it("requires readable subscription usage and current account evidence", () => {
     const { usage: _usage, ...withoutUsage } = probe;
     expect(claudeProbeAllowance(withoutUsage, "claude-opus-4-6", now, now)).toBeUndefined();
+    expect(
+      claudeProbeAllowance(
+        { ...probe, usage: { ...probe.usage, rate_limits_available: false } },
+        "claude-sonnet-4-6",
+        now,
+        now,
+      ),
+    ).toBeUndefined();
     expect(hasClaudeSubscription(probe)).toBe(true);
     for (const patch of [
       { email: undefined },

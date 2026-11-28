@@ -6,6 +6,7 @@ import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -17,6 +18,7 @@ import {
   buildClaudeCapabilitiesProbeQueryOptions,
   probeClaudeCapabilities,
   probeClaudeWorkspaceSnapshot,
+  readClaudeQueryUsage,
   spawnClaudeProbeThroughEnv,
 } from "./ClaudeProvider.ts";
 
@@ -96,6 +98,16 @@ it.effect("refuses the Claude Auto probe before SDK startup when MCP is managed"
       ),
     ),
   ),
+);
+
+it.effect("bounds the Claude Auto usage control when an older CLI does not reply", () =>
+  Effect.gen(function* () {
+    const usage = yield* readClaudeQueryUsage({
+      usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: () => new Promise(() => {}),
+    }).pipe(Effect.forkChild);
+    yield* TestClock.adjust("4 seconds");
+    assert.isUndefined(yield* Fiber.join(usage));
+  }),
 );
 
 // A shell trampoline would not do: dash drops the exported function, and the launcher exits 127.

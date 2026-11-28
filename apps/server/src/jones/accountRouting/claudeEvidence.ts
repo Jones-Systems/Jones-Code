@@ -21,8 +21,10 @@ import {
   type ClaudeModelCatalog,
 } from "../../provider/ClaudeModelCatalog.ts";
 import { windowLimitsModel } from "../../provider/claudeUsageLimits.ts";
-import { claudeAccountConfigPath } from "../../provider/claudeResetCredits.ts";
-import { claudeLocalSettingsDirectory } from "../../provider/Drivers/ClaudeHome.ts";
+import {
+  claudeLocalSettingsDirectory,
+  resolveClaudeAccountFiles,
+} from "../../provider/Drivers/ClaudeHome.ts";
 import { classifyClaudeEvaluatorLaunchArgs } from "../../textGeneration/jones/claudeEvaluatorLaunch.ts";
 import {
   claudeAllowance,
@@ -327,14 +329,10 @@ export const observeClaudeNativeAccount = Effect.fn("AccountRouting.observeClaud
       /^--(?:fallback-)?model(?:=|$)/.test(arg),
     );
     if (!args.qualified || args.args.length > 0 || modelOverridden) return undefined;
-    const routeSettings = yield* readNativeClaudeRoute(input);
+    const { configDir, accountConfigPath } = yield* resolveClaudeAccountFiles(input);
+    const routeSettings = yield* readNativeClaudeRoute({ ...input, configDir });
     if (!routeSettings) return undefined;
-    const accountConfig = yield* claudeAccountConfigPath(
-      input.settings.homePath.trim() || input.environment.CLAUDE_CONFIG_DIR?.trim()
-        ? input.configDir
-        : undefined,
-    );
-    const priorIdentity = yield* readClaudeAutoIdentity(accountConfig);
+    const priorIdentity = yield* readClaudeAutoIdentity(accountConfigPath);
     if (!priorIdentity) return undefined;
     const observedAt = yield* Clock.currentTimeMillis;
     const verified = yield* probeClaudeCapabilities(
@@ -344,8 +342,13 @@ export const observeClaudeNativeAccount = Effect.fn("AccountRouting.observeClaud
       true,
       true,
     ).pipe(Effect.orElseSucceed(() => undefined));
-    if (!verified || !hasClaudeSubscription(verified)) return undefined;
-    const accountIdentity = yield* readClaudeAutoIdentity(accountConfig, verified);
+    if (
+      !verified ||
+      !hasClaudeSubscription(verified) ||
+      !claudePaidFallbackDisabled(verified.usage)
+    )
+      return undefined;
+    const accountIdentity = yield* readClaudeAutoIdentity(accountConfigPath, verified);
     if (accountIdentity !== priorIdentity) return undefined;
     const { effortCapSources: managedCaps, ...uncapped } = verified;
     const draft = yield* checkClaudeProviderStatus(
@@ -374,6 +377,19 @@ export const observeClaudeNativeAccount = Effect.fn("AccountRouting.observeClaud
   },
 );
 
+export function claudePaidFallbackDisabled(usage: ClaudeCapabilitiesProbe["usage"]): boolean {
+  if (usage?.rate_limits_available !== true || !usage.rate_limits) return false;
+  const limits = usage.rate_limits as typeof usage.rate_limits & { readonly spend?: unknown };
+  const spend = asSettings(limits.spend);
+  const extraUsageDisabled = limits.extra_usage?.is_enabled === false;
+  const spendDisabled = spend._tag === "Some" && spend.value.enabled === false;
+  return (
+    (extraUsageDisabled || spendDisabled) &&
+    (limits.extra_usage == null || extraUsageDisabled) &&
+    (limits.spend == null || spendDisabled)
+  );
+}
+
 export function claudeProbeAllowance(
   capabilities: ClaudeCapabilitiesProbe,
   model: string,
@@ -383,11 +399,10 @@ export function claudeProbeAllowance(
   if (!currentObservation(observedAt, now) || !hasClaudeSubscription(capabilities)) {
     return undefined;
   }
-  if (!capabilities.usage) return undefined;
   const checkedAt = capabilities.usageCheckedAt ?? "";
   if (!currentObservation(Date.parse(checkedAt), now)) return undefined;
-  const limits = capabilities.usage.rate_limits;
-  if (!limits) return undefined;
+  const limits = capabilities.usage?.rate_limits;
+  if (!limits || !claudePaidFallbackDisabled(capabilities.usage)) return undefined;
   const modelNames = [model];
   for (const reported of capabilities.models ?? []) {
     if (reported.value === model && reported.resolvedModel) modelNames.push(reported.resolvedModel);
@@ -399,7 +414,6 @@ export function claudeProbeAllowance(
   const scoped = limits as {
     readonly model_scoped?: unknown;
     readonly seven_day_sonnet?: unknown;
-    readonly spend?: unknown;
   };
   const applicable = [
     { id: "seven_day_opus", value: limits.seven_day_opus },
@@ -414,21 +428,13 @@ export function claudeProbeAllowance(
     id === undefined ? undefined : readWindow(value, week),
   );
   const weekly = [overallWeek, ...scopedWindows].filter((window) => window !== undefined);
-  const allowance = claudeAllowance({
+  return claudeAllowance({
     session,
     weekly,
-    hasOverallWeek: capabilities.usage.rate_limits_available === true && !!overallWeek,
+    hasOverallWeek: !!overallWeek,
     hasUnreadableWindows: scopedWindows.some((window) => window === undefined),
     now,
   });
-  const paid = asSettings(scoped.spend);
-  const extraUsageDisabled = limits.extra_usage?.is_enabled === false;
-  const spendDisabled = paid._tag === "Some" && paid.value.enabled === false;
-  const paidFallbackDisabled =
-    (extraUsageDisabled || spendDisabled) &&
-    (limits.extra_usage == null || extraUsageDisabled) &&
-    (scoped.spend == null || spendDisabled);
-  return allowance.status === "unknown" && !paidFallbackDisabled ? undefined : allowance;
 }
 
 function readWindow(raw: unknown, durationMs: number): AllowanceWindow | undefined {

@@ -47,6 +47,30 @@ export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function
   return path.resolve(path.join(home, ".claude"));
 });
 
+export const resolveClaudeAccountFiles = Effect.fn("resolveClaudeAccountFiles")(function* (input: {
+  readonly settings: Pick<ClaudeSettings, "homePath">;
+  readonly configDir: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly cwd: string;
+}) {
+  const path = yield* Path.Path;
+  // Claude keeps its global metadata in the overridden config directory, or
+  // directly in the process's user home. A relative env override is cwd-relative.
+  const inherited = input.environment.CLAUDE_CONFIG_DIR;
+  const override = input.settings.homePath.trim()
+    ? input.configDir
+    : inherited
+      ? path.resolve(input.cwd, inherited)
+      : undefined;
+  return {
+    configDir: override ?? input.configDir,
+    accountConfigPath: path.join(
+      override ?? (yield* resolveClaudeUserHome(input.environment)),
+      ".claude.json",
+    ),
+  };
+});
+
 export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function* (
   config: Pick<ClaudeSettings, "homePath">,
   baseEnv?: NodeJS.ProcessEnv,

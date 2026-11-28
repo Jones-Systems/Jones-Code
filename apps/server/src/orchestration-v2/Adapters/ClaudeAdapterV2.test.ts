@@ -3524,9 +3524,10 @@ describe("ClaudeAdapterV2 native fork", () => {
   );
 });
 
-function makeFakeClaudeCli(answerSetServers = true) {
+function makeFakeClaudeCli(answerSetServers = true, usageResponse?: object) {
   const spawns: Array<SpawnOptions> = [];
   const controlRequests: Array<object> = [];
+  const userInputs: Array<SDKUserMessage> = [];
   const stdins: Array<NodeStream.PassThrough> = [];
   const spawn = (options: SpawnOptions): SpawnedProcess => {
     spawns.push(options);
@@ -3550,6 +3551,7 @@ function makeFakeClaudeCli(answerSetServers = true) {
       for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
         const frame = JSON.parse(pending.slice(0, end));
         pending = pending.slice(end + 1);
+        if (frame.type === "user") userInputs.push(frame);
         if (frame.type !== "control_request") continue;
         controlRequests.push(frame.request);
         const setServers = frame.request.subtype === "mcp_set_servers";
@@ -3557,7 +3559,11 @@ function makeFakeClaudeCli(answerSetServers = true) {
         const response = {
           subtype: "success",
           request_id: frame.request_id,
-          response: setServers ? { added: [], removed: [], errors: {} } : {},
+          response: setServers
+            ? { added: [], removed: [], errors: {} }
+            : frame.request.subtype === "get_usage"
+              ? (usageResponse ?? {})
+              : {},
         };
         stdout.write(`${JSON.stringify({ type: "control_response", response })}\n`);
       }
@@ -3569,8 +3575,20 @@ function makeFakeClaudeCli(answerSetServers = true) {
     return child;
   };
   const closed = () => stdins.length > 0 && stdins.every((stdin) => stdin.writableEnded);
-  return { spawn, spawns, controlRequests, closed };
+  return { spawn, spawns, controlRequests, closed, userInputs };
 }
+
+const autoClaudeUsage = (paidEnabled: boolean) => ({
+  rate_limits_available: true,
+  rate_limits: {
+    extra_usage: {
+      is_enabled: paidEnabled,
+      monthly_limit: null,
+      used_credits: null,
+      utilization: null,
+    },
+  },
+});
 
 describe("ClaudeAdapterV2 MCP credential channel", () => {
   const t3McpServer = {
@@ -3630,6 +3648,22 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
           (request) => Reflect.get(request, "subtype") === "mcp_set_servers",
         ),
       );
+    }),
+  );
+
+  it.effect("reads Claude Auto allowance using only the producing SDK query's usage control", () =>
+    Effect.gen(function* () {
+      const usage = autoClaudeUsage(false);
+      const cli = makeFakeClaudeCli(true, usage);
+      const session = yield* openWith(cli, undefined, () => Effect.succeed(true));
+      const before = cli.controlRequests.length;
+      assert.deepEqual(yield* session.readUsage!, usage);
+      assert.deepEqual(cli.controlRequests.slice(before), [
+        { subtype: "get_usage", skip_behaviors: true },
+      ]);
+      assert.lengthOf(cli.userInputs, 0);
+      assert.equal(cli.spawns[0]?.env?.CLAUDE_CODE_RESUME_INTERRUPTED_TURN, "0");
+      yield* session.close;
     }),
   );
 
@@ -4105,6 +4139,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly routeModelCatalog?: ClaudeAdapterV2.ClaudeAdapterV2Options["routeModelCatalog"];
     readonly initialAccount?: ClaudeSdk.AccountInfo;
     readonly reinitializeAccount?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["reinitializeAccount"];
+    readonly readUsage?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["readUsage"];
   }) =>
     Effect.gen(function* () {
       const eventScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
@@ -4225,6 +4260,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 processQueues.push(processMessages);
                 return {
                   messages,
+                  reinitializeAccount: options?.reinitializeAccount ?? Effect.undefined,
+                  readUsage: options?.readUsage ?? Effect.undefined,
                   offer: (message: SDKUserMessage) =>
                     Effect.sync(() => {
                       offeredMessages.push(message);
@@ -4259,6 +4296,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               return {
                 messages,
                 reinitializeAccount: options?.reinitializeAccount ?? Effect.undefined,
+                readUsage: options?.readUsage ?? Effect.undefined,
                 offer: (message) =>
                   Effect.sync(() => {
                     offeredMessages.push(message);
@@ -4802,12 +4840,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     );
 
     it.effect(
-      "refreshes the idle Auto query and refuses a changed native organization before offer",
+      "checks Claude Auto account and paid allowance before initial, warm, and recovery inputs",
       () =>
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const homePath = yield* fileSystem.makeTempDirectoryScoped();
+          const defaultHome = yield* fileSystem.makeTempDirectoryScoped();
+          const environment = { HOME: defaultHome, CLAUDE_CONFIG_DIR: homePath };
           const initialAccount = {
             email: "same-user@example.invalid",
             organization: "Original Organization",
@@ -4826,50 +4866,108 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               },
             }),
           );
+          yield* fileSystem.writeFileString(
+            path.join(defaultHome, ".claude.json"),
+            JSON.stringify({
+              oauthAccount: {
+                organizationUuid: "00000000-0000-4000-8000-000000000456",
+                organizationName: initialAccount.organization,
+                emailAddress: initialAccount.email,
+              },
+            }),
+          );
           const identity = claudeAutoAccountIdentity(
             organizationUuid,
             initialAccount.email,
             initialAccount.organization,
           )!;
           let observedOrganization = initialAccount.organization;
-          let checks = 0;
+          let accountChecks = 0;
+          let allowanceChecks = 0;
+          let usage: ReturnType<typeof autoClaudeUsage> | undefined = autoClaudeUsage(false);
+          let stopAtAllowance = false;
+          let admitted = true;
           const harness = yield* makeWakeHarnessWithOptions({
-            settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath },
+            environment,
             initialAccount,
+            freshQueueOnReopen: true,
             reinitializeAccount: Effect.sync(() => {
-              checks++;
+              accountChecks++;
               return { ...initialAccount, organization: observedOrganization };
             }),
-          });
-          const startAuto = (ordinal: number) =>
+            readUsage: Effect.sync(() => {
+              allowanceChecks++;
+              if (stopAtAllowance) admitted = false;
+              return usage;
+            }),
+          }).pipe(
+            Effect.provideService(HostProcess.Environment, environment),
+            Effect.provideService(HostProcess.HomeDirectory, defaultHome),
+          );
+          const autoTurn = (ordinal: number) =>
             turnFor(harness, ordinal).pipe(
-              Effect.flatMap((turn) =>
-                harness.runtime.startTurn({
-                  ...turn,
-                  runtimePolicy: {
-                    ...turn.runtimePolicy,
-                    cwd: homePath,
-                    autoAccountDigest: accountIdentityDigest("claudeAgent", identity),
-                  },
-                }),
-              ),
+              Effect.map((turn) => ({
+                ...turn,
+                runtimePolicy: {
+                  ...turn.runtimePolicy,
+                  cwd: homePath,
+                  autoAccountDigest: accountIdentityDigest("claudeAgent", identity),
+                },
+                revalidateStartAdmission: Effect.suspend(() =>
+                  admitted
+                    ? Effect.void
+                    : Effect.fail(
+                        new ProviderAdapter.ProviderAdapterProtocolError({
+                          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                          detail: "Synthetic Stop revoked admission.",
+                        }),
+                      ),
+                ),
+              })),
             );
+          const startAuto = (ordinal: number) =>
+            autoTurn(ordinal).pipe(Effect.flatMap(harness.runtime.startTurn));
           yield* startAuto(1);
           yield* harness.offerAndWait(wakeTurnInit);
           yield* harness.offerAndWait(turnOneResult);
           yield* Queue.take(harness.terminalReceipts);
+          assert.equal(allowanceChecks, 1);
 
           observedOrganization = "Wrong Organization";
           const refusal = yield* startAuto(2).pipe(Effect.flip);
           assert.equal(refusal._tag, "ProviderAdapterTurnStartError");
           if (refusal._tag === "ProviderAdapterTurnStartError")
             assert.isTrue(refusal.refusedBeforePrompt);
-          assert.equal(checks, 1);
+          assert.equal(accountChecks, 1);
+          assert.equal(allowanceChecks, 1);
           assert.lengthOf(harness.offeredMessages, 1);
 
           observedOrganization = initialAccount.organization;
-          yield* startAuto(3);
-          assert.equal(checks, 2);
+          for (const [ordinal, unavailable] of [autoClaudeUsage(true), undefined].entries()) {
+            usage = unavailable;
+            const refusal = yield* startAuto(ordinal + 3).pipe(Effect.flip);
+            assert.equal(refusal._tag, "ProviderAdapterTurnStartError");
+            if (refusal._tag === "ProviderAdapterTurnStartError") {
+              assert.isTrue(refusal.refusedBeforePrompt);
+              assert.propertyVal(refusal.cause, "method", "verifyAutoAllowance");
+            }
+            assert.lengthOf(harness.offeredMessages, 1);
+          }
+          assert.equal(allowanceChecks, 3);
+
+          usage = autoClaudeUsage(false);
+          stopAtAllowance = true;
+          const stopped = yield* startAuto(5).pipe(Effect.flip);
+          assert.equal(stopped._tag, "ProviderAdapterTurnStartError");
+          if (stopped._tag === "ProviderAdapterTurnStartError")
+            assert.propertyVal(stopped.cause, "detail", "Synthetic Stop revoked admission.");
+          assert.lengthOf(harness.offeredMessages, 1);
+
+          admitted = true;
+          stopAtAllowance = false;
+          yield* startAuto(6);
+          assert.equal(accountChecks, 5);
+          assert.equal(allowanceChecks, 5);
           assert.lengthOf(harness.offeredMessages, 2);
           assert.lengthOf(harness.processQueues, 1);
           assert.equal(harness.getOpenedOptions()?.sessionId, WAKE_NATIVE_SESSION);
@@ -4882,15 +4980,37 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             path.join(homePath, "settings.json"),
             JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://synthetic-provider.invalid" } }),
           );
-          const routeRefusal = yield* startAuto(4).pipe(Effect.flip);
+          const routeRefusal = yield* startAuto(7).pipe(Effect.flip);
           assert.equal(routeRefusal._tag, "ProviderAdapterTurnStartError");
           if (routeRefusal._tag === "ProviderAdapterTurnStartError") {
             assert.isTrue(routeRefusal.refusedBeforePrompt);
             assert.propertyVal(routeRefusal.cause, "nativeOutcome", "not_spawned");
           }
-          assert.equal(checks, 2);
+          assert.equal(accountChecks, 5);
+          assert.equal(allowanceChecks, 5);
           assert.lengthOf(harness.offeredMessages, 2);
           assert.lengthOf(harness.processQueues, 1);
+
+          yield* fileSystem.remove(path.join(homePath, "settings.json"));
+          usage = undefined;
+          const { message, ...resume } = yield* autoTurn(8);
+          const resumeRefusal = yield* harness.runtime.resumeTurn!({
+            ...resume,
+            messageId: message.messageId,
+          }).pipe(Effect.flip);
+          assert.equal(resumeRefusal._tag, "ProviderAdapterTurnStartError");
+          if (resumeRefusal._tag === "ProviderAdapterTurnStartError") {
+            assert.isTrue(resumeRefusal.refusedBeforePrompt);
+            assert.propertyVal(resumeRefusal.cause, "method", "verifyAutoAllowance");
+          }
+          assert.equal(allowanceChecks, 6);
+          assert.lengthOf(harness.offeredMessages, 2);
+          assert.lengthOf(harness.processQueues, 2);
+
+          usage = autoClaudeUsage(false);
+          yield* startAuto(9);
+          assert.equal(allowanceChecks, 7);
+          assert.lengthOf(harness.offeredMessages, 3);
         }),
     );
 

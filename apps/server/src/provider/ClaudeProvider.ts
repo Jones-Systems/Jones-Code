@@ -29,6 +29,7 @@ import {
   query as claudeQuery,
   type ModelInfo as ClaudeModelInfo,
   type Options as ClaudeQueryOptions,
+  type Query as ClaudeQuery,
   type SlashCommand as ClaudeSlashCommand,
   type SDKControlGetUsageResponse,
   type SDKUserMessage,
@@ -497,6 +498,24 @@ class ClaudeCapabilitiesProbeSdkError extends Schema.TaggedError<ClaudeCapabilit
   }
 }
 
+export const readClaudeQueryUsage = Effect.fn("ClaudeProvider.readClaudeQueryUsage")(function* (
+  query: Pick<ClaudeQuery, "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET">,
+) {
+  // get_usage is a control request. Skip the transcript scan and cap the wait
+  // separately from startup, including when an older CLI rejects the control.
+  const usage = yield* Effect.tryPromise({
+    try: () =>
+      query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }),
+    catch: (cause) => new ClaudeCapabilitiesProbeSdkError({ operation: "usage", cause }),
+  }).pipe(
+    Effect.timeout(DEFAULT_TIMEOUT_MS),
+    Effect.orElseSucceed(() => undefined),
+  );
+  return usage
+    ? { rate_limits_available: usage.rate_limits_available, rate_limits: usage.rate_limits }
+    : undefined;
+});
+
 /** A never-yielding prompt allows local initialization IPC without sending an Anthropic request. */
 const probeClaudeCapabilities = (
   claudeSettings: ClaudeSettings,
@@ -565,24 +584,12 @@ const probeClaudeCapabilities = (
     ),
     Effect.flatMap(({ q, init, graceMs }) =>
       Effect.gen(function* () {
-        // Usage has its own deadline so a slow optional request cannot discard initialization.
-        // Only the rate limits are read, so skip the local transcript scan that fills
-        // `behaviors`: with a few GB of transcripts it outlasts the deadline.
         // The effort caps are read in parallel under the same deadline; workspace probes skip both.
         const usageCheckedAt = DateTime.formatIso(yield* DateTime.now);
         const { getSettings } = q as ClaudeSettingsQuery;
-        const [usageResult, settingsResult] = yield* Effect.all(
+        const [usage, settingsResult] = yield* Effect.all(
           [
-            includeStatus
-              ? Effect.tryPromise({
-                  try: () =>
-                    q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({
-                      skipBehaviors: true,
-                    }),
-                  catch: (cause) =>
-                    new ClaudeCapabilitiesProbeSdkError({ operation: "usage", cause }),
-                }).pipe(Effect.timeout(DEFAULT_TIMEOUT_MS), Effect.result)
-              : Effect.undefined,
+            includeStatus ? readClaudeQueryUsage(q) : Effect.undefined,
             includeStatus && getSettings
               ? Effect.tryPromise({
                   try: () => getSettings.call(q),
@@ -593,13 +600,6 @@ const probeClaudeCapabilities = (
           ],
           { concurrency: "unbounded" },
         );
-        const usage =
-          usageResult && Result.isSuccess(usageResult)
-            ? {
-                rate_limits_available: usageResult.success.rate_limits_available,
-                rate_limits: usageResult.success.rate_limits,
-              }
-            : undefined;
         if (autoRouting && (!settingsResult || Result.isFailure(settingsResult))) {
           return yield* new ClaudeCapabilitiesProbeSdkError({
             operation: "settings",
