@@ -643,7 +643,7 @@ describe("Workstream options and header ordering", () => {
       .toBeVisible();
   });
 
-  it("moves accepted offline closes to Closed Workstreams and can reopen them", async () => {
+  it("hides an accepted close from the sidebar until the authority confirms closure", async () => {
     using setup = fixture();
     const mini = EnvironmentId.make("Mini");
     const laptop = EnvironmentId.make("Laptop");
@@ -663,23 +663,6 @@ describe("Workstream options and header ordering", () => {
       rosterRevision: 1,
       members: [mini],
     } as const;
-    const cancel = vi.fn<NonNullable<PersonalWorkstreamsController["cancelOperation"]>>(
-      async () => {
-        setup.registry.set(setup.state, {
-          ...setup.initial,
-          fleet: { ...fleet, operations: [] },
-        });
-        return {
-          ok: true,
-          value: {
-            operation: { ...operation, status: "cancelled" },
-            workstream: null,
-            sequence: 2,
-          },
-        };
-      },
-    );
-    setup.controller.cancelOperation = cancel;
     setup.registry.set(setup.state, {
       ...setup.initial,
       fleet: { ...fleet, operations: [] },
@@ -688,6 +671,7 @@ describe("Workstream options and header ordering", () => {
     await using _screen = await render(setup.ui);
     const members = page.getByText("Members of menu-Alpha", { exact: true });
     const closed = page.getByText("Closed Workstreams", { exact: true });
+    const closedAlpha = page.getByRole("button", { name: "Alpha Completed", exact: true });
     await expect.element(members).toBeVisible();
     await expect.element(closed).not.toBeInTheDocument();
     await act(() =>
@@ -698,12 +682,24 @@ describe("Workstream options and header ordering", () => {
       }),
     );
     await expect.element(members).not.toBeInTheDocument();
-    await expect.element(page.getByText(/waiting for Mini/i)).not.toBeInTheDocument();
+    await expect.element(closed).not.toBeInTheDocument();
+    await expect.element(page.getByText("Alpha", { exact: true })).not.toBeInTheDocument();
+    await act(() =>
+      setup.registry.set(setup.state, {
+        ...setup.initial,
+        fleet: { ...fleet, operations: [] },
+        workstreams: setup.initial.workstreams.map((entry) =>
+          entry.id === operation.workstreamId
+            ? { ...entry, lifecycle: "completed" as const }
+            : entry,
+        ),
+      }),
+    );
     await closed.click();
-    await page.getByRole("button", { name: "Alpha Completed", exact: true }).click();
+    await closedAlpha.click();
     await expect.element(page.getByRole("dialog")).toHaveAccessibleName("Alpha");
     await page.getByRole("button", { name: "Reopen Workstream", exact: true }).click();
-    expect(cancel).toHaveBeenCalledWith("closing-alpha");
+    expect(setup.controller.setLifecycle).toHaveBeenCalledWith("menu-Alpha", "active");
     await expect.element(members).toBeVisible();
     await expect.element(closed).not.toBeInTheDocument();
   });
