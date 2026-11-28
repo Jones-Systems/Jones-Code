@@ -23235,6 +23235,154 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
     ),
   );
 
+  it.effect.each([false, true])(
+    "releases producer-owned queued Stop after a child failure (interrupt acknowledged: %s)",
+    (acknowledged) =>
+      Effect.gen(function* () {
+        const allowProducerStop = yield* Deferred.make<void>();
+        const rootReplyObserved = yield* Deferred.make<void>();
+        const childFailureReady = yield* Deferred.make<void>();
+        const allowChildFailure = yield* Deferred.make<void>();
+        const allowTerminal = yield* Deferred.make<void>();
+        const terminalReceived = yield* Deferred.make<void>();
+        const entries = interruptSubagentCommandTranscript.entries;
+        const transcript = makeCodexReplayTranscript({
+          scenario: `queued-stop-child-failure-${acknowledged}`,
+          entries: [
+            ...entries.slice(0, 6),
+            {
+              type: "emit_inbound",
+              frame: {
+                id: 3,
+                result: {
+                  turn: {
+                    ...makeCodexReplayTurn({ id: INTERRUPT_NATIVE_TURN, status: "inProgress" }),
+                    startedAt: null,
+                  },
+                },
+              },
+            },
+            // Omit the child command process, which has a separate cleanup protocol.
+            ...entries.slice(7, childInterruptResponseIndex - 2),
+            entries[childInterruptResponseIndex - 1]!,
+            {
+              type: "emit_inbound",
+              label: "child interrupt queued",
+              frame: {
+                method: "thread/status/changed",
+                params: { threadId: INTERRUPT_CHILD_NATIVE_THREAD, status: { type: "idle" } },
+              },
+            },
+            entries[rootInterruptResponseIndex - 1]!,
+            ...(acknowledged ? [entries[rootInterruptResponseIndex]!] : []),
+            {
+              type: "emit_inbound",
+              label: "child interrupt failed",
+              frame: { id: 4, error: { code: -32_000, message: "child interrupt request failed" } },
+            },
+            {
+              type: "emit_inbound",
+              label: "root native terminal",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: INTERRUPT_NATIVE_THREAD,
+                  turn: makeCodexReplayTurn({ id: INTERRUPT_NATIVE_TURN, status: "interrupted" }),
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "after root native terminal",
+              frame: {
+                method: "thread/status/changed",
+                params: { threadId: INTERRUPT_NATIVE_THREAD, status: { type: "idle" } },
+              },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
+          onResponse: (method) =>
+            method === "turn/interrupt"
+              ? Deferred.succeed(rootReplyObserved, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+          beforeEmitInbound: (entry) => {
+            switch (entry.label) {
+              case "child interrupt queued":
+                return Deferred.succeed(allowProducerStop, undefined);
+              case "child interrupt failed":
+                return Deferred.succeed(childFailureReady, undefined).pipe(
+                  Effect.andThen(Deferred.await(allowChildFailure)),
+                );
+              case "root native terminal":
+                return Deferred.await(allowTerminal);
+              case "after root native terminal":
+                return Deferred.succeed(terminalReceived, undefined);
+              default:
+                return Effect.void;
+            }
+          },
+        });
+        yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("queued-stop-child-failure"),
+              text: INTERRUPT_PROMPT,
+            }),
+          )
+          .pipe(
+            Effect.provideService(CodexQueuedStartStop, () => ({
+              wasStopped: Effect.succeed(true),
+              awaitStop: Deferred.await(allowProducerStop).pipe(Effect.as(true)),
+            })),
+          );
+        yield* harness.until(
+          () =>
+            harness.events.some(
+              (event) =>
+                event.type === "provider_turn.updated" &&
+                event.providerTurn.nativeTurnRef?.nativeId === INTERRUPT_CHILD_NATIVE_TURN,
+            ),
+          "running child turn",
+        );
+        const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+          driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+          nativeTurnId: INTERRUPT_NATIVE_TURN,
+        });
+        const stopping = yield* harness.runtime
+          .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
+          .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(childFailureReady);
+        if (acknowledged) yield* Deferred.await(rootReplyObserved);
+        yield* TestClock.adjust(0);
+        yield* Deferred.succeed(allowChildFailure, undefined);
+        assert.equal((yield* Fiber.join(stopping))._tag, "Failure");
+        yield* TestClock.adjust(0);
+        assert.lengthOf(harness.terminalEvents(), acknowledged ? 1 : 0);
+        assert.isTrue(
+          yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
+        );
+
+        yield* Deferred.succeed(allowTerminal, undefined);
+        yield* Deferred.await(terminalReceived);
+        yield* TestClock.adjust(0);
+        yield* harness.firstTerminal;
+        assert.lengthOf(harness.terminalEvents(), 1);
+        assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
+        assert.isFalse(
+          yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, layerNodeServicesWithCrypto),
+        ),
+      ),
+  );
+
   const childTerminationResponseIndex = interruptSubagentCommandTranscript.entries.findIndex(
     (entry) =>
       entry.type === "emit_inbound" && entry.label === "thread/backgroundTerminals/terminate/child",

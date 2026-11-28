@@ -1543,7 +1543,7 @@ interface QueuedCodexRootStop {
   readonly closed: Deferred.Deferred<void>;
   readonly wasStopped: Effect.Effect<boolean>;
   authorized: boolean;
-  dispatched: boolean;
+  delivery: "pending" | "dispatched" | "acknowledged";
 }
 
 interface ActiveCodexTurnContext {
@@ -3208,11 +3208,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             producer.unloadedThreads.has(nativeThreadId)
           )
             return;
-          const stop = { producer, closed, wasStopped, authorized: false, dispatched: false };
+          const stop: QueuedCodexRootStop = {
+            producer,
+            closed,
+            wasStopped,
+            authorized: false,
+            delivery: "pending",
+          };
           turn.queuedRootStop = stop;
           const canEnqueue = () =>
             queuedRootStops.get(turn) === stop &&
-            !stop.dispatched &&
+            stop.delivery === "pending" &&
             ownsNativeBinding(producer, nativeThreadId, turn.providerThread.id) &&
             !producer.unloadedThreads.has(nativeThreadId) &&
             Ref.getUnsafe(activeTurns).get(turn.nativeTurnId) === turn;
@@ -3233,10 +3239,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   {
                     canEnqueue,
                     onEnqueued: () => {
-                      stop.dispatched = true;
+                      stop.delivery = "dispatched";
                     },
                   },
-                ).pipe(Effect.timeout(STOP_REQUEST_BUDGET_MS));
+                ).pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      stop.delivery = "acknowledged";
+                    }),
+                  ),
+                  Effect.timeout(STOP_REQUEST_BUDGET_MS),
+                );
               }),
               Deferred.await(closed),
             ).pipe(
@@ -3448,8 +3461,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (
                 context?.providerThread.nativeThreadRef?.nativeId === completion.threadId &&
                 queuedRootStops.get(context)?.producer === producer
-              )
+              ) {
                 settleQueuedRootStop(context);
+              } else {
+                // Local lineage cleanup may remove the active context before the native terminal.
+                for (const [turn, stop] of queuedRootStops) {
+                  if (
+                    stop.producer === producer &&
+                    turn.nativeTurnId === completion.turn.id &&
+                    turn.providerThread.nativeThreadRef?.nativeId === completion.threadId
+                  ) {
+                    settleQueuedRootStop(turn);
+                    break;
+                  }
+                }
+              }
               lateStarts.complete(binding, completion.turn.id, () => ({
                 nativeTurnId: completion.turn.id,
                 status,
@@ -12681,7 +12707,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     let dispatchedHere = false;
                     const stillOwnsStop = () =>
                       stop !== undefined &&
-                      !stop.dispatched &&
+                      stop.delivery === "pending" &&
                       queuedRootStops.get(activeTurn) === stop &&
                       ownsNativeBinding(
                         stop.producer,
@@ -12697,9 +12723,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                             canEnqueue: stillOwnsStop,
                             onEnqueued: () => {
                               dispatchedHere = true;
-                              stop.dispatched = true;
+                              stop.delivery = "dispatched";
                             },
                           }).pipe(
+                            Effect.tap(() =>
+                              Effect.sync(() => {
+                                stop.delivery = "acknowledged";
+                              }),
+                            ),
                             Effect.catch((cause) =>
                               !dispatchedHere && !stillOwnsStop()
                                 ? Effect.void
@@ -12729,8 +12760,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ),
                       ),
                     );
+                    rootInterruptAcknowledged =
+                      stop === undefined || stop.delivery === "acknowledged";
+                    rootAcknowledgementUnknown ||= !rootInterruptAcknowledged;
                   }
-                  rootInterruptAcknowledged = true;
                 }
                 if (childInterruptFailure !== undefined) return yield* childInterruptFailure;
                 const [, completed] = yield* Effect.all(
