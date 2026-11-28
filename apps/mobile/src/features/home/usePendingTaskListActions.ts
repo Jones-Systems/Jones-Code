@@ -4,7 +4,7 @@ import { msg } from "gt-react-native";
 import { useCallback } from "react";
 
 import { m } from "../../i18n/messages";
-import { automaticLaunchNeedsReconciliation } from "../../jones/accountRouting/outbox";
+import { automaticLaunchNeedsReconciliation } from "../../jones/threadConfiguration/outboxDelivery";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
 import { removeThreadOutboxMessage } from "../../state/thread-outbox-removal";

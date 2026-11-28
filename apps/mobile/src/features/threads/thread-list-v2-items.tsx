@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { settlementRestoreMenuItems } from "../../jones/settlementRestore/menu";
-import { automaticLaunchNeedsReconciliation } from "../../jones/accountRouting/outbox";
+import { automaticLaunchNeedsReconciliation } from "../../jones/threadConfiguration/outboxDelivery";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {

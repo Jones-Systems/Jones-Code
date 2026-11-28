@@ -13,7 +13,7 @@
   "allowedImports": [
     {
       "from": "apps/mobile/src/features/home/usePendingTaskListActions.ts",
-      "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
     },
     {
       "from": "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
@@ -33,7 +33,7 @@
     },
     {
       "from": "apps/mobile/src/features/threads/thread-list-v2-items.tsx",
-      "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
     },
     {
       "from": "apps/mobile/src/state/thread-outbox-model.ts",
@@ -45,7 +45,7 @@
     },
     {
       "from": "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts",
-      "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
     },
     {
       "from": "apps/mobile/src/state/threadOutboxDelivery.ts",

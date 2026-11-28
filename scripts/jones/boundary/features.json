@@ -20,6 +20,7 @@
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
         "apps/server/src/cli/thread.test.ts",
+        "apps/mobile/src/dependency-graph.test.ts",
         "apps/mobile/src/jones/accountRouting/outbox.test.ts",
         "apps/mobile/src/features/threads/new-task-flow-provider.test.tsx",
         "apps/mobile/src/state/thread-outbox.test.ts",

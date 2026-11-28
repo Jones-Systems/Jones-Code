@@ -16,7 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { automaticLaunchNeedsReconciliation } from "../jones/accountRouting/outbox";
+import { automaticLaunchNeedsReconciliation } from "../jones/threadConfiguration/outboxDelivery";
 import {
   decodeQueuedThreadMessage,
   threadOutboxRetryDelayMs,

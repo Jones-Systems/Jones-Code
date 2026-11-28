@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts/jones/deliveryEvidence";
 
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
+import { preparedUsesAutomaticAccounts } from "../accountRouting/outbox";
 import { queuedThreadTurnMatches } from "./outboxDeliveryContract";
 
 type DeliveryEvidence = DispatchDeliveryEvidence | LaunchDeliveryEvidence;
@@ -125,6 +126,14 @@ export function acceptedQueuedThreadDelivery(message: QueuedThreadMessage): Deli
 export function queuedThreadDeliveryStatus(message: QueuedThreadMessage) {
   const evidence = queuedThreadDeliveryEvidence(message);
   return evidence === undefined ? "unknown" : threadTurnDeliveryStatus(evidence);
+}
+
+export function automaticLaunchNeedsReconciliation(message: QueuedThreadMessage): boolean {
+  return (
+    message.issuance?.state === "issued" &&
+    preparedUsesAutomaticAccounts(message.issuance.prepared) &&
+    queuedThreadDeliveryStatus(message) !== "rejected"
+  );
 }
 
 export function canRestoreQueuedThreadMessage(message: QueuedThreadMessage): boolean {
