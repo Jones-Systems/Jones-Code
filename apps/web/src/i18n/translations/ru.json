@@ -13094,5 +13094,7 @@
   "08226ed443dd4cb0": "Установка · {operationId}",
   "d805857a3e243315": "Попытка обновления",
   "18d6cbd59b2ef487": "Исходная директива ведомого хоста не подтверждена.",
-  "47387fc33eca675a": "Хост подтвердил снятие директивы. Для сохранения требуется разрешение на чтение."
+  "47387fc33eca675a": "Хост подтвердил снятие директивы. Для сохранения требуется разрешение на чтение.",
+  "c3a73b89ed249a98": "The exact Stop result was already recorded. Nothing will be resent.",
+  "fd4c7619ea984d74": "The transfer ended before Stop was confirmed. Nothing will be resent."
 }

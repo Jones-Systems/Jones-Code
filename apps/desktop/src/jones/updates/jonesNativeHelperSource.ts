@@ -461,11 +461,24 @@ def swap_bundle(expected, incoming, previous):
             sync_parent(stable)
         raise
 
+def verify_bundle_generation(app, expected_digest):
+    if app.is_symlink() or not app.is_dir() or app_digest(app) != expected_digest:
+        raise RuntimeError('Native bundle digest changed; paired rollback held.')
+
+def prove_bundle_rollback(expected, rollback_digest, staged, incoming, previous):
+    stable = pathlib.Path(expected['appPath'])
+    if not previous.exists() and not previous.is_symlink():
+        verify_bundle_generation(stable, rollback_digest)
+        return False
+    if incoming.exists() or incoming.is_symlink():
+        raise RuntimeError('Occupied trial bundle path; rollback held.')
+    verify_bundle_generation(previous, rollback_digest)
+    verify_rollback_signature(expected, previous)
+    verify_bundle_generation(stable, staged['appDigest'])
+    return True
+
 def restore_bundle(expected, incoming, previous):
     stable = pathlib.Path(expected['appPath'])
-    if not previous.exists(): return
-    if incoming.exists(): raise RuntimeError('Occupied trial bundle path; rollback held.')
-    verify_rollback_signature(expected, previous)
     os.rename(stable, incoming)
     sync_parent(stable)
     os.rename(previous, stable)
@@ -1694,6 +1707,7 @@ def activate(intent_file):
     candidate = None
     backend_process = None
     incoming = previous = None
+    rollback_digest = None
     startup_unknown = False
     exclusive_writers = []
     recovery_reserves = []
@@ -1711,6 +1725,13 @@ def activate(intent_file):
         record('preparing', recoveryReserves=list(recovery_reserves))
         preparation_step = 'bundle'
         incoming, previous = prepare_bundle(expected, staged, intent['transactionId'])
+        stable = pathlib.Path(expected['appPath'])
+        rollback_digest = expected.get('appDigest')
+        if rollback_digest is None:
+            bundle_identity(expected)
+            rollback_digest = app_digest(stable)
+        else:
+            verify_bundle_generation(stable, rollback_digest)
         record('preparing', incomingBundle=str(incoming), previousBundle=str(previous))
         preserve_restart_tunnel(expected, intent['transactionId'])
         preparation_step = 'stop-processes'
@@ -1837,10 +1858,13 @@ def activate(intent_file):
             stop_exact(proofs)
             prove_quiescence(expected)
             if not exclusive_writers: exclusive_writers = acquire_writer_exclusion(expected)
+            if rollback_digest is None: raise RuntimeError('Original bundle generation is unproved.')
+            swap_back = prove_bundle_rollback(expected, rollback_digest, staged, incoming, previous)
             release_recovery_reserve(recovery_reserves)
             recovery_capacity_before_restore(expected, tx / 'previous-pair')
             restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state', staged)
-            if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
+            if swap_back: restore_bundle(expected, incoming, previous)
+            verify_bundle_generation(pathlib.Path(expected['appPath']), rollback_digest)
             record('rolled-back', message='Update rolled back: ' + str(failure))
         except Exception as recovery_failure:
             diagnostics = {'recoveryDiagnostics': {key: value for key, value in recovery_failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(recovery_failure, KernelProcessError) else {}

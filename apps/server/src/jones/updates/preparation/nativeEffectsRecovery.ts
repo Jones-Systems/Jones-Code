@@ -202,6 +202,7 @@ export interface NativeEffectsRecoveryDependencies {
   readonly plist?: typeof plist;
   readonly validateArtifact?: typeof validateJonesStagedArtifact;
   readonly syncFile?: (file: string, descriptor: NodeFSP.FileHandle) => Promise<void>;
+  readonly syncLifecycleDirectory?: (directory: string) => Promise<void>;
   readonly beforeApply?: () => void;
   readonly checkpoint?: (
     phase: "proof-durable" | "release-prepared" | "release-durable",
@@ -293,6 +294,8 @@ export async function recoverNativeEffects(
   return withQualifiedRuntimeLock(input.baseDir, PREPARATION_LOCK, () =>
     withQualifiedRuntimeLock(input.baseDir, preparationJobLock(input.jobId), async () => {
       const lifecyclePath = NodePath.join(root, "lifecycle", `${input.jobId}.json`);
+      const syncLifecycle = () =>
+        (dependencies.syncLifecycleDirectory ?? syncDirectory)(NodePath.dirname(lifecyclePath));
       const effectsPath = NodePath.join(root, "lifecycle", `${input.jobId}.effects.json`);
       const proofRoot = NodePath.join(runtime, "jones-preparation-recovery");
       const proofPath = NodePath.join(proofRoot, `${input.jobId}.json`);
@@ -324,6 +327,8 @@ export async function recoverNativeEffects(
           return fail();
         const { proofSha256, ...evidence } = saved;
         if (digest(JSON.stringify(evidence)) !== proofSha256) return fail();
+        await syncLifecycle();
+        if ((await read(lifecyclePath, 4096)).sha256 !== lifecycle.sha256) return fail();
         return { schema: 1, state: "released", proofSha256, proofPath };
       }
       if (
@@ -606,7 +611,7 @@ export async function recoverNativeEffects(
       await dependencies.checkpoint?.("release-prepared");
       await fresh();
       await NodeFSP.rename(temporary, lifecyclePath);
-      await syncDirectory(NodePath.dirname(lifecyclePath));
+      await syncLifecycle();
       await dependencies.checkpoint?.("release-durable");
       if ((await read(lifecyclePath)).sha256 !== digest(releasedBytes)) return fail();
       return { schema: 1, state: "released", proofSha256, proofPath };

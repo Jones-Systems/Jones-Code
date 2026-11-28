@@ -156,6 +156,20 @@ describe("updater progress record", () => {
     expect(state.progress?.error?.message.length).toBe(240);
   });
 
+  it("records a planless install ID before native preparation begins", async () => {
+    const operationId = "11111111-1111-4111-8111-111111111111";
+    const f = fixture({
+      newInstallOperationId: () => operationId,
+      install: async (input) => {
+        expect(input.operationId).toBe(operationId);
+        expect(f.states.at(-1)?.progress?.operationId).toBe(operationId);
+        return { updateId: operationId };
+      },
+    });
+    await f.updater.stageExact(candidate.source);
+    expect((await f.updater.install(install)).progress?.operationId).toBe(operationId);
+  });
+
   it("a check never touches the progress record, including a failed check", async () => {
     let fail = false;
     const f = fixture({}, async () => {
@@ -233,6 +247,27 @@ describe("restart reconciliation", () => {
     return advanceProgress(advanceProgress(started, "launcher-handoff", at), "restart", at)!;
   };
   const later = Date.parse("2026-11-10T00:01:00.000Z");
+
+  it.each(["committed", "rolled-back"] as const)(
+    "requires correlation at handoff before applying a %s startup result",
+    (status) => {
+      const outcome = { status, id: "op-1" };
+      const legacy = advanceProgress(startProgress("install", at), "launcher-handoff", at)!;
+      expect(reconcileProgressAtStartup(legacy, outcome, later)?.error?.code).toBe("interrupted");
+      const interrupted = reconcileProgressAtStartup(
+        { ...legacy, operationId: "op-1" },
+        undefined,
+        later,
+      );
+      expect(reconcileProgressAtStartup(interrupted, { ...outcome, id: "op-2" }, later)).toBe(
+        interrupted,
+      );
+      const corrected = reconcileProgressAtStartup(interrupted, outcome, later + 1);
+      expect(corrected?.phase).toBe(status === "committed" ? "done" : "failed");
+      expect(corrected?.stepKey).toBe("confirm-restart");
+      expect(corrected?.error?.code).toBe(status === "committed" ? undefined : "rolled-back");
+    },
+  );
 
   it("finishes a matching install from the launcher's committed outcome", () => {
     const settled = reconcileProgressAtStartup(

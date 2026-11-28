@@ -268,12 +268,13 @@ export async function stageQualifiedArtifact(input: {
   // is reported instead of failing a valid Download.
   return await withOwnedScratch(input.scratchParent, ".jones-extract-", async (scratch) => {
     if (staged.candidate.platform === "darwin") {
-      await input.onNativeEffects?.("native-effects");
       await extractQualifiedDarwinRuntime({
         artifact: staged,
         destination: scratch,
         payloadVerification: "staging",
         baseDir: binding.baseDir,
+        beforeAttach: async () => input.onNativeEffects?.("native-effects"),
+        onCleanupProved: async () => input.onNativeEffects?.("clean"),
         ...(signal === undefined ? {} : { signal }),
         run: async (command) => {
           const result = await runBoundedProcess({
@@ -285,8 +286,6 @@ export async function stageQualifiedArtifact(input: {
           return { ...result, code: result.code ?? 1 };
         },
       });
-      // Successful extraction includes the helper's positive detach/inventory reconciliation.
-      await input.onNativeEffects?.("clean");
     } else await extractQualifiedLinuxArchive(staged.payloadPath, scratch);
     signal?.throwIfAborted();
     await validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), staged.candidate);

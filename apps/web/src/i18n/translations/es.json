@@ -13090,5 +13090,7 @@
   "08226ed443dd4cb0": "Instalación · {operationId}",
   "d805857a3e243315": "Intento de actualización",
   "18d6cbd59b2ef487": "La directiva original del host seguidor aún no se ha confirmado.",
-  "47387fc33eca675a": "El host confirmó la liberación. Se necesita permiso de lectura para guardarla."
+  "47387fc33eca675a": "El host confirmó la liberación. Se necesita permiso de lectura para guardarla.",
+  "c3a73b89ed249a98": "The exact Stop result was already recorded. Nothing will be resent.",
+  "fd4c7619ea984d74": "The transfer ended before Stop was confirmed. Nothing will be resent."
 }

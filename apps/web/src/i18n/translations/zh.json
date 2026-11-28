@@ -13109,5 +13109,7 @@
   "08226ed443dd4cb0": "安装 · {operationId}",
   "d805857a3e243315": "更新尝试",
   "18d6cbd59b2ef487": "原始跟随主机指令尚未确认。",
-  "47387fc33eca675a": "主机已确认解除指令。保存此确认需要读取权限。"
+  "47387fc33eca675a": "主机已确认解除指令。保存此确认需要读取权限。",
+  "c3a73b89ed249a98": "The exact Stop result was already recorded. Nothing will be resent.",
+  "fd4c7619ea984d74": "The transfer ended before Stop was confirmed. Nothing will be resent."
 }

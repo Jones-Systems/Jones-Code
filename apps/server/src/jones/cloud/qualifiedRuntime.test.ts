@@ -145,6 +145,16 @@ it("stages a fixed source and payload without changing live state or active runt
       await verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost),
       staged,
     );
+    const otherHandle = "f".repeat(staged.stagedHandle.length);
+    await NodeFSP.copyFile(
+      NodePath.join(base, "runtime", "staged-updates", `${staged.stagedHandle}.json`),
+      NodePath.join(base, "runtime", "staged-updates", `${otherHandle}.json`),
+    );
+    await NodeAssert.rejects(
+      verifyStagedQualifiedRuntime(base, baseline, otherHandle, fixtureHost),
+      (cause: unknown) =>
+        cause instanceof QualifiedRuntimeBlockedError && cause.reason === "invalid-artifact",
+    );
     await NodeFSP.writeFile(
       NodePath.join(base, "userdata", "environment-id"),
       "different-environment",

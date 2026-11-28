@@ -59,6 +59,7 @@ export interface JonesUpdaterHost {
   readonly installedSource: () => Promise<string>;
   readonly platform: "linux" | "darwin";
   readonly architecture: "x64" | "arm64";
+  readonly newInstallOperationId?: () => string;
   /**
    * Downloads, verifies and stages exactly `candidate`. The host runs this off the serving
    * process; the signal stops a preparation whose target was superseded.
@@ -1251,11 +1252,12 @@ export class JonesUpdater {
     );
     if (refusal !== undefined)
       return refused({ ...this.snapshot(), phase: "blocked", message: refusal });
+    const operationId = input.operationId ?? this.host.newInstallOperationId?.();
     this.busy = true;
     this.clearOutcome();
     this.setProgress((_previous, now) =>
       startProgress("install", now, {
-        ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+        ...(operationId === undefined ? {} : { operationId }),
         continueRunningThreads: input.continueRunningThreads === true,
       }),
     );
@@ -1280,7 +1282,7 @@ export class JonesUpdater {
     try {
       const { onBeforeDispatchRefusal: _refusal, ...hostInput } = input;
       const accepted = await this.host.install(
-        hostInput,
+        { ...hostInput, ...(operationId === undefined ? {} : { operationId }) },
         (step) => {
           currentMessage = messages[step];
           this.setProgress((progress, now) =>

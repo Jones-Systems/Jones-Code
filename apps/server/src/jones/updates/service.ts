@@ -798,6 +798,9 @@ export const layer = Layer.effect(
       yield* Clock.currentTimeMillis,
     );
     const updater: JonesUpdater = new JonesUpdater({
+      ...(launcher.qualifiedOperations === true
+        ? { newInstallOperationId: () => NodeCrypto.randomUUID() }
+        : {}),
       stateChanged: (state) => {
         publishCapability(state);
         progressRecorder.persist(state);
@@ -957,9 +960,7 @@ export const layer = Layer.effect(
       install: async (input, reportStep, onPreparationRefused) => {
         if (qualifiedSelfUpdate.installQualified === undefined)
           throw new Error("bootstrap-required: Qualified Install is unavailable.");
-        const operationId =
-          input.operationId ??
-          (launcher.qualifiedOperations === true ? NodeCrypto.randomUUID() : undefined);
+        const operationId = input.operationId;
         const installQualified = qualifiedSelfUpdate.installQualified;
         const recoveryRefusal = () =>
           input.recovery === undefined

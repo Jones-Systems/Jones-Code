@@ -13028,5 +13028,7 @@
   "08226ed443dd4cb0": "설치 · {operationId}",
   "d805857a3e243315": "업데이트 시도",
   "18d6cbd59b2ef487": "팔로워에 대한 원래 지시가 확인되지 않았습니다.",
-  "47387fc33eca675a": "호스트가 해제를 확인했습니다. 저장하려면 읽기 권한이 필요합니다."
+  "47387fc33eca675a": "호스트가 해제를 확인했습니다. 저장하려면 읽기 권한이 필요합니다.",
+  "c3a73b89ed249a98": "The exact Stop result was already recorded. Nothing will be resent.",
+  "fd4c7619ea984d74": "The transfer ended before Stop was confirmed. Nothing will be resent."
 }

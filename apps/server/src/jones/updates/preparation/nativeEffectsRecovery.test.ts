@@ -378,6 +378,21 @@ it.each([PREPARATION_LOCK, preparationJobLock(jobId)])(
     }),
 );
 
+it("requires durable release readback after a rename whose directory sync failed", async () =>
+  fixture(async (f) => {
+    const proof = String((await f.inspect()).proofSha256);
+    f.dependencies.syncLifecycleDirectory = async () => {
+      throw new Error("simulated directory sync failure");
+    };
+    await expect(f.apply(proof)).rejects.toThrow("simulated directory sync failure");
+    const visible = await NodeFSP.readFile(f.lifecycle, "utf8");
+    expect(JSON.parse(visible).state).toBe("released");
+    await expect(f.apply(proof)).rejects.toThrow("simulated directory sync failure");
+    delete f.dependencies.syncLifecycleDirectory;
+    expect((await f.apply(proof)).state).toBe("released");
+    expect(await NodeFSP.readFile(f.lifecycle, "utf8")).toBe(visible);
+  }));
+
 it.each([worker.pid, -worker.processGroup])("holds a live or reused identity %s", async (live) =>
   fixture(async (f) => {
     f.dependencies.absent = (pid) => pid !== live;

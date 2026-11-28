@@ -58,6 +58,15 @@ const absent = (pid: number) => {
   }
 };
 
+async function syncDirectory(directory: string): Promise<void> {
+  const fd = await NodeFSP.open(directory, "r");
+  try {
+    await fd.sync();
+  } finally {
+    await fd.close();
+  }
+}
+
 /** Only immutable release evidence may bypass the job lock. Never cache an unresolved read. */
 export async function readTerminalRelease(baseDir: string, jobId: string): Promise<boolean> {
   if (!isPreparationJobId(jobId)) return false;
@@ -207,7 +216,10 @@ export function preparationLifecycle(baseDir: string, jobId: string) {
               ? "not-started"
               : "unknown";
           }
-          if (raw.state === "released") return identity(raw.worker) ? "released" : "unknown";
+          if (raw.state === "released") {
+            await syncDirectory(directory);
+            return (await readTerminalRelease(baseDir, jobId)) ? "released" : "unknown";
+          }
           if (raw.state !== "spawning" && raw.state !== "started") return "unknown";
           const effects = (await readBoundedJson(effectFile, LIMIT).catch(() => undefined)) as
             | Effects
@@ -234,6 +246,8 @@ export function preparationLifecycle(baseDir: string, jobId: string) {
             (boundEffects === undefined || !["transfer", "clean"].includes(boundEffects.phase))
           )
             return "cleanup-unconfirmed";
+          // The worker may have exited after publishing its effects but before syncing the rename.
+          await syncDirectory(directory);
           // Only the parent/job-lock owner calls release after the entire captured group is absent.
           await save(launchFile, { schema: 1, jobId, kind: raw.kind, state: "released", worker });
           return "released";

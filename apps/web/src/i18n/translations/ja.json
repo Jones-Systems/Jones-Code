@@ -13031,5 +13031,7 @@
   "08226ed443dd4cb0": "インストール · {operationId}",
   "d805857a3e243315": "更新の試行",
   "18d6cbd59b2ef487": "フォロワーへの元の指示はまだ確認されていません。",
-  "47387fc33eca675a": "ホストが解除を確認しました。保存するには読み取り権限が必要です。"
+  "47387fc33eca675a": "ホストが解除を確認しました。保存するには読み取り権限が必要です。",
+  "c3a73b89ed249a98": "The exact Stop result was already recorded. Nothing will be resent.",
+  "fd4c7619ea984d74": "The transfer ended before Stop was confirmed. Nothing will be resent."
 }

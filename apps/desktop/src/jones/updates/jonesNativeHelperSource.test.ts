@@ -254,6 +254,10 @@ def synthetic_launch(active, descriptor=None):
     with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='advanced-state'")
     (home / 'settings.json').write_text('{"fixture":"candidate-settings"}')
     (profile / 'opaque').write_text('advanced-profile')
+    if fault in ('retained-removed', 'retained-changed'):
+        retained = previous_app.with_name(previous_app.name + '.jones-previous-' + expected['generation'])
+        if fault == 'retained-removed': shutil.rmtree(retained)
+        else: (retained / 'Contents/MacOS/Jones').write_text('substituted-binary')
     if fault == 'untracked-launch': raise RuntimeError('Candidate identity was not captured.')
     wanted = read(descriptor)
     receipt = {key: wanted[key] for key in ('protocol', 'startupGateProtocol', 'transactionId', 'stagedHandle', 'home', 'databasePath', 'profile', 'environmentId', 'version', 'sourceSha', 'sourceTree', 'listener')}
@@ -270,7 +274,7 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
     if fault == 'kernel-receipt': receipt['backendProcess'] = {'pid': 654, 'startSec': 101, 'startUsec': 0, 'executable': '/synthetic/backend'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
-    if fault in ('trial-mismatch', 'restart-refused', 'relaunch-eperm', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
+    if fault in ('trial-mismatch', 'restart-refused', 'relaunch-eperm', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy', 'retained-removed', 'retained-changed'): receipt['sourceSha'] = 'wrong-source'
     if fault.startswith('authority-'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
@@ -339,6 +343,11 @@ else:
     activate(tx / 'intent.json')
     journal = read(tx / 'journal.json')
     with sqlite3.connect(database) as db: state = db.execute('SELECT value FROM identity').fetchone()[0]
+    if fault in ('retained-removed', 'retained-changed'):
+        assert state == 'advanced-state'
+        assert (tx / 'previous-pair' / 'pair.json').exists()
+        assert 'restart-previous' not in events
+        assert app_digest(previous_app) == staged['appDigest']
     if fault in ('storage-refused', 'reserve-denied'):
         assert events == ['storage-preflight', 'identity:123', 'restart-previous']
         assert state == 'previous-state'
@@ -3144,6 +3153,8 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["authority-advance-lost", "blocked"],
     ["bundle-denied", "rolled-back"],
     ["bundle-second-rename-denied", "rolled-back"],
+    ["retained-removed", "blocked"],
+    ["retained-changed", "blocked"],
     ["legacy-receipt", "blocked"],
     ["gate-mismatch", "blocked"],
     ["gate-boolean", "blocked"],

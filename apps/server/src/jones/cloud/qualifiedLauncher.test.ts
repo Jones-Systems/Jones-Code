@@ -1947,6 +1947,69 @@ const reconciliationRequest = (requestId = "22345678-1234-4234-8234-123456789abc
   requestId,
 });
 
+it.each([false, true])(
+  "reconciles admission write failure with pending selection published=%s",
+  async (published) => {
+    const operationId = "12345678-1234-4234-8234-123456789abc";
+    let preimage: Buffer | undefined;
+    await runScenario(
+      "commit",
+      async (base, failure) => {
+        const runtime = NodePath.join(base, "runtime");
+        const selection = NodePath.join(runtime, "service-state.json");
+        const selected = await readServiceState(selection);
+        const evidence = await reconcileUpdateOperation(base, operationId, selected.update);
+        if (!published) {
+          assert.deepEqual(await NodeFSP.readFile(selection), preimage);
+          assert.equal(evidence.state, "rejected");
+          const response = JSON.parse(
+            await NodeFSP.readFile(NodePath.join(runtime, "rejected.json"), "utf8"),
+          );
+          assert.equal(response.operationId, operationId);
+          assert.isTrue(NodeFS.existsSync(NodePath.join(runtime, "old-child-survived.json")));
+          return;
+        }
+        assert.match(String(failure), /Service selection changed/);
+        assert.equal(selected.update?.id, operationId);
+        assert.equal(selected.update?.status, "pending");
+        assert.isFalse(NodeFS.existsSync(NodePath.join(runtime, "rejected.json")));
+        assert.isFalse(NodeFS.existsSync(NodePath.join(runtime, "observed-active-launcher.json")));
+        assert.equal(evidence.state, "pending");
+        const reservationOnly = await reconcileUpdateOperation(base, operationId, undefined);
+        assert.equal(reservationOnly.state, "blocked");
+        if (reservationOnly.state === "blocked")
+          assert.match(reservationOnly.reason ?? "", /no proven native outcome/);
+        await NodeAssert.rejects(
+          new Launcher(base, selected, { startupGateProtocol: 1 }).run(),
+          /Active child exited unexpectedly/,
+        );
+        const recovered = await readServiceState(selection);
+        assert.equal(recovered.activeVersion, baseline);
+        assert.equal(recovered.update?.status, "failed");
+        assert.equal(
+          (await readUpdateOperationSettlement(base, operationId))?.basis,
+          "launcher-recorded",
+        );
+        const restart = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(runtime, "restart-context.json"), "utf8"),
+        );
+        assert.equal(restart.childVersion, baseline);
+      },
+      undefined,
+      {
+        afterOperationReserve: async () => {},
+        recoveryIO: {
+          writeState: async (path, state) => {
+            preimage = await NodeFSP.readFile(path);
+            if (published) await writeServiceState(path, state);
+            throw new Error("Synthetic admission durability failure");
+          },
+        },
+      },
+    );
+  },
+);
+
 it("keeps uncertain snapshot staging held before publishing pre-trial settlement", async () => {
   await runScenario(
     "commit",

@@ -134,6 +134,7 @@ it.each([false, true])(
       extractQualifiedDarwinRuntime: async (
         input: Parameters<typeof extractQualifiedDarwinRuntime>[0],
       ) => {
+        await input.beforeAttach?.();
         controller.abort(primary);
         const detached = await input.run({
           command: "/usr/bin/hdiutil",
@@ -168,7 +169,8 @@ it.each([false, true])(
           signal: cleanup.signal,
         });
         expect(pipe.inputFailed).toBe(true);
-        if (!cleanupProved) throw primary;
+        if (cleanupProved) await input.onCleanupProved?.();
+        throw primary;
       },
     }));
     try {
