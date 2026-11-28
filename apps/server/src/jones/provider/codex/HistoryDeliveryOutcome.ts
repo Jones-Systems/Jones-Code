@@ -2,7 +2,10 @@ import type {
   MessageId,
   OrchestrationV2ContextHandoff,
   OrchestrationV2ProviderTurn,
+  OrchestrationV2Run,
+  OrchestrationV2RunAttempt,
   OrchestrationV2StoredEvent,
+  OrchestrationV2TurnItem,
   ProviderRuntimeBinding,
   RunAttemptId,
   RunId,
@@ -45,6 +48,43 @@ export class PromptNotApplied extends Schema.TaggedError<PromptNotApplied>()("Pr
 const isCodexRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 const isHistoryNotApplied = Schema.is(HistoryNotApplied);
 const isPromptNotApplied = Schema.is(PromptNotApplied);
+
+export function codexUnconfirmedStoppedRuns(input: {
+  readonly nativeThreadId: string | null | undefined;
+  readonly history: ReadonlyArray<OrchestrationV2TurnItem>;
+  readonly runs: ReadonlyArray<OrchestrationV2Run>;
+  readonly attempts: ReadonlyArray<OrchestrationV2RunAttempt>;
+  readonly droppedAttemptIds: ReadonlySet<RunAttemptId | null>;
+}): ReadonlySet<RunId> {
+  if (input.nativeThreadId == null || !input.runs.some((run) => run.status === "interrupted"))
+    return new Set();
+  const attempts = new Map(input.attempts.map((attempt) => [attempt.id, attempt]));
+  const candidates = new Map(input.runs.map((run) => [run.id, run]));
+  const uncertain = new Set<RunId>();
+  for (const item of input.history) {
+    if (item.type !== "run_interrupt_result" || item.runId === null || item.providerTurnId !== null)
+      continue;
+    const run = candidates.get(item.runId);
+    if (
+      run?.status !== "interrupted" ||
+      run.activeAttemptId === null ||
+      run.rootNodeId !== item.nodeId ||
+      run.providerThreadId !== item.providerThreadId ||
+      input.droppedAttemptIds.has(run.activeAttemptId)
+    )
+      continue;
+    const attempt = attempts.get(run.activeAttemptId);
+    if (
+      attempt?.status === "interrupted" &&
+      attempt.runId === run.id &&
+      attempt.startedAt !== null &&
+      attempt.nativeThreadId === input.nativeThreadId &&
+      attempt.providerThreadId === item.providerThreadId
+    )
+      uncertain.add(item.runId);
+  }
+  return uncertain;
+}
 
 export const historyInjectionRejection = (error: unknown) => {
   if (!isCodexRequestError(error) || error.method !== "thread/inject_items") return "ambiguous";

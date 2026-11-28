@@ -42,6 +42,7 @@ import * as PhysicalProcess from "../../jones/runtime/PhysicalProcessEvidence.ts
 import {
   CODEX_START_ACK_TIMEOUT_MS,
   CodexPendingStartStop,
+  CodexQueuedStartStop,
   codexStartReplyObservationOptions,
   makeCodexLateStartRecovery,
   type CodexStartDispatch,
@@ -2687,6 +2688,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           makeCodexPendingStartNotifications<
             Effect.Effect<void, CodexErrors.CodexAppServerError>
           >();
+        const queuedRootStops = new Map<
+          ActiveCodexTurnContext,
+          {
+            readonly producer: CodexRuntimeProducer;
+            readonly closed: Deferred.Deferred<void>;
+            authorized: boolean;
+            dispatched: boolean;
+          }
+        >();
+        const settleQueuedRootStop = (turn: ActiveCodexTurnContext) => {
+          const stop = queuedRootStops.get(turn);
+          if (stop === undefined) return;
+          queuedRootStops.delete(turn);
+          Deferred.doneUnsafe(stop.closed, Effect.void);
+        };
         const handleServerNotification: CodexRuntimeProducer["client"]["handleServerNotification"] =
           (method, handler) => {
             const install = (producer: CodexRuntimeProducer) =>
@@ -2709,6 +2725,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                           runtimeGeneration: producer.generation,
                           nativeThreadId: nativeId,
                         });
+                        for (const [turn, stop] of queuedRootStops) {
+                          if (
+                            stop.producer === producer &&
+                            turn.providerThread.nativeThreadRef?.nativeId === nativeId
+                          ) {
+                            settleQueuedRootStop(turn);
+                          }
+                        }
                       }
                       yield* threadRetirements.observeClosed(producer, nativeId);
                       if (closing !== undefined) yield* Deferred.succeed(closing, undefined);
@@ -3161,6 +3185,81 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           !Deferred.isDoneUnsafe(producer.termination) &&
           producer.bindings.get(nativeThreadId)?.id === providerThreadId &&
           !threadRetirements.owns(producer, nativeThreadId);
+        const retainQueuedRootStop = Effect.fn("CodexAdapterV2.retainQueuedRootStop")(function* (
+          turn: ActiveCodexTurnContext,
+          ready: Deferred.Deferred<void>,
+          awaitAppStop: Effect.Effect<boolean>,
+        ) {
+          const producer = currentProducer;
+          const nativeThreadId = yield* getNativeThreadId(turn.providerThread);
+          const closed = yield* Deferred.make<void>();
+          if (
+            queuedRootStops.has(turn) ||
+            Ref.getUnsafe(activeTurns).get(turn.nativeTurnId) !== turn ||
+            turn.providerThread.runtimeIdentity?.runtimeGeneration !== producer.generation ||
+            !ownsNativeBinding(producer, nativeThreadId, turn.providerThread.id) ||
+            producer.unloadedThreads.has(nativeThreadId)
+          )
+            return;
+          const stop = { producer, closed, authorized: false, dispatched: false };
+          const canEnqueue = () =>
+            queuedRootStops.get(turn) === stop &&
+            !stop.dispatched &&
+            ownsNativeBinding(producer, nativeThreadId, turn.providerThread.id) &&
+            !producer.unloadedThreads.has(nativeThreadId) &&
+            Ref.getUnsafe(activeTurns).get(turn.nativeTurnId) === turn;
+          queuedRootStops.set(turn, stop);
+          yield* Effect.gen(function* () {
+            yield* Effect.raceFirst(
+              Effect.gen(function* () {
+                if (!(yield* awaitAppStop)) return;
+                stop.authorized = true;
+                yield* Deferred.await(ready);
+                if (!canEnqueue()) return;
+                yield* requestAdmission("turn/interrupt", { threadId: nativeThreadId }, producer);
+                yield* withRequestAdmission(
+                  producer.client.request("turn/interrupt", {
+                    threadId: nativeThreadId,
+                    turnId: turn.nativeTurnId,
+                  }),
+                  {
+                    canEnqueue,
+                    onEnqueued: () => {
+                      stop.dispatched = true;
+                    },
+                  },
+                ).pipe(Effect.timeout(STOP_REQUEST_BUDGET_MS));
+              }),
+              Deferred.await(closed),
+            ).pipe(
+              Effect.catch((cause) =>
+                queuedRootStops.get(turn) === stop
+                  ? Effect.logWarning("Codex could not confirm a deferred queued Stop.", { cause })
+                  : Effect.void,
+              ),
+            );
+            yield* Deferred.await(closed);
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (queuedRootStops.get(turn) === stop) settleQueuedRootStop(turn);
+              }),
+            ),
+            Effect.interruptible,
+            Effect.forkIn(producer.scope, { startImmediately: true }),
+          );
+        }, Effect.uninterruptible);
+        const hasQueuedRootStop = (producer: CodexRuntimeProducer, nativeThreadId?: string) => {
+          for (const [turn, stop] of queuedRootStops) {
+            if (
+              stop.producer === producer &&
+              (nativeThreadId === undefined ||
+                turn.providerThread.nativeThreadRef?.nativeId === nativeThreadId)
+            )
+              return true;
+          }
+          return false;
+        };
         type CapacitySignalWithoutBinding<T> = T extends { readonly binding: unknown }
           ? Omit<T, "binding">
           : never;
@@ -3286,7 +3385,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               producer === currentProducer &&
               !handoffCompaction.ownsTurn(binding, completion.turn.id) &&
               (status === "completed" || status === "failed" || status === "interrupted")
-            )
+            ) {
+              const context = Ref.getUnsafe(activeTurns).get(completion.turn.id);
+              if (
+                context?.providerThread.nativeThreadRef?.nativeId === completion.threadId &&
+                queuedRootStops.get(context)?.producer === producer
+              )
+                settleQueuedRootStop(context);
               lateStarts.complete(binding, completion.turn.id, () => ({
                 nativeTurnId: completion.turn.id,
                 status,
@@ -3296,6 +3401,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ? { inputObserved: true }
                   : {}),
               }));
+            }
           }
           const captured = pendingStartNotifications.capture(
             producer.generation,
@@ -10084,7 +10190,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return;
           const producer = currentProducer;
           const binding = request.state.binding;
-          if (hasUnknownNativeStart() || lateStarts.blocksStart(binding))
+          if (
+            hasUnknownNativeStart() ||
+            lateStarts.blocksStart(binding) ||
+            hasQueuedRootStop(producer, binding.nativeThreadId)
+          )
             return yield* toProtocolError(
               "The original Codex start no longer has safe native admission.",
             );
@@ -10241,6 +10351,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   currentCapacityBinding(request) &&
                   !hasUnknownNativeStart() &&
                   !lateStarts.blocksStart(binding) &&
+                  !hasQueuedRootStop(producer, binding.nativeThreadId) &&
                   (inlineHistory?.canDispatch() ?? true),
                 onEnqueued,
               },
@@ -10436,6 +10547,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return yield* toProtocolError(
               "Native physical binding changed during notification replay.",
             );
+          if (retryOrdinal === 0 && context.nativeStartReady !== undefined) {
+            const awaitAppStop = yield* CodexQueuedStartStop;
+            // Stop can commit before this ACK's event is projected. Its durable
+            // receipt still belongs to this queued native turn after the caller exits.
+            if (awaitAppStop !== undefined)
+              yield* retainQueuedRootStop(context, context.nativeStartReady, awaitAppStop);
+          }
           lateStarts.release(dispatch);
           request.lateStartDispatch = undefined;
         });
@@ -11207,7 +11325,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           backgroundTasksEndWithProcess: true,
           // Idle release can beat delayed subagent resumes: Codex reports them completed between turns with no resume-expected signal.
           hasPendingBackgroundWork: Effect.gen(function* () {
-            if (currentProducer.active && lateStarts.hasPendingStop(currentProducer.generation))
+            if (
+              currentProducer.active &&
+              (lateStarts.hasPendingStop(currentProducer.generation) ||
+                hasQueuedRootStop(currentProducer))
+            )
               return true;
             if (Array.from(capacityByThread.values()).some(capacityWorkPending)) return true;
             for (const items of (yield* Ref.get(runningCommandItemsByTurn)).values()) {
@@ -11351,7 +11473,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (
               nativeThreadId != null &&
               ownsNativeBinding(producer, nativeThreadId, providerThread.id) &&
-              lateStarts.hasPendingStop(producer.generation, nativeThreadId)
+              (lateStarts.hasPendingStop(producer.generation, nativeThreadId) ||
+                hasQueuedRootStop(producer, nativeThreadId))
             )
               return true;
             const request = capacityByThread.get(nativeThreadId ?? "");
@@ -12439,41 +12562,68 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     const ready = yield* Deferred.await(activeTurn.nativeStartReady).pipe(
                       Effect.timeoutOption(startWaitMs),
                     );
-                    if (Option.isNone(ready))
+                    if (Option.isNone(ready)) {
+                      if (
+                        queuedRootStops.get(activeTurn)?.authorized &&
+                        (yield* deferToActiveRoots)
+                      )
+                        return true;
                       return yield* toProtocolError(
                         `Codex did not start the queued turn within ${Math.ceil(startWaitMs / 1000)} seconds; Stop could not be delivered.`,
                       );
+                    }
                   }
                   if ((yield* Ref.get(activeTurns)).get(activeTurn.nativeTurnId) === activeTurn) {
                     const nativeThreadId = yield* getNativeThreadId(activeTurn.providerThread);
-                    yield* client
-                      .request("turn/interrupt", {
-                        threadId: nativeThreadId,
-                        turnId: activeTurn.nativeTurnId,
-                      })
-                      .pipe(
-                        Effect.timeoutOrElse({
-                          duration: STOP_REQUEST_BUDGET_MS,
-                          orElse: () =>
-                            Effect.suspend(() => {
-                              rootAcknowledgementUnknown = true;
-                              return Effect.fail(
-                                new CodexInterruptAcknowledgementTimeout({
-                                  nativeThreadId,
-                                  nativeTurnId: activeTurn.nativeTurnId,
-                                }),
-                              );
-                            }),
-                        }),
-                        Effect.tapError((cause) =>
-                          emitInterruptWarning(
-                            activeTurn,
-                            "codex_stop_acknowledgement_unknown",
-                            "Turn may still be running",
-                            cause.message,
-                          ),
+                    const request = client.request("turn/interrupt", {
+                      threadId: nativeThreadId,
+                      turnId: activeTurn.nativeTurnId,
+                    });
+                    const stop = queuedRootStops.get(activeTurn);
+                    let dispatchedHere = false;
+                    const stillOwnsStop = () =>
+                      stop !== undefined &&
+                      (!stop.authorized || !stop.dispatched) &&
+                      queuedRootStops.get(activeTurn) === stop;
+                    yield* (
+                      stop === undefined
+                        ? request
+                        : withRequestAdmission(request, {
+                            canEnqueue: stillOwnsStop,
+                            onEnqueued: () => {
+                              dispatchedHere = true;
+                              stop.dispatched = true;
+                            },
+                          }).pipe(
+                            Effect.catch((cause) =>
+                              !dispatchedHere && !stillOwnsStop()
+                                ? Effect.void
+                                : Effect.fail(cause),
+                            ),
+                          )
+                    ).pipe(
+                      Effect.timeoutOrElse({
+                        duration: STOP_REQUEST_BUDGET_MS,
+                        orElse: () =>
+                          Effect.suspend(() => {
+                            rootAcknowledgementUnknown = true;
+                            return Effect.fail(
+                              new CodexInterruptAcknowledgementTimeout({
+                                nativeThreadId,
+                                nativeTurnId: activeTurn.nativeTurnId,
+                              }),
+                            );
+                          }),
+                      }),
+                      Effect.tapError((cause) =>
+                        emitInterruptWarning(
+                          activeTurn,
+                          "codex_stop_acknowledgement_unknown",
+                          "Turn may still be running",
+                          cause.message,
                         ),
-                      );
+                      ),
+                    );
                   }
                   rootInterruptAcknowledged = true;
                 }

@@ -189,6 +189,7 @@ export function makeCodexReplayClientFactory(input: {
 export function layer(
   input: Parameters<typeof makeCodexReplayClientFactory>[0] & {
     readonly onSessionOpened?: (runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime) => void;
+    readonly onTurnStartReturned?: () => void;
   },
 ) {
   const layerReplayClientFactory = Layer.succeed(
@@ -208,16 +209,28 @@ export function layer(
       config: DEFAULT_CODEX_SETTINGS,
     }).pipe(
       Effect.map((adapter) => [
-        input.onSessionOpened === undefined
+        input.onSessionOpened === undefined && input.onTurnStartReturned === undefined
           ? adapter
           : {
               ...adapter,
               openSession: (value: ProviderAdapter.ProviderAdapterV2OpenSessionInput) =>
-                adapter
-                  .openSession(value)
-                  .pipe(
-                    Effect.tap((runtime) => Effect.sync(() => input.onSessionOpened?.(runtime))),
+                adapter.openSession(value).pipe(
+                  Effect.tap((runtime) => Effect.sync(() => input.onSessionOpened?.(runtime))),
+                  Effect.map((runtime) =>
+                    input.onTurnStartReturned === undefined
+                      ? runtime
+                      : {
+                          ...runtime,
+                          get providerSession() {
+                            return runtime.providerSession;
+                          },
+                          startTurn: (value: ProviderAdapter.ProviderAdapterV2TurnInput) =>
+                            runtime
+                              .startTurn(value)
+                              .pipe(Effect.tap(() => Effect.sync(input.onTurnStartReturned!))),
+                        },
                   ),
+                ),
             },
       ]),
     ),

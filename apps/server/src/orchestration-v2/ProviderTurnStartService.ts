@@ -47,9 +47,13 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
 import { startFailureCauseMessage } from "../jones/provider/startFailureMessage.ts";
-import { CodexPendingStartStop } from "../jones/provider/codex/CodexLateStartRecovery.ts";
+import {
+  CodexPendingStartStop,
+  CodexQueuedStartStop,
+} from "../jones/provider/codex/CodexLateStartRecovery.ts";
 import {
   CodexInlineHistoryStart,
+  codexUnconfirmedStoppedRuns,
   makeCodexHistoryDeliveryPersistence,
   promptWasNotApplied,
 } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
@@ -92,6 +96,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -584,19 +589,37 @@ export const layer: Layer.Layer<
             ),
             Effect.catchCause(() => Effect.undefined),
           );
+      const wasStopped = Effect.gen(function* () {
+        const run = yield* projectionStore.getRun(input.threadId, input.runId);
+        if (run?.activeAttemptId !== input.attemptId || run.status !== "interrupted") return false;
+        const request = yield* loadRunInterruptRequest();
+        return (
+          request !== undefined &&
+          request.nodeId === run.rootNodeId &&
+          request.providerThreadId === input.providerThreadId &&
+          request.providerTurnId === null
+        );
+      }).pipe(Effect.orElseSucceed(() => false));
       return {
         isCurrentAttemptInStatus,
-        wasStopped: Effect.gen(function* () {
-          const run = yield* projectionStore.getRun(input.threadId, input.runId);
-          if (run?.activeAttemptId !== input.attemptId || run.status !== "interrupted")
-            return false;
-          const request = yield* loadRunInterruptRequest();
-          return (
-            request !== undefined &&
-            request.nodeId === run.rootNodeId &&
-            request.providerThreadId === input.providerThreadId &&
-            request.providerTurnId === null
-          );
+        wasStopped,
+        awaitQueuedStartStop: Effect.gen(function* () {
+          const afterSequence = yield* eventSink.latestSequence({ threadId: input.threadId });
+          if (yield* wasStopped) return true;
+          // Catch up from before the durable read so a concurrent Stop cannot be missed.
+          const stop = yield* eventSink
+            .stream({ threadId: input.threadId, eventType: "run.updated", afterSequence })
+            .pipe(
+              Stream.filter(
+                ({ event }) =>
+                  event.type === "run.updated" &&
+                  event.payload.id === input.runId &&
+                  event.payload.activeAttemptId === input.attemptId &&
+                  event.payload.status === "interrupted",
+              ),
+              Stream.runHead,
+            );
+          return Option.isSome(stop) && (yield* wasStopped);
         }).pipe(Effect.orElseSucceed(() => false)),
         loadInheritedBackgroundTurnItems: () =>
           projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
@@ -2744,6 +2767,7 @@ export const layer: Layer.Layer<
           deliveredItemIds,
           coveredItemIds,
           acceptedAttempts,
+          droppedAttemptIds,
           nativeInputRunIds,
           legacyInputRunIds,
           missedRuns,
@@ -2765,13 +2789,29 @@ export const layer: Layer.Layer<
       };
       const prepareRetryHandoff = Effect.fn("ProviderTurnStartService.prepareRetryHandoff")(
         function* (context: ReturnType<typeof handoffContextForThread>) {
-          const { missedRunIds, coveredItemIds, missedRuns, acceptedAttempts } = context;
-          const missedHistory =
+          const { missedRunIds, coveredItemIds, acceptedAttempts } = context;
+          const history =
             missedRunIds.size === 0
               ? []
               : (yield* projectionStore.getTurnStartHistory(input.threadId, [
                   ...missedRunIds,
                 ])).filter((item) => item.runId !== null && missedRunIds.has(item.runId));
+          // Stop can commit without a turn receipt after Codex has saved the input.
+          // Rejoining the same native conversation is not evidence that input was dropped.
+          const uncertainStoppedRuns = codexUnconfirmedStoppedRuns({
+            history,
+            runs: context.missedRuns,
+            attempts: projection.attempts,
+            droppedAttemptIds: context.droppedAttemptIds,
+            nativeThreadId:
+              session.driver === "codex" && context.sameNativeThread
+                ? providerThread.nativeThreadRef?.nativeId
+                : undefined,
+          });
+          const missedRuns = context.missedRuns.filter((run) => !uncertainStoppedRuns.has(run.id));
+          const missedHistory = history.filter(
+            (item) => item.runId !== null && !uncertainStoppedRuns.has(item.runId),
+          );
           const missedItems = missedHistory.filter(
             (item) => !coveredItemIds.has(item.id) && historicalMessage(item) !== null,
           );
@@ -3998,6 +4038,7 @@ export const layer: Layer.Layer<
         effect.pipe(
           Effect.provideService(RequiredNativeSession, requiredNativeSession),
           Effect.provideService(CodexPendingStartStop, runControls.wasStopped),
+          Effect.provideService(CodexQueuedStartStop, runControls.awaitQueuedStartStop),
         );
       const startWithConfiguredEffort = Effect.fn(
         "ProviderTurnStartService.startWithConfiguredEffort",

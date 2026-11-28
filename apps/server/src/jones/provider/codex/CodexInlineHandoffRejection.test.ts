@@ -81,6 +81,175 @@ const send = (
   });
 
 describe("Codex inline handoff rejection recovery", () => {
+  it.effect("rejoins a stopped conversation without reconstructing its unconfirmed prompt", () =>
+    Effect.gen(function* () {
+      const scenario = "rejoin-after-stopped-start";
+      const cwd = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
+        prefix: "jones-codex-stopped-start-",
+      });
+      const threadId = ThreadId.make(scenario);
+      const nativeThreadId = "stopped-start-conversation";
+      const first = codexReplayPreamble({
+        nativeThreadId,
+        nativeTurnId: "stopped-start-original",
+        prompt: "Original request",
+        cwd,
+      });
+      const next = codexReplayPreamble({
+        nativeThreadId,
+        nativeTurnId: "stopped-start-next",
+        prompt: "New authorized request",
+        cwd,
+      });
+      const transcript = makeCodexReplayTranscript({
+        scenario,
+        entries: [
+          ...first.slice(0, 6),
+          {
+            type: "emit_inbound",
+            label: "original request enqueued",
+            frame: {
+              method: "thread/status/changed",
+              params: { threadId: nativeThreadId, status: { type: "idle" } },
+            },
+          },
+          {
+            type: "expect_outbound",
+            frame: { id: 4, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
+          },
+          { type: "emit_inbound", frame: { id: 4, result: { status: "unsubscribed" } } },
+          {
+            type: "emit_inbound",
+            frame: { method: "thread/closed", params: { threadId: nativeThreadId } },
+          },
+          first[6]!,
+          {
+            type: "expect_outbound",
+            frame: {
+              id: 5,
+              method: "thread/resume",
+              params: {
+                threadId: nativeThreadId,
+                excludeTurns: true,
+                ...CodexAdapterV2.codexThreadRuntimeParams({
+                  threadId,
+                  mcpSession: undefined,
+                  modelSelection: CODEX_TEST_MODEL_SELECTION,
+                  runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, cwd },
+                }),
+              },
+            },
+          },
+          {
+            type: "emit_inbound",
+            frame: {
+              id: 5,
+              result: {
+                thread: { id: nativeThreadId, updatedAt: 1782622450 },
+                model: CODEX_TEST_MODEL_SELECTION.model,
+                modelProvider: "openai",
+                serviceTier: null,
+              },
+            },
+          },
+          withReplayRequestId(next[5]!, 6),
+          withReplayRequestId(next[6]!, 6),
+          ...next.slice(7),
+          producerCompletion(nativeThreadId, "stopped-start-next"),
+        ],
+      });
+      const sent = yield* Deferred.make<void>();
+      const sessionOpened = yield* Deferred.make<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
+      const effectiveTranscript = withCodexSetup(transcript, threadTitle);
+      const driver = yield* CodexReplay.makeReplayDriver(effectiveTranscript, {
+        beforeEmitInbound: (entry) =>
+          entry.label === "original request enqueued"
+            ? Deferred.succeed(sent, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+      });
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const read = () => orchestrator.getThreadProjection(threadId);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`create-${scenario}`),
+          threadId,
+          projectId: ProjectId.make(scenario),
+          title: threadTitle,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* send(orchestrator, threadId, "plain-original", "Original request");
+        const starting = yield* worker.drain().pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(sent);
+        const pending = yield* read();
+        const [run] = pending.runs;
+        assert.equal(run?.status, "running");
+        assert.deepEqual(pending.providerTurns, []);
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("plain-stop"),
+          threadId,
+          runId: run!.id,
+          holdQueue: true,
+        });
+        yield* Fiber.join(starting);
+        const stopped = yield* read();
+        assert.equal(stopped.runs[0]?.status, "interrupted");
+        assert.deepEqual(stopped.contextHandoffs, []);
+        const runtime = yield* Deferred.await(sessionOpened);
+        yield* runtime.unloadThread!({ providerThread: stopped.providerThreads[0]! });
+        yield* TestClock.adjust(0);
+        const completed = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.threadId === threadId &&
+              event.payload.id !== run!.id &&
+              event.payload.status === "completed",
+          ),
+          Stream.runHead,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* send(orchestrator, threadId, "plain-follow-up", "New authorized request");
+        yield* worker.drain();
+        const progress = yield* Ref.get(driver.state);
+        assert.isNull(progress.failure, String(progress.failure));
+        yield* Fiber.join(completed);
+        const after = yield* read();
+        assert.deepEqual(
+          after.runs.map((run) => run.status),
+          ["interrupted", "completed"],
+        );
+        assert.equal(after.providerThreads[0]?.nativeThreadRef?.nativeId, nativeThreadId);
+        assert.deepEqual(after.contextHandoffs, []);
+        assert.deepEqual(yield* Ref.get(driver.state), {
+          failure: null,
+          cursor: effectiveTranscript.entries.length,
+        });
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistryAndServices(
+            { name: scenario, runtimePolicyOverride: { cwd } },
+            CodexAdapterV2Testkit.layer({
+              transcript,
+              driver,
+              onSessionOpened: (runtime) =>
+                Deferred.doneUnsafe(sessionOpened, Effect.succeed(runtime)),
+            }),
+            { runEffectWorker: false },
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
   it.effect.each([
     { code: -32602, late: true, recovery: "no inline pending marker" },
     { code: -32600, late: false, recovery: "no inline pending marker" },
@@ -100,6 +269,7 @@ describe("Codex inline handoff rejection recovery", () => {
     { code: null, late: true, recovery: "late ACK and interrupted prompt with observed input" },
     { code: null, late: false, recovery: "application Stop while awaiting ACK" },
     { code: null, late: false, recovery: "application Stop before queued ACK" },
+    { code: null, late: false, recovery: "queued ACK during application Stop commit" },
     { code: null, late: true, recovery: "late ACK with a different terminal" },
     { code: null, late: true, recovery: "late acceptance after newer identical marker" },
     { code: null, late: true, recovery: "late acceptance after binding replacement" },
@@ -123,7 +293,8 @@ describe("Codex inline handoff rejection recovery", () => {
       const interruptedWithoutInput = recovery === "late ACK and interrupted prompt without input";
       const interruptedWithInput =
         recovery === "late ACK and interrupted prompt with observed input";
-      const queuedStop = recovery === "application Stop before queued ACK";
+      const queuedCommitRace = recovery === "queued ACK during application Stop commit";
+      const queuedStop = recovery === "application Stop before queued ACK" || queuedCommitRace;
       const stopWhileAwaitingAck = recovery === "application Stop while awaiting ACK" || queuedStop;
       const nativeTerminalStatus =
         interruptedWithoutInput || interruptedWithInput || stopWhileAwaitingAck
@@ -440,6 +611,8 @@ describe("Codex inline handoff rejection recovery", () => {
       const possibleRestoreFinished = yield* Deferred.make<void>();
       const activityObserved = yield* Deferred.make<void>();
       const sessionOpened = yield* Deferred.make<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
+      const nativeStartReturned = yield* Deferred.make<void>();
+      let parkStopCommit = false;
       let commitsUntilPark = 0;
       let commitIntercepted = false;
       const databaseLayer = Layer.effect(
@@ -448,6 +621,25 @@ describe("Codex inline handoff rejection recovery", () => {
           const sql = yield* SqlClient.SqlClient;
           const withTransaction: typeof sql.withTransaction = (body) =>
             Effect.gen(function* () {
+              if (
+                parkStopCommit &&
+                Option.isNone(yield* Effect.serviceOption(sql.transactionService)) &&
+                (yield* Effect.currentSpan.pipe(
+                  Effect.map((span) => span.name === "orchestrationV2.EventSink.commitThenPublish"),
+                  Effect.orElseSucceed(() => false),
+                ))
+              ) {
+                parkStopCommit = false;
+                return yield* sql.withTransaction(
+                  body.pipe(
+                    Effect.tap(() =>
+                      Deferred.succeed(writerParked, undefined).pipe(
+                        Effect.andThen(Deferred.await(allowWriter)),
+                      ),
+                    ),
+                  ),
+                );
+              }
               if (
                 commitsUntilPark === 0 ||
                 Option.isSome(yield* Effect.serviceOption(sql.transactionService))
@@ -617,13 +809,22 @@ describe("Codex inline handoff rejection recovery", () => {
           const beforeStop = yield* getProjection();
           assert.equal(beforeStop.runs[0]?.status, "running");
           assert.deepEqual(beforeStop.providerTurns, []);
-          yield* orchestrator.dispatch({
+          const stop = orchestrator.dispatch({
             type: "run.interrupt",
             commandId: CommandId.make("stop-before-native-ack"),
             threadId,
             runId: run.id,
             holdQueue: true,
           });
+          if (queuedCommitRace) {
+            parkStopCommit = true;
+            const stopping = yield* stop.pipe(Effect.forkChild({ startImmediately: true }));
+            yield* Deferred.await(writerParked);
+            yield* Deferred.succeed(allowRejection, undefined);
+            yield* Deferred.await(nativeStartReturned);
+            yield* Deferred.succeed(allowWriter, undefined);
+            yield* Fiber.join(stopping);
+          } else yield* stop;
           const afterStop = yield* getProjection();
           assert.equal(afterStop.runs[0]?.status, "interrupted");
           yield* Deferred.succeed(allowRejection, undefined);
@@ -655,9 +856,18 @@ describe("Codex inline handoff rejection recovery", () => {
             assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
           }
           assert.deepEqual(afterTerminal.runs, afterStop.runs);
-          assert.deepEqual(afterTerminal.attempts, afterStop.attempts);
-          assert.deepEqual(afterTerminal.providerTurns, []);
-          assert.equal(afterTerminal.contextHandoffs[0]?.delivery?.status, "pending");
+          if (queuedCommitRace) {
+            assert.equal(afterTerminal.attempts[0]?.status, "interrupted");
+            assert.isTrue(
+              afterTerminal.providerTurns.every(
+                (turn) => turn.nativeTurnRef?.nativeId === originalNativeTurnId,
+              ),
+            );
+          } else {
+            assert.deepEqual(afterTerminal.attempts, afterStop.attempts);
+            assert.deepEqual(afterTerminal.providerTurns, []);
+            assert.equal(afterTerminal.contextHandoffs[0]?.delivery?.status, "pending");
+          }
           assert.deepEqual(yield* Ref.get(driver.state), {
             failure: null,
             cursor: effectiveTranscript.entries.length,
@@ -944,6 +1154,12 @@ describe("Codex inline handoff rejection recovery", () => {
             CodexAdapterV2Testkit.layer({
               transcript,
               driver,
+              ...(queuedCommitRace
+                ? {
+                    onTurnStartReturned: () =>
+                      Deferred.doneUnsafe(nativeStartReturned, Effect.void),
+                  }
+                : {}),
               onSessionOpened: (runtime) =>
                 Deferred.doneUnsafe(sessionOpened, Effect.succeed(runtime)),
               observeOutgoingFrame: (frame) => {

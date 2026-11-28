@@ -48,6 +48,11 @@ export const CodexPendingStartStop = Context.Reference<Effect.Effect<boolean>>(
   { defaultValue: () => Effect.succeed(false) },
 );
 
+export const CodexQueuedStartStop = Context.Reference<Effect.Effect<boolean> | undefined>(
+  "jones/CodexQueuedStartStop",
+  { defaultValue: () => undefined },
+);
+
 export interface CodexStartDispatch extends NativeBinding {
   readonly ordinal: number;
   readonly excludedTurnIds: ReadonlySet<string>;
