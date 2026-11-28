@@ -266,6 +266,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 166, name: "TaskFolderTeardown" },
           { id: 167, name: "WorkflowAgentJournal" },
           { id: 168, name: "PersonalWorkstreamFleet" },
+          { id: 169, name: "AutoAccountBindings" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

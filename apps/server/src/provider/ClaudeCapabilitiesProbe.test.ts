@@ -7,6 +7,7 @@ import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -77,9 +78,13 @@ it.effect("refuses the Claude Auto probe before SDK startup when MCP is managed"
   }).pipe(
     Effect.provideService(HostProcess.Platform, "linux"),
     Effect.provide(
-      FileSystem.layerNoop({ exists: (file) => Effect.succeed(file.endsWith("managed-mcp.json")) }),
+      Layer.mergeAll(
+        FileSystem.layerNoop({
+          exists: (file) => Effect.succeed(file.endsWith("managed-mcp.json")),
+        }),
+        Path.layer,
+      ),
     ),
-    Effect.provide(Path.layer),
   ),
 );
 

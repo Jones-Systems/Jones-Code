@@ -153,7 +153,7 @@ it("allows route-preserving Codex launch flags and rejects flags that can activa
     assert.strictEqual(codexAutoProbeConfigArgs(args), undefined);
 });
 
-it.effect("waits for a new Codex catalog and performs only contextual reads", () =>
+it.live("waits for a new Codex catalog and performs only contextual reads", () =>
   Effect.gen(function* () {
     const { helpers, spawner } = makeFakeCodexAppServers({
       "account/read": {
@@ -168,7 +168,7 @@ it.effect("waits for a new Codex catalog and performs only contextual reads", ()
       },
       "model/list": { data: [] },
     });
-    const settings = yield* Schema.decodeEffect(CodexSettings)({
+    const settings = yield* compiledDecodeEffect1({
       binaryPath: "codex",
       launchArgs: "-c 'model_provider=\"openai\"'",
     });
@@ -194,9 +194,7 @@ it.effect("waits for a new Codex catalog and performs only contextual reads", ()
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provide(Layer.mergeAll(catalogWith(fresh), Path.layer)),
       );
-    const stale = yield* observe(false).pipe(Effect.forkChild);
-    yield* TestClock.adjust("3 seconds");
-    assert.strictEqual(yield* Fiber.join(stale), undefined);
+    assert.strictEqual(yield* observe(false), undefined);
     assert.strictEqual(helpers[0]!.methods.includes("model/list"), false);
     assert.strictEqual(helpers[0]!.closed, true);
 
