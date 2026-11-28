@@ -68,6 +68,7 @@ export function cleanupReportSummary(report: StorageCleanupReport) {
 }
 
 export function cleanupRequestSummary(request: CleanupRequest) {
+  if (request.status === "running" && request.detail) return request.detail;
   const label = cleanupOperationLabel(request.operation);
   switch (request.status) {
     case "queued":

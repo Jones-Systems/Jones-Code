@@ -260,6 +260,17 @@ export function NewThreadSettingsSection() {
           void savePreferences({ useLastProjectForNewThreads: value });
         }}
       />
+      <SettingsSwitchRow
+        icon="star"
+        label={gt("Open model picker in Favorites")}
+        subtitle={gt("Star models in the picker. You can switch to all models at any time.")}
+        value={
+          AsyncResult.isSuccess(preferences) && preferences.value.modelPickerFavoritesOnly === true
+        }
+        onValueChange={(value) => {
+          void savePreferences({ modelPickerFavoritesOnly: value });
+        }}
+      />
     </SettingsSection>
   );
 }

@@ -139,6 +139,7 @@ vi.mock(import("../ui/toast"), async (original) => {
 });
 
 import { CleanupResults } from "../../jones/storageCleanupResults/CleanupResults";
+import { ConfirmDialogHost } from "../ConfirmDialogHost";
 import { StorageCleanupSections } from "./StorageSettings";
 import { serverEnvironment } from "../../state/server";
 
@@ -934,6 +935,150 @@ const retirableEntry = (patch: { reasonCodes?: string[]; paths?: string[] } = {}
     },
   } as StorageCleanupReport["entries"][number];
 };
+
+function batchRetirementFixture(count: number) {
+  setup();
+  state.retirementSupported = true;
+  const entries = Array.from({ length: count }, (_, index) => {
+    const path = `/cleanup-test/retire/batch-${index}`;
+    const ready = retirableEntry({ paths: [`${path}/cache`] });
+    return {
+      ...ready,
+      path,
+      threadId: `synthetic-batch-${index}` as NonNullable<typeof ready.threadId>,
+      retirement: { ...ready.retirement!, fingerprint: `fingerprint-${index}` },
+    };
+  });
+  state.reports = {
+    "env-a": {
+      ...cleanupReport("env-a", 0),
+      operation: "propose",
+      entries: [...entries, cleanupReport("env-a", 1).entries[0]!],
+    },
+    "env-b": { ...cleanupReport("env-b", 0), operation: "propose", entries },
+  };
+  return entries;
+}
+
+async function openRetireAll(screen: Screen) {
+  await screen.getByRole("button", { name: /Last run/ }).click();
+  await screen
+    .getByRole("region", { name: "env-a: Ready to retire", exact: true })
+    .getByRole("button", { name: "Retire all", exact: true })
+    .click();
+  return page.getByRole("alertdialog", { name: /Retire .* worktrees on env-a/ });
+}
+
+it("confirms all ready checkouts on one machine, including rows beyond the first page", async () => {
+  const entries = batchRetirementFixture(6);
+  const result = (index: number) => {
+    const entry = entries[index]!;
+    return {
+      _tag: "Success",
+      value: {
+        ...cleanupReport("env-a", 0),
+        operation: "retire",
+        entries: [
+          {
+            ...entry,
+            outcome: index === 0 ? "kept" : "removed",
+            retirement: { ...entry.retirement, state: index === 0 ? "held" : "retired" },
+          },
+        ],
+      },
+    };
+  };
+  let finishFirst!: (report: ReturnType<typeof result>) => void;
+  state.run.mockImplementationOnce(
+    () => new Promise<ReturnType<typeof result>>((resolve) => (finishFirst = resolve)),
+  );
+  state.run.mockImplementation(() => Promise.resolve(result(state.run.mock.calls.length - 1)));
+  await using screen = await render(
+    <>
+      {panel()}
+      <ConfirmDialogHost />
+    </>,
+  );
+
+  const dialog = await openRetireAll(screen);
+  await expect
+    .element(dialog.getByRole("heading", { name: "Retire 6 worktrees on env-a?", exact: true }))
+    .toBeVisible();
+  expect(dialog.element().textContent).toContain("/cleanup-test/retire/batch-5/cache");
+  expect(dialog.element().textContent).not.toContain("/cleanup-test/env-a/worktree-0");
+  expect(state.run).not.toHaveBeenCalled();
+  await dialog.getByRole("button", { name: "Confirm" }).click();
+  await expect.poll(() => state.run.mock.calls.length).toBe(1);
+  await expect
+    .element(
+      screen
+        .getByRole("region", { name: "env-a: Ready to retire", exact: true })
+        .getByRole("button", { name: "Retire all", exact: true }),
+    )
+    .toBeDisabled();
+
+  finishFirst(result(0));
+  await expect.poll(() => state.run.mock.calls.length).toBe(6);
+  expect(state.run.mock.calls).toEqual(
+    entries.map((entry) => [
+      {
+        environmentId: "env-a",
+        input: {
+          retirement: {
+            action: "retire",
+            threadId: entry.threadId,
+            worktreePath: entry.path,
+            expectedFingerprint: entry.retirement.fingerprint,
+            coveredPaths: entry.retirement.paths,
+          },
+        },
+      },
+    ]),
+  );
+});
+
+it("can cancel Retire all without requesting a retirement", async () => {
+  batchRetirementFixture(2);
+  await using screen = await render(
+    <>
+      {panel()}
+      <ConfirmDialogHost />
+    </>,
+  );
+  const dialog = await openRetireAll(screen);
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect.element(dialog).not.toBeInTheDocument();
+  expect(state.run).not.toHaveBeenCalled();
+});
+
+it("stops Retire all when the server cannot confirm the selected checkout's outcome", async () => {
+  const [entry] = batchRetirementFixture(2);
+  state.run.mockResolvedValueOnce({
+    _tag: "Success",
+    value: {
+      ...cleanupReport("env-a", 0),
+      operation: "retire",
+      entries: [
+        {
+          ...entry!,
+          outcome: "failed",
+          retirement: { ...entry!.retirement, state: "unknown" },
+        },
+      ],
+    },
+  });
+  await using screen = await render(
+    <>
+      {panel()}
+      <ConfirmDialogHost />
+    </>,
+  );
+  const dialog = await openRetireAll(screen);
+  await dialog.getByRole("button", { name: "Confirm" }).click();
+
+  await expect.element(screen.getByText(/Batch stopped at worktree 1 of 2/).last()).toBeVisible();
+  expect(state.run).toHaveBeenCalledTimes(1);
+});
 
 it("a retirement proposal opens Last run and shows Ready to retire", async () => {
   setup();

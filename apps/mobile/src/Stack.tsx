@@ -78,6 +78,7 @@ import {
   FullscreenThreadRouteScreen,
   ThreadRouteScreen,
 } from "./features/threads/ThreadRouteScreen";
+import { OrchestratorThreadScreen } from "./jones/mobileOrchestrator/OrchestratorThreadScreen";
 import { McpAppFullscreenScreen } from "./features/threads/McpAppFullscreenScreen";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
@@ -735,6 +736,10 @@ const RootStackConfig = createWorkspaceStackNavigator({
     ThreadInspectorFullscreen: createNativeStackScreen({
       screen: FullscreenThreadRouteScreen,
       options: modalRoute({ header: "glass", itemStyle: "editor", duoMinimize: "onScrollUp" }),
+    }),
+    OrchestratorThread: createNativeStackScreen({
+      screen: OrchestratorThreadScreen,
+      options: { ...modalRoute({ header: "glass", itemStyle: "editor" }), gestureEnabled: false },
     }),
     ThreadDevicePreview: createNativeStackScreen({
       screen: DevicePreviewRouteScreen,
