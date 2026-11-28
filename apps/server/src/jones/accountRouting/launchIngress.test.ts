@@ -4,163 +4,140 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  type ModelSelection,
+  type OrchestrationV2ThreadLaunchInput,
 } from "@t3tools/contracts";
-import * as Deferred from "effect/Deferred";
+import * as NodePath from "@effect/platform-node/NodePath";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import * as Result from "effect/Result";
 
-import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
-import { makeAutoLaunchResolver, resolveLaunchSelection } from "./launchIngress.ts";
+import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
+import * as ProjectCloneTracker from "../../project/ProjectCloneTracker.ts";
+import { autoLaunchRequest, type AutoLaunchDecision } from "./accountBinding.ts";
+import { makeAutoLaunchResolver } from "./launchIngress.ts";
 import { AccountAutoRoutingError } from "./selectAutoAccount.ts";
 
-const representative = {
-  instanceId: ProviderInstanceId.make("representative"),
-  model: "test-model",
-  options: [{ id: "effort", value: "max" }],
-} satisfies ModelSelection;
-const winner = { ...representative, instanceId: ProviderInstanceId.make("winner") };
 const input = {
   accountRouting: { mode: "auto" },
+  commandId: CommandId.make("synthetic-auto-request"),
+  threadId: ThreadId.make("synthetic-auto-thread"),
+  title: "Synthetic launch",
   projectId: ProjectId.make("test-project"),
-  modelSelection: representative,
+  modelSelection: { instanceId: ProviderInstanceId.make("representative"), model: "test-model" },
   workspaceStrategy: { type: "root" },
   runtimeMode: "full-access",
   interactionMode: "default",
-} satisfies Parameters<typeof resolveLaunchSelection>[0];
+  initialMessage: { text: "A synthetic prompt", attachments: [] },
+} satisfies OrchestrationV2ThreadLaunchInput;
+const winner = { ...input.modelSelection, instanceId: ProviderInstanceId.make("winner") };
 const quotaRefusal = new AccountAutoRoutingError({
   code: "no_available_allowance",
   message: "Synthetic quota refusal",
 });
-const unexpectedReceipt = Effect.die("unexpected receipt lookup");
-const unexpectedSelect = () => Effect.die("unexpected quota observation");
-
-it.effect("preserves a manual selection without reading a receipt or observing quota", () =>
-  Effect.gen(function* () {
-    const { accountRouting: _routing, ...manual } = input;
-    const chosen = yield* resolveLaunchSelection(manual, unexpectedReceipt, unexpectedSelect);
-    expect(chosen.modelSelection).toBe(representative);
+const projectRoot = "/checkouts/root";
+const layer = Layer.mergeAll(
+  Layer.mock(ProjectStore.ProjectStoreV2)({
+    get: (id) =>
+      id === input.projectId
+        ? Effect.succeedSome({ workspaceRoot: projectRoot } as ProjectStore.ProjectRow)
+        : Effect.succeedNone,
   }),
-);
-
-it.effect("substitutes the selected account before launch with exact options and cwd", () =>
-  Effect.gen(function* () {
-    const chosen = yield* resolveLaunchSelection(
-      {
-        ...input,
-        workspaceStrategy: { type: "existing_worktree", worktreePath: "/test/worktree" },
-      },
-      Effect.succeed(false),
-      (request) => {
-        expect(request.cwd).toBe("/test/worktree");
-        expect(request.modelSelection).toBe(representative);
-        expect(request.runtimeMode).toBe("full-access");
-        expect(request.interactionMode).toBe("default");
-        return Effect.succeed({ modelSelection: winner });
-      },
-    );
-    expect(chosen.modelSelection).toBe(winner);
+  Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
+  FileSystem.layerNoop({
+    realPath: (path) => Effect.succeed(path === "/worktree-alias" ? "/checkouts/worktree" : path),
   }),
-);
-
-it.effect("refuses reuse and unmaterialized workspaces before observing quota", () =>
-  Effect.gen(function* () {
-    const reuse = yield* resolveLaunchSelection(
-      { ...input, reuseExistingThread: true },
-      unexpectedReceipt,
-      unexpectedSelect,
-    ).pipe(Effect.result);
-    expect(Result.isFailure(reuse) && reuse.failure.code).toBe("reuse_existing_thread");
-    const allocation = yield* resolveLaunchSelection(
-      { ...input, workspaceStrategy: { type: "worktree" } },
-      Effect.succeed(false),
-      unexpectedSelect,
-    ).pipe(Effect.result);
-    expect(Result.isFailure(allocation) && allocation.failure.code).toBe("unsupported_workspace");
-  }),
+  NodePath.layer,
 );
 
 it.effect(
-  "defers a same-command replay to the immutable receipt, even if the workspace changed",
+  "passes the canonical checkout to the account observer and preserves manual selection",
   () =>
     Effect.gen(function* () {
-      const replay = yield* resolveLaunchSelection(
-        { ...input, workspaceStrategy: { type: "auto" } },
-        Effect.succeed(true),
-        unexpectedSelect,
+      const resolve = makeAutoLaunchResolver((selection) => {
+        expect(selection.cwd).toBe("/checkouts/worktree");
+        expect(selection.modelSelection).toBe(input.modelSelection);
+        return Effect.succeed({ modelSelection: winner });
+      });
+      const { accountRouting: _auto, ...manual } = input;
+      expect((yield* resolve(manual, {})).modelSelection).toBe(input.modelSelection);
+      const checkout = yield* resolve(
+        {
+          ...input,
+          workspaceStrategy: { type: "existing_worktree", worktreePath: "/worktree-alias" },
+        },
+        {
+          readAutoLaunch: () => Effect.undefined,
+          commitAutoLaunchRefusal: () => Effect.die("unexpected refusal"),
+        },
       );
-      // The original request is forwarded so ThreadLaunchService can recover the durable winner.
-      expect(replay.modelSelection).toBe(representative);
-    }),
+      expect(checkout.modelSelection).toBe(winner);
+      expect(checkout.workspace).toEqual({ projectRoot, worktreePath: "/checkouts/worktree" });
+    }).pipe(Effect.provide(layer)),
 );
 
-it.effect("rechecks the receipt when a simultaneous winner lands during a quota refusal", () =>
+it.effect("uses rejected evidence only for the original project, target and launch payload", () =>
   Effect.gen(function* () {
-    const accepted = yield* Ref.make(false);
-    const sampling = yield* Deferred.make<void>();
-    const finish = yield* Deferred.make<void>();
-    const racing = yield* resolveLaunchSelection(input, Ref.get(accepted), () =>
-      Deferred.succeed(sampling, undefined).pipe(
-        Effect.andThen(Deferred.await(finish)),
-        Effect.andThen(Effect.fail(quotaRefusal)),
-      ),
-    ).pipe(Effect.forkScoped);
-    yield* Deferred.await(sampling);
-    yield* Ref.set(accepted, true);
-    yield* Deferred.succeed(finish, undefined);
-    expect((yield* Fiber.join(racing)).modelSelection).toBe(representative);
-  }),
-);
-
-it.effect("never falls back to the representative on an unaccepted quota refusal", () =>
-  Effect.gen(function* () {
-    const launch = yield* Ref.make(false);
-    const failure = yield* resolveLaunchSelection(
-      input,
-      Effect.succeed(false),
-      () => quotaRefusal,
-    ).pipe(Effect.andThen(Ref.set(launch, true)), Effect.result);
-    expect(Result.isFailure(failure) && failure.failure).toBe(quotaRefusal);
-    expect(yield* Ref.get(launch)).toBe(false);
-  }),
-);
-
-it.effect("fences a rejected Auto command and replays its refusal before probing again", () =>
-  Effect.gen(function* () {
-    const probeCount = yield* Ref.make(0);
-    const resolveLaunchAutoAccount = makeAutoLaunchResolver(() =>
-      Ref.update(probeCount, (count) => count + 1).pipe(Effect.andThen(Effect.fail(quotaRefusal))),
+    const probes = yield* Ref.make(0);
+    const retained = yield* Ref.make<AutoLaunchDecision | undefined>(undefined);
+    const resolve = makeAutoLaunchResolver(() =>
+      Ref.update(probes, (count) => count + 1).pipe(Effect.andThen(Effect.fail(quotaRefusal))),
     );
-    const receipt = yield* Ref.make<Option.Option<Receipts.CommandReceiptV2>>(Option.none());
-    const store = Layer.mock(Receipts.CommandReceiptStoreV2)({
-      getByCommandId: () => Ref.get(receipt),
-      insertIfAbsent: (next) =>
-        Ref.modify(receipt, (current) =>
-          Option.isSome(current) || !("threadId" in next)
-            ? [false, current]
-            : [true, Option.some(next)],
-        ),
-    });
-    const commandId = CommandId.make("synthetic-auto-refusal");
-    const launch = resolveLaunchAutoAccount({
-      ...input,
-      commandId,
-      threadId: ThreadId.make("synthetic-auto-thread"),
-      title: "Synthetic launch",
-      initialMessage: { text: "A synthetic prompt", attachments: [] },
-    }).pipe(Effect.provide(store), Effect.flip);
-    const first = yield* launch;
-    const next = yield* launch;
-    for (const error of [first, next]) {
+    const receipts: Parameters<typeof resolve>[1] = {
+      readAutoLaunch: () => Ref.get(retained),
+      commitAutoLaunchRefusal: ({ request, workspace }, refusal) => {
+        const decision = {
+          ...workspace,
+          projectId: request.projectId,
+          threadId: request.threadId ?? null,
+          digest: request.digest,
+          refusal,
+        };
+        return Ref.set(retained, decision).pipe(Effect.as(decision));
+      },
+    };
+    for (const same of [input, input]) {
+      const error = yield* resolve(same, receipts).pipe(Effect.flip);
       expect(error.message).toBe(quotaRefusal.message);
       expect(error.deliveryEvidence?.creation.status).toBe("rejected");
       expect(error.deliveryEvidence?.initialMessage.status).toBe("rejected");
     }
-    expect(Option.getOrUndefined(yield* Ref.get(receipt))?.status).toBe("rejected");
-    expect(yield* Ref.get(probeCount)).toBe(1);
-  }),
+    for (const changed of [
+      { ...input, projectId: ProjectId.make("different-project") },
+      { ...input, threadId: ThreadId.make("different-thread") },
+      { ...input, initialMessage: { ...input.initialMessage, text: "Different prompt" } },
+      { ...input, workspaceStrategy: { type: "worktree" } as const },
+    ]) {
+      const error = yield* resolve(changed, receipts).pipe(Effect.flip);
+      expect(error.deliveryEvidence?.creation.status).toBe("unknown");
+      expect(error.deliveryEvidence?.initialMessage.status).toBe("unknown");
+    }
+    expect(yield* Ref.get(probes)).toBe(1);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("surfaces uncertainty if an exact refusal cannot be committed", () =>
+  Effect.gen(function* () {
+    const resolve = makeAutoLaunchResolver(() => Effect.fail(quotaRefusal));
+    const receipts: Parameters<typeof resolve>[1] = {
+      readAutoLaunch: () => Effect.undefined,
+      commitAutoLaunchRefusal: () => Effect.undefined,
+    };
+    const error = yield* resolve(input, receipts).pipe(Effect.flip);
+    expect(error.deliveryEvidence?.creation.status).toBe("unknown");
+    const accepted: AutoLaunchDecision = {
+      projectId: input.projectId,
+      threadId: input.threadId,
+      digest: autoLaunchRequest(input)!.digest,
+      projectRoot,
+      worktreePath: null,
+      refusal: null,
+    };
+    const raced = yield* resolve(input, {
+      ...receipts,
+      commitAutoLaunchRefusal: () => Effect.succeed(accepted),
+    });
+    expect(raced.modelSelection).toBe(input.modelSelection);
+    expect(raced.binding).toBeUndefined();
+  }).pipe(Effect.provide(layer)),
 );

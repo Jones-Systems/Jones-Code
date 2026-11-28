@@ -181,6 +181,9 @@ it.effect("Auto launches and local delegation bind a concrete account before rep
         );
       const keyed = yield* launch({ ...auto, clientRequestId: "auto-1" });
       assert.deepEqual(keyed.modelSelection, selected);
+      const lookup = yield* ClientLaunch.lookupForCaller(context, "auto-1");
+      assert.equal(lookup.state, "launched");
+      assert.equal(lookup.initialMessage, "accepted");
       currentWinner = representative;
       const replayed = yield* launch({ ...auto, clientRequestId: "auto-1" });
       assert.equal(replayed.threadId, keyed.threadId);

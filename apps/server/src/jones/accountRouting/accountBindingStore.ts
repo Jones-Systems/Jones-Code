@@ -1,10 +1,10 @@
-import type { ModelSelection, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import type { CommandId, ModelSelection, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/sql/SqlClient";
 
 import type { JonesTablePresence } from "../persistence/JonesTablePresence.ts";
-import type { AccountBinding } from "./accountBinding.ts";
+import type { AccountBinding, AutoLaunchCommit, AutoLaunchDecision } from "./accountBinding.ts";
 
 class AccountBindingMismatch extends Data.TaggedError("AccountBindingMismatch")<{
   readonly message: string;
@@ -12,6 +12,7 @@ class AccountBindingMismatch extends Data.TaggedError("AccountBindingMismatch")<
 
 export const makeAccountBindingStore = (sql: SqlClient.SqlClient, tables: JonesTablePresence) => {
   const available = tables("jones_auto_account_bindings");
+  const launchTable = tables("jones_auto_account_launches");
   const read = Effect.fn("AccountBindingStore.read")(function* (
     threadId: ThreadId,
     instanceId: ProviderInstanceId,
@@ -45,5 +46,22 @@ export const makeAccountBindingStore = (sql: SqlClient.SqlClient, tables: JonesT
       (thread_id, provider_instance_id, account_digest)
       VALUES (${creation.threadId}, ${binding.instanceId}, ${binding.digest})`;
   });
-  return { read, commit };
+  const readLaunch = Effect.fn("AccountBindingStore.readLaunch")(function* (commandId: CommandId) {
+    if (!(yield* launchTable)) return undefined;
+    const rows = yield* sql<AutoLaunchDecision>`SELECT project_id AS "projectId",
+      thread_id AS "threadId", request_digest AS digest, project_root AS "projectRoot",
+      worktree_path AS "worktreePath", refusal_message AS refusal
+      FROM jones_auto_account_launches WHERE command_id = ${commandId}`;
+    return rows[0];
+  });
+  const recordLaunch = (
+    { request, workspace }: AutoLaunchCommit,
+    threadId: ThreadId | null,
+    refusal: string | null,
+  ) =>
+    sql`INSERT INTO jones_auto_account_launches
+      (command_id, project_id, thread_id, request_digest, project_root, worktree_path, refusal_message)
+      VALUES (${request.commandId}, ${request.projectId}, ${threadId}, ${request.digest},
+        ${workspace.projectRoot}, ${workspace.worktreePath}, ${refusal})`.pipe(Effect.asVoid);
+  return { read, commit, readLaunch, recordLaunch };
 };

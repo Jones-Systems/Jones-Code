@@ -120,8 +120,24 @@
       "to": "apps/server/src/jones/accountRouting/accountBindingStore.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationStageDispatch.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
       "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/accountRouting/launchIngress.ts"
     },
     {
       "from": "apps/server/src/provider/CodexProvider.ts",

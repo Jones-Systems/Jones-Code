@@ -25,7 +25,11 @@ import * as NodeCrypto from "node:crypto";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
-import { withAccountLaunchBinding } from "./jones/accountRouting/accountBinding.ts";
+import {
+  AutoLaunchIntent,
+  autoLaunchRequest,
+  withAccountLaunchBinding,
+} from "./jones/accountRouting/accountBinding.ts";
 import * as Context from "effect/Context";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -2281,6 +2285,21 @@ export const layerWsRpc = (
                           (cause) => cause._tag !== "EnvironmentAuthorizationError",
                           (cause) =>
                             threadManagement.getDispatchDeliveryEvidence(command).pipe(
+                              Effect.flatMap((evidence) => {
+                                const readAutoLaunch = threadLaunch.readAutoLaunch;
+                                if (
+                                  command.type !== "thread.create" ||
+                                  readAutoLaunch === undefined
+                                )
+                                  return Effect.succeed(evidence);
+                                const unknown = { ...evidence, status: "unknown" as const };
+                                return readAutoLaunch(command.commandId).pipe(
+                                  Effect.map((decision) =>
+                                    decision === undefined ? evidence : unknown,
+                                  ),
+                                  Effect.orElseSucceed(() => unknown),
+                                );
+                              }),
                               Effect.flatMap((deliveryEvidence) => {
                                 const detail = userFacingDispatchErrorMessage(cause);
                                 return Effect.fail(
@@ -2437,15 +2456,16 @@ export const layerWsRpc = (
                 ),
             ),
           ),
-        [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) =>
-          Effect.annotateCurrentSpan({
+        [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) => {
+          const request = autoLaunchRequest(input);
+          return Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": input.commandId,
             "orchestration_v2.project_id": input.projectId,
           }).pipe(
             Effect.andThen(
               startup
                 .enqueueCommand(
-                  resolveLaunchAutoAccount(input).pipe(
+                  resolveLaunchAutoAccount(input, threadLaunch, request).pipe(
                     Effect.provide(autoLaunchContext),
                     Effect.tap(() =>
                       threadLaunch.checkWorktreeBase({
@@ -2454,7 +2474,7 @@ export const layerWsRpc = (
                         workspaceStrategy: input.workspaceStrategy,
                       }),
                     ),
-                    Effect.flatMap(({ modelSelection, binding }) =>
+                    Effect.flatMap(({ modelSelection, binding, workspace }) =>
                       withAccountLaunchBinding(
                         ThreadMessageIntake.launchThread({
                           commandId: input.commandId,
@@ -2470,7 +2490,11 @@ export const layerWsRpc = (
                           modelSelection,
                           runtimeMode: input.runtimeMode,
                           interactionMode: input.interactionMode,
-                          workspaceStrategy: input.workspaceStrategy,
+                          workspaceStrategy:
+                            input.workspaceStrategy.type === "existing_worktree" &&
+                            workspace?.worktreePath != null
+                              ? { ...input.workspaceStrategy, worktreePath: workspace.worktreePath }
+                              : input.workspaceStrategy,
                           ...(input.workspaceStrategy.type === "worktree" &&
                           input.workspaceStrategy.baseFreshness === "fetch-now" &&
                           currentSession.scopes.includes(AuthSourceControlWriteScope)
@@ -2495,6 +2519,13 @@ export const layerWsRpc = (
                         }),
                         input.commandId,
                         binding,
+                      ).pipe(
+                        Effect.provideService(
+                          AutoLaunchIntent,
+                          request === undefined
+                            ? undefined
+                            : { request, ...(workspace === undefined ? {} : { workspace }) },
+                        ),
                       ),
                     ),
                     Effect.provide(intakeContext),
@@ -2596,7 +2627,7 @@ export const layerWsRpc = (
                     OrchestrationV2ThreadLaunchError: (error) =>
                       error.deliveryEvidence !== undefined
                         ? Effect.fail(error)
-                        : threadLaunch.getDeliveryEvidence(input).pipe(
+                        : threadLaunch.getDeliveryEvidence(input, { autoRequest: request }).pipe(
                             Effect.flatMap((deliveryEvidence) =>
                               Effect.fail(
                                 new OrchestrationV2ThreadLaunchError({
@@ -2613,7 +2644,8 @@ export const layerWsRpc = (
                 ),
             ),
             (launch) => launchCommands.withLock(input.commandId, launch),
-          ),
+          );
+        },
         [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input) =>
           Stream.unwrap(subscribeOrchestrationV2Shell(input)),
         [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input) =>

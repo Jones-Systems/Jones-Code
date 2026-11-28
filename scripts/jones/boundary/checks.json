@@ -7,6 +7,7 @@
         "apps/server/src/jones/accountRouting/policy.test.ts",
         "apps/server/src/jones/accountRouting/launchIngress.test.ts",
         "apps/server/src/jones/accountRouting/accountBindingStore.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
@@ -27,7 +28,7 @@
         "packages/contracts/src/jones/accountRouting.test.ts"
       ],
       "commands": [
-        "vp test run --maxWorkers=1 --no-file-parallelism apps/server/src/jones/accountRouting/policy.test.ts apps/server/src/jones/accountRouting/launchIngress.test.ts apps/server/src/jones/accountRouting/accountBindingStore.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/cli/thread.test.ts packages/client-runtime/src/operations/commands.test.ts packages/contracts/src/jones/accountRouting.test.ts apps/web/src/jones/pendingSends/send.test.ts",
+        "vp test run --maxWorkers=1 --no-file-parallelism apps/server/src/jones/accountRouting/policy.test.ts apps/server/src/jones/accountRouting/launchIngress.test.ts apps/server/src/jones/accountRouting/accountBindingStore.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/cli/thread.test.ts packages/client-runtime/src/operations/commands.test.ts packages/contracts/src/jones/accountRouting.test.ts apps/web/src/jones/pendingSends/send.test.ts",
         "cd apps/mobile && vp test run --project unit --project react --maxWorkers=1 --no-file-parallelism src/jones/accountRouting/outbox.test.ts src/features/threads/new-task-flow-provider.test.tsx src/state/thread-outbox.test.ts src/state/thread-outbox-removal.test.ts src/state/threadOutboxDelivery.permissions.test.ts src/state/use-composer-drafts.test.ts src/state/threadOutboxDelivery.test.ts src/state/pending-new-tasks-model.test.ts src/jones/threadConfiguration/outboxRecovery.test.ts src/jones/threadConfiguration/outboxDrainReplay.test.ts",
         "cd apps/web && vp test run --project browser --maxWorkers=1 --no-file-parallelism src/jones/accountRouting/composerAccountRouting.browser.test.tsx",
         "vp run --filter t3 --filter @t3tools/web --filter @t3tools/mobile --filter @t3tools/client-runtime --filter @t3tools/contracts --concurrency-limit 1 typecheck",

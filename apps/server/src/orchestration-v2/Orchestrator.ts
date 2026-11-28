@@ -92,7 +92,11 @@ import { resolveMessageModelSelection } from "@t3tools/contracts";
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { queuedToolBoundaryTarget } from "./QueuedToolBoundary.ts";
 import { OwnerSelectionIngress } from "../jones/threadConfiguration/ownerIngress.ts";
-import { AccountLaunchIntent } from "../jones/accountRouting/accountBinding.ts";
+import {
+  AccountLaunchIntent,
+  AutoLaunchIntent,
+  matchesAutoLaunch,
+} from "../jones/accountRouting/accountBinding.ts";
 import {
   isOwnerSelectionExplicit,
   isOwnerSelectionMessage,
@@ -19584,6 +19588,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       linkedMessage: yield* IncomingLinkedMessage,
       ownerSelection: yield* OwnerSelectionIngress,
       accountLaunchIntent: yield* AccountLaunchIntent,
+      autoLaunchIntent: yield* AutoLaunchIntent,
       titleAssessment: yield* ThreadTitleAssessment,
     };
   });
@@ -19875,6 +19880,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
     if (Option.isSome(existingReceipt)) {
+      if (
+        nativeLineage === undefined &&
+        legacyPolicy === undefined &&
+        existingReceipt.value.commandType === "thread.create" &&
+        eventSink.readAutoLaunch !== undefined
+      ) {
+        const decision = yield* eventSink
+          .readAutoLaunch(command.commandId)
+          .pipe(mapDispatchError(command));
+        if (
+          decision !== undefined &&
+          (command.type !== "thread.create" ||
+            !matchesAutoLaunch(captured.autoLaunchIntent?.request, decision))
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "The command belongs to a different Auto launch.",
+          });
+      }
       if (remoteSend !== undefined && originalRemoteSend === undefined)
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -20257,6 +20282,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ownerSelection: ownerSelectionCommit(command, captured.ownerSelection, plan.events),
           ...(captured.accountLaunchIntent?.commandId === command.commandId
             ? { autoAccountBinding: captured.accountLaunchIntent.binding }
+            : {}),
+          ...(command.type === "thread.create" &&
+          captured.autoLaunchIntent?.request.commandId === command.commandId &&
+          captured.autoLaunchIntent.workspace !== undefined
+            ? {
+                autoLaunch: {
+                  request: captured.autoLaunchIntent.request,
+                  workspace: captured.autoLaunchIntent.workspace,
+                },
+              }
             : {}),
           commandId: command.commandId,
           threadId: commandThreadId(command),

@@ -9,6 +9,7 @@
         "apps/server/src/jones/accountRouting/policy.test.ts",
         "apps/server/src/jones/accountRouting/launchIngress.test.ts",
         "apps/server/src/jones/accountRouting/accountBindingStore.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",

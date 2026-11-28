@@ -1,8 +1,19 @@
 // @effect-diagnostics nodeBuiltinImport:off - compares a private digest in native provider callbacks.
 import * as NodeCrypto from "node:crypto";
-import type { CommandId, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  CommandId,
+  OrchestrationV2ThreadLaunchInput,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+
+import {
+  canonicalLegacyPayload,
+  legacyPayloadHash,
+} from "../../orchestration-v2/LegacyBootstrap.ts";
 
 export interface AccountBinding {
   readonly instanceId: ProviderInstanceId;
@@ -13,6 +24,64 @@ export interface AccountLaunchAdmission {
   readonly commandId: CommandId;
   readonly binding: AccountBinding;
 }
+
+export interface AutoLaunchRequest {
+  readonly commandId: CommandId;
+  readonly projectId: ProjectId;
+  readonly threadId: ThreadId | undefined;
+  readonly digest: string;
+}
+
+export interface AutoLaunchWorkspace {
+  readonly projectRoot: string;
+  readonly worktreePath: string | null;
+}
+
+export interface AutoLaunchCommit {
+  readonly request: AutoLaunchRequest;
+  readonly workspace: AutoLaunchWorkspace;
+}
+
+export interface AutoLaunchDecision extends AutoLaunchWorkspace {
+  readonly projectId: ProjectId;
+  readonly threadId: ThreadId | null;
+  readonly digest: string;
+  readonly refusal: string | null;
+}
+
+export const autoLaunchRequest = (
+  input: OrchestrationV2ThreadLaunchInput,
+): AutoLaunchRequest | undefined =>
+  input.accountRouting === undefined
+    ? undefined
+    : {
+        commandId: input.commandId,
+        projectId: input.projectId,
+        threadId: input.threadId,
+        digest: legacyPayloadHash(
+          canonicalLegacyPayload([
+            "jones-auto-account-launch-v1",
+            { ...input, creationSource: input.creationSource ?? "web" },
+          ]),
+        ),
+      };
+
+export const matchesAutoLaunch = (
+  request: AutoLaunchRequest | undefined,
+  decision: AutoLaunchDecision,
+) =>
+  request !== undefined &&
+  request.projectId === decision.projectId &&
+  request.digest === decision.digest &&
+  ((decision.refusal === null && request.threadId === undefined) ||
+    (request.threadId ?? null) === decision.threadId);
+
+export const isReservedAutoLaunchCommand = (commandId: CommandId) =>
+  /^(server:|jones:|native:|voice-command-)/.test(commandId) || commandId.includes(":native:v2:");
+
+export const AutoLaunchIntent = Context.Reference<
+  { readonly request: AutoLaunchRequest; readonly workspace?: AutoLaunchWorkspace } | undefined
+>("jones/accountRouting/AutoLaunchIntent", { defaultValue: () => undefined });
 
 export const accountIdentityDigest = (family: "codex" | "claudeAgent", identity: string): string =>
   NodeCrypto.createHash("sha256")
