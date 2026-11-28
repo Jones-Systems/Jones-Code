@@ -4,6 +4,7 @@ import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts
 import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import { CODEX_START_ACK_TIMEOUT_MS } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 import { CurrentStartedTurnContinuation } from "../../jones/provider/StartAdmission.ts";
+import { accountIdentityDigest } from "../../jones/accountRouting/accountBinding.ts";
 import { buildAppIdentityInstructions } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import { historyResponseItems, selectHistory } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
@@ -1134,6 +1135,41 @@ describe("CodexAdapterV2 dynamic tool projection", () => {
 });
 
 describe("CodexAdapterV2 native protocol logging", () => {
+  it.effect("suppresses private account responses before writing the native trace", () =>
+    Effect.gen(function* () {
+      const writes: unknown[] = [];
+      const log = CodexAdapterV2.makeCodexAppServerProtocolLogger({
+        providerSessionId: ProviderSessionId.make("synthetic-logging-session"),
+        nativeEventLogger: {
+          filePath: "/tmp/synthetic-events.log",
+          write: (event) => Effect.sync(() => void writes.push(event)),
+          close: () => Effect.void,
+        },
+      })!;
+      const privateEmail = "private-account@example.invalid";
+      const privateAccountId = "synthetic-private-identity";
+      for (const [id, method, result] of [
+        [1, "account/read", { account: { type: "chatgpt", email: privateEmail } }],
+        [2, "account/rateLimits/read", { accountId: privateAccountId }],
+      ] as const) {
+        yield* log({ direction: "outgoing", stage: "decoded", payload: { id, method } });
+        const payload = { id, result };
+        yield* log({ direction: "incoming", stage: "raw", payload: JSON.stringify(payload) });
+        yield* log({ direction: "incoming", stage: "decoded", payload });
+      }
+      yield* log({
+        direction: "incoming",
+        stage: "decoded",
+        payload: { id: 3, result: { accountId: privateAccountId, email: privateEmail, count: 1 } },
+      });
+      assert.lengthOf(writes, 1);
+      const serialized = JSON.stringify(writes);
+      assert.notInclude(serialized, privateEmail);
+      assert.notInclude(serialized, privateAccountId);
+      assert.include(serialized, '"count":1');
+    }),
+  );
+
   it.effect("logs decoded app-server frames once with credentials redacted", () =>
     Effect.gen(function* () {
       const writes: Array<{
@@ -1240,6 +1276,45 @@ describe("CodexAdapterV2 native protocol logging", () => {
           },
         },
       });
+    }),
+  );
+});
+
+describe("Codex native Auto account proof", () => {
+  it.effect("distinguishes verified exhaustion from a mismatched or unverifiable account", () =>
+    Effect.gen(function* () {
+      const accountId = "synthetic-account";
+      let usage = { accountId, ordinaryUsageAllowed: false as boolean | undefined };
+      const requests: string[] = [];
+      const request = ((method: string) =>
+        Effect.sync(() => {
+          requests.push(method);
+          switch (method) {
+            case "account/read":
+              return { requiresOpenaiAuth: true, account: { type: "chatgpt" } };
+            case "config/read":
+              return { config: { model_provider: "openai" } };
+            case "account/rateLimits/read":
+              return usage;
+            default:
+              throw new Error("Unexpected account proof RPC");
+          }
+        })) as CodexClient.CodexAppServerClient["Service"]["request"];
+      const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: "/synthetic/workspace",
+        autoAccountDigest: accountIdentityDigest("codex", accountId),
+      });
+      const verify = CodexAdapterV2.readRoutedCodexAccount({ request }, policy, {});
+      assert.isFalse(yield* verify);
+      assert.deepEqual(requests, ["account/read", "config/read", "account/rateLimits/read"]);
+      usage = { accountId, ordinaryUsageAllowed: true };
+      assert.isTrue(yield* verify);
+      usage = { accountId: "different-account", ordinaryUsageAllowed: false };
+      yield* verify.pipe(Effect.flip);
+      usage = { accountId, ordinaryUsageAllowed: undefined };
+      yield* verify.pipe(Effect.flip);
     }),
   );
 });
@@ -25637,6 +25712,99 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           }),
         ),
       );
+    it.effect(
+      "rechecks durable Stop after the native account response and withholds the prompt",
+      () =>
+        Effect.gen(function* () {
+          const accountId = "synthetic-routed-account";
+          const nativeMethods: string[] = [];
+          let quotaVerified = false;
+          let refused = false;
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: "native-auto-verify-before-stop",
+              entries: [
+                ...sessionStart,
+                ...request(
+                  3,
+                  "thread/name/set",
+                  { threadId: nativeThreadId, name: CODEX_TEST_THREAD_TITLE },
+                  {},
+                ),
+                ...request(
+                  4,
+                  "config/read",
+                  { cwd: "/workspace", includeLayers: false },
+                  { config: {}, origins: {} },
+                ),
+                ...request(
+                  5,
+                  "account/read",
+                  {},
+                  {
+                    account: {
+                      type: "chatgpt",
+                      email: "synthetic@example.invalid",
+                      planType: "pro",
+                    },
+                    requiresOpenaiAuth: true,
+                  },
+                ),
+                ...request(
+                  6,
+                  "config/read",
+                  { cwd: "/workspace", includeLayers: false },
+                  { config: {}, origins: {} },
+                ),
+                ...request(7, "account/rateLimits/read", null, {
+                  accountId,
+                  ordinaryUsageAllowed: true,
+                  rateLimits: { limitId: "codex" },
+                }),
+              ],
+            }),
+            undefined,
+            (method) => Effect.sync(() => void nativeMethods.push(method)),
+            undefined,
+            {
+              onResponse: (method) =>
+                Effect.sync(() => {
+                  if (method === "account/rateLimits/read") quotaVerified = true;
+                }),
+            },
+          );
+          const turn = yield* goalTurnInput(harness, "Do not dispatch this synthetic prompt.");
+          yield* harness.runtime
+            .startTurn({
+              ...turn,
+              runtimePolicy: {
+                ...turn.runtimePolicy,
+                autoAccountDigest: accountIdentityDigest("codex", accountId),
+              },
+              revalidateStartAdmission: Effect.gen(function* () {
+                if (!quotaVerified) return;
+                refused = true;
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                  detail: "Synthetic durable Stop fenced this dispatch.",
+                });
+              }),
+            })
+            .pipe(Effect.flip);
+          assert.isTrue(refused);
+          assert.notInclude(nativeMethods, "turn/start");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              layerNodeServicesWithCrypto,
+            ),
+          ),
+        ),
+    );
+
     const providerGoals = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
       events.flatMap((event) =>
         event.type === "provider_thread.updated" ? [event.providerThread.goal?.status ?? null] : [],

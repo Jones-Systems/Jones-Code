@@ -148,6 +148,7 @@ it("allows route-preserving Codex launch flags and rejects flags that can activa
     "-c mcp_servers.foo.command=external",
     "--listen ws://0.0.0.0:9876",
     "--profile --config model=foo",
+    "-c 'marketplaces.openai-bundled.source=\"/user/marketplace\"'",
     "--",
   ])
     assert.strictEqual(codexAutoProbeConfigArgs(args), undefined);
@@ -170,11 +171,18 @@ it.live("waits for a new Codex catalog and performs only contextual reads", () =
     });
     const settings = yield* compiledDecodeEffect1({
       binaryPath: "codex",
+      homePath: "/synthetic/shadow home",
       launchArgs: "-c 'model_provider=\"openai\"'",
     });
     const input = {
       instanceId: ProviderInstanceId.make("synthetic-auto"),
       settings,
+      homeLayout: {
+        mode: "authOverlay" as const,
+        sharedHomePath: "/synthetic/shared",
+        effectiveHomePath: settings.homePath,
+        continuationKey: "codex:home:/synthetic/shared",
+      },
       environment: {},
       cwd: "/project",
     };
@@ -200,6 +208,7 @@ it.live("waits for a new Codex catalog and performs only contextual reads", () =
 
     const current = yield* observe(true);
     assert.strictEqual(current?.accountIdentity, "synthetic-codex");
+    assert.strictEqual(helpers[1]!.codexHome, "/synthetic/shadow home");
     assert.deepStrictEqual(helpers[1]!.methods, [
       "initialize",
       "account/read",
@@ -212,6 +221,8 @@ it.live("waits for a new Codex catalog and performs only contextual reads", () =
       "app-server",
       "-c",
       "thread_unload_delay_secs=0",
+      "-c",
+      'marketplaces.openai-bundled.source="/synthetic/shadow home/.tmp/bundled-marketplaces/openai-bundled"',
       "-c",
       'model_provider="openai"',
       ...codexAutoProbeConfigArgs("")!,

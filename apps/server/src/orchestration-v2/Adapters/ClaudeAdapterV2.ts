@@ -66,6 +66,7 @@ import { forkClaudeHistorySession } from "../../claudeHistoryWorker.ts";
 import { accountIdentityDigest } from "../../jones/accountRouting/accountBinding.ts";
 import {
   hasNativeClaudeRoute,
+  hasClaudeSubscription,
   readClaudeAutoIdentity,
 } from "../../jones/accountRouting/claudeEvidence.ts";
 import { claudeAccountConfigPath } from "../../provider/claudeResetCredits.ts";
@@ -847,6 +848,10 @@ export interface ClaudeAgentSdkQueryOpenInput {
 
 export interface ClaudeAgentSdkQuerySession {
   readonly messages: Stream.Stream<SDKMessage, ClaudeAgentSdkQueryRunnerError>;
+  /** Refreshes account evidence on an idle query. Stdio reinitialization can reset pending hooks. */
+  readonly reinitializeAccount?: Effect.Effect<
+    Awaited<ReturnType<ClaudeQuery["reinitialize"]>>["account"] | undefined
+  >;
   readonly offer: (
     message: SDKUserMessage,
     onQueued?: () => void,
@@ -2084,6 +2089,11 @@ export const layerQueryRunner: Layer.Layer<
 
       return {
         termination: Deferred.await(spawnObserved).pipe(Effect.andThen(awaitCapturedExits)),
+        reinitializeAccount: Effect.tryPromise(() => queryRuntime.reinitialize()).pipe(
+          Effect.map((init) => init.account),
+          Effect.timeout(CLAUDE_BOOT_TIMEOUT),
+          Effect.orElseSucceed(() => undefined),
+        ),
         messages: Stream.fromAsyncIterable(
           claudeQueryMessages(queryRuntime),
           (cause) => cause,
@@ -6427,24 +6437,38 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
     digest: string,
   ): NonNullable<ClaudeAgentSdkQueryOpenInput["verifyAutoAccount"]> =>
     Effect.fn("ClaudeAdapterV2.verifyAutoAccount")(function* (account) {
-      const source = account?.tokenSource?.toLowerCase().replace(/[.\s_-]+/g, "");
-      const provider = (account as { readonly apiProvider?: string } | undefined)?.apiProvider;
-      if (
-        !account ||
-        !account.email?.trim() ||
-        (provider !== undefined && provider !== "firstParty") ||
-        (source !== "claudeai" && source !== "oauth") ||
-        (account.apiKeySource && account.apiKeySource !== "none")
-      )
-        return false;
+      if (!account || !hasClaudeSubscription(account)) return false;
       const configPath = yield* claudeAccountConfigPath(customHome ? homePath : undefined).pipe(
         Effect.provideService(Path.Path, path),
       );
-      const identity = yield* readClaudeAutoIdentity(configPath, account.email).pipe(
+      const identity = yield* readClaudeAutoIdentity(configPath, account).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
       );
       return identity !== undefined && accountIdentityDigest("claudeAgent", identity) === digest;
     });
+  const requireAutoRoute = Effect.fn("ClaudeAdapterV2.requireAutoRoute")(function* (
+    policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+    environment: NodeJS.ProcessEnv,
+  ) {
+    if (policy.autoAccountDigest === undefined) return;
+    const native =
+      policy.cwd !== null &&
+      (yield* hasNativeClaudeRoute({
+        cwd: policy.cwd,
+        configDir: homePath,
+        customHome,
+        environment,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      ));
+    if (!native)
+      return yield* new ClaudeAgentSdkQueryRunnerError({
+        method: "verifyAutoAccount",
+        cause: "The selected Claude subscription route changed before startup.",
+        nativeOutcome: "not_spawned",
+      });
+  });
   const announcedBypassDowngrades = new Set<ThreadId>();
   // Native session ids, so a resumed session does not repeat its notice.
   const announcedAutoFallbacks = new Set<string>();
@@ -14554,7 +14578,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.runtimePolicy.workspace,
           );
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
+          const accountDigest = turnInput.runtimePolicy.autoAccountDigest;
+          let routeCheckedBeforeRetirement = false;
           const retirePredecessor = Effect.fnUntraced(function* (previous: ClaudeLiveQueryContext) {
+            if (accountDigest !== undefined) {
+              yield* requireAutoRoute(turnInput.runtimePolicy, adapterOptions.environment);
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
+              routeCheckedBeforeRetirement = true;
+            }
             const retireForReplacement = input.runtimeLifecycle?.retireForReplacement;
             const binding = ProviderAdapter.runtimeBinding(
               previous.providerThread,
@@ -14612,6 +14643,44 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
             }
           }
+          let warmAccountVerified = false;
+          const verifyWarmAccount = Effect.fn("ClaudeAdapterV2.verifyWarmAccount")(function* (
+            live: ClaudeLiveQueryContext,
+          ) {
+            if (accountDigest === undefined || warmAccountVerified) return;
+            // Reinitializing stdio can interrupt hook callbacks, so only refresh
+            // a query without active turns, background work, or pending wakes.
+            if (
+              (yield* Ref.get(activeTurn)) !== null ||
+              (yield* liveProcessRunsBackgroundWork(live)) ||
+              scheduledWakeupsByNativeThread.has(nativeThreadId) ||
+              (yield* holdsBufferedWake(
+                nativeThreadId,
+                (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [],
+              ))
+            ) {
+              return yield* queryRunnerError(
+                "The Claude subscription cannot be reverified while native work is active.",
+                "verifyAutoAccount",
+              );
+            }
+            yield* requireAutoRoute(turnInput.runtimePolicy, adapterOptions.environment);
+            yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            const account = yield* live.query.reinitializeAccount ?? Effect.undefined;
+            if (!(yield* verifyAutoAccount(accountDigest)(account))) {
+              return yield* queryRunnerError(
+                "The selected Claude subscription could not be verified on the running provider. Restore its original login and try again.",
+                "verifyAutoAccount",
+              );
+            }
+            yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            if ((yield* Ref.get(queryContext)) !== live || live.stopping)
+              return yield* queryRunnerError(
+                CLAUDE_QUERY_ENDED_BEFORE_TURN_DETAIL,
+                "verifyAutoAccount",
+              );
+            warmAccountVerified = true;
+          });
           const reuseQuery = Effect.fn("ClaudeAdapterV2.reuseQuery")(function* (
             live: ClaudeLiveQueryContext,
           ) {
@@ -14706,6 +14775,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             (existing.selection.apiModelId === compiledSelection.apiModelId ||
               existing.openedPermissionMode === queryPolicy.permissionMode)
           ) {
+            yield* verifyWarmAccount(existing);
             yield* applySelectionLive(existing, compiledSelection);
           }
           if (
@@ -14719,6 +14789,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             !replaceStaleProcess &&
             existing.selection.queryIdentity === compiledSelection.queryIdentity
           ) {
+            yield* verifyWarmAccount(existing);
             // A denied ExitPlanMode leaves Claude in plan mode. Restore only from plan:
             // Auto/default may reflect a policy restriction that forbids restoring bypass.
             if (existing.permissionMode === "plan" && existing.openedPermissionMode !== "plan") {
@@ -14898,24 +14969,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const openQueryRuntime = Effect.gen(function* () {
             const program = yield* readProgram;
             yield* turnInput.revalidateStartAdmission ?? Effect.void;
-            const accountDigest = turnInput.runtimePolicy.autoAccountDigest;
-            if (accountDigest !== undefined) {
-              const native =
-                queryOptions.cwd !== undefined &&
-                (yield* hasNativeClaudeRoute({
-                  cwd: queryOptions.cwd,
-                  configDir: homePath,
-                  customHome,
-                  environment: queryOptions.env ?? adapterOptions.environment ?? process.env,
-                }).pipe(
-                  Effect.provideService(FileSystem.FileSystem, fileSystem),
-                  Effect.provideService(Path.Path, path),
-                ));
-              if (!native)
-                return yield* queryRunnerError(
-                  "The selected Claude subscription route changed before startup.",
-                  "verifyAutoAccount",
-                );
+            // A route rejection cannot retire a predecessor. With no predecessor,
+            // check the launch environment immediately before admitting a spawn.
+            if (accountDigest !== undefined && !routeCheckedBeforeRetirement) {
+              yield* requireAutoRoute(
+                turnInput.runtimePolicy,
+                queryOptions.env ?? adapterOptions.environment,
+              );
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
             }
             yield* (
               input.runtimeLifecycle?.admit({ runtimeGeneration, threadId: turnInput.threadId }) ??
@@ -15394,6 +15455,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             }
             yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            if (turnInput.runtimePolicy.autoAccountDigest !== undefined) {
+              yield* requireAutoRoute(turnInput.runtimePolicy, adapterOptions.environment);
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            }
             const required = yield* RequiredNativeSession;
             const requirement = required === undefined ? undefined : { ...required };
             if (
@@ -15924,6 +15989,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     threadId: turnInput.threadId,
                     providerThreadId: turnInput.providerThread.id,
                     runId: turnInput.runId,
+                    ...(isClaudeAgentSdkQueryRunnerError(cause) &&
+                    cause.method === "verifyAutoAccount"
+                      ? { refusedBeforePrompt: true }
+                      : {}),
                     cause,
                   }),
               ),
@@ -16091,6 +16160,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             }
             yield* turnInput.revalidateSteerAdmission ?? Effect.void;
+            // An active SDK query can have pending hook callbacks. Let the
+            // caller queue a new turn, whose idle query can safely reattest.
+            if (currentTurn.input.runtimePolicy.autoAccountDigest !== undefined)
+              return yield* new ProviderAdapter.ProviderAdapterSteerDeclinedError({
+                driver: CLAUDE_PROVIDER,
+                providerThreadId: turnInput.providerThread.id,
+                providerTurnId: turnInput.providerTurnId,
+              });
             if (currentTurn.nativeSessionProof !== undefined) {
               yield* currentTurn.nativeSessionProof
                 .confirm(existing.observedNativeSessionId, existing.runtimeGeneration)
@@ -16227,14 +16304,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           (effect, turnInput) =>
             effect.pipe(
               Effect.scoped,
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapter.ProviderAdapterSteerRunError({
-                    driver: CLAUDE_PROVIDER,
-                    providerThreadId: turnInput.providerThread.id,
-                    providerTurnId: turnInput.providerTurnId,
-                    cause,
-                  }),
+              Effect.mapError((cause) =>
+                cause._tag === "ProviderAdapterSteerDeclinedError"
+                  ? cause
+                  : new ProviderAdapter.ProviderAdapterSteerRunError({
+                      driver: CLAUDE_PROVIDER,
+                      providerThreadId: turnInput.providerThread.id,
+                      providerTurnId: turnInput.providerTurnId,
+                      cause,
+                    }),
               ),
             ),
         );

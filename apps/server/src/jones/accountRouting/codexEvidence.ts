@@ -1,4 +1,6 @@
 import type { QualifiedQuota, QualifiedQuotaMap } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
 
 import {
   makeAccountRoutingQuota,
@@ -15,6 +17,28 @@ import {
 const WEEK_IN_MINUTES = 7 * 24 * 60;
 type QuotaBucket = QualifiedQuotaMap[string];
 const legacyBuckets = new WeakMap<QualifiedQuota, QuotaBucket>();
+
+/** Positive proof of the selected account with no ordinary usage available. */
+export class CodexRoutedAccountUsageLimit extends Schema.TaggedError<CodexRoutedAccountUsageLimit>()(
+  "CodexRoutedAccountUsageLimit",
+  {},
+) {
+  override get message(): string {
+    return "The verified Codex subscription has reached its usage limit.";
+  }
+}
+
+const isCodexRoutedAccountUsageLimit = Schema.is(CodexRoutedAccountUsageLimit);
+
+export function routedCodexUsageFailure(cause: unknown): CodexRoutedAccountUsageLimit | undefined {
+  for (let depth = 0; depth < 16; depth++) {
+    if (isCodexRoutedAccountUsageLimit(cause)) return new CodexRoutedAccountUsageLimit();
+    if (Cause.isCause(cause)) cause = Cause.squash(cause);
+    else if (typeof cause === "object" && cause !== null && "cause" in cause) cause = cause.cause;
+    else break;
+  }
+  return undefined;
+}
 
 export function makeCodexRoutingQuota(
   input: Parameters<typeof makeAccountRoutingQuota>[0] & { readonly legacyRateLimit: QuotaBucket },

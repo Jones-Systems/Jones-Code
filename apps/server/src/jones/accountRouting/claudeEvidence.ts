@@ -49,10 +49,18 @@ const SUBSCRIPTION_TYPES = new Set([
   "claudefreesubscription",
 ]);
 
-function hasClaudeSubscription(probe: ClaudeCapabilitiesProbe): boolean {
+type ClaudeSubscriptionAccount = Partial<
+  Pick<
+    ClaudeCapabilitiesProbe,
+    "email" | "organization" | "apiProvider" | "tokenSource" | "apiKeySource" | "subscriptionType"
+  >
+>;
+
+export function hasClaudeSubscription(probe: ClaudeSubscriptionAccount): boolean {
   const token = probe.tokenSource?.toLowerCase().replace(/[.\s_-]+/g, "");
   return (
     !!probe.email?.trim() &&
+    !!probe.organization?.trim() &&
     (probe.apiProvider === "firstParty" || probe.apiProvider === undefined) &&
     (token === "oauth" || token === "claudeai") &&
     (!probe.apiKeySource || probe.apiKeySource === "none") &&
@@ -63,10 +71,14 @@ function hasClaudeSubscription(probe: ClaudeCapabilitiesProbe): boolean {
 export function claudeAutoAccountIdentity(
   workspaceId: string | null | undefined,
   email: string | null | undefined,
+  organizationName: string | null | undefined,
 ): string | undefined {
   const workspace = workspaceId?.trim().toLowerCase();
   const address = email?.trim().toLowerCase();
-  return workspace && address ? JSON.stringify([workspace, address]) : undefined;
+  const organization = organizationName?.trim();
+  return workspace && address && organization
+    ? JSON.stringify([workspace, address, organization])
+    : undefined;
 }
 
 const ALTERNATE_CREDENTIALS = [
@@ -188,14 +200,18 @@ export const hasNativeClaudeRoute = Effect.fn("AccountRouting.hasNativeClaudeRou
 const decodeClaudeAccountMetadata = Schema.decodeUnknownEffect(
   fromLenientJson(
     Schema.Struct({
-      oauthAccount: Schema.Struct({ organizationUuid: Schema.String, emailAddress: Schema.String }),
+      oauthAccount: Schema.Struct({
+        organizationUuid: Schema.String,
+        organizationName: Schema.String,
+        emailAddress: Schema.String,
+      }),
     }),
   ),
 );
 
 export const readClaudeAutoIdentity = Effect.fn("AccountRouting.readClaudeAutoIdentity")(function* (
   configPath: string,
-  email?: string,
+  account?: Pick<ClaudeSubscriptionAccount, "email" | "organization">,
 ) {
   const fs = yield* FileSystem.FileSystem;
   return yield* fs.readFileString(configPath).pipe(
@@ -204,9 +220,18 @@ export const readClaudeAutoIdentity = Effect.fn("AccountRouting.readClaudeAutoId
       const identity = claudeAutoAccountIdentity(
         oauthAccount.organizationUuid,
         oauthAccount.emailAddress,
+        oauthAccount.organizationName,
       );
-      return email === undefined ||
-        identity === claudeAutoAccountIdentity(oauthAccount.organizationUuid, email)
+      // SDK AccountInfo.organization is the native organization name. The CLI
+      // does not report its UUID here, so same-email, same-name orgs cannot be
+      // distinguished by native evidence alone. Bind the local UUID as well.
+      return account === undefined ||
+        identity ===
+          claudeAutoAccountIdentity(
+            oauthAccount.organizationUuid,
+            account.email,
+            account.organization,
+          )
         ? identity
         : undefined;
     }),
@@ -320,7 +345,7 @@ export const observeClaudeNativeAccount = Effect.fn("AccountRouting.observeClaud
       true,
     ).pipe(Effect.orElseSucceed(() => undefined));
     if (!verified || !hasClaudeSubscription(verified)) return undefined;
-    const accountIdentity = yield* readClaudeAutoIdentity(accountConfig, verified.email);
+    const accountIdentity = yield* readClaudeAutoIdentity(accountConfig, verified);
     if (accountIdentity !== priorIdentity) return undefined;
     const { effortCapSources: managedCaps, ...uncapped } = verified;
     const draft = yield* checkClaudeProviderStatus(
@@ -358,11 +383,11 @@ export function claudeProbeAllowance(
   if (!currentObservation(observedAt, now) || !hasClaudeSubscription(capabilities)) {
     return undefined;
   }
-  if (!capabilities.usage) return { status: "unknown" as const };
+  if (!capabilities.usage) return undefined;
   const checkedAt = capabilities.usageCheckedAt ?? "";
   if (!currentObservation(Date.parse(checkedAt), now)) return undefined;
   const limits = capabilities.usage.rate_limits;
-  if (!limits) return { status: "unknown" as const };
+  if (!limits) return undefined;
   const modelNames = [model];
   for (const reported of capabilities.models ?? []) {
     if (reported.value === model && reported.resolvedModel) modelNames.push(reported.resolvedModel);
@@ -397,10 +422,13 @@ export function claudeProbeAllowance(
     now,
   });
   const paid = asSettings(scoped.spend);
-  const mayUsePaidAllowance =
-    (limits.extra_usage != null && limits.extra_usage.is_enabled !== false) ||
-    (scoped.spend != null && (paid._tag !== "Some" || paid.value.enabled !== false));
-  return allowance.status === "unknown" && mayUsePaidAllowance ? undefined : allowance;
+  const extraUsageDisabled = limits.extra_usage?.is_enabled === false;
+  const spendDisabled = paid._tag === "Some" && paid.value.enabled === false;
+  const paidFallbackDisabled =
+    (extraUsageDisabled || spendDisabled) &&
+    (limits.extra_usage == null || extraUsageDisabled) &&
+    (scoped.spend == null || spendDisabled);
+  return allowance.status === "unknown" && !paidFallbackDisabled ? undefined : allowance;
 }
 
 function readWindow(raw: unknown, durationMs: number): AllowanceWindow | undefined {

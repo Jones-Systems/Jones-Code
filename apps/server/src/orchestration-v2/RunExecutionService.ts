@@ -6,6 +6,7 @@ import {
   recoverAcceptedTerminal,
 } from "../jones/orchestration/AcceptedTerminalRecovery.ts";
 import { appFailureCodeFromCause } from "../jones/orchestration/appFailureReason.ts";
+import { routedCodexUsageFailure } from "../jones/accountRouting/codexEvidence.ts";
 import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import { findEffectClaimLost, guardClaim } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
 import type { GoalContinuityContext } from "@t3tools/provider-core/server/jones/GoalContinuityContext";
@@ -2690,8 +2691,9 @@ export const layer: Layer.Layer<
               Effect.forkDetach,
             ),
           ),
-          Effect.catchCause((cause) =>
-            Effect.logError("orchestration V2 provider turn start failed", {
+          Effect.catchCause((cause) => {
+            const usageLimit = routedCodexUsageFailure(cause);
+            return Effect.logError("orchestration V2 provider turn start failed", {
               runId: input.run.id,
               cause,
             }).pipe(
@@ -2716,8 +2718,17 @@ export const layer: Layer.Layer<
                           terminal: makeFailedTerminalEvent(
                             makeProviderFailure({
                               cause: Cause.squash(cause),
-                              code: appFailureCodeFromCause(cause),
-                              class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
+                              code:
+                                usageLimit === undefined
+                                  ? appFailureCodeFromCause(cause)
+                                  : "usageLimitExceeded",
+                              message: usageLimit?.message,
+                              class:
+                                usageLimit !== undefined
+                                  ? "usage_limit"
+                                  : Exit.isFailure(shouldStart)
+                                    ? "unknown"
+                                    : "provider_error",
                             }),
                             latestItemOrdinal + 1,
                           ),
@@ -2750,8 +2761,8 @@ export const layer: Layer.Layer<
                       }),
                     ),
               ),
-            ),
-          ),
+            );
+          }),
         );
       }),
     } satisfies RunExecutionServiceV2Shape);

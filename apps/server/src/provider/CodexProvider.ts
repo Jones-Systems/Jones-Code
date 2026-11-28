@@ -50,6 +50,7 @@ import {
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import { codexHomeLaunchArgs, type CodexHomeLayout } from "./Drivers/CodexHomeLayout.ts";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
@@ -987,14 +988,19 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
 export const probeCodexAutoRouting = Effect.fn("probeCodexAutoRouting")(function* (input: {
   readonly instanceId: ProviderInstanceId;
   readonly settings: CodexSettings;
+  readonly homeLayout?: CodexHomeLayout;
   readonly environment: NodeJS.ProcessEnv;
   readonly cwd: string;
 }) {
   const { instanceId, settings, environment, cwd } = input;
   if (!settings.enabled || settings.setupMode === "managed") return undefined;
-  const launchArgs = resolveCodexLaunchArgs(settings.launchArgs, environment);
-  const trailingArgs = codexAutoProbeConfigArgs(launchArgs);
+  const userArgs = resolveCodexLaunchArgs(settings.launchArgs, environment);
+  const trailingArgs = codexAutoProbeConfigArgs(userArgs);
   if (!trailingArgs || !isNativeCodexAutoRoute({}, environment)) return undefined;
+  // The server's shadow-home override is generated only after qualifying user flags.
+  const launchArgs = input.homeLayout
+    ? codexHomeLaunchArgs(yield* Path.Path, input.homeLayout, userArgs)
+    : userArgs;
   const attemptedAt = DateTime.formatIso(yield* DateTime.now);
   const probeTimeoutMs = Math.min(
     CODEX_AUTH_PROBE_TIMEOUT_MS,
@@ -1003,7 +1009,7 @@ export const probeCodexAutoRouting = Effect.fn("probeCodexAutoRouting")(function
   const result = yield* probeCodexAppServerProvider({
     probeTimeoutMs,
     binaryPath: settings.binaryPath,
-    homePath: settings.homePath,
+    homePath: input.homeLayout?.effectiveHomePath ?? settings.homePath,
     launchArgs,
     trailingArgs,
     cwd: process.cwd(),

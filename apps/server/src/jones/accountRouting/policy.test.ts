@@ -18,8 +18,14 @@ import {
   claudeAutoAccountIdentity,
   claudeAutoModels,
   claudeProbeAllowance,
+  hasClaudeSubscription,
 } from "./claudeEvidence.ts";
-import { codexAllowance, makeCodexRoutingQuota } from "./codexEvidence.ts";
+import {
+  CodexRoutedAccountUsageLimit,
+  codexAllowance,
+  makeCodexRoutingQuota,
+  routedCodexUsageFailure,
+} from "./codexEvidence.ts";
 import { chooseAccount, claudeAllowance, type AllowanceWindow } from "./policy.ts";
 
 const checkedAt = "2026-11-18T16:00:00.000Z";
@@ -41,6 +47,15 @@ const claude = (fiveHour: AllowanceWindow | undefined, ...weeks: ReadonlyArray<A
   claudeAllowance({ session: fiveHour, weekly: weeks, hasOverallWeek: weeks.length > 0, now });
 
 describe("account routing policy", () => {
+  it("recognizes an attributed Codex allowance refusal through startup error wrappers", () => {
+    const refusal = new CodexRoutedAccountUsageLimit();
+    const wrapped = new Error("Failed to start", {
+      cause: new Error("Native startup", { cause: refusal }),
+    });
+    expect(routedCodexUsageFailure(wrapped)?.message).toBe(refusal.message);
+    expect(routedCodexUsageFailure(new Error(refusal.message))).toBeUndefined();
+  });
+
   it("ranks useful weekly surplus per day and caps it with applicable model windows", () => {
     const slow = claude(session(30), weekly(20, 5 * day));
     const fast = claude(session(30), weekly(40, 2 * day));
@@ -250,6 +265,7 @@ describe("Claude contextual evidence", () => {
   const resetAt = "2026-11-19T16:00:00.000Z";
   const probe = {
     email: "synthetic@example.invalid",
+    organization: "Synthetic Organization",
     subscriptionType: "pro",
     tokenSource: "oauth",
     apiKeySource: "none",
@@ -283,6 +299,14 @@ describe("Claude contextual evidence", () => {
     const unreadableSonnet = { seven_day_sonnet: { utilization: null, resets_at: resetAt } };
     expect(
       claudeProbeAllowance(usageWith(unreadableSonnet), "claude-sonnet-4-6", now, now),
+    ).toBeUndefined();
+    expect(
+      claudeProbeAllowance(
+        usageWith({ ...unreadableSonnet, spend: { enabled: false } }),
+        "claude-sonnet-4-6",
+        now,
+        now,
+      ),
     ).toEqual({
       status: "unknown",
     });
@@ -291,7 +315,10 @@ describe("Claude contextual evidence", () => {
       expect(claudeProbeAllowance(incomplete, "claude-sonnet-4-6", now, now)).toBeUndefined();
       expect(claudeProbeAllowance(incomplete, "claude-opus-4-6", now, now)?.status).toBe("blocked");
     }
-    const malformedScope = usageWith({ model_scoped: [{ utilization: 1 }] });
+    const malformedScope = usageWith({
+      model_scoped: [{ utilization: 1 }],
+      extra_usage: { is_enabled: false },
+    });
     expect(claudeProbeAllowance(malformedScope, "claude-sonnet-4-6", now, now)?.status).toBe(
       "unknown",
     );
@@ -339,26 +366,39 @@ describe("Claude contextual evidence", () => {
     ]);
   });
 
-  it("normalizes private Claude account identity and requires workspace and email", () => {
-    expect(claudeAutoAccountIdentity(" ORG-TEST ", " Person@EXAMPLE.invalid ")).toBe(
-      claudeAutoAccountIdentity("org-test", "person@example.invalid"),
+  it("binds the private Claude UUID and email to the observed organization name", () => {
+    const identity = claudeAutoAccountIdentity("org-test", "person@example.invalid", "Test Org");
+    expect(claudeAutoAccountIdentity(" ORG-TEST ", " Person@EXAMPLE.invalid ", " Test Org ")).toBe(
+      identity,
     );
-    expect(claudeAutoAccountIdentity("", "person@example.invalid")).toBeUndefined();
-    expect(claudeAutoAccountIdentity("org-test", undefined)).toBeUndefined();
+    expect(claudeAutoAccountIdentity("org-other", "person@example.invalid", "Test Org")).not.toBe(
+      identity,
+    );
+    expect(
+      claudeAutoAccountIdentity("org-test", "person@example.invalid", "Different Org"),
+    ).not.toBe(identity);
+    expect(claudeAutoAccountIdentity("", "person@example.invalid", "Test Org")).toBeUndefined();
+    expect(claudeAutoAccountIdentity("org-test", undefined, "Test Org")).toBeUndefined();
+    expect(
+      claudeAutoAccountIdentity("org-test", "person@example.invalid", undefined),
+    ).toBeUndefined();
   });
 
-  it("keeps missing usage unknown only under verified native auth", () => {
+  it("requires affirmative paid fallback evidence for unreadable usage and actual subscription proof", () => {
     const { usage: _usage, ...withoutUsage } = probe;
-    expect(claudeProbeAllowance(withoutUsage, "claude-opus-4-6", now, now)?.status).toBe("unknown");
+    expect(claudeProbeAllowance(withoutUsage, "claude-opus-4-6", now, now)).toBeUndefined();
+    expect(hasClaudeSubscription(probe)).toBe(true);
     for (const patch of [
       { email: undefined },
+      { organization: undefined },
       { apiProvider: "bedrock" },
       { apiKeySource: "environment" },
       { tokenSource: undefined },
       { subscriptionType: undefined },
     ]) {
+      expect(hasClaudeSubscription({ ...probe, ...patch })).toBe(false);
       expect(
-        claudeProbeAllowance({ ...withoutUsage, ...patch }, "claude-opus-4-6", now, now),
+        claudeProbeAllowance({ ...probe, ...patch }, "claude-opus-4-6", now, now),
       ).toBeUndefined();
     }
     expect(claudeProbeAllowance(probe, "claude-sonnet-4-6", now, now + 120_001)).toBeUndefined();

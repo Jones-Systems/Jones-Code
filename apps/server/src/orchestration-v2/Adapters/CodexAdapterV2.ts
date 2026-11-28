@@ -154,6 +154,7 @@ import type {
 } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import { accountIdentityDigest } from "../../jones/accountRouting/accountBinding.ts";
+import { CodexRoutedAccountUsageLimit } from "../../jones/accountRouting/codexEvidence.ts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import type * as CodexRpc from "effect-codex-app-server/rpc";
 import * as CodexSchema from "effect-codex-app-server/schema";
@@ -538,36 +539,47 @@ function toProtocolError(
   });
 }
 
-const requireRoutedCodexAccount = Effect.fn("CodexAdapterV2.requireRoutedAccount")(function* (
-  client: CodexClient.CodexAppServerClient["Service"],
+export const readRoutedCodexAccount = Effect.fn("CodexAdapterV2.readRoutedAccount")(function* (
+  client: Pick<CodexClient.CodexAppServerClient["Service"], "request">,
   policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
+  environment: NodeJS.ProcessEnv,
 ) {
   if (policy?.autoAccountDigest === undefined) return;
   const verify = Effect.gen(function* () {
+    if (!isNativeCodexAutoRoute({}, environment)) return undefined;
     const account = yield* client.request("account/read", {});
-    if (!account.requiresOpenaiAuth || account.account?.type !== "chatgpt") return false;
+    if (!account.requiresOpenaiAuth || account.account?.type !== "chatgpt") return undefined;
     const config = yield* client.request("config/read", {
       includeLayers: false,
       ...(policy.cwd === null ? {} : { cwd: policy.cwd }),
     });
-    if (!isNativeCodexAutoRoute(config.config, {})) return false;
+    if (!isNativeCodexAutoRoute(config.config, environment)) return undefined;
     const quota = yield* client.request("account/rateLimits/read", null);
     const accountId = quota.accountId?.trim();
-    return (
-      quota.ordinaryUsageAllowed === true &&
-      !!accountId &&
-      accountIdentityDigest("codex", accountId) === policy.autoAccountDigest
-    );
+    return accountId &&
+      accountIdentityDigest("codex", accountId) === policy.autoAccountDigest &&
+      typeof quota.ordinaryUsageAllowed === "boolean"
+      ? quota.ordinaryUsageAllowed
+      : undefined;
   });
-  if (
-    !(yield* verify.pipe(
-      Effect.timeout("10 seconds"),
-      Effect.orElseSucceed(() => false),
-    ))
-  )
+  const ordinaryUsageAllowed = yield* verify.pipe(
+    Effect.timeout("10 seconds"),
+    Effect.orElseSucceed(() => undefined),
+  );
+  if (ordinaryUsageAllowed === undefined)
     return yield* toProtocolError(
       "The selected Codex subscription could not be verified on the running provider. Restore its original login and try again.",
     );
+  return ordinaryUsageAllowed;
+});
+
+const requireRoutedCodexUsage = Effect.fn("CodexAdapterV2.requireRoutedUsage")(function* (
+  client: CodexClient.CodexAppServerClient["Service"],
+  policy: ProviderAdapterV2RuntimePolicy | undefined,
+  environment: NodeJS.ProcessEnv,
+) {
+  if ((yield* readRoutedCodexAccount(client, policy, environment)) === false)
+    return yield* new CodexRoutedAccountUsageLimit();
 });
 
 const CODEX_THREAD_IN_USE_MESSAGE =
@@ -2060,8 +2072,27 @@ export function makeCodexAppServerProtocolLogger(input: {
   }
 
   const routeThread = makeCodexProtocolThreadRouter();
+  const privateRequests = new Set<number | string>();
   return (event) => {
     if (!shouldPersistProviderEvent("native", event)) return Effect.void;
+    if (event.stage === "decoded") {
+      const id = readCodexProtocolPath(event.payload, "id");
+      const method = readCodexProtocolPath(event.payload, "method");
+      if (
+        event.direction === "outgoing" &&
+        (method === "account/read" || method === "account/rateLimits/read")
+      ) {
+        if (typeof id === "number" || typeof id === "string") privateRequests.add(id);
+        return Effect.void;
+      }
+      if (
+        event.direction === "incoming" &&
+        method === undefined &&
+        (typeof id === "number" || typeof id === "string") &&
+        privateRequests.delete(id)
+      )
+        return Effect.void;
+    }
     const threadId = event.stage === "decoded" ? routeThread(event.direction, event.payload) : null;
     return nativeEventLogger
       .write(
@@ -2124,7 +2155,9 @@ function isSensitiveCodexProtocolKey(key: string): boolean {
     normalized.endsWith("apikey") ||
     normalized.endsWith("token") ||
     normalized.endsWith("password") ||
-    normalized.endsWith("secret")
+    normalized.endsWith("secret") ||
+    normalized === "accountid" ||
+    normalized === "email"
   );
 }
 
@@ -2699,6 +2732,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           input.threadId,
           input.runtimePolicy,
         );
+        const codexProducerEnvironment = (producer: CodexRuntimeProducer) =>
+          producer.resolvedRuntime?.environment ?? adapterOptions.environment;
         // Upstream's reset lookup may outlive native completion. Retain the exact terminal
         // until publication so retirement cannot strand it or let a replacement publish it.
         const pendingRootPublications = new Map<
@@ -3535,6 +3570,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             inject: Effect.fn("CodexAdapterV2.inject")(function* (text, permit) {
               const admission = yield* revalidate.pipe(
                 Effect.andThen(
+                  requireRoutedCodexUsage(
+                    producer.client,
+                    turnInput.runtimePolicy,
+                    codexProducerEnvironment(producer),
+                  ),
+                ),
+                Effect.andThen(turnInput.revalidateStartAdmission ?? Effect.void),
+                Effect.andThen(
                   requestAdmission(
                     "thread/inject_items",
                     { threadId: binding.nativeThreadId },
@@ -3969,7 +4012,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ) {
               return;
             }
-            const response = yield* client.raw.request("thread/sample", {
+            const producer = (yield* CodexProducerContext) ?? currentProducer;
+            yield* requireRoutedCodexUsage(
+              producer.client,
+              context.input.runtimePolicy,
+              codexProducerEnvironment(producer),
+            );
+            if (producer !== currentProducer || !producer.active) return;
+            const response = yield* producer.client.raw.request("thread/sample", {
               threadId: nativeThreadId,
               expectedTurnId: nativeTurnId,
               prompt: CODEX_PROMPT_SUGGESTION_PROMPT,
@@ -9736,8 +9786,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                             ),
                           });
                           yield* Deferred.succeed(pending, undefined);
+                          const limited = cause._tag === "CodexRoutedAccountUsageLimit";
                           yield* turnTerminalizationPermit.withPermits(1)(
-                            emitOrDeferRootTerminal({ ...terminal, providerRetry: state }),
+                            emitOrDeferRootTerminal({
+                              ...terminal,
+                              providerRetry: state,
+                              ...(limited
+                                ? {
+                                    evidenceKind: "local_failure" as const,
+                                    failureCode: "usageLimitExceeded",
+                                    failureErrorInfo: "usageLimitExceeded" as const,
+                                    failureMessage: cause.message,
+                                  }
+                                : {}),
+                            }),
                           );
                         }),
                       ),
@@ -10011,10 +10073,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           yield* assertControlAdmission(
             providerThreadTarget(request.input.providerThread, request.input.threadId),
           );
-          // Revalidate after the asynchronous admission/continuity work, on the exact producer.
           yield* request.input.revalidateStartAdmission ?? Effect.void;
           const producer = currentProducer;
-          yield* requireRoutedCodexAccount(producer.client, request.input.runtimePolicy);
+          yield* requireRoutedCodexUsage(
+            producer.client,
+            request.input.runtimePolicy,
+            codexProducerEnvironment(producer),
+          );
+          // Stop can commit while the account RPCs are outstanding.
+          if (request.input.runtimePolicy.autoAccountDigest !== undefined)
+            yield* request.input.revalidateStartAdmission ?? Effect.void;
           if (!currentCapacityBinding(request))
             return yield* toProtocolError("Native physical binding changed before dispatch.");
           // A native goal successor may have been adopted while admission ran.
@@ -10745,6 +10813,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               goalsByNativeThread.set(threadId, providerGoalFromCodex(goal));
               return yield* completeGoalCommandTurn(turnInput, null);
             }
+            const producer = (yield* CodexProducerContext) ?? currentProducer;
+            yield* requireRoutedCodexUsage(
+              producer.client,
+              turnInput.runtimePolicy,
+              codexProducerEnvironment(producer),
+            );
+            if (turnInput.runtimePolicy.autoAccountDigest !== undefined)
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            if (producer !== currentProducer || !producer.active)
+              return yield* toProtocolError("Codex goal binding changed before dispatch.");
             if (command.type === "set") {
               goalUpdatesHeld.add(threadId);
               if (current !== null) yield* client.request("thread/goal/clear", { threadId });
@@ -11117,7 +11195,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               });
               yield* guard;
               yield* ensureInitialized;
-              yield* requireRoutedCodexAccount(producer.client, threadInput.runtimePolicy);
+              yield* readRoutedCodexAccount(
+                producer.client,
+                threadInput.runtimePolicy,
+                codexProducerEnvironment(producer),
+              );
               const stdioMcpServers = yield* readStdioMcpServers(threadInput.runtimePolicy.cwd);
               const mcpSession = yield* mcpSessions.read(threadInput.threadId);
               yield* guard;
@@ -11230,7 +11312,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               });
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(
-                  requireRoutedCodexAccount(producer.client, threadInput.runtimePolicy),
+                  readRoutedCodexAccount(
+                    producer.client,
+                    threadInput.runtimePolicy,
+                    codexProducerEnvironment(producer),
+                  ),
                 ),
                 Effect.andThen(
                   appThreadId === null
@@ -11300,11 +11386,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           compactThread: Effect.fn("CodexAdapterV2.compactThread")(
             function* (turnInput) {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
-              yield* bindContinuity(turnInput, currentProducer);
+              const producer = (yield* CodexProducerContext) ?? currentProducer;
+              yield* bindContinuity(turnInput, producer);
+              yield* requireRoutedCodexUsage(
+                producer.client,
+                turnInput.runtimePolicy,
+                codexProducerEnvironment(producer),
+              );
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
+              if (producer !== currentProducer || !producer.active)
+                return yield* toProtocolError("Codex compact binding changed before dispatch.");
               yield* Ref.update(pendingRootTurns, (current) =>
                 new Map(current).set(threadId, { turnInput }),
               );
-              yield* turnInput.revalidateStartAdmission ?? Effect.void;
               // Cleared on interrupt too, as startTurn does: an interrupted start
               // must not adopt the native turn that a late turn/started reports.
               yield* client.request("thread/compact/start", { threadId }).pipe(
@@ -11332,7 +11426,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
           ),
           injectHistory: Effect.fn("CodexAdapterV2.injectHistory")(
-            function* (input) {
+            function* (
+              input: Parameters<NonNullable<ProviderAdapterV2SessionRuntime["injectHistory"]>>[0],
+            ) {
               const prepared = yield* Effect.gen(function* () {
                 if (hasUnknownNativeStart())
                   return yield* toProtocolError(
@@ -11345,6 +11441,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 });
                 const threadId = yield* getNativeThreadId(input.providerThread);
                 const items = historyResponseItems(input.messages, input.context);
+                yield* requireRoutedCodexUsage(
+                  producer.client,
+                  input.runtimePolicy,
+                  codexProducerEnvironment(producer),
+                );
+                yield* input.revalidateStartAdmission ?? Effect.void;
                 yield* requestAdmission("thread/inject_items", { threadId }, producer);
                 return { producer, threadId, items };
               }).pipe(Effect.mapError((cause) => new HistoryNotApplied({ cause })));
@@ -11483,6 +11585,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     capturedTurn.providerThread.providerSessionId === input.providerSessionId &&
                     capturedTurn.providerThread.nativeThreadRef?.nativeId === threadId &&
                     producer.bindings.get(threadId)?.id === capturedTurn.providerThread.id;
+                  yield* requireRoutedCodexUsage(
+                    producer.client,
+                    capturedTurn.input.runtimePolicy,
+                    codexProducerEnvironment(producer),
+                  );
+                  yield* turnInput.revalidateSteerAdmission ?? Effect.void;
                   if (
                     !currentTarget() ||
                     !(adopting || (yield* Ref.get(activeTurns)).has(activeTurn.nativeTurnId))
@@ -12724,6 +12832,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               yield* ensureInitialized;
               const mcpSession = yield* mcpSessions.read(threadInput.targetThreadId);
               const stdioMcpServers = yield* readStdioMcpServers(threadInput.runtimePolicy?.cwd);
+              yield* readRoutedCodexAccount(
+                issuer.client,
+                threadInput.runtimePolicy,
+                codexProducerEnvironment(issuer),
+              );
               yield* requestAdmission("thread/fork", { threadId }, issuer);
               yield* assertControlAdmission(
                 admissionTarget(threadInput.targetThreadId, null, issuer),
@@ -13731,6 +13844,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               // Stop must acquire lifecyclePermit even while compact/start has not acknowledged.
               return yield* Effect.gen(function* () {
                 yield* value.revalidateStartAdmission ?? Effect.void;
+                yield* requireRoutedCodexUsage(
+                  prepared.producer.client,
+                  value.runtimePolicy,
+                  codexProducerEnvironment(prepared.producer),
+                );
+                if (value.runtimePolicy.autoAccountDigest !== undefined)
+                  yield* value.revalidateStartAdmission ?? Effect.void;
                 if (!prepared.producer.active || currentProducer !== prepared.producer)
                   return yield* new HandoffCompactionError({ reason: "cancelled" });
                 yield* prepared.request.assertActive;
@@ -13753,6 +13873,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 );
                 yield* Fiber.join(acknowledgement);
                 const usage = yield* prepared.request.wait;
+                yield* requireRoutedCodexUsage(
+                  prepared.producer.client,
+                  value.runtimePolicy,
+                  codexProducerEnvironment(prepared.producer),
+                );
                 yield* value.revalidateStartAdmission ?? Effect.void;
                 if (!prepared.producer.active || currentProducer !== prepared.producer)
                   return yield* new HandoffCompactionError({ reason: "cancelled" });

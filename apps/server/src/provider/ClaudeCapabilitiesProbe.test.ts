@@ -46,7 +46,12 @@ it("isolates Claude Auto from ambient settings, tools, and MCP", () => {
   const options = buildClaudeCapabilitiesProbeQueryOptions({
     executablePath: "/usr/bin/claude",
     abortController: new AbortController(),
-    environment: { HOME: "/home/user", ENABLE_CLAUDEAI_MCP_SERVERS: "true" },
+    environment: {
+      HOME: "/home/user",
+      CLAUDE_CONFIG_DIR: "/synthetic/account",
+      ENABLE_CLAUDEAI_MCP_SERVERS: "true",
+      CLAUDE_CODE_PLUGIN_DIRS: "/synthetic/inline-plugin",
+    },
     cwd: "/synthetic/project",
     managedMcpConfig: false,
     spawnVia: undefined,
@@ -57,8 +62,13 @@ it("isolates Claude Auto from ambient settings, tools, and MCP", () => {
   assert.deepEqual(options.tools, []);
   assert.deepEqual(options.plugins, []);
   assert.deepEqual(options.mcpServers, {});
-  assert.deepEqual(options.settings, { disableAllHooks: true });
+  assert.deepEqual(options.settings, {
+    disableAllHooks: true,
+    env: { CLAUDE_CODE_PLUGIN_DIRS: "" },
+  });
   assert.equal(options.env?.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
+  assert.equal(options.env?.CLAUDE_CODE_PLUGIN_DIRS, "");
+  assert.equal(options.env?.CLAUDE_CONFIG_DIR, "/synthetic/account");
 });
 
 it.effect("refuses the Claude Auto probe before SDK startup when MCP is managed", () =>

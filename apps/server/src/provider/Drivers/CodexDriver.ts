@@ -426,7 +426,8 @@ export const CodexDriver: ProviderDriver<
     registerAccountObserver(orchestrationAdapter, (cwd) =>
       probeCodexAutoRouting({
         instanceId,
-        settings: effectiveConfig,
+        settings: { ...effectiveConfig, launchArgs: config.launchArgs },
+        homeLayout,
         environment: processEnv,
         cwd,
       }).pipe(

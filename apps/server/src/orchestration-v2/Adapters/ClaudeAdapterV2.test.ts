@@ -40,6 +40,8 @@ import type {
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
+import { accountIdentityDigest } from "../../jones/accountRouting/accountBinding.ts";
+import { claudeAutoAccountIdentity } from "../../jones/accountRouting/claudeEvidence.ts";
 import {
   ChatAttachmentId,
   type ChatAttachment,
@@ -4078,6 +4080,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly offer?: (message: SDKUserMessage) => Effect.Effect<void>;
     readonly promptSuggestions?: boolean;
     readonly routeModelCatalog?: ClaudeAdapterV2.ClaudeAdapterV2Options["routeModelCatalog"];
+    readonly initialAccount?: ClaudeSdk.AccountInfo;
+    readonly reinitializeAccount?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["reinitializeAccount"];
   }) =>
     Effect.gen(function* () {
       const eventScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
@@ -4165,6 +4169,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Effect.gen(function* () {
               openedInputs.push(input);
               openedOptions = input.options;
+              if (
+                input.verifyAutoAccount &&
+                !(yield* input.verifyAutoAccount(options?.initialAccount))
+              )
+                return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                  method: "verifyAutoAccount",
+                  cause: "Synthetic account mismatch",
+                  nativeOutcome: "not_spawned",
+                });
               const processMessages =
                 options?.freshQueueOnReopen === true && processQueues.length > 0
                   ? yield* Queue.unbounded<SDKMessage>()
@@ -4222,6 +4235,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               processQueues.push(sdkMessages);
               return {
                 messages,
+                reinitializeAccount: options?.reinitializeAccount ?? Effect.undefined,
                 offer: (message) =>
                   Effect.sync(() => {
                     offeredMessages.push(message);
@@ -4762,6 +4776,99 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(observations.length, 1);
         assert.equal(observations[0]?.attemptId, turn.attemptId);
       }),
+    );
+
+    it.effect(
+      "refreshes the idle Auto query and refuses a changed native organization before offer",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const homePath = yield* fileSystem.makeTempDirectoryScoped();
+          const initialAccount = {
+            email: "same-user@example.invalid",
+            organization: "Original Organization",
+            subscriptionType: "pro",
+            tokenSource: "oauth",
+            apiProvider: "firstParty",
+          } satisfies ClaudeSdk.AccountInfo;
+          const organizationUuid = "00000000-0000-4000-8000-000000000123";
+          yield* fileSystem.writeFileString(
+            path.join(homePath, ".claude.json"),
+            JSON.stringify({
+              oauthAccount: {
+                organizationUuid,
+                organizationName: initialAccount.organization,
+                emailAddress: initialAccount.email,
+              },
+            }),
+          );
+          const identity = claudeAutoAccountIdentity(
+            organizationUuid,
+            initialAccount.email,
+            initialAccount.organization,
+          )!;
+          let observedOrganization = initialAccount.organization;
+          let checks = 0;
+          const harness = yield* makeWakeHarnessWithOptions({
+            settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath },
+            initialAccount,
+            reinitializeAccount: Effect.sync(() => {
+              checks++;
+              return { ...initialAccount, organization: observedOrganization };
+            }),
+          });
+          const startAuto = (ordinal: number) =>
+            turnFor(harness, ordinal).pipe(
+              Effect.flatMap((turn) =>
+                harness.runtime.startTurn({
+                  ...turn,
+                  runtimePolicy: {
+                    ...turn.runtimePolicy,
+                    cwd: homePath,
+                    autoAccountDigest: accountIdentityDigest("claudeAgent", identity),
+                  },
+                }),
+              ),
+            );
+          yield* startAuto(1);
+          yield* harness.offerAndWait(wakeTurnInit);
+          yield* harness.offerAndWait(turnOneResult);
+          yield* Queue.take(harness.terminalReceipts);
+
+          observedOrganization = "Wrong Organization";
+          const refusal = yield* startAuto(2).pipe(Effect.flip);
+          assert.equal(refusal._tag, "ProviderAdapterTurnStartError");
+          if (refusal._tag === "ProviderAdapterTurnStartError")
+            assert.isTrue(refusal.refusedBeforePrompt);
+          assert.equal(checks, 1);
+          assert.lengthOf(harness.offeredMessages, 1);
+
+          observedOrganization = initialAccount.organization;
+          yield* startAuto(3);
+          assert.equal(checks, 2);
+          assert.lengthOf(harness.offeredMessages, 2);
+          assert.lengthOf(harness.processQueues, 1);
+          assert.equal(harness.getOpenedOptions()?.sessionId, WAKE_NATIVE_SESSION);
+
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "auto-warm-result", result: "Done" }),
+          );
+          yield* Queue.take(harness.terminalReceipts);
+          yield* fileSystem.writeFileString(
+            path.join(homePath, "settings.json"),
+            JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://synthetic-provider.invalid" } }),
+          );
+          const routeRefusal = yield* startAuto(4).pipe(Effect.flip);
+          assert.equal(routeRefusal._tag, "ProviderAdapterTurnStartError");
+          if (routeRefusal._tag === "ProviderAdapterTurnStartError") {
+            assert.isTrue(routeRefusal.refusedBeforePrompt);
+            assert.propertyVal(routeRefusal.cause, "nativeOutcome", "not_spawned");
+          }
+          assert.equal(checks, 2);
+          assert.lengthOf(harness.offeredMessages, 2);
+          assert.lengthOf(harness.processQueues, 1);
+        }),
     );
 
     it.effect("keeps ordinary output compatible and reopens an idle unobserved query cold", () =>

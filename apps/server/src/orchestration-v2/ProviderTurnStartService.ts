@@ -4116,6 +4116,8 @@ export const layer: Layer.Layer<
                     inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
                       session.injectHistory!({
                         providerThread: runningProviderThread,
+                        runtimePolicy: turnInput.runtimePolicy,
+                        revalidateStartAdmission: revalidateHandoff,
                         ...history,
                       }),
                   }),

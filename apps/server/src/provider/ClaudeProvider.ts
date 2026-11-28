@@ -287,7 +287,10 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
     abortController: input.abortController,
     settingSources: input.autoRouting ? [] : [...CLAUDE_CAPABILITIES_PROBE_SETTING_SOURCES],
     // Keep settings for slash-command discovery, but disable hooks so health checks do not run SessionStart repeatedly.
-    settings: { disableAllHooks: true },
+    settings: {
+      disableAllHooks: true,
+      ...(input.autoRouting ? { env: { CLAUDE_CODE_PLUGIN_DIRS: "" } } : {}),
+    },
     allowedTools: [],
     ...(input.autoRouting ? { tools: [], plugins: [] } : {}),
     // Exclude filesystem MCP servers; omit strict mode when managed-mcp.json already excludes them and forbids the flag.
@@ -297,7 +300,9 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
       ...providerProbeEnvironment(input.environment),
       // Disable claude.ai MCP separately; it is discovered outside filesystem config.
       ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-      ...(input.autoRouting ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" } : {}),
+      ...(input.autoRouting
+        ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", CLAUDE_CODE_PLUGIN_DIRS: "" }
+        : {}),
       // Skipping this avoids a Windows tasklist | findstr process tree on every refresh.
       FORCE_CODE_TERMINAL: undefined,
       CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
@@ -315,6 +320,7 @@ function nonEmptyProbeString(value: string): string | undefined {
 
 export type ClaudeCapabilitiesProbe = {
   readonly email: string | undefined;
+  readonly organization?: string | undefined;
   readonly workspaceId?: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
@@ -603,17 +609,10 @@ const probeClaudeCapabilities = (
         const effortCapSources = parseClaudeEffortCapSources(
           settingsResult && Result.isSuccess(settingsResult) ? settingsResult.success : undefined,
         );
-        const account = init.account as
-          | {
-              readonly email?: string;
-              readonly subscriptionType?: string;
-              readonly tokenSource?: string;
-              readonly apiKeySource?: string;
-              readonly apiProvider?: string;
-            }
-          | undefined;
+        const account = init.account;
         return {
           email: account?.email,
+          organization: account?.organization,
           subscriptionType: account?.subscriptionType,
           tokenSource: account?.tokenSource,
           apiKeySource: account?.apiKeySource,
