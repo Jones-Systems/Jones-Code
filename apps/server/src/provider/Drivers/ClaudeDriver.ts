@@ -15,6 +15,8 @@ import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
+import { registerAccountObserver } from "../../jones/accountRouting/accountObservation.ts";
+import { observeClaudeNativeAccount } from "../../jones/accountRouting/claudeEvidence.ts";
 import { classifyClaudeEvaluatorLaunchArgs } from "../../textGeneration/jones/claudeEvaluatorLaunch.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -431,6 +433,34 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       ),
     );
 
+    registerAccountObserver(orchestrationAdapter, (cwd, runtimeMode) =>
+      Effect.gen(function* () {
+        if (runtimeMode === "auto" || runtimeMode === "full-access") {
+          const modes = yield* resolveClaudeModeAvailability({
+            settings: effectiveConfig,
+            homePath: configDir,
+            customHome,
+            cwd,
+            fileSystem,
+            path,
+          }).pipe(Effect.orElseSucceed(() => undefined));
+          if (!modes || (runtimeMode === "auto" ? modes.autoDisabled : modes.bypassDisabled))
+            return undefined;
+        }
+        return yield* observeClaudeNativeAccount({
+          cwd,
+          configDir,
+          customHome,
+          settings: effectiveConfig,
+          environment: processEnv,
+          catalog: yield* modelCatalog,
+        });
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      ),
+    );
     return {
       instanceId,
       driverKind: DRIVER_KIND,

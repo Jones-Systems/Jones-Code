@@ -316,6 +316,11 @@ export function ComposerModelPicker({
       ? current.filter((selection) => !matchesModel(selection))
       : [...current, createModelSelection(instanceId, model)];
     if (next.length > 1) {
+      if (pickerProps.accountRouting?.active) {
+        onProviderModelSelect(selectedModelSelection.instanceId, selectedModelSelection.model, {
+          focusComposer: false,
+        });
+      }
       onMultipleModelSelectionsChange(next);
     } else {
       onMultipleModelSelectionsChange(null);

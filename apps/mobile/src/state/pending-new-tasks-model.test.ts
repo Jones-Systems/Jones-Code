@@ -127,6 +127,7 @@ describe("buildPendingNewTasks", () => {
       sendGate: {
         connectedEnvironmentIds: new Set([sending, syncing, readOnly, retrying]),
         operableEnvironmentIds: new Set([sending, syncing, retrying]),
+        automaticAccountEnvironmentIds: new Set(),
         shellStatuses: new Map([
           [sending, "live"],
           [syncing, "synchronizing"],
@@ -141,5 +142,41 @@ describe("buildPendingNewTasks", () => {
     expect(new Set(tasks.map((task) => task.environmentId))).toEqual(
       new Set(["syncing", "read-only", "retrying", "offline", "sending"]),
     );
+  });
+
+  it("exposes a held Auto launch and its outbox row until the destination supports it", () => {
+    const automatic = {
+      ...queuedCreation("sending"),
+      accountRouting: { mode: "auto" },
+      issuance: { state: "unissued" },
+    } satisfies QueuedThreadMessage;
+    const { environmentId } = automatic;
+    const baseGate = {
+      connectedEnvironmentIds: new Set([environmentId]),
+      operableEnvironmentIds: new Set([environmentId]),
+      shellStatuses: new Map([[environmentId, "live"]] as const),
+      retryingMessageIds: {},
+    };
+    const input = { queuedMessages: [automatic, queuedCreation("sending")], drafts: {} };
+
+    expect(
+      buildPendingNewTasks({
+        ...input,
+        sendGate: { ...baseGate, automaticAccountEnvironmentIds: new Set() },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "pending",
+        key: `pending-task:${automatic.messageId}`,
+        environmentId,
+        message: automatic,
+      }),
+    ]);
+    expect(
+      buildPendingNewTasks({
+        ...input,
+        sendGate: { ...baseGate, automaticAccountEnvironmentIds: new Set([environmentId]) },
+      }),
+    ).toEqual([]);
   });
 });

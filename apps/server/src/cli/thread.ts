@@ -1,4 +1,5 @@
 import {
+  ModelSelection,
   NonNegativeInt,
   OrchestratorMcpFailure,
   OrchestratorMcpThreadListResult,
@@ -189,6 +190,13 @@ const ThreadLaunchResult = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   runId: Schema.NullOr(RunId),
+});
+const AutoThreadLaunchResult = Schema.Struct({
+  ...ThreadLaunchResult.fields,
+  modelSelection: ModelSelection,
+});
+const AccountRoutingCapabilities = Schema.Struct({
+  features: Schema.Struct({ accountAutoRouting: Schema.optional(Schema.Boolean) }),
 });
 
 const toolFailureDetail = (result: typeof ToolResult.Type) => {
@@ -940,6 +948,12 @@ const threadStartCommand = Command.make("start", {
     Flag.withDescription("Model slug. Defaults to the project's default model."),
     Flag.optional,
   ),
+  accountRouting: Flag.Literals("account-routing", ["auto"]).pipe(
+    Flag.withDescription(
+      "Choose an eligible Codex or Claude account for a project-root launch. Needs --provider and --model.",
+    ),
+    Flag.optional,
+  ),
   option: Flag.String("option").pipe(
     Flag.withDescription(
       "Model option as id=value (Codex: reasoningEffort=high; Claude: effort=high). Ids depend on the model. Repeat for more. Needs --provider and --model.",
@@ -963,9 +977,26 @@ const threadStartCommand = Command.make("start", {
   Command.withDescription("Start a thread in a project and print its id."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
+      const accountRouting = Option.isSome(flags.accountRouting)
+        ? { mode: flags.accountRouting.value }
+        : undefined;
+      if (
+        accountRouting !== undefined &&
+        (Option.isNone(flags.provider) || Option.isNone(flags.model))
+      )
+        return yield* new ThreadUsageError({
+          detail: "--account-routing auto needs --provider and --model.",
+        });
+      if (accountRouting !== undefined && Option.isSome(flags.worktree))
+        return yield* new ThreadUsageError({
+          detail:
+            "--account-routing auto needs an existing launch directory. Omit --worktree to use the project root.",
+        });
       const message = yield* readMessageArgument(flags.message);
       const output = yield* readOutputSchema(flags.outputSchema);
-      const workspaceStrategy = yield* launchWorkspaceStrategy(flags);
+      const workspaceStrategy =
+        (yield* launchWorkspaceStrategy(flags)) ??
+        (accountRouting === undefined ? undefined : { type: "root" });
       const modelSelection = yield* launchModelSelection(flags);
       const title = yield* decodeTitle(
         Option.getOrElse(flags.title, () => titleFromMessage(message)),
@@ -973,6 +1004,19 @@ const threadStartCommand = Command.make("start", {
       yield* withThreadTools(
         flags,
         Effect.fn("cli.thread.start")(function* (tools) {
+          if (accountRouting !== undefined) {
+            const { features } = yield* tools.call(
+              "orchestrator_capabilities",
+              {},
+              AccountRoutingCapabilities,
+            );
+            if (features.accountAutoRouting !== true)
+              return yield* new ThreadToolFailedError({
+                tool: "orchestrator_capabilities",
+                detail:
+                  "This T3 Code server does not support Auto account routing. Update T3 Code, then retry.",
+              });
+          }
           const project = yield* resolveProject(tools, flags.project);
           const launched = yield* tools.call(
             "t3_thread_launch",
@@ -984,8 +1028,9 @@ const threadStartCommand = Command.make("start", {
               ...output,
               ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
               ...(modelSelection === undefined ? {} : { modelSelection }),
+              ...(accountRouting === undefined ? {} : { accountRouting }),
             },
-            ThreadLaunchResult,
+            accountRouting === undefined ? ThreadLaunchResult : AutoThreadLaunchResult,
           );
           if (flags.wait && launched.runId !== null) {
             if (!flags.json) yield* Console.error(`Thread ${launched.threadId}`);

@@ -1,3 +1,4 @@
+import { isAccountAutoOption } from "../../jones/accountRouting/selection";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import type { ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
 
@@ -88,7 +89,13 @@ export function canCommitPendingModel(
 ): boolean {
   return groups.some((group) =>
     group.models.some(
-      (model) => model.key === pending.key && !model.isUnavailable && !model.isHidden,
+      (model) =>
+        model.key === pending.key &&
+        !model.isUnavailable &&
+        !model.isHidden &&
+        (!isAccountAutoOption(pending) ||
+          (model.selection.instanceId === pending.selection.instanceId &&
+            model.selection.model === pending.selection.model)),
     ),
   );
 }

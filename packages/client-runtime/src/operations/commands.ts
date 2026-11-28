@@ -13,6 +13,7 @@ import {
   OrchestrationV2CheckpointUnavailableError,
   OrchestrationDispatchCommandError,
   WS_METHODS,
+  type AccountRouting,
   type ChatAttachment,
   MessageId,
   type ModelSelection,
@@ -40,6 +41,7 @@ import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2Pend
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Cause from "effect/Cause";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -52,9 +54,10 @@ import {
   getInitialServerConfig,
   isRpcClientError,
   request,
+  requestGuarded,
 } from "../rpc/client.ts";
 import { freezePreparedTurnRequest } from "./jonesPreparedTurn.ts";
-import { translatableMessage } from "../errors/translatable.ts";
+import { translatableMessage, type MarkedText } from "../errors/translatable.ts";
 import { msg } from "gt-i18n";
 import { repositoryCheckpointScopeIds } from "../state/threadRepositories.ts";
 
@@ -205,6 +208,9 @@ interface StartThreadBootstrap {
 }
 
 export interface StartThreadTurnInput extends ThreadCommandInput {
+  readonly accountRouting?: AccountRouting;
+  /** Capability of the environment receiving this fresh launch. */
+  readonly serverSupportsAccountAutoRouting?: boolean;
   /** Client-only capability hint; never sent in the launch payload. */
   readonly serverResolvesWorktreeBase?: boolean;
   readonly manualContinuationOfRunId?: RunId;
@@ -807,10 +813,34 @@ export const setThreadInteractionMode = Effect.fn("EnvironmentCommands.setThread
 
 const MANUAL_CONTINUATION_FALLBACK_TEXT = "Continue where you left off.";
 
+const accountAutoRoutingUnavailableMessage = () =>
+  translatableMessage(msg("This environment does not support automatic account selection."));
+
+/** The selected session lacks Auto support. No launch RPC was issued on it. */
+export class AccountAutoRoutingSessionError extends Data.TaggedError(
+  "AccountAutoRoutingSessionError",
+)<{
+  readonly message: string;
+  readonly i18nMessage?: MarkedText;
+}> {}
+
 export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTurn")(function* (
   input: StartThreadTurnInput,
 ) {
   input = structuredClone(input);
+  const bootstrap = input.bootstrap?.createThread;
+  if (
+    input.accountRouting !== undefined &&
+    (bootstrap === undefined || input.serverSupportsAccountAutoRouting !== true)
+  ) {
+    return yield* bootstrap === undefined
+      ? new OrchestrationDispatchCommandError(
+          translatableMessage(
+            msg("Automatic account selection is available only when starting a new thread."),
+          ),
+        )
+      : new OrchestrationDispatchCommandError(accountAutoRoutingUnavailableMessage());
+  }
   const commandId = yield* allocateCommandId(input);
   const attachments = yield* persistAttachments(
     input.threadId,
@@ -822,7 +852,6 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
     input.message.attachments,
     attachments,
   );
-  const bootstrap = input.bootstrap?.createThread;
   const conversation = input.bootstrap?.conversation;
   let prepareWorktree = input.bootstrap?.prepareWorktree;
   if (
@@ -894,6 +923,7 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
         title: input.titleSeed ?? thread.title,
         generateTitle: input.titleSeed !== undefined,
         modelSelection: input.modelSelection ?? thread.modelSelection,
+        ...(input.accountRouting === undefined ? {} : { accountRouting: input.accountRouting }),
         runtimeMode: input.runtimeMode,
         interactionMode: input.interactionMode,
         workspaceStrategy,
@@ -1034,6 +1064,20 @@ export const dispatchPreparedThreadTurn = Effect.fn(
   "EnvironmentCommands.dispatchPreparedThreadTurn",
 )(function* (prepared: PreparedThreadTurn) {
   if (prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
+    if (prepared.payload.accountRouting !== undefined) {
+      return yield* requestGuarded(prepared.method, prepared.payload, {
+        validateSession: (session) =>
+          session.initialConfig.pipe(
+            Effect.flatMap((config) =>
+              config.environment.capabilities.accountAutoRouting === true
+                ? Effect.void
+                : Effect.fail(
+                    new AccountAutoRoutingSessionError(accountAutoRoutingUnavailableMessage()),
+                  ),
+            ),
+          ),
+      });
+    }
     return yield* request(prepared.method, prepared.payload);
   }
   return yield* request(prepared.method, prepared.payload);

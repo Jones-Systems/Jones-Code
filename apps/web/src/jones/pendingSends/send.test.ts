@@ -7,7 +7,11 @@ import {
   ThreadId,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
-import type { PreparedThreadTurn, StartThreadTurnInput } from "@t3tools/client-runtime/operations";
+import {
+  AccountAutoRoutingSessionError,
+  type PreparedThreadTurn,
+  type StartThreadTurnInput,
+} from "@t3tools/client-runtime/operations";
 import { createPendingSendStore } from "./store";
 import { sendPendingTurn } from "./send";
 import { startFanoutThread } from "../../components/chat/chatViewSend";
@@ -54,6 +58,61 @@ describe("prepared pending turn", () => {
     await result;
     expect(store.getSnapshot()).toMatchObject([{ delivery: "failed", working: false }]);
     expect(dispatch).not.toHaveBeenCalled();
+  });
+  it("waits for the recovery write and never issues when that write fails", async () => {
+    const store = createPendingSendStore();
+    const saving = deferred<boolean>();
+    const beforeDispatch = vi.fn(async () => {
+      if (!(await saving.promise)) throw new Error("Storage unavailable");
+    });
+    const dispatch = vi.fn(async () => AsyncResult.success({ sequence: 1 }));
+    const result = sendPendingTurn({
+      environmentId,
+      input,
+      store,
+      prepare: async () => AsyncResult.success(prepared),
+      beforeDispatch,
+      dispatch,
+    });
+    await Promise.resolve();
+    expect(beforeDispatch).toHaveBeenCalledWith(prepared);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(store.getSnapshot()[0]?.issued).toBe(false);
+
+    saving.resolve(false);
+    expect((await result)._tag).toBe("Failure");
+    expect(store.getSnapshot()[0]).toMatchObject({ issued: false, delivery: "failed" });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+  it("restores an unsent draft on capability loss and preserves uncertain earlier attempts", async () => {
+    const unsupported = () =>
+      AsyncResult.failure<never, Error>(
+        Cause.fail(
+          new AccountAutoRoutingSessionError({ message: "Automatic accounts unavailable" }),
+        ),
+      );
+    const prepare = async () => AsyncResult.success(prepared);
+    const first = createPendingSendStore();
+    await sendPendingTurn({
+      environmentId,
+      input,
+      store: first,
+      prepare,
+      dispatch: async () => unsupported(),
+    });
+    expect(first.getSnapshot()[0]?.delivery).toBe("failed");
+
+    const issued = createPendingSendStore();
+    await sendPendingTurn({
+      environmentId,
+      input,
+      store: issued,
+      prepare,
+      dispatch: vi.fn().mockResolvedValueOnce(failure()).mockResolvedValueOnce(unsupported()),
+    });
+    expect(issued.getSnapshot()[0]?.delivery).toBe("uncertain");
+    await issued.getSnapshot()[0]!.retry!();
+    expect(issued.getSnapshot()[0]?.delivery).toBe("uncertain");
   });
   it("manual Retry is single-flight and dispatches the same prepared object without preparation or reconnect dispatch", async () => {
     const store = createPendingSendStore();

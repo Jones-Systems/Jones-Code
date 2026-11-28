@@ -158,12 +158,11 @@ export function createNewThreadHandler(router: AnyRouter) {
             : currentRouteTarget.draftId,
         )
       : null;
-    const composerActiveProvider = draftModelSelectionApplies(
-      carrySourceComposer,
-      threadHasStarted(carrySourceShell),
-    )
-      ? (carrySourceComposer?.activeProvider ?? null)
-      : null;
+    const composerActiveProvider =
+      !carrySourceComposer?.accountRouting &&
+      draftModelSelectionApplies(carrySourceComposer, threadHasStarted(carrySourceShell))
+        ? (carrySourceComposer?.activeProvider ?? null)
+        : null;
     const composerModelSelection = composerActiveProvider
       ? (carrySourceComposer?.modelSelectionByProvider[composerActiveProvider] ?? null)
       : null;

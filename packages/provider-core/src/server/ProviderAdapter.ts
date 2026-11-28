@@ -89,6 +89,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * it; adapters use it to refuse native mode choices a user makes beside T3 Code's own.
    */
   maxRuntimeMode: Schema.optional(RuntimeMode),
+  /** Server-owned digest of the native login chosen at automatic account admission. */
+  autoAccountDigest: Schema.optionalKey(Schema.String),
   workspace: Schema.optional(ProviderAdapterV2RuntimeWorkspace),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
@@ -1106,9 +1108,10 @@ export interface ProviderAdapterV2SessionRuntime {
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
   /** False means the native protocol explicitly does not support history injection. */
   readonly injectHistory?: (
-    input: ProviderAdapterV2HistoricalContext & {
-      readonly providerThread: OrchestrationV2ProviderThread;
-    },
+    input: ProviderAdapterV2HistoricalContext &
+      Partial<Pick<ProviderAdapterV2TurnInput, "runtimePolicy" | "revalidateStartAdmission">> & {
+        readonly providerThread: OrchestrationV2ProviderThread;
+      },
   ) => Effect.Effect<boolean, ProviderAdapterV2Error>;
   readonly startTurn: (
     input: ProviderAdapterV2TurnInput,

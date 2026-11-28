@@ -63,6 +63,14 @@ import {
 } from "../../provider/ClaudeTurnTokenUsage.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
 import { forkClaudeHistorySession } from "../../claudeHistoryWorker.ts";
+import { accountIdentityDigest } from "../../jones/accountRouting/accountBinding.ts";
+import {
+  claudePaidFallbackDisabled,
+  hasNativeClaudeRoute,
+  hasClaudeSubscription,
+  readClaudeAutoIdentity,
+} from "../../jones/accountRouting/claudeEvidence.ts";
+import { readClaudeQueryUsage } from "../../provider/ClaudeProvider.ts";
 import {
   type CanUseTool,
   type ElicitationRequest,
@@ -232,6 +240,7 @@ import {
   claudeSignedOutMessage,
   makeClaudeEnvironment,
   mergeClaudeProcessEnvironment,
+  resolveClaudeAccountFiles,
   resolveClaudeHomePath,
   resolveClaudeUserHome,
   usesClaudeHostConfig,
@@ -832,12 +841,21 @@ export interface ClaudeAgentSdkQueryOpenInput {
   readonly options: ClaudeAgentSdkQueryOptions;
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
+  readonly verifyAutoAccount?: (
+    account: Awaited<ReturnType<ClaudeQuery["initializationResult"]>>["account"] | undefined,
+  ) => Effect.Effect<boolean>;
   /** Reports the step the CLI is on before the turn can start, such as `mcp`; `undefined` ends it. */
   readonly onStartupPhase?: (phase: string | undefined) => Effect.Effect<void>;
 }
 
 export interface ClaudeAgentSdkQuerySession {
   readonly messages: Stream.Stream<SDKMessage, ClaudeAgentSdkQueryRunnerError>;
+  /** Refreshes account evidence on an idle query. Stdio reinitialization can reset pending hooks. */
+  readonly reinitializeAccount?: Effect.Effect<
+    Awaited<ReturnType<ClaudeQuery["reinitialize"]>>["account"] | undefined
+  >;
+  /** Read-only allowance evidence from this query's own CLI. */
+  readonly readUsage?: ReturnType<typeof readClaudeQueryUsage>;
   readonly offer: (
     message: SDKUserMessage,
     onQueued?: () => void,
@@ -904,7 +922,7 @@ export class ClaudeAgentSdkQueryRunnerError extends Schema.TaggedError<ClaudeAge
   {
     method: Schema.String,
     cause: Schema.Defect(),
-    nativeOutcome: Schema.optional(Schema.Literals(["not_spawned", "unknown"])),
+    nativeOutcome: Schema.optional(Schema.Literals(["not_spawned", "retired", "unknown"])),
     unappliedSourceNativeId: Schema.optional(Schema.String),
   },
 ) {
@@ -1820,13 +1838,16 @@ export const layerQueryRunner: Layer.Layer<
         ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
         env: {
           ...(sdkOptions.env ?? hostEnvironment),
-          // The CLI would re-run a failed request by itself, then run the resume prompt as a second turn.
-          ...(input.resume && !endsOnFailedRequest
-            ? {
-                CLAUDE_CODE_RESUME_INTERRUPTED_TURN: "1",
-                CLAUDE_CODE_RESUME_REASON: "user_resume",
-              }
-            : {}),
+          // Auto must wait for a gated input before replaying interrupted work.
+          // Explicit-account recovery keeps its existing native resume behavior.
+          ...(input.verifyAutoAccount !== undefined
+            ? { CLAUDE_CODE_RESUME_INTERRUPTED_TURN: "0" }
+            : input.resume && !endsOnFailedRequest
+              ? {
+                  CLAUDE_CODE_RESUME_INTERRUPTED_TURN: "1",
+                  CLAUDE_CODE_RESUME_REASON: "user_resume",
+                }
+              : {}),
           [PortScanner.AGENT_THREAD_ENV]: input.threadId,
         },
       };
@@ -1901,6 +1922,7 @@ export const layerQueryRunner: Layer.Layer<
         hasExited: boolean;
       }> = [];
       let knownSpawnFailures = 0;
+      let rejectedQueryRetired = false;
       const awaitCapturedExits = Effect.suspend(() =>
         Effect.forEach(processExits, Deferred.await, {
           concurrency: "unbounded",
@@ -1966,6 +1988,20 @@ export const layerQueryRunner: Layer.Layer<
           Effect.tap((queryRuntime) =>
             restore(
               Effect.gen(function* () {
+                if (input.verifyAutoAccount !== undefined) {
+                  const account = yield* Effect.tryPromise(() =>
+                    queryRuntime.initializationResult(),
+                  ).pipe(
+                    Effect.map((init) => init.account),
+                    Effect.timeout(CLAUDE_BOOT_TIMEOUT),
+                    Effect.orElseSucceed(() => undefined),
+                  );
+                  if (!(yield* input.verifyAutoAccount(account)))
+                    return yield* queryRunnerError(
+                      "The selected Claude subscription could not be verified on the running provider. Restore its original login and try again.",
+                      "verifyAutoAccount",
+                    );
+                }
                 if (mcpServers !== undefined) {
                   const timedOut = (phase: ClaudeMcpRegistrationTimeoutError["phase"]) => () =>
                     Effect.logWarning("orchestration-v2.claude-mcp-registration-timeout", {
@@ -2039,6 +2075,14 @@ export const layerQueryRunner: Layer.Layer<
                       catch: (cause) => queryRunnerError(cause, "close"),
                     }).pipe(Effect.orDie),
                   ),
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      rejectedQueryRetired =
+                        capturedChildren.length > 0 &&
+                        capturedChildren.length === processExits.length &&
+                        capturedChildren.every((owner) => owner.hasExited);
+                    }),
+                  ),
                   Effect.orDie,
                 ),
               ),
@@ -2054,13 +2098,21 @@ export const layerQueryRunner: Layer.Layer<
               nativeOutcome:
                 processExits.length > 0 && processExits.length === knownSpawnFailures
                   ? "not_spawned"
-                  : "unknown",
+                  : error.method === "verifyAutoAccount" && rejectedQueryRetired
+                    ? "retired"
+                    : "unknown",
             }),
         ),
       );
 
       return {
         termination: Deferred.await(spawnObserved).pipe(Effect.andThen(awaitCapturedExits)),
+        reinitializeAccount: Effect.tryPromise(() => queryRuntime.reinitialize()).pipe(
+          Effect.map((init) => init.account),
+          Effect.timeout(CLAUDE_BOOT_TIMEOUT),
+          Effect.orElseSucceed(() => undefined),
+        ),
+        readUsage: readClaudeQueryUsage(queryRuntime),
         messages: Stream.fromAsyncIterable(
           claudeQueryMessages(queryRuntime),
           (cause) => cause,
@@ -6400,6 +6452,48 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const customHome =
     adapterOptions.settings.homePath.trim().length > 0 ||
     !(yield* usesClaudeHostConfig(adapterOptions.environment));
+  const autoAccountFiles = (cwd: string, environment: NodeJS.ProcessEnv) =>
+    resolveClaudeAccountFiles({
+      settings: adapterOptions.settings,
+      configDir: homePath,
+      environment,
+      cwd,
+    }).pipe(Effect.provideService(Path.Path, path));
+  const verifyAutoAccount = (
+    digest: string,
+    cwd: string | null,
+    environment = adapterOptions.environment,
+  ): NonNullable<ClaudeAgentSdkQueryOpenInput["verifyAutoAccount"]> =>
+    Effect.fn("ClaudeAdapterV2.verifyAutoAccount")(function* (account) {
+      if (cwd === null || !account || !hasClaudeSubscription(account)) return false;
+      const { accountConfigPath } = yield* autoAccountFiles(cwd, environment);
+      const identity = yield* readClaudeAutoIdentity(accountConfigPath, account).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+      );
+      return identity !== undefined && accountIdentityDigest("claudeAgent", identity) === digest;
+    });
+  const requireAutoRoute = Effect.fn("ClaudeAdapterV2.requireAutoRoute")(function* (
+    policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+    environment: NodeJS.ProcessEnv,
+  ) {
+    if (policy.autoAccountDigest === undefined) return;
+    const cwd = policy.cwd;
+    const native =
+      cwd !== null &&
+      (yield* Effect.gen(function* () {
+        const { configDir } = yield* autoAccountFiles(cwd, environment);
+        return yield* hasNativeClaudeRoute({ cwd, configDir, customHome, environment });
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      ));
+    if (!native)
+      return yield* new ClaudeAgentSdkQueryRunnerError({
+        method: "verifyAutoAccount",
+        cause: "The selected Claude subscription route changed before startup.",
+        nativeOutcome: "not_spawned",
+      });
+  });
   const announcedBypassDowngrades = new Set<ThreadId>();
   // Native session ids, so a resumed session does not repeat its notice.
   const announcedAutoFallbacks = new Set<string>();
@@ -14509,7 +14603,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.runtimePolicy.workspace,
           );
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
+          const accountDigest = turnInput.runtimePolicy.autoAccountDigest;
+          let routeCheckedBeforeRetirement = false;
           const retirePredecessor = Effect.fnUntraced(function* (previous: ClaudeLiveQueryContext) {
+            if (accountDigest !== undefined) {
+              yield* requireAutoRoute(turnInput.runtimePolicy, adapterOptions.environment);
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
+              routeCheckedBeforeRetirement = true;
+            }
             const retireForReplacement = input.runtimeLifecycle?.retireForReplacement;
             const binding = ProviderAdapter.runtimeBinding(
               previous.providerThread,
@@ -14567,6 +14668,44 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
             }
           }
+          let warmAccountVerified = false;
+          const verifyWarmAccount = Effect.fn("ClaudeAdapterV2.verifyWarmAccount")(function* (
+            live: ClaudeLiveQueryContext,
+          ) {
+            if (accountDigest === undefined || warmAccountVerified) return;
+            // Reinitializing stdio can interrupt hook callbacks, so only refresh
+            // a query without active turns, background work, or pending wakes.
+            if (
+              (yield* Ref.get(activeTurn)) !== null ||
+              (yield* liveProcessRunsBackgroundWork(live)) ||
+              scheduledWakeupsByNativeThread.has(nativeThreadId) ||
+              (yield* holdsBufferedWake(
+                nativeThreadId,
+                (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [],
+              ))
+            ) {
+              return yield* queryRunnerError(
+                "The Claude subscription cannot be reverified while native work is active.",
+                "verifyAutoAccount",
+              );
+            }
+            yield* requireAutoRoute(turnInput.runtimePolicy, adapterOptions.environment);
+            yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            const account = yield* live.query.reinitializeAccount ?? Effect.undefined;
+            if (!(yield* verifyAutoAccount(accountDigest, turnInput.runtimePolicy.cwd)(account))) {
+              return yield* queryRunnerError(
+                "The selected Claude subscription could not be verified on the running provider. Restore its original login and try again.",
+                "verifyAutoAccount",
+              );
+            }
+            yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            if ((yield* Ref.get(queryContext)) !== live || live.stopping)
+              return yield* queryRunnerError(
+                CLAUDE_QUERY_ENDED_BEFORE_TURN_DETAIL,
+                "verifyAutoAccount",
+              );
+            warmAccountVerified = true;
+          });
           const reuseQuery = Effect.fn("ClaudeAdapterV2.reuseQuery")(function* (
             live: ClaudeLiveQueryContext,
           ) {
@@ -14661,6 +14800,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             (existing.selection.apiModelId === compiledSelection.apiModelId ||
               existing.openedPermissionMode === queryPolicy.permissionMode)
           ) {
+            yield* verifyWarmAccount(existing);
             yield* applySelectionLive(existing, compiledSelection);
           }
           if (
@@ -14674,6 +14814,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             !replaceStaleProcess &&
             existing.selection.queryIdentity === compiledSelection.queryIdentity
           ) {
+            yield* verifyWarmAccount(existing);
             // A denied ExitPlanMode leaves Claude in plan mode. Restore only from plan:
             // Auto/default may reflect a policy restriction that forbids restoring bypass.
             if (existing.permissionMode === "plan" && existing.openedPermissionMode !== "plan") {
@@ -14853,6 +14994,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const openQueryRuntime = Effect.gen(function* () {
             const program = yield* readProgram;
             yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            // A route rejection cannot retire a predecessor. With no predecessor,
+            // check the launch environment immediately before admitting a spawn.
+            if (accountDigest !== undefined && !routeCheckedBeforeRetirement) {
+              yield* requireAutoRoute(
+                turnInput.runtimePolicy,
+                queryOptions.env ?? adapterOptions.environment,
+              );
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            }
             yield* (
               input.runtimeLifecycle?.admit({ runtimeGeneration, threadId: turnInput.threadId }) ??
               Effect.void
@@ -14863,6 +15013,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 threadId: turnInput.threadId,
                 providerSessionId: input.providerSessionId,
                 options: queryOptions,
+                ...(accountDigest === undefined
+                  ? {}
+                  : {
+                      verifyAutoAccount: verifyAutoAccount(
+                        accountDigest,
+                        turnInput.runtimePolicy.cwd,
+                        queryOptions.env ?? adapterOptions.environment,
+                      ),
+                    }),
                 ...(turnInput.resume ? { resume: true } : {}),
                 onStartupPhase: reportStartupPhase,
               })
@@ -14877,7 +15036,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               : adapterOptions.installationGate.execute(adapterOptions.instanceId, openQueryRuntime)
           ).pipe(
             Effect.mapError((cause) => {
-              if (!isClaudeAgentSdkQueryRunnerError(cause) || cause.nativeOutcome === "not_spawned")
+              if (
+                !isClaudeAgentSdkQueryRunnerError(cause) ||
+                cause.nativeOutcome === "not_spawned" ||
+                cause.nativeOutcome === "retired"
+              )
                 return cause;
               queryBindingUnknown = true;
               queryControlUnknown = new ProviderControlOutcomeUnknown({
@@ -15325,6 +15488,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             }
             yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            if (turnInput.runtimePolicy.autoAccountDigest !== undefined) {
+              yield* requireAutoRoute(turnInput.runtimePolicy, adapterOptions.environment);
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            }
             const required = yield* RequiredNativeSession;
             const requirement = required === undefined ? undefined : { ...required };
             if (
@@ -15496,6 +15663,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               queryPolicy,
               nativeSessionProof,
             );
+            const verifyAutoAllowance = Effect.gen(function* () {
+              if (turnInput.runtimePolicy.autoAccountDigest === undefined) return;
+              const usage = yield* querySession.query.readUsage ?? Effect.undefined;
+              if (!claudePaidFallbackDisabled(usage)) {
+                return yield* queryRunnerError(
+                  "Claude Auto requires extra usage to be verifiably disabled on the running provider.",
+                  "verifyAutoAllowance",
+                );
+              }
+              if ((yield* Ref.get(queryContext)) !== querySession || querySession.stopping) {
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: CLAUDE_QUERY_ENDED_BEFORE_TURN_DETAIL,
+                });
+              }
+            });
             yield* applySessionTitle(querySession.query, nativeThreadId, turnInput.appThread.title);
             const autoCompactWindow = yield* resolveAutoCompactWindow(
               querySession.settingsCwd,
@@ -15568,6 +15751,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               heldResult: undefined,
               executedModel: undefined,
             };
+            const previousTurn = querySession.lastTurn;
             const attachTurn = Effect.gen(function* () {
               yield* turnInput.revalidateStartAdmission ?? Effect.void;
               if (querySession.nativeSessionFailure !== undefined) {
@@ -15580,6 +15764,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 yield* nativeSessionProof
                   .confirm(querySession.observedNativeSessionId, querySession.runtimeGeneration)
                   .pipe(Effect.onError((cause) => rejectNativeSessionQuery(querySession, cause)));
+              }
+              if (
+                userMessage !== null &&
+                !turnInput.resume &&
+                turnInput.runtimePolicy.autoAccountDigest !== undefined
+              ) {
+                // Refused inputs leave the producer idle. Recheck Stop after the slow control.
+                yield* verifyAutoAllowance;
+                yield* turnInput.revalidateStartAdmission ?? Effect.void;
               }
               // Set before claiming: a query that exits after the claim finalizes this turn; one that exits before it fails the start.
               yield* Ref.set(activeTurn, context);
@@ -15840,7 +16033,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (userMessage !== null) {
               yield* sdkMessageLock.withPermits(1)(
                 Effect.gen(function* () {
-                  if ((yield* Ref.get(activeTurn)) === context) yield* offerUserMessage;
+                  if ((yield* Ref.get(activeTurn)) !== context) return;
+                  // A native wake replay can settle the resume without offering any input.
+                  // Check only when the still-active resume will actually send its input.
+                  yield* verifyAutoAllowance.pipe(
+                    Effect.onError(() =>
+                      Ref.update(activeTurn, (current) => {
+                        if (current !== context || context.nativeWakeStarted) return current;
+                        if (querySession.lastTurn === context) querySession.lastTurn = previousTurn;
+                        return null;
+                      }),
+                    ),
+                  );
+                  yield* offerUserMessage;
                 }),
               );
             }
@@ -15855,6 +16060,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     threadId: turnInput.threadId,
                     providerThreadId: turnInput.providerThread.id,
                     runId: turnInput.runId,
+                    ...(isClaudeAgentSdkQueryRunnerError(cause) &&
+                    (cause.method === "verifyAutoAccount" || cause.method === "verifyAutoAllowance")
+                      ? { refusedBeforePrompt: true }
+                      : {}),
                     cause,
                   }),
               ),
@@ -16022,6 +16231,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             }
             yield* turnInput.revalidateSteerAdmission ?? Effect.void;
+            // An active SDK query can have pending hook callbacks. Let the
+            // caller queue a new turn, whose idle query can safely reattest.
+            if (currentTurn.input.runtimePolicy.autoAccountDigest !== undefined)
+              return yield* new ProviderAdapter.ProviderAdapterSteerDeclinedError({
+                driver: CLAUDE_PROVIDER,
+                providerThreadId: turnInput.providerThread.id,
+                providerTurnId: turnInput.providerTurnId,
+              });
             if (currentTurn.nativeSessionProof !== undefined) {
               yield* currentTurn.nativeSessionProof
                 .confirm(existing.observedNativeSessionId, existing.runtimeGeneration)
@@ -16158,14 +16375,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           (effect, turnInput) =>
             effect.pipe(
               Effect.scoped,
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapter.ProviderAdapterSteerRunError({
-                    driver: CLAUDE_PROVIDER,
-                    providerThreadId: turnInput.providerThread.id,
-                    providerTurnId: turnInput.providerTurnId,
-                    cause,
-                  }),
+              Effect.mapError((cause) =>
+                cause._tag === "ProviderAdapterSteerDeclinedError"
+                  ? cause
+                  : new ProviderAdapter.ProviderAdapterSteerRunError({
+                      driver: CLAUDE_PROVIDER,
+                      providerThreadId: turnInput.providerThread.id,
+                      providerTurnId: turnInput.providerTurnId,
+                      cause,
+                    }),
               ),
             ),
         );

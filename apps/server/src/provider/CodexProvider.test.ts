@@ -1,6 +1,7 @@
 import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -22,10 +23,12 @@ import {
   applyPreferredCodexDefaultModel,
   codexDefaultReasoningEffortOverride,
   checkCodexProviderStatus,
+  codexAutoProbeConfigArgs,
   codexCustomEndpoint,
   codexRoutesSpendNativeQuota,
   makeCodexSkillsProbe,
   mapCodexModelCapabilities,
+  probeCodexAutoRouting,
 } from "./CodexProvider.ts";
 
 const layerProbePlatform = Layer.mergeAll(
@@ -35,10 +38,12 @@ const layerProbePlatform = Layer.mergeAll(
   }),
 );
 
-function makeFakeCodexAppServers() {
+function makeFakeCodexAppServers(responses: Readonly<Record<string, unknown>> = {}) {
   const helpers: Array<{
     readonly codexHome: unknown;
+    readonly args: ReadonlyArray<string>;
     readonly crash: Effect.Effect<void>;
+    readonly methods: Array<string>;
     readonly requests: Array<unknown>;
     closed: boolean;
   }> = [];
@@ -52,7 +57,9 @@ function makeFakeCodexAppServers() {
       );
       const helper = {
         codexHome: command._tag === "StandardCommand" ? command.options.env?.CODEX_HOME : undefined,
+        args: command._tag === "StandardCommand" ? command.args.map(String) : [],
         crash,
+        methods: [] as Array<string>,
         requests: [] as Array<unknown>,
         closed: false,
       };
@@ -78,6 +85,7 @@ function makeFakeCodexAppServers() {
                 readonly params?: { readonly cwds: ReadonlyArray<string> };
               };
               if (frame.id === undefined) return Effect.void;
+              helper.methods.push(frame.method);
               if (frame.method === "initialize") {
                 return respond(frame.id, {
                   codexHome: "/codex-home",
@@ -87,6 +95,8 @@ function makeFakeCodexAppServers() {
                 });
               }
               helper.requests.push(frame.params);
+              if (Object.hasOwn(responses, frame.method))
+                return respond(frame.id, responses[frame.method]);
               return respond(frame.id, {
                 data: (frame.params?.cwds ?? []).map((cwd) => ({
                   cwd,
@@ -116,6 +126,109 @@ function makeFakeCodexAppServers() {
   );
   return { helpers, spawner };
 }
+
+it("allows route-preserving Codex launch flags and rejects flags that can activate integrations", () => {
+  assert.deepStrictEqual(
+    codexAutoProbeConfigArgs("--profile work -c 'model_provider=\"openai\"'"),
+    [
+      "--config",
+      "features.connectors=false",
+      "--config",
+      "features.plugins=false",
+      "--config",
+      "features.apps=false",
+      "--config",
+      "features.codex_hooks=false",
+      "--config",
+      "features.hooks=false",
+    ],
+  );
+  for (const args of [
+    "--enable=plugins",
+    "-c mcp_servers.foo.command=external",
+    "--listen ws://0.0.0.0:9876",
+    "--profile --config model=foo",
+    "-c 'marketplaces.openai-bundled.source=\"/user/marketplace\"'",
+    "--",
+  ])
+    assert.strictEqual(codexAutoProbeConfigArgs(args), undefined);
+});
+
+it.live("waits for a new Codex catalog and performs only contextual reads", () =>
+  Effect.gen(function* () {
+    const { helpers, spawner } = makeFakeCodexAppServers({
+      "account/read": {
+        account: { type: "chatgpt", email: "example@example.invalid", planType: "pro" },
+        requiresOpenaiAuth: true,
+      },
+      "config/read": { config: { model_provider: "openai" }, origins: {} },
+      "account/rateLimits/read": {
+        accountId: " synthetic-codex ",
+        ordinaryUsageAllowed: true,
+        rateLimits: { limitId: "codex" },
+      },
+      "model/list": { data: [] },
+    });
+    const settings = yield* compiledDecodeEffect1({
+      binaryPath: "codex",
+      homePath: "/synthetic/shadow home",
+      launchArgs: "-c 'model_provider=\"openai\"'",
+    });
+    const input = {
+      instanceId: ProviderInstanceId.make("synthetic-auto"),
+      settings,
+      homeLayout: {
+        mode: "authOverlay" as const,
+        sharedHomePath: "/synthetic/shared",
+        effectiveHomePath: settings.homePath,
+        continuationKey: "codex:home:/synthetic/shared",
+      },
+      environment: {},
+      cwd: "/project",
+    };
+    const catalogWith = (fresh: boolean) =>
+      FileSystem.layerNoop({
+        readFileString: () =>
+          DateTime.now.pipe(
+            Effect.map((now) =>
+              JSON.stringify({
+                fetched_at: fresh ? DateTime.formatIso(now) : "1969-12-31T23:59:59.000Z",
+              }),
+            ),
+          ),
+      });
+    const observe = (fresh: boolean) =>
+      probeCodexAutoRouting(input).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provide(Layer.mergeAll(catalogWith(fresh), Path.layer)),
+      );
+    assert.strictEqual(yield* observe(false), undefined);
+    assert.strictEqual(helpers[0]!.methods.includes("model/list"), false);
+    assert.strictEqual(helpers[0]!.closed, true);
+
+    const current = yield* observe(true);
+    assert.strictEqual(current?.accountIdentity, "synthetic-codex");
+    assert.strictEqual(helpers[1]!.codexHome, "/synthetic/shadow home");
+    assert.deepStrictEqual(helpers[1]!.methods, [
+      "initialize",
+      "account/read",
+      "config/read",
+      "config/read",
+      "account/rateLimits/read",
+      "model/list",
+    ]);
+    assert.deepStrictEqual(helpers[1]!.args, [
+      "app-server",
+      "-c",
+      "thread_unload_delay_secs=0",
+      "-c",
+      'marketplaces.openai-bundled.source="/synthetic/shadow home/.tmp/bundled-marketplaces/openai-bundled"',
+      "-c",
+      'model_provider="openai"',
+      ...codexAutoProbeConfigArgs("")!,
+    ]);
+  }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+);
 
 it.effect("reuses one Codex skills helper per launch until it idles out", () =>
   Effect.gen(function* () {

@@ -217,6 +217,7 @@ vi.mock("../../state/use-thread-outbox", async () => {
 vi.mock("../../state/use-composer-drafts", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
+    cloudOutboxArchiveFencesAtom: Atom.make(new Map()),
     composerDraftsAtom: Atom.make({}),
     removeDeliveredCloudQueuedMessage: async () => {},
     appendComposerDraftAttachments: vi.fn(),

@@ -1,6 +1,14 @@
 import { namedClipboardTarget, writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { withMessageContext } from "../../jones/composer/messageContext";
 import {
+  acknowledgeAccountRouting,
+  canRouteAccountForSelection,
+} from "../../jones/accountRouting/composerAccountRouting";
+import {
+  captureAutoLaunch,
+  type AutoLaunchRecoveryRecord,
+} from "../../jones/accountRouting/autoLaunchRecovery";
+import {
   resolveFirstSendWorktreePreparation,
   usesVerifiedDefault,
 } from "../../jones/composer/firstSendWorktree";
@@ -27,6 +35,7 @@ import {
   formatOutgoingPrompt,
   optimisticMessageAttachments,
   planComposerTurn,
+  presentThreadShellFromProjection,
   deriveComposerSendTitle,
   snapshotComposerSend,
   makeThreadErrorSetter,
@@ -81,8 +90,11 @@ import {
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
   finalizePromotedDraftThreadByRef,
+  hasUnresolvedAutoDraftLaunch,
   markPromotedDraftThreadByRef,
+  reserveAutoDraftLaunch,
   restoreFailedDraftThread,
+  settleAutoDraftLaunch,
   checkoutPullRequestUrlToLink,
   composerDraftHasUserContent,
   composerTargetKey,
@@ -460,6 +472,17 @@ export function useComposerSend(input: ComposerSendInput) {
     },
   ) => {
     e?.preventDefault();
+    if (draftId && draftThread && hasUnresolvedAutoDraftLaunch(draftId)) {
+      setThreadError(
+        draftThread.threadId,
+        m(
+          msg(
+            "This draft has an Auto launch waiting for confirmation. Check its message for recovery options.",
+          ),
+        ),
+      );
+      return;
+    }
     // What the user pressed send on; uploads below can take a while, and a redirect must not
     // decline approvals for a draft that changed meanwhile.
     let promptAtSend = detachedOverride ? detachedOverride.prompt : promptRef.current;
@@ -783,13 +806,42 @@ export function useComposerSend(input: ComposerSendInput) {
       onAdvanceActivePendingUserInput();
       return;
     }
+    const submittedComposerDraft = useComposerDraftStore
+      .getState()
+      .getComposerDraft(composerDraftTarget);
+    const accountRouting = isLocalDraftThread ? submittedComposerDraft?.accountRouting : undefined;
+    const serverSupportsAccountAutoRouting = () =>
+      appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+        .accountAutoRouting === true;
+    const accountRoutingUnavailable = () =>
+      m(
+        msg(
+          "Automatic account selection is unavailable here. Choose an account in the model picker.",
+        ),
+      );
+    if (
+      accountRouting &&
+      (!draftId ||
+        !draftThread ||
+        !serverSupportsAccountAutoRouting() ||
+        !sendCtx ||
+        sendCtx.multipleModelSelections !== null ||
+        submittedComposerDraft?.activeProvider !== sendCtx.selectedModelSelection.instanceId ||
+        !canRouteAccountForSelection(
+          providerInstanceEntries,
+          sendCtx.selectedModelSelection.instanceId,
+        ))
+    ) {
+      setThreadError(activeThread.id, accountRoutingUnavailable());
+      return;
+    }
     if (!sendCtx?.providerAvailable) {
       notifyDirectAnnotationAttached();
       return;
     }
-    const submittedComposerDraft = useComposerDraftStore
-      .getState()
-      .getComposerDraft(composerDraftTarget);
+    const submittedModelPick = submittedComposerDraft?.accountRouting
+      ? null
+      : submittedComposerDraft;
     const multipleModelSelections = sendCtx.multipleModelSelections;
     const approvalFeedbackTarget = pendingApprovalsRef.current.find(
       (approval) =>
@@ -1102,6 +1154,17 @@ export function useComposerSend(input: ComposerSendInput) {
     const isFirstMessage = !sendQueuesBehindSetup && (!isServerThread || activeMessageCount === 0);
     const shouldCreateWorktree =
       isFirstMessage && effectiveSendEnvMode === "worktree" && activeThread.worktreePath === null;
+    if (accountRouting && (shouldCreateWorktree || shouldStartConversation)) {
+      setThreadError(
+        threadIdForSend,
+        m(
+          msg(
+            "Automatic account selection needs an existing workspace. Choose the project root or an existing worktree, or select a specific account for a new workspace.",
+          ),
+        ),
+      );
+      return;
+    }
     if (
       missingWorktreeBaseBranch &&
       appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
@@ -1236,13 +1299,24 @@ export function useComposerSend(input: ComposerSendInput) {
       if (isCurrentRouteThread() && composerRef.current?.hasPendingAttachments() === true)
         return true;
       const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
-      return composerDraftContentChanged(draftBeforePreparation, draft);
+      return (
+        composerDraftContentChanged(draftBeforePreparation, draft) ||
+        ((submittedComposerDraft?.accountRouting !== undefined ||
+          draft?.accountRouting !== undefined) &&
+          submittedComposerDraft?.modelSelectionByProvider !== draft?.modelSelectionByProvider)
+      );
     };
     sendInFlightRef.current = true;
     const sendGeneration = ++composerSendGenerationRef.current;
     composerRecoveryGenerationRef.current.set(routeThreadKey, sendGeneration);
     const isCurrentComposerSend = () =>
       composerRecoveryGenerationRef.current.get(routeThreadKey) === sendGeneration;
+    const resetSubmittedAttachmentRefs = () => {
+      composerImagesRef.current = [];
+      composerFilesRef.current = [];
+      composerTerminalContextsRef.current = [];
+      composerEnvironmentContextsRef.current = [];
+    };
     const clearSendingComposer = () => {
       const cleared = clearSubmittedComposer({
         routeThreadKey,
@@ -1253,12 +1327,7 @@ export function useComposerSend(input: ComposerSendInput) {
         isCurrentSend: isCurrentComposerSend,
         resetCursor: () => composerRef.current?.resetCursorState(),
       });
-      if (cleared && currentRouteThreadKeyRef.current === routeThreadKey) {
-        composerImagesRef.current = [];
-        composerFilesRef.current = [];
-        composerTerminalContextsRef.current = [];
-        composerEnvironmentContextsRef.current = [];
-      }
+      if (cleared && isCurrentRouteThread()) resetSubmittedAttachmentRefs();
       return cleared;
     };
     const attachmentCapabilitiesBeforeUpload = readLiveAttachmentCapabilities();
@@ -1634,19 +1703,21 @@ export function useComposerSend(input: ComposerSendInput) {
       optimisticBlobPreviews.release(optimisticMessage);
     }
     setOptimisticUserMessages((existing) => [...existing, optimisticMessage]);
-    pendingSends.attachThread(
-      environmentId,
-      threadIdForSend,
-      isLocalDraftThread
-        ? presentThreadShell(environmentId, {
-            ...activeThread.source,
-            providerInstanceId: ctxSelectedModelSelection.instanceId,
-            modelSelection: ctxSelectedModelSelection,
-            runtimeMode,
-            interactionMode: DEFAULT_INTERACTION_MODE,
-          })
-        : activeThread,
-    );
+    if (!accountRouting) {
+      pendingSends.attachThread(
+        environmentId,
+        threadIdForSend,
+        isLocalDraftThread
+          ? presentThreadShell(environmentId, {
+              ...activeThread.source,
+              providerInstanceId: ctxSelectedModelSelection.instanceId,
+              modelSelection: ctxSelectedModelSelection,
+              runtimeMode,
+              interactionMode: DEFAULT_INTERACTION_MODE,
+            })
+          : activeThread,
+      );
+    }
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
       const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -1664,9 +1735,10 @@ export function useComposerSend(input: ComposerSendInput) {
     const sentDraftThreadRef = isLocalDraftThread
       ? scopeThreadRef(environmentId, threadIdForSend)
       : null;
-    // Keep new-thread flows from reusing this draft while attachments and worktree setup settle.
-    if (sentDraftThreadRef) markPromotedDraftThreadByRef(sentDraftThreadRef);
-    const clearedComposer = clearSendingComposer();
+    // Auto drafts stay visible until their prepared launch is durably reserved.
+    if (sentDraftThreadRef && !accountRouting) markPromotedDraftThreadByRef(sentDraftThreadRef);
+    let clearedComposer = accountRouting ? null : clearSendingComposer();
+    let savedAutoLaunch: AutoLaunchRecoveryRecord | undefined;
     let backgroundDraftOpened = false;
     const recoveryTarget = () =>
       draftId && !useComposerDraftStore.getState().draftThreadsByThreadKey[draftId]
@@ -1709,6 +1781,7 @@ export function useComposerSend(input: ComposerSendInput) {
         isLocalDraftThread &&
         draftId &&
         draftThread &&
+        (!accountRouting || savedAutoLaunch) &&
         isCurrentComposerSend()
       ) {
         restoreFailedDraftThread(draftId, draftThread, threadIdForSend);
@@ -1718,6 +1791,8 @@ export function useComposerSend(input: ComposerSendInput) {
         !backgroundDraftOpened && currentRouteThreadKeyRef.current === routeThreadKey;
       const recoverInForeground = draftInForeground && isCurrentComposerSend();
       const restored = composerRecovery.rejected();
+      if (draftId && savedAutoLaunch)
+        settleAutoDraftLaunch(draftId, savedAutoLaunch, creationAccepted);
       if (
         !restored &&
         recoverInForeground &&
@@ -1856,6 +1931,9 @@ export function useComposerSend(input: ComposerSendInput) {
       if (liveFileBlockReason !== null) {
         throw new Error(liveFileBlockReason);
       }
+      if (accountRouting && !serverSupportsAccountAutoRouting()) {
+        throw new Error(accountRoutingUnavailable());
+      }
       return turnAttachments;
     });
     if (failure === null && turnAttachmentsResult._tag === "Failure") {
@@ -1877,7 +1955,7 @@ export function useComposerSend(input: ComposerSendInput) {
             attachments: [],
             idleCompaction: "onReturn",
           },
-          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedComposerDraft),
+          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedModelPick),
           runtimeMode,
           interactionMode: DEFAULT_INTERACTION_MODE,
         },
@@ -1931,11 +2009,42 @@ export function useComposerSend(input: ComposerSendInput) {
             draftId === null ? null : useComposerDraftStore.getState().getDraftSession(draftId),
           )
         : null;
-      if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
+      const openBackgroundDraft = async () => {
+        if (!backgroundThreadRef) return;
+        try {
+          backgroundDraftOpened = Boolean(
+            await handleNewThread(
+              scopeProjectRef(activeProject.environmentId, activeProject.id),
+              resolveBackgroundDraftWorkspaceOptions({
+                envMode: sendEnvMode,
+                branch: activeThreadBranch,
+                startFromOrigin,
+              }),
+            ),
+          );
+        } catch (error) {
+          clearBackgroundDraftSubmissionByRef(backgroundThreadRef);
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: m(msg("Could not open a fresh composer")),
+              description: thrownErrorMessage(error, m) ?? undefined,
+            }),
+          );
+        }
+      };
+      let autoBackgroundDraftOpening: Promise<void> | undefined;
+      if (backgroundThreadRef && !accountRouting)
+        beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
       pendingSends.whenAccepted(environmentId, threadIdForSend, messageIdForSend, () => {
         turnStartSucceeded = true;
+        if (draftId && savedAutoLaunch) settleAutoDraftLaunch(draftId, savedAutoLaunch, true);
         if (sentDraftThreadRef) input.onNewThreadAccepted?.(sentDraftThreadRef);
-        acknowledgeComposerSelection(recoveryTarget(), submittedComposerDraft);
+        if (accountRouting) {
+          acknowledgeAccountRouting(recoveryTarget(), submittedComposerDraft);
+        } else {
+          acknowledgeComposerSelection(recoveryTarget(), submittedModelPick);
+        }
         if (checkoutPullRequestUrl)
           linkCheckoutPullRequest(
             scopeThreadRef(environmentId, threadIdForSend),
@@ -1959,6 +2068,56 @@ export function useComposerSend(input: ComposerSendInput) {
       });
       const startPromise = startThreadTurn({
         environmentId,
+        ...(accountRouting && draftId
+          ? {
+              beforeDispatch: async (prepared) => {
+                const captured = captureAutoLaunch(
+                  prepared,
+                  {
+                    environmentId,
+                    threadId: threadIdForSend,
+                    projectId: activeProject.id,
+                    messageId: messageIdForSend,
+                  },
+                  messageCreatedAt,
+                  outgoingMessageContext === undefined ? sendSnapshot.draftText : undefined,
+                );
+                clearedComposer = await reserveAutoDraftLaunch(draftId, captured, () => {
+                  if (!serverSupportsAccountAutoRouting())
+                    throw new Error(accountRoutingUnavailable());
+                  const drafts = useComposerDraftStore.getState();
+                  const current = drafts.getDraftSession(draftId);
+                  if (
+                    !isCurrentComposerSend() ||
+                    !current ||
+                    !draftThread ||
+                    current.envMode !== draftThread.envMode ||
+                    current.branch !== draftThread.branch ||
+                    current.worktreePath !== draftThread.worktreePath ||
+                    drafts.getComposerDraft(draftId)?.accountRouting?.mode !== "auto" ||
+                    draftChangedDuringPreparation()
+                  )
+                    throw new Error(
+                      m(
+                        msg(
+                          "Draft changed while preparing this message. Review it and send again.",
+                        ),
+                      ),
+                    );
+                });
+                savedAutoLaunch = captured.record;
+                if (isCurrentRouteThread()) {
+                  promptRef.current = "";
+                  resetSubmittedAttachmentRefs();
+                  composerRef.current?.resetCursorState();
+                  if (backgroundThreadRef) {
+                    beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
+                    autoBackgroundDraftOpening = openBackgroundDraft();
+                  }
+                }
+              },
+            }
+          : {}),
         input: {
           threadId: threadIdForSend,
           serverResolvesWorktreeBase:
@@ -1978,7 +2137,13 @@ export function useComposerSend(input: ComposerSendInput) {
               ),
             }),
           },
-          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedComposerDraft),
+          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedModelPick),
+          ...(accountRouting
+            ? {
+                accountRouting,
+                serverSupportsAccountAutoRouting: serverSupportsAccountAutoRouting(),
+              }
+            : {}),
           titleSeed: title,
           runtimeMode,
           interactionMode: DEFAULT_INTERACTION_MODE,
@@ -1987,31 +2152,34 @@ export function useComposerSend(input: ComposerSendInput) {
           ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,
         },
-      });
-      if (backgroundThreadRef) {
-        try {
-          backgroundDraftOpened = Boolean(
-            await handleNewThread(
-              scopeProjectRef(activeProject.environmentId, activeProject.id),
-              resolveBackgroundDraftWorkspaceOptions({
-                envMode: sendEnvMode,
-                branch: activeThreadBranch,
-                startFromOrigin,
-              }),
+      }).then((result) => {
+        if (
+          accountRouting &&
+          result._tag === "Success" &&
+          "projection" in result.value &&
+          result.value.threadId === threadIdForSend
+        ) {
+          const accepted = result.value;
+          pendingSends.attachThread(
+            environmentId,
+            accepted.threadId,
+            presentThreadShellFromProjection(
+              environmentId,
+              accepted.threadId,
+              accepted.projection,
+              {
+                updatedAt: accepted.projection.updatedAt,
+                lastVisitedAt: accepted.projection.thread.lastVisitedAt,
+              },
             ),
           );
-        } catch (error) {
-          clearBackgroundDraftSubmissionByRef(backgroundThreadRef);
-          toastManager.add(
-            stackedThreadToast({
-              type: "warning",
-              title: m(msg("Could not open a fresh composer")),
-              description: thrownErrorMessage(error, m) ?? undefined,
-            }),
-          );
+          pendingSends.confirmThreadCreation(environmentId, accepted.threadId, messageIdForSend);
         }
-      }
+        return result;
+      });
+      if (backgroundThreadRef && !accountRouting) await openBackgroundDraft();
       const startResult = await startPromise;
+      if (autoBackgroundDraftOpening) await autoBackgroundDraftOpening;
       if (startResult._tag === "Failure") {
         failure = startResult;
       } else {
@@ -2055,6 +2223,7 @@ export function useComposerSend(input: ComposerSendInput) {
         isLocalDraftThread &&
         draftId &&
         draftThread &&
+        (!accountRouting || savedAutoLaunch) &&
         isCurrentComposerSend()
       ) {
         restoreFailedDraftThread(

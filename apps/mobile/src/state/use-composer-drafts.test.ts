@@ -1,4 +1,15 @@
-import { PrimaryConnectionTarget } from "@t3tools/client-runtime/connection";
+import {
+  BearerConnectionProfile,
+  BearerConnectionTarget,
+  connectionRoutes,
+  entryWithRoutes,
+  EnvironmentRegistry,
+  PrimaryConnectionTarget,
+  RELAY_ROUTE_ID,
+  RelayConnectionTarget,
+  routesAfterRemoving,
+  type ConnectionCatalogEntry,
+} from "@t3tools/client-runtime/connection";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { createEnvironmentThreadShellAtoms } from "@t3tools/client-runtime/state/threads";
@@ -14,20 +25,31 @@ import {
   v2ThreadShell,
 } from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import {
   CommandId,
   ComposerContextId,
+  ComposerContextRecord,
   EnvironmentId,
+  ForwardCompatibleArray,
   MessageId,
+  ModelSelection,
+  ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationV2Command,
+  OrchestrationV2ThreadLaunchInput,
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
   ProviderInstanceId,
+  ProviderInteractionMode,
+  ProviderOptionSelection,
+  RuntimeMode,
   RuntimeRequestId,
   ThreadId,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ShellSnapshot,
-  type ModelSelection,
 } from "@t3tools/contracts";
 import { onTestFinished, vi } from "vite-plus/test";
 
@@ -35,7 +57,10 @@ import { buildIncomingShareDraft } from "../features/sharing/incoming-share-mode
 import { composerContextSendBlockReason } from "../lib/composerContext";
 
 const composerDraftFileMocks = vi.hoisted(() => {
-  let document = JSON.stringify({ schemaVersion: 1, drafts: {} });
+  const MAIN_FILE = "drafts.json";
+  const AUTO_ARCHIVE_FILE = "signed-out-auto-account-outbox.json";
+  const documents = new Map([[MAIN_FILE, JSON.stringify({ schemaVersion: 1, drafts: {} })]]);
+  let archiveWriteError: Error | null = null;
   let readError: Error | null = null;
   let writeError: Error | null = null;
   let releaseRead: (() => void) | null = null;
@@ -45,7 +70,7 @@ const composerDraftFileMocks = vi.hoisted(() => {
   const writes: string[] = [];
   const readImage = vi.fn(async () => "YWJj");
 
-  return {
+  const storage = {
     readImage,
     blockRead() {
       readBarrier = new Promise<void>((resolve) => {
@@ -57,10 +82,25 @@ const composerDraftFileMocks = vi.hoisted(() => {
       releaseRead = null;
     },
     getDocument() {
-      return document;
+      return documents.get(MAIN_FILE) ?? "";
+    },
+    getAutoArchive() {
+      return documents.get(AUTO_ARCHIVE_FILE);
+    },
+    getQueuedMessage(messageId: string) {
+      return documents.get(`${encodeURIComponent(messageId)}.json`);
     },
     setDocument(value: unknown) {
-      document = JSON.stringify(value);
+      documents.set(MAIN_FILE, JSON.stringify(value));
+    },
+    resetOtherDocuments() {
+      for (const name of documents.keys()) {
+        if (name !== MAIN_FILE) documents.delete(name);
+      }
+      archiveWriteError = null;
+    },
+    setArchiveWriteError(error: Error | null) {
+      archiveWriteError = error;
     },
     setReadError(error: Error | null) {
       readError = error;
@@ -81,28 +121,54 @@ const composerDraftFileMocks = vi.hoisted(() => {
       writes.length = 0;
     },
     Directory: class {
+      constructor(
+        _parent: unknown,
+        readonly name?: string,
+      ) {}
+
       create() {}
 
-      list() {
-        return [];
+      list(): { readonly name: string }[] {
+        if (this.name !== "thread-outbox") return [];
+        return [...documents.keys()]
+          .filter((name) => name !== MAIN_FILE && name !== AUTO_ARCHIVE_FILE)
+          .map((name) => new storage.File(this, name));
       }
     },
     File: class {
-      exists = true;
       size = 3;
       parentDirectory = null;
       uri = "file:///documents/attachment.png";
+      private staged: string | undefined;
+
+      constructor(
+        _directory: unknown,
+        readonly name = MAIN_FILE,
+      ) {}
+
+      get exists() {
+        return this.name !== AUTO_ARCHIVE_FILE || documents.has(this.name);
+      }
 
       create() {}
 
+      delete() {
+        documents.delete(this.name);
+      }
+
       async copy() {}
 
-      moveSync() {}
+      moveSync(destination: { readonly name: string }) {
+        if (this.staged === undefined) throw new Error("Missing staged draft contents");
+        documents.set(destination.name, this.staged);
+        writes.push(this.staged);
+        onWrite?.();
+      }
 
       async text() {
         await readBarrier;
         if (readError) throw readError;
-        return document;
+        return documents.get(this.name) ?? "";
       }
 
       async base64() {
@@ -110,24 +176,22 @@ const composerDraftFileMocks = vi.hoisted(() => {
       }
 
       write(value: string) {
-        if (writeError) {
-          throw writeError;
+        if (this.name.startsWith(`${AUTO_ARCHIVE_FILE}.`) && archiveWriteError) {
+          throw archiveWriteError;
         }
+        if (writeError) throw writeError;
         if (nextWriteBarrier) {
           const barrier = nextWriteBarrier;
           nextWriteBarrier = null;
           return barrier.then(() => {
-            document = value;
-            writes.push(value);
-            onWrite?.();
+            this.staged = value;
           });
         }
-        document = value;
-        writes.push(value);
-        onWrite?.();
+        this.staged = value;
       }
     },
   };
+  return storage;
 });
 
 const composerAttachmentCleanupMocks = vi.hoisted(() => ({
@@ -137,6 +201,8 @@ const composerAttachmentCleanupMocks = vi.hoisted(() => ({
 
 const pickMedia = vi.hoisted(() => vi.fn());
 vi.mock("expo-image-picker", () => ({ launchImageLibraryAsync: pickMedia }));
+
+vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: {} }));
 
 const incomingShareStorageMocks = vi.hoisted(() => ({
   load: vi.fn<typeof import("../features/sharing/incoming-share-storage").loadIncomingShareDrafts>(
@@ -161,6 +227,7 @@ vi.mock("./assets", () => ({ assetEnvironment: {} }));
 vi.mock("./attachments", () => ({ attachmentEnvironment: {} }));
 vi.mock("./session", () => ({ environmentSession: {} }));
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+  createRuntimeCommand: () => ({}),
   createEnvironmentRpcCommand: () => Symbol("rpc-command"),
   executeAtomQuery: () => {
     throw new Error("Unexpected network query in the inline read test");
@@ -180,6 +247,8 @@ vi.mock("../features/sharing/incoming-share-storage", () => ({
 }));
 
 import type { DraftComposerAttachment } from "../lib/composerImages";
+import { preserveCloudDraftsAndRemoveEnvironments } from "../features/cloud/cloud-drafts";
+import { scopedThreadKey } from "../lib/scopedEntities";
 import {
   collectComposerContextReferences,
   formatComposerContextReference,
@@ -191,13 +260,30 @@ import {
   pickQuestionAttachments,
   resolveQuestionImagePreparations,
 } from "./question-attachment-preparation";
-import { threadOutboxManager } from "./thread-outbox";
+import { enqueueThreadOutboxMessage, threadOutboxManager } from "./thread-outbox";
+import { createThreadOutboxManager } from "./thread-outbox-manager";
+import { expoThreadOutboxStorage } from "./thread-outbox-storage";
+import { archiveAndClearCloudOutbox, clearThreadOutboxEnvironment } from "./thread-outbox-removal";
+import { withLaunchingThreads } from "./pending-thread-creation";
+import {
+  decodeQueuedThreadMessage,
+  QueuedThreadMessageSchema,
+  type QueuedThreadMessage,
+} from "./thread-outbox-model";
+import { decodePreparedThreadTurn } from "@t3tools/client-runtime/jones/preparedThreadTurn";
+import {
+  acceptedQueuedThreadDelivery,
+  observeQueuedThreadDelivery,
+  withIssuedQueuedThreadTurn,
+} from "../jones/threadConfiguration/outboxDelivery";
+import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
 import {
   appendComposerDraftAttachments,
   captureComposerDraftInsertion,
   countComposerDraftAttachmentsAfterSelection,
   getComposerDraftAfterSelection,
   archiveCloudComposerDrafts,
+  beginCloudOutboxArchive,
   clearComposerDraftContent,
   clearComposerDraftContentState,
   consumeSubmittedComposerModelPick,
@@ -243,6 +329,160 @@ const DRAFT: ComposerDraft = {
   text: "hello",
   attachments: [],
 };
+
+// Embedded v1 composer document and v1–v4 outbox reader from 4ed713e00.
+const embeddedComposerDraft = Schema.Struct({
+  importedHistoryCorrelation: Schema.optional(Schema.String),
+  text: Schema.String,
+  context: Schema.optional(
+    Schema.Struct({
+      version: Schema.Literal(1),
+      records: ForwardCompatibleArray(ComposerContextRecord),
+    }),
+  ),
+  attachments: Schema.Array(DraftComposerAttachmentSchema),
+  importedShareIds: Schema.optional(Schema.Array(Schema.String)),
+  modelSelection: Schema.optional(ModelSelection),
+  runtimeMode: Schema.optional(RuntimeMode),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  freshContext: Schema.optional(Schema.Boolean),
+  workspaceSelection: Schema.optional(
+    Schema.Struct({
+      mode: Schema.Literals(["local", "worktree"]),
+      branch: Schema.NullOr(Schema.String),
+      worktreePath: Schema.NullOr(Schema.String),
+      startFromOrigin: Schema.optional(Schema.Boolean),
+      pullRequestReference: Schema.optional(Schema.String),
+      followsCurrentCheckout: Schema.optional(Schema.Boolean),
+    }),
+  ),
+  project: Schema.optional(
+    Schema.Struct({ environmentId: EnvironmentId, projectId: ProjectId, createdAt: Schema.String }),
+  ),
+});
+const embeddedQueuedCreation =
+  QueuedThreadMessageSchema.fields.creation.schema.members[0].mapFields(
+    ({ repositories: _repositories, startsFromRepositoryDefaults: _defaults, ...fields }) => fields,
+  );
+const [embeddedAuto, embeddedRoot, embeddedExisting, currentWorktree] =
+  OrchestrationV2ThreadLaunchWorkspaceStrategy.members;
+const embeddedLaunchInput = OrchestrationV2ThreadLaunchInput.mapFields(
+  ({ accountRouting: _routing, ...fields }) => ({
+    ...fields,
+    workspaceStrategy: Schema.Union([
+      embeddedAuto,
+      embeddedRoot,
+      embeddedExisting,
+      currentWorktree.mapFields(({ repositories: _repositories, ...worktree }) => worktree),
+    ]),
+  }),
+);
+const embeddedPreparedTurn = Schema.Union([
+  Schema.Struct({
+    method: Schema.Literal(ORCHESTRATION_V2_WS_METHODS.launchThread),
+    payload: embeddedLaunchInput,
+  }),
+  Schema.Struct({
+    method: Schema.Literal(ORCHESTRATION_V2_WS_METHODS.dispatchCommand),
+    payload: OrchestrationV2Command,
+  }),
+]).check(
+  Schema.makeFilter((value) =>
+    value.method === ORCHESTRATION_V2_WS_METHODS.launchThread
+      ? value.payload.threadId !== undefined &&
+        value.payload.creationSource !== undefined &&
+        value.payload.generateTitle !== undefined &&
+        value.payload.initialMessage?.messageId !== undefined
+      : value.payload.type === "message.dispatch" &&
+        value.payload.createdBy === "user" &&
+        value.payload.dispatchMode.type !== "defer_start",
+  ),
+);
+const [embeddedUnissued, currentIssued] =
+  QueuedThreadMessageSchema.fields.issuance.schema.members[0].members;
+const embeddedQueuedMessage = QueuedThreadMessageSchema.mapFields(
+  ({ accountRouting: _routing, restoreToDraft: _restore, ...fields }) => ({
+    ...fields,
+    schemaVersion: Schema.Literals([1, 2, 3, 4]),
+    creation: Schema.optional(embeddedQueuedCreation),
+    issuance: Schema.optional(
+      Schema.Union([
+        embeddedUnissued,
+        currentIssued.mapFields((fields) => ({
+          ...fields,
+          prepared: Schema.toCodecJson(embeddedPreparedTurn),
+        })),
+      ]),
+    ),
+  }),
+);
+const decodeEmbeddedComposerDocument = Schema.decodeUnknownSync(
+  Schema.Struct({
+    schemaVersion: Schema.Literal(1),
+    drafts: Schema.Record(Schema.String, embeddedComposerDraft),
+    stickyModelSelection: Schema.optional(ModelSelection),
+    modelOptionMemory: Schema.optional(
+      Schema.Record(
+        Schema.String,
+        Schema.Record(Schema.String, Schema.Array(ProviderOptionSelection)),
+      ),
+    ),
+    cloudAccountId: Schema.optional(Schema.String),
+    signedOutDrafts: Schema.optional(
+      Schema.Record(
+        Schema.String,
+        Schema.Struct({
+          drafts: Schema.Record(Schema.String, embeddedComposerDraft),
+          queuedMessages: Schema.Array(embeddedQueuedMessage),
+        }),
+      ),
+    ),
+  }),
+);
+
+function archivedAutoLaunch() {
+  const queued = {
+    environmentId: EnvironmentId.make("cloud-environment"),
+    threadId: ThreadId.make("auto-thread"),
+    messageId: MessageId.make("auto-message"),
+    commandId: CommandId.make("auto-command"),
+    text: "Start this task with Auto",
+    attachments: [],
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      model: "gpt-5.4",
+    },
+    accountRouting: { mode: "auto" },
+    creation: {
+      projectId: ProjectId.make("project"),
+      workspaceMode: "local",
+      branch: null,
+      worktreePath: null,
+    },
+    issuance: { state: "unissued" },
+    createdAt: "2026-08-31T12:00:00.000Z",
+  } satisfies QueuedThreadMessage;
+  return withIssuedQueuedThreadTurn(
+    queued,
+    decodePreparedThreadTurn({
+      method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+      payload: {
+        commandId: queued.commandId,
+        threadId: queued.threadId,
+        projectId: queued.creation.projectId,
+        title: "Auto launch",
+        creationSource: "mobile",
+        generateTitle: true,
+        accountRouting: queued.accountRouting,
+        modelSelection: queued.modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        workspaceStrategy: { type: "root" },
+        initialMessage: { messageId: queued.messageId, text: queued.text, attachments: [] },
+      },
+    }),
+  );
+}
 
 it.each(["picker open", "reading image"] as const)(
   "recovers only accepted screenshots when a question is cancelled while %s",
@@ -313,6 +553,7 @@ afterEach(() => {
   vi.useRealTimers();
   resetComposerDraftsLoadState();
   composerDraftFileMocks.setDocument({ schemaVersion: 1, drafts: {} });
+  composerDraftFileMocks.resetOtherDocuments();
   composerDraftFileMocks.setReadError(null);
   composerDraftFileMocks.setWriteError(null);
   composerDraftFileMocks.setNextWriteBarrier(null);
@@ -1591,6 +1832,415 @@ describe("mobile composer drafts", () => {
       expect(persisted.cloudDrafts.accountId).toBe("account-a");
     },
   );
+
+  it.each([false, true])(
+    "keeps Auto isolated across downgrade and restores the original issued command once (live row retained: %s)",
+    async (alreadyQueued) => {
+      const load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+      const enqueue = vi.spyOn(threadOutboxManager, "enqueue");
+      onTestFinished(() => {
+        load.mockRestore();
+        enqueue.mockRestore();
+      });
+      const auto = archivedAutoLaunch();
+      const ordinary: QueuedThreadMessage = {
+        environmentId: auto.environmentId,
+        threadId: ThreadId.make("ordinary-thread"),
+        messageId: MessageId.make("ordinary-message"),
+        commandId: CommandId.make("ordinary-command"),
+        text: "Send later",
+        attachments: [],
+        createdAt: auto.createdAt,
+      };
+      const directKey = "direct-environment:direct-thread";
+      const cloudKey = `${auto.environmentId}:draft-thread`;
+      appAtomRegistry.set(composerDraftsAtom, { [directKey]: DRAFT, [cloudKey]: DRAFT });
+      appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {
+        queued: [auto, ordinary],
+      });
+      await archiveCloudComposerDrafts("owner", new Set([auto.environmentId]), [
+        auto.environmentId,
+      ]);
+
+      const siblingBeforeDowngrade = composerDraftFileMocks.getAutoArchive()!;
+      const archive = JSON.parse(siblingBeforeDowngrade);
+      expect(archive).toMatchObject({
+        schemaVersion: 1,
+        accounts: { owner: [{ schemaVersion: 5, accountRouting: { mode: "auto" } }] },
+      });
+      const main = decodeEmbeddedComposerDocument(JSON.parse(composerDraftFileMocks.getDocument()));
+      expect(main.drafts).toEqual({ [directKey]: DRAFT });
+      expect(main.signedOutDrafts?.owner?.drafts).toEqual({ [cloudKey]: DRAFT });
+      expect(main.signedOutDrafts?.owner?.queuedMessages).toEqual([
+        { ...ordinary, schemaVersion: 3 },
+      ]);
+      for (const schemaVersion of [1, 2, 3, 4]) {
+        const legacy = {
+          ...main,
+          signedOutDrafts: {
+            owner: { drafts: {}, queuedMessages: [{ ...ordinary, schemaVersion }] },
+          },
+        };
+        expect(
+          decodePersistedComposerState(legacy).cloudDrafts.signedOut.owner?.queuedMessages,
+        ).toEqual([ordinary]);
+      }
+      expect(() =>
+        decodeEmbeddedComposerDocument({
+          ...main,
+          signedOutDrafts: { owner: { drafts: {}, queuedMessages: archive.accounts.owner } },
+        }),
+      ).toThrow();
+
+      // The old app reads and rewrites the main file while the Auto archive is still on disk.
+      const edited = { text: "Edited on the older build", attachments: [] };
+      composerDraftFileMocks.setDocument({ ...main, drafts: { [directKey]: edited } });
+      const retained = observeQueuedThreadDelivery(auto, acceptedQueuedThreadDelivery(auto));
+      appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {});
+      if (alreadyQueued) {
+        await threadOutboxManager.enqueue(retained);
+        enqueue.mockClear();
+      }
+      appAtomRegistry.set(composerDraftsAtom, {});
+      appAtomRegistry.set(composerCloudDraftsAtom, { accountId: null, signedOut: {} });
+      resetComposerDraftsLoadState();
+      await restoreCloudComposerDrafts("other-account");
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(composerDraftFileMocks.getAutoArchive()).toBe(siblingBeforeDowngrade);
+      expect(getComposerDraftSnapshot(directKey)).toEqual(edited);
+      expect(getComposerDraftSnapshot(cloudKey).text).toBe("");
+
+      await restoreCloudComposerDrafts("owner");
+      expect(
+        enqueue.mock.calls.filter(([message]) => message.messageId === auto.messageId),
+      ).toEqual(alreadyQueued ? [] : [[auto]]);
+      const restoredAuto = Object.values(
+        appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
+      )
+        .flat()
+        .filter((message) => message.messageId === auto.messageId);
+      expect(restoredAuto).toEqual([alreadyQueued ? retained : auto]);
+      const queuedFile = composerDraftFileMocks.getQueuedMessage(auto.messageId)!;
+      expect(decodeQueuedThreadMessage(JSON.parse(queuedFile))).toEqual(
+        alreadyQueued ? retained : auto,
+      );
+      expect(getComposerDraftSnapshot(cloudKey)).toEqual(DRAFT);
+      expect(JSON.parse(composerDraftFileMocks.getAutoArchive()!)).toEqual({
+        schemaVersion: 1,
+        accounts: {},
+      });
+
+      resetComposerDraftsLoadState();
+      await restoreCloudComposerDrafts("owner");
+      expect(enqueue).toHaveBeenCalledTimes(alreadyQueued ? 1 : 2);
+    },
+  );
+
+  it("clears the copied outbox revision and retains a newer issued Auto request", async () => {
+    const issued = archivedAutoLaunch();
+    const unissued = { ...issued, issuance: { state: "unissued" } } satisfies QueuedThreadMessage;
+    const other = {
+      ...unissued,
+      messageId: MessageId.make("unchanged-during-archive"),
+      commandId: CommandId.make("unchanged-during-archive"),
+    };
+    await threadOutboxManager.enqueue(unissued);
+    await threadOutboxManager.enqueue(other);
+    const revision = threadOutboxManager.revisionOf(unissued.messageId);
+    const environments = new Set([issued.environmentId]);
+    const release = beginCloudOutboxArchive(environments);
+    const issuance = Promise.withResolvers<boolean>();
+    composerDraftFileMocks.setOnWrite(() => {
+      composerDraftFileMocks.setOnWrite(null);
+      void threadOutboxManager.update(issued, revision).then(issuance.resolve, issuance.reject);
+    });
+    try {
+      await archiveCloudComposerDrafts("owner", environments, environments);
+      await expect(issuance.promise).resolves.toBe(true);
+      expect(JSON.parse(composerDraftFileMocks.getAutoArchive()!)).toMatchObject({
+        accounts: {
+          owner: [{ issuance: { state: "unissued" } }, { issuance: { state: "unissued" } }],
+        },
+      });
+
+      await clearThreadOutboxEnvironment(issued.environmentId);
+      expect(composerDraftFileMocks.getQueuedMessage(other.messageId)).toBeUndefined();
+      const queuedFile = composerDraftFileMocks.getQueuedMessage(issued.messageId)!;
+      expect(decodeQueuedThreadMessage(JSON.parse(queuedFile))).toEqual(issued);
+    } finally {
+      release();
+    }
+
+    await restoreCloudComposerDrafts("owner");
+    const restored = Object.values(
+      appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
+    ).flat();
+    expect(restored).toHaveLength(2);
+    expect(restored).toEqual(expect.arrayContaining([issued, other]));
+  });
+
+  it("archives a newer row before signing out and keeps it private to the original account", async () => {
+    const issued = archivedAutoLaunch();
+    const unissued = { ...issued, issuance: { state: "unissued" } } satisfies QueuedThreadMessage;
+    await threadOutboxManager.enqueue(unissued);
+    const environments = new Set([issued.environmentId]);
+    const release = beginCloudOutboxArchive(environments);
+    const revision = threadOutboxManager.revisionOf(issued.messageId);
+    const updated = Promise.withResolvers<boolean>();
+    composerDraftFileMocks.setOnWrite(() => {
+      composerDraftFileMocks.setOnWrite(null);
+      void threadOutboxManager.update(issued, revision).then(updated.resolve, updated.reject);
+    });
+    try {
+      await expect(enqueueThreadOutboxMessage(unissued)).rejects.toThrow();
+      await archiveAndClearCloudOutbox("owner", environments, [...environments]);
+      await expect(updated.promise).resolves.toBe(true);
+      expect(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).toEqual({});
+      expect(composerDraftFileMocks.getQueuedMessage(issued.messageId)).toBeUndefined();
+      expect(JSON.parse(composerDraftFileMocks.getAutoArchive()!)).toMatchObject({
+        accounts: { owner: [{ issuance: { state: "issued" } }] },
+      });
+    } finally {
+      release();
+    }
+
+    await restoreCloudComposerDrafts("other");
+    expect(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).toEqual({});
+    await restoreCloudComposerDrafts("owner");
+    expect(
+      Object.values(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).flat(),
+    ).toEqual([issued]);
+  });
+
+  it.effect.each(["disconnected", "relay", "direct"] as const)(
+    "preserves ownership after a disconnected restore and a second sign-out with a %s route",
+    (route) =>
+      Effect.gen(function* () {
+        const auto = archivedAutoLaunch();
+        const model = auto.modelSelection!;
+        const explicit: QueuedThreadMessage = {
+          environmentId: auto.environmentId,
+          threadId: ThreadId.make("restored-explicit-thread"),
+          messageId: MessageId.make("restored-explicit-message"),
+          commandId: CommandId.make("restored-explicit-command"),
+          text: "Explicitly selected model",
+          modelSelection: model,
+          modelSelectionExplicit: true,
+          attachments: [],
+          createdAt: auto.createdAt,
+        };
+        const draftOnlyEnvironment = EnvironmentId.make("archived-draft-only-environment");
+        const draftKey = scopedThreadKey(draftOnlyEnvironment, ThreadId.make("private-draft"));
+        const pendingKey = `pending-task:${auto.messageId}`;
+        const draft = { ...DRAFT, text: "Private account A draft", automaticAccountModel: model };
+        const relay = (environmentId: EnvironmentId): ConnectionCatalogEntry => ({
+          target: new RelayConnectionTarget({ environmentId, label: "Synthetic environment" }),
+          profile: Option.none(),
+          enabled: true,
+        });
+        const entries = yield* SubscriptionRef.make<
+          ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
+        >(
+          new Map([
+            [auto.environmentId, relay(auto.environmentId)],
+            [draftOnlyEnvironment, relay(draftOnlyEnvironment)],
+          ]),
+        );
+        const registryFixture = {
+          entries,
+          removeRelayEnvironments: () =>
+            SubscriptionRef.update(
+              entries,
+              (current) =>
+                new Map(
+                  [...current].flatMap(([id, entry]) => {
+                    const remaining = routesAfterRemoving(connectionRoutes(entry), RELAY_ROUTE_ID);
+                    return remaining.length === 0
+                      ? []
+                      : [[id, entryWithRoutes(entry, remaining)] as const];
+                  }),
+                ),
+            ),
+        } satisfies Pick<
+          EnvironmentRegistry.EnvironmentRegistry["Service"],
+          "entries" | "removeRelayEnvironments"
+        >;
+        const registry = EnvironmentRegistry.EnvironmentRegistry.of(
+          registryFixture as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"],
+        );
+        const signOut = (accountId: string) =>
+          preserveCloudDraftsAndRemoveEnvironments(accountId).pipe(
+            Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, registry),
+          );
+        const queuedAtom = threadOutboxManager.queuedMessagesByThreadKeyAtom;
+        const liveMessages = () => Object.values(appAtomRegistry.get(queuedAtom)).flat();
+        const launchingThreads = () =>
+          withLaunchingThreads({
+            threads: [],
+            launches: liveMessages(),
+            hiddenThreadKeys: new Set(),
+          });
+
+        yield* Effect.promise(() => restoreCloudComposerDrafts("account-a"));
+        appAtomRegistry.set(composerDraftsAtom, { [draftKey]: draft, [pendingKey]: draft });
+        yield* Effect.promise(() => threadOutboxManager.enqueue(auto));
+        yield* Effect.promise(() => threadOutboxManager.enqueue(explicit));
+        yield* signOut("account-a");
+        expect(yield* SubscriptionRef.get(entries)).toEqual(new Map());
+        expect(liveMessages()).toEqual([]);
+
+        yield* Effect.promise(() => restoreCloudComposerDrafts("account-a"));
+        expect(liveMessages()).toEqual(expect.arrayContaining([auto, explicit]));
+        expect(launchingThreads()).toEqual([
+          expect.objectContaining({ title: auto.text, modelSelection: model }),
+        ]);
+        expect(getComposerDraftSnapshot(draftKey)).toEqual(draft);
+        expect(appAtomRegistry.get(composerCloudDraftsAtom).signedOut).toEqual({});
+
+        const rehydratedOutbox = createThreadOutboxManager({
+          registry: appAtomRegistry,
+          storage: expoThreadOutboxStorage,
+        });
+        appAtomRegistry.set(queuedAtom, {});
+        appAtomRegistry.set(composerDraftsAtom, {});
+        appAtomRegistry.set(composerCloudDraftsAtom, { accountId: null, signedOut: {} });
+        resetComposerDraftsLoadState();
+        expect(yield* Effect.promise(() => rehydratedOutbox.load())).toBe(true);
+        appAtomRegistry.set(
+          queuedAtom,
+          appAtomRegistry.get(rehydratedOutbox.queuedMessagesByThreadKeyAtom),
+        );
+        yield* Effect.promise(() => waitForComposerDraftsLoaded());
+        expect(liveMessages()).toEqual(expect.arrayContaining([auto, explicit]));
+        expect(getComposerDraftSnapshot(pendingKey)).toEqual(draft);
+
+        const updatedExplicit = { ...explicit, text: "Edited after restore" };
+        expect(yield* Effect.promise(() => threadOutboxManager.update(updatedExplicit))).toBe(true);
+        if (route === "disconnected") {
+          composerDraftFileMocks.setArchiveWriteError(new Error("Synthetic archive write failure"));
+          expect(yield* Effect.flip(signOut("account-a"))).toMatchObject({
+            _tag: "CloudDraftArchiveError",
+          });
+          yield* Effect.promise(() =>
+            expect(restoreCloudComposerDrafts("account-b")).rejects.toThrow(),
+          );
+          expect(liveMessages()).toEqual(expect.arrayContaining([auto, updatedExplicit]));
+          composerDraftFileMocks.setArchiveWriteError(null);
+        } else {
+          const relayEntry = relay(auto.environmentId);
+          const direct = {
+            connectionId: "explicit-direct",
+            environmentId: auto.environmentId,
+            label: "Paired direct route",
+          };
+          const entry =
+            route === "relay"
+              ? relayEntry
+              : {
+                  ...relayEntry,
+                  alternateRoutes: [
+                    {
+                      target: new BearerConnectionTarget(direct),
+                      profile: Option.some(
+                        new BearerConnectionProfile({
+                          ...direct,
+                          httpBaseUrl: "http://192.0.2.1/",
+                          wsBaseUrl: "ws://192.0.2.1/",
+                        }),
+                      ),
+                    },
+                  ],
+                };
+          yield* SubscriptionRef.set(entries, new Map([[auto.environmentId, entry]]));
+        }
+        yield* signOut("account-a");
+        yield* Effect.promise(() => restoreCloudComposerDrafts("account-b"));
+        expect(getComposerDraftSnapshot(draftKey).automaticAccountModel).toBeUndefined();
+        if (route === "direct") {
+          expect(liveMessages()).toEqual(expect.arrayContaining([auto, updatedExplicit]));
+          expect(getComposerDraftSnapshot(pendingKey)).toEqual(draft);
+        } else {
+          yield* SubscriptionRef.set(
+            entries,
+            new Map([[auto.environmentId, relay(auto.environmentId)]]),
+          );
+          expect(liveMessages()).toEqual([]);
+          expect(launchingThreads()).toEqual([]);
+          expect(getComposerDraftSnapshot(pendingKey).text).toBe("");
+          for (const message of [auto, updatedExplicit]) {
+            const mutate = vi.fn(() => message);
+            expect(
+              yield* Effect.promise(() => threadOutboxManager.modify(message.messageId, mutate)),
+            ).toBe(false);
+            expect(mutate).not.toHaveBeenCalled();
+            expect(composerDraftFileMocks.getQueuedMessage(message.messageId)).toBeUndefined();
+          }
+        }
+
+        yield* signOut("account-b");
+        yield* Effect.promise(() => restoreCloudComposerDrafts("account-a"));
+        expect(liveMessages()).toHaveLength(2);
+        expect(liveMessages()).toEqual(expect.arrayContaining([auto, updatedExplicit]));
+        expect(getComposerDraftSnapshot(draftKey)).toEqual(draft);
+        expect(getComposerDraftSnapshot(pendingKey)).toEqual(draft);
+      }),
+  );
+
+  it.each(["manual", "auto", "untouched"] as const)(
+    "restores a coherent model selection with a %s live draft",
+    async (liveMode) => {
+      const environmentId = EnvironmentId.make("cloud-environment");
+      const key = `${environmentId}:selection-merge`;
+      const auto = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
+      const manual = { instanceId: ProviderInstanceId.make("codex-other"), model: "gpt-5.5" };
+      const archivedSelection =
+        liveMode === "auto" ? { modelSelection: manual } : { automaticAccountModel: auto };
+      const liveSelection =
+        liveMode === "manual"
+          ? { modelSelection: manual }
+          : liveMode === "auto"
+            ? { automaticAccountModel: auto }
+            : {};
+      appAtomRegistry.set(composerDraftsAtom, { [key]: { ...DRAFT, ...archivedSelection } });
+      await archiveCloudComposerDrafts("owner", new Set([environmentId]), [environmentId]);
+      appAtomRegistry.set(composerDraftsAtom, {
+        [key]: { text: "new text", attachments: [], ...liveSelection },
+      });
+
+      await restoreCloudComposerDrafts("owner");
+      const restored = getComposerDraftSnapshot(key);
+      expect(restored.text).toBe("new text\n\nhello");
+      expect(restored.modelSelection).toEqual(liveMode === "manual" ? manual : undefined);
+      expect(restored.automaticAccountModel).toEqual(liveMode === "manual" ? undefined : auto);
+    },
+  );
+
+  it("keeps the live Auto row when the sibling archive write fails", async () => {
+    const load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+    onTestFinished(() => load.mockRestore());
+    const auto = archivedAutoLaunch();
+    appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, { queued: [auto] });
+    const originalDraftsFile = composerDraftFileMocks.getDocument();
+    composerDraftFileMocks.setArchiveWriteError(new Error("Auto archive unavailable"));
+
+    const archive = () =>
+      archiveCloudComposerDrafts("owner", new Set([auto.environmentId]), [auto.environmentId]);
+    await expect(archive()).rejects.toMatchObject({
+      operation: "write",
+      fileName: "signed-out-auto-account-outbox.json",
+    });
+    expect(composerDraftFileMocks.getAutoArchive()).toBeUndefined();
+    expect(composerDraftFileMocks.getDocument()).toBe(originalDraftsFile);
+    expect(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).toEqual({
+      queued: [auto],
+    });
+
+    composerDraftFileMocks.setArchiveWriteError(null);
+    await archive();
+    expect(JSON.parse(composerDraftFileMocks.getAutoArchive()!)).toMatchObject({
+      accounts: { owner: [{ commandId: auto.commandId, schemaVersion: 5 }] },
+    });
+  });
 
   it("fails sign-out preservation before cleanup if a durable backup cannot be written", async () => {
     const load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);

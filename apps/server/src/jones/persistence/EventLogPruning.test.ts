@@ -34,6 +34,13 @@ interface Reader {
 }
 const readers: ReadonlyArray<Reader> = [
   {
+    file: "mcp/clientLaunch/ClientLaunchService.ts",
+    classification: "tolerate",
+    after:
+      "If the original Auto selection was pruned, keyed replay reports it as unavailable. The durable launch receipt still prevents creating another thread or acknowledging a different account.",
+    proof: "mcp/clientLaunch/ClientLaunchService.test.ts (Auto launch and keyed replay)",
+  },
+  {
     file: "startRefusal/Store.ts",
     classification: "tolerate",
     after:

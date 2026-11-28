@@ -5,7 +5,7 @@ import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { useNowMinuteMs } from "../../lib/clock";
 import { m, type MessageResolver } from "../../i18n/messages";
 import * as Dialog from "../../components/ui/Dialog";
-import React, { useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 
 import type {
   EnvironmentId,
@@ -38,6 +38,14 @@ import {
   resolveSelectableModelSelection,
   serverConfigForCwd,
 } from "../../lib/modelOptions";
+import {
+  automaticAccountLabel,
+  automaticAccountOptions,
+  isAccountAutoOption,
+  sameModelSelection,
+  withAutomaticAccountGroup,
+} from "../../jones/accountRouting/selection";
+import { withImplicitFastModeSelection } from "../../lib/providerOptions";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { useAtomValue } from "@effect/atom-react";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -189,6 +197,7 @@ type NewTaskFlowContextValue = {
   readonly modelOptions: ReadonlyArray<ModelOption>;
   readonly selectedModel: ModelSelection | null;
   readonly selectedModelOption: ModelOption | null;
+  readonly automaticAccountLabel: string | undefined;
   readonly selectedProviderStatus: ServerProvider | null;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly setProject: (project: EnvironmentProject) => void;
@@ -209,6 +218,7 @@ type NewTaskFlowContextValue = {
   readonly setSelectedModelKey: (
     key: string | null,
     options?: ReadonlyArray<ProviderOptionSelection>,
+    expectedAutomaticModel?: ModelSelection,
   ) => void;
   readonly setWorkspaceMode: (mode: WorkspaceMode) => void;
   readonly selectBranch: (branch: VcsRef) => void;
@@ -497,11 +507,18 @@ export function NewTaskFlowProvider(
     storedStickyModelSelection,
     selectedProject?.id ?? null,
   );
-  const modelOptions = buildModelOptions(
-    selectedEnvironmentServerConfig,
-    draftModelSelection ?? projectDefaultModelSelection ?? stickyModelSelection,
-    undefined,
-    selectedProject?.id ?? null,
+  const catalogModelSelection =
+    draftModelSelection ?? projectDefaultModelSelection ?? stickyModelSelection;
+  const catalogProjectId = selectedProject?.id ?? null;
+  const modelOptions = useMemo(
+    () =>
+      buildModelOptions(
+        selectedEnvironmentServerConfig,
+        catalogModelSelection,
+        undefined,
+        catalogProjectId,
+      ),
+    [selectedEnvironmentServerConfig, catalogModelSelection, catalogProjectId],
   );
 
   const selectedDefaultModel = resolveNewTaskModelSelection({
@@ -510,7 +527,7 @@ export function NewTaskFlowProvider(
     stickySelection: stickyModelSelection,
     modelOptions,
   });
-  const selectedModel = resolveNewThreadModelSelection({
+  const baseModel = resolveNewThreadModelSelection({
     defaultSelection: selectedDefaultModel,
     explicitSelection:
       draftModelSelection ?? (projectDefaultModelSelection ? null : stickyModelSelection),
@@ -522,17 +539,34 @@ export function NewTaskFlowProvider(
     projectId: selectedProject?.id ?? null,
     now: modelSelectionNow,
   }).selection;
-  const selectedModelKey = selectedModel
-    ? `${selectedModel.instanceId}:${selectedModel.model}`
-    : null;
+  const autoModel = selectedProjectDraft.automaticAccountModel;
+  const selectedModel = autoModel ?? baseModel;
+  const autoOptions = automaticAccountOptions({
+    config: selectedEnvironmentServerConfig,
+    projectId: selectedProject?.id ?? null,
+    models: modelOptions,
+    preferred: selectedModel,
+  });
+  const selectedAutoOption =
+    autoModel === undefined
+      ? undefined
+      : autoOptions.find((option) => sameModelSelection(option.selection, autoModel));
+  const selectedModelKey =
+    autoModel !== undefined
+      ? (selectedAutoOption?.key ?? null)
+      : selectedModel
+        ? `${selectedModel.instanceId}:${selectedModel.model}`
+        : null;
 
   const selectedModelOption =
+    selectedAutoOption ??
     modelOptions.find(
       (option) =>
         selectedModel &&
         option.selection.instanceId === selectedModel.instanceId &&
         option.selection.model === selectedModel.model,
-    ) ?? null;
+    ) ??
+    null;
   const selectedProviderStatus =
     selectedEnvironmentServerConfig?.providers.find(
       (provider) => provider.instanceId === selectedModel?.instanceId,
@@ -540,38 +574,66 @@ export function NewTaskFlowProvider(
   const setSelectedModelKey = (
     key: string | null,
     options?: ReadonlyArray<ProviderOptionSelection>,
+    expectedAutomaticModel?: ModelSelection,
   ) => {
     if (!key || !selectedProjectDraftKey) {
       return;
     }
-    const option = modelOptions.find((candidate) => candidate.key === key);
+    const option =
+      autoOptions.find((candidate) => candidate.key === key) ??
+      modelOptions.find((candidate) => candidate.key === key);
     if (!option) {
       return;
     }
-    const selection = withRememberedModelOptions(
-      options ? { ...option.selection, options } : option.selection,
-    );
-    updateComposerDraftSettings(selectedProjectDraftKey, { modelSelection: selection });
-    setStickyComposerModelSelection(selection);
+    const selection = options === undefined ? option.selection : { ...option.selection, options };
+    if (isAccountAutoOption(option)) {
+      if (
+        expectedAutomaticModel &&
+        (expectedAutomaticModel.instanceId !== option.selection.instanceId ||
+          expectedAutomaticModel.model !== option.selection.model)
+      ) {
+        return;
+      }
+      updateComposerDraftSettings(selectedProjectDraftKey, {
+        modelSelection: undefined,
+        automaticAccountModel: withImplicitFastModeSelection(
+          options === undefined ? withRememberedModelOptions(selection) : selection,
+          selectedEnvironmentServerConfig?.providers ?? [],
+        ),
+      });
+      return;
+    }
+    const explicitSelection = withRememberedModelOptions(selection);
+    updateComposerDraftSettings(selectedProjectDraftKey, {
+      modelSelection: explicitSelection,
+      automaticAccountModel: undefined,
+    });
+    setStickyComposerModelSelection(explicitSelection);
   };
   const setSelectedModelOptions = (options: ReadonlyArray<ProviderOptionSelection> | undefined) => {
     if (!selectedModel || !selectedProjectDraftKey) {
       return;
     }
-    rememberModelOptions(selectedModel.instanceId, selectedModel.model, options ?? []);
+    if (autoModel === undefined) {
+      rememberModelOptions(selectedModel.instanceId, selectedModel.model, options ?? []);
+    }
     const nextSelection: ModelSelection = options
       ? { ...selectedModel, options }
       : {
           instanceId: selectedModel.instanceId,
           model: selectedModel.model,
         };
-    updateComposerDraftSettings(selectedProjectDraftKey, {
-      modelSelection: nextSelection,
-    });
+    if (autoModel !== undefined) {
+      updateComposerDraftSettings(selectedProjectDraftKey, {
+        automaticAccountModel: nextSelection,
+      });
+      return;
+    }
+    updateComposerDraftSettings(selectedProjectDraftKey, { modelSelection: nextSelection });
     setStickyComposerModelSelection(nextSelection);
   };
 
-  const providerGroups = groupByProvider(modelOptions);
+  const providerGroups = withAutomaticAccountGroup(groupByProvider(modelOptions), autoOptions);
   const setPrompt = (value: string) => {
     if (!selectedProjectDraftKey) {
       return;
@@ -805,11 +867,13 @@ export function NewTaskFlowProvider(
     const draft = getComposerDraftSnapshot(selectedProjectDraftKey);
     const text = draft.text.trim();
     const draftModelSelection =
+      draft.automaticAccountModel ??
       resolveSelectableModelSelection(
         selectedEnvironmentServerConfig,
         draft.modelSelection ?? null,
         selectedProject.id,
-      ) ?? selectedModel;
+      ) ??
+      baseModel;
     if ((text.length === 0 && draft.attachments.length === 0) || !draftModelSelection) {
       return null;
     }
@@ -844,6 +908,7 @@ export function NewTaskFlowProvider(
       attachments: draft.attachments,
       context: draft.context,
       modelSelection: draftModelSelection,
+      ...(draft.automaticAccountModel === undefined ? {} : { accountRouting: { mode: "auto" } }),
       runtimeMode: resolveNewThreadRuntimeMode(
         draft.runtimeMode,
         defaultRuntimeMode,
@@ -973,6 +1038,10 @@ export function NewTaskFlowProvider(
     modelOptions,
     selectedModel,
     selectedModelOption,
+    automaticAccountLabel:
+      autoModel === undefined
+        ? undefined
+        : automaticAccountLabel(selectedEnvironmentServerConfig, autoModel),
     selectedProviderStatus,
     providerGroups,
     setProject,

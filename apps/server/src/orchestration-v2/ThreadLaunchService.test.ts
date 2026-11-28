@@ -12,6 +12,7 @@ import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentS
 import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
 import { assert, it, vi } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   ChatAttachmentId,
   ComposerContextId,
@@ -55,10 +56,17 @@ import * as TestClock from "effect/testing/TestClock";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
+import { makeCommandObservationQuery } from "./CommandObservation.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import {
+  AutoLaunchIntent,
+  autoLaunchRequest,
+  withAccountLaunchBinding,
+} from "../jones/accountRouting/accountBinding.ts";
 import * as ProviderInstances from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -152,6 +160,9 @@ type CloseTerminal = (
 ) => Effect.Effect<void, TerminalError>;
 
 interface HarnessOptions {
+  readonly databaseLayer?: NonNullable<
+    Parameters<typeof ProviderReplayHarness.layerWithRegistry>[2]
+  >["databaseLayer"];
   readonly closeTerminal?: CloseTerminal;
   readonly adapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
@@ -179,7 +190,7 @@ interface HarnessOptions {
 }
 
 function makeHarness(options: HarnessOptions = {}) {
-  const layerDatabase = SqlitePersistence.layerMemory;
+  const layerDatabase = options.databaseLayer ?? SqlitePersistence.layerMemory;
   const layerRegistry = ProviderAdapterRegistry.layerFromAdapters(options.adapters ?? [adapter]);
   const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
     { name: "thread-launch" },
@@ -2324,6 +2335,286 @@ it.effect("replays a server-allocated launch", () =>
       assert.equal(harness.runSetup.mock.calls.length, 1);
     }).pipe(Effect.provide(harness.layer));
   }),
+);
+
+const seedAutoLaunchProject = Effect.fn("Test.seedAutoLaunchProject")(function* (
+  sink: EventSink.EventSinkV2["Service"],
+) {
+  const commandId = CommandId.make("command:launch:auto-project");
+  yield* sink.commitProjectCommand({
+    commandId,
+    projectId,
+    commandType: "project.create",
+    acceptedAt: yield* DateTime.now,
+    event: {
+      eventId: EventId.make(`${commandId}:event`),
+      aggregateKind: "project",
+      aggregateId: projectId,
+      occurredAt: project.createdAt,
+      commandId,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "project.created",
+      payload: {
+        projectId,
+        title: project.title,
+        workspaceRoot: project.workspaceRoot,
+        defaultModelSelection: project.defaultModelSelection,
+        scripts: [],
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+      },
+    },
+  });
+});
+
+const autoLaunchWorkspace = { projectRoot: project.workspaceRoot, worktreePath: null };
+
+it.effect("fences an already-admitted creation when a second connection commits the refusal", () =>
+  Effect.gen(function* () {
+    const atDispatch = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const input = launchInput({ command: "auto-negative-race", thread: "target" });
+    const auto = { ...input, accountRouting: { mode: "auto" } as const };
+    const request = autoLaunchRequest(auto)!;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "auto-launch-refusal-" });
+    const filename = path.join(dir, "state", "launch.sqlite");
+    const secondWriter = EventSink.layer.pipe(
+      Layer.provide(
+        Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
+          Layer.provideMerge(NodeSqliteClient.layer({ filename })),
+        ),
+      ),
+    );
+    const harness = makeHarness({
+      databaseLayer: SqlitePersistence.layerFromPath(filename).pipe(
+        Layer.provide(NodeServices.layer),
+        Layer.orDie,
+      ),
+      dispatch: (command, original) =>
+        command.commandId === input.commandId
+          ? Deferred.succeed(atDispatch, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(original(command)),
+            )
+          : original(command),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const sink = yield* EventSink.EventSinkV2;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      yield* seedAutoLaunchProject(sink);
+      const pending = yield* launches.launch(input).pipe(Effect.exit, Effect.forkScoped);
+      yield* Deferred.await(atDispatch);
+      const refusal = yield* Effect.gen(function* () {
+        const second = yield* EventSink.EventSinkV2;
+        return yield* second.commitAutoLaunchRefusal!(
+          { request, workspace: autoLaunchWorkspace },
+          "Synthetic no allowance",
+        );
+      }).pipe(Effect.provide(secondWriter));
+      assert.equal(refusal?.refusal, "Synthetic no allowance");
+      yield* Deferred.succeed(release, undefined);
+      assert.isTrue(Exit.isFailure(yield* Fiber.join(pending)));
+      assert.isTrue(Option.isNone(yield* receipts.getByCommandId(input.commandId)));
+      assert.isNull(yield* threads.getThreadShell(input.threadId));
+      assert.equal(
+        (yield* launches.getDeliveryEvidence(auto, { autoRequest: request })).creation.status,
+        "rejected",
+      );
+      assert.equal((yield* launches.getDeliveryEvidence(input, {})).creation.status, "unknown");
+      assert.isEmpty(harness.createWorktree.mock.calls);
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "cannot write an Auto refusal over acceptance, another project, or reserved command IDs",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const sink = yield* EventSink.EventSinkV2;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      yield* seedAutoLaunchProject(sink);
+      const input = launchInput({ command: "auto-acceptance-first", thread: "target" });
+      const accepted = yield* launches.launch(input);
+      for (const attempt of [
+        input,
+        {
+          ...input,
+          commandId: CommandId.make("auto-nonexistent-project"),
+          projectId: otherProjectId,
+        },
+        { ...input, commandId: CommandId.make("auto-existing-thread") },
+        {
+          ...input,
+          threadId: ThreadId.make("new-auto-thread"),
+          commandId: legacyBootstrapCreateCommandId(input.threadId, input.commandId),
+        },
+        ...[
+          "voice-command-native",
+          "public:native:v2:create",
+          "jones:codex-failover:id:continue",
+          "mcp-launch:v1:" + "a".repeat(64),
+        ].map((id) => ({
+          ...input,
+          threadId: ThreadId.make("new-auto-thread"),
+          commandId: CommandId.make(id),
+        })),
+      ]) {
+        const request = autoLaunchRequest({ ...attempt, accountRouting: { mode: "auto" } })!;
+        const decision = yield* sink.commitAutoLaunchRefusal!(
+          { request, workspace: autoLaunchWorkspace },
+          "Synthetic no allowance",
+        );
+        assert.isUndefined(decision);
+        assert.isUndefined(yield* sink.readAutoLaunch!(attempt.commandId));
+        if (attempt.commandId !== input.commandId)
+          assert.isTrue(Option.isNone(yield* receipts.getByCommandId(attempt.commandId)));
+      }
+      const receipt = yield* receipts.getByCommandId(input.commandId);
+      assert.isTrue(Option.isSome(receipt) && receipt.value.status === "accepted");
+      assert.equal(accepted.threadId, input.threadId);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect.each([false, true])(
+  "replays only the original Auto launch, with first message %s",
+  (withPrompt) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const sink = yield* EventSink.EventSinkV2;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      yield* seedAutoLaunchProject(sink);
+      const input = launchInput({
+        command: "auto-workspace-identity",
+        thread: "target",
+        ...(withPrompt ? { message: "Original first prompt" } : {}),
+      });
+      const original = { ...input, accountRouting: { mode: "auto" } as const };
+      const request = autoLaunchRequest(original)!;
+      const created = yield* withAccountLaunchBinding(
+        launches
+          .launch(input)
+          .pipe(
+            Effect.provideService(AutoLaunchIntent, { request, workspace: autoLaunchWorkspace }),
+          ),
+        input.commandId,
+        { instanceId: modelSelection.instanceId, digest: "synthetic-account" },
+      );
+      const repeated = yield* launches
+        .launch(input)
+        .pipe(Effect.provideService(AutoLaunchIntent, { request }));
+      assert.isTrue(repeated.resumed);
+      assert.equal(repeated.threadId, created.threadId);
+      assert.deepEqual(
+        repeated.projection.runs.map((run) => run.id),
+        created.projection.runs.map((run) => run.id),
+      );
+      assert.equal(
+        (yield* launches.getDeliveryEvidence(original, { autoRequest: request })).creation.status,
+        "accepted",
+      );
+      const rawReplay = yield* threads
+        .dispatch({
+          type: "thread.create",
+          commandId: input.commandId,
+          threadId: input.threadId,
+          projectId: input.projectId,
+          title: "Changed raw create",
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          branch: null,
+          worktreePath: "/repo-worktrees/different",
+          createdBy: input.createdBy,
+          creationSource: input.creationSource,
+        })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(rawReplay));
+      const changedMessage = {
+        messageId: input.initialMessage?.messageId ?? MessageId.make("new-first-message"),
+        text: "Different first prompt",
+        attachments: [],
+      };
+      const worktree = { type: "worktree", baseRef: "main" } as const;
+      for (const changed of [
+        input,
+        { ...input, workspaceStrategy: worktree, initialMessage: changedMessage },
+        { ...original, workspaceStrategy: worktree, initialMessage: changedMessage },
+        { ...original, projectId: otherProjectId },
+        { ...original, threadId: ThreadId.make("different-auto-target") },
+        { ...original, initialMessage: changedMessage },
+      ]) {
+        const candidate = "accountRouting" in changed ? autoLaunchRequest(changed) : undefined;
+        const outcome = yield* launches
+          .launch(changed)
+          .pipe(
+            Effect.provideService(
+              AutoLaunchIntent,
+              candidate === undefined ? undefined : { request: candidate },
+            ),
+            Effect.exit,
+          );
+        assert.isTrue(Exit.isFailure(outcome));
+        assert.equal(
+          (yield* launches.getDeliveryEvidence(changed, { autoRequest: candidate })).creation
+            .status,
+          "unknown",
+        );
+      }
+      const final = yield* launches
+        .launch(input)
+        .pipe(Effect.provideService(AutoLaunchIntent, { request }));
+      assert.isNull(final.projection.thread.worktreePath);
+      assert.equal(final.projection.messages.length, withPrompt ? 1 : 0);
+      assert.isEmpty(harness.createWorktree.mock.calls);
+      if (input.initialMessage !== undefined) {
+        yield* preparationSettled(created.threadId);
+        const sql = yield* SqlClient.SqlClient;
+        const messageId = input.initialMessage.messageId;
+        const accepted = (yield* sink.readAutoLaunch!(input.commandId))?.acceptance;
+        assert.equal(accepted?.firstMessage?.messageId, messageId);
+        yield* sql`DELETE FROM orchestration_events WHERE command_id = ${input.commandId}
+          AND event_type IN ('run.created', 'message.updated')`;
+        const observation = yield* makeCommandObservationQuery().pipe(
+          Effect.provide(ProjectionStore.layer),
+        );
+        const observed = yield* observation.observe({
+          threadId: created.threadId,
+          commandId: input.commandId,
+          messageId,
+        });
+        assert.equal(observed.commandStatus, "accepted");
+        assert.oneOf(observed.correlation, ["pending", "exact"]);
+        assert.equal(observed.acceptedSequence, accepted?.sequence);
+        const unrelated = yield* observation.observe({
+          threadId: created.threadId,
+          commandId: input.commandId,
+          messageId: MessageId.make("unrelated-message"),
+        });
+        assert.equal(unrelated.correlation, "missing");
+        const recovered = yield* launches
+          .launch(input)
+          .pipe(Effect.provideService(AutoLaunchIntent, { request }));
+        assert.isTrue(recovered.resumed);
+        assert.equal(recovered.sequence, accepted?.sequence);
+        assert.lengthOf(recovered.projection.runs, 1);
+        assert.equal(
+          (yield* launches.getDeliveryEvidence(original, { autoRequest: request })).initialMessage
+            .status,
+          "accepted",
+        );
+      }
+    }).pipe(Effect.provide(harness.layer));
+  },
 );
 
 it.effect("replays an accepted launch after the project disables the instance", () => {

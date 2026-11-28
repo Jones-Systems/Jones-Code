@@ -1,3 +1,6 @@
+import { msg } from "gt-react-native";
+import { m } from "../i18n/messages";
+import { cloudOutboxArchiveFencesAtom } from "../jones/accountRouting/cloudOutboxFence";
 import { appAtomRegistry } from "./atom-registry";
 import { createThreadOutboxManager } from "./thread-outbox-manager";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
@@ -16,8 +19,11 @@ export async function flushThreadOutbox(): Promise<void> {
   await flushThreadOutboxWrites();
 }
 
-export function enqueueThreadOutboxMessage(message: QueuedThreadMessage): Promise<void> {
-  return threadOutboxManager.enqueue({
+export async function enqueueThreadOutboxMessage(message: QueuedThreadMessage): Promise<void> {
+  if (appAtomRegistry.get(cloudOutboxArchiveFencesAtom).has(message.environmentId)) {
+    throw new Error(m(msg("Could not preserve queued messages.")));
+  }
+  await threadOutboxManager.enqueue({
     ...message,
     issuance: message.issuance ?? { state: "unissued" },
   });

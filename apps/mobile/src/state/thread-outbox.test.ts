@@ -129,7 +129,7 @@ const embeddedCreation = QueuedThreadMessageSchema.fields.creation.schema.member
 const embeddedPreparedLaunch = Schema.toCodecJson(
   Schema.Struct({
     method: Schema.Literal(ORCHESTRATION_V2_WS_METHODS.launchThread),
-    payload: OrchestrationV2ThreadLaunchInput.mapFields((fields) => ({
+    payload: OrchestrationV2ThreadLaunchInput.mapFields(({ accountRouting: _auto, ...fields }) => ({
       ...fields,
       workspaceStrategy: Schema.Struct({
         type: Schema.Literal("worktree"),
@@ -143,16 +143,19 @@ const embeddedPreparedLaunch = Schema.toCodecJson(
 );
 const [unissued, issued] = QueuedThreadMessageSchema.fields.issuance.schema.members[0].members;
 const decodeEmbeddedWorktreeRow = Schema.decodeUnknownSync(
-  QueuedThreadMessageSchema.mapFields(({ restoreToDraft: _, ...fields }) => ({
-    ...fields,
-    creation: Schema.optional(embeddedCreation),
-    issuance: Schema.optional(
-      Schema.Union([
-        unissued,
-        issued.mapFields((fields) => ({ ...fields, prepared: embeddedPreparedLaunch })),
-      ]),
-    ),
-  })),
+  QueuedThreadMessageSchema.mapFields(
+    ({ restoreToDraft: _, accountRouting: _auto, ...fields }) => ({
+      ...fields,
+      schemaVersion: Schema.Literals([1, 2, 3, 4]),
+      creation: Schema.optional(embeddedCreation),
+      issuance: Schema.optional(
+        Schema.Union([
+          unissued,
+          issued.mapFields((fields) => ({ ...fields, prepared: embeddedPreparedLaunch })),
+        ]),
+      ),
+    }),
+  ),
 );
 const encodeOutboxFixture = Schema.encodeSync(QueuedThreadMessageSchema);
 
@@ -195,6 +198,78 @@ function issuedWorktreeMessage(repositories?: ReadonlyArray<{ readonly path: str
   });
   return withIssuedQueuedThreadTurn(message, prepared);
 }
+
+describe("automatic account outbox compatibility", () => {
+  it.each([1, 2, 3, 4])(
+    "reads ordinary v%s rows and writes in the embedded format",
+    (schemaVersion) => {
+      const ordinary = queuedWorktreeMessage();
+      expect(decodeQueuedThreadMessage({ ...ordinary, schemaVersion })).toEqual(ordinary);
+      const stored = encodeQueuedThreadMessage(ordinary);
+      expect(stored).toMatchObject({ schemaVersion: 3 });
+      expect(decodeEmbeddedWorktreeRow(stored)).toMatchObject(ordinary);
+    },
+  );
+
+  it("keeps queued and issued Auto intent behind a version that older readers reject", () => {
+    const queued = {
+      ...queuedWorktreeMessage(),
+      accountRouting: { mode: "auto" },
+    } satisfies QueuedThreadMessage;
+    const unissued = encodeQueuedThreadMessage(queued);
+    expect(unissued).toMatchObject({ schemaVersion: 5, accountRouting: { mode: "auto" } });
+    expect(decodeQueuedThreadMessage(unissued)).toEqual(queued);
+    expect(() => decodeEmbeddedWorktreeRow(unissued)).toThrow();
+
+    const ordinary = issuedWorktreeMessage();
+    if (ordinary.issuance?.state !== "issued") throw new Error("Expected issued fixture");
+    const original = ordinary.issuance.prepared;
+    const prepared = decodePreparedThreadTurn({
+      ...original,
+      payload: { ...original.payload, accountRouting: queued.accountRouting },
+    });
+    const issued = withIssuedQueuedThreadTurn(queued, prepared);
+    const stored = encodeQueuedThreadMessage(issued);
+    expect(decodeQueuedThreadMessage(stored)).toEqual(issued);
+    expect(() => decodeEmbeddedWorktreeRow(stored)).toThrow();
+    expect(() => decodeQueuedThreadMessage({ ...(stored as object), schemaVersion: 3 })).toThrow();
+    expect(() =>
+      decodeQueuedThreadMessage({ ...(stored as object), accountRouting: undefined }),
+    ).toThrow();
+    expect(() => withIssuedQueuedThreadTurn(queued, original)).toThrow();
+    expect(() => withIssuedQueuedThreadTurn(queuedWorktreeMessage(), prepared)).toThrow();
+    expect(() =>
+      withIssuedQueuedThreadTurn(
+        { ...queued, modelSelection: { ...queued.modelSelection, model: "different" } },
+        prepared,
+      ),
+    ).toThrow();
+    expect(() =>
+      withIssuedQueuedThreadTurn(
+        {
+          ...queued,
+          modelSelection: {
+            ...queued.modelSelection,
+            instanceId: ProviderInstanceId.make("another-codex-account"),
+          },
+        },
+        prepared,
+      ),
+    ).toThrow();
+    expect(() =>
+      withIssuedQueuedThreadTurn(
+        {
+          ...queued,
+          modelSelection: {
+            ...queued.modelSelection,
+            options: [{ id: "reasoningEffort", value: "high" }],
+          },
+        },
+        prepared,
+      ),
+    ).toThrow();
+  });
+});
 
 describe("thread outbox", () => {
   it("retains structured context through a persisted offline queue round trip", () => {

@@ -46,7 +46,14 @@ const harness = vi.hoisted(() => ({
         create() {}
       },
       File: class {
-        exists = true;
+        constructor(
+          _directory: unknown,
+          readonly name: string,
+        ) {}
+
+        get exists() {
+          return this.name === "drafts.json";
+        }
         parentDirectory = null;
 
         create() {}

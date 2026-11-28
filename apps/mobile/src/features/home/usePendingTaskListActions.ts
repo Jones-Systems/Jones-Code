@@ -4,8 +4,11 @@ import { msg } from "gt-react-native";
 import { useCallback } from "react";
 
 import { m } from "../../i18n/messages";
+import { automaticLaunchNeedsReconciliation } from "../../jones/threadConfiguration/outboxDelivery";
+import { scopedThreadKey } from "../../lib/scopedEntities";
 
 import { removeThreadOutboxMessage } from "../../state/thread-outbox-removal";
+import { threadOutboxManager } from "../../state/thread-outbox";
 import { clearComposerDraftContent } from "../../state/use-composer-drafts";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -68,6 +71,22 @@ export function usePendingTaskListActions(
       );
       return;
     }
+    const { message } = pendingTask;
+    const key = scopedThreadKey(message.environmentId, message.threadId);
+    const canDiscard = () => {
+      const queued = appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom);
+      const latest = queued[key]?.find((entry) => entry.messageId === message.messageId);
+      return latest === undefined || !automaticLaunchNeedsReconciliation(latest);
+    };
+    const showVerifying = () =>
+      Dialog.alert(
+        m(msg("Verifying task delivery")),
+        m(msg("The task may already be on the server. Reconnect to check its delivery.")),
+      );
+    if (!canDiscard()) {
+      showVerifying();
+      return;
+    }
     Dialog.alert(
       m(msg("Delete pending task?")),
       m(
@@ -81,6 +100,10 @@ export function usePendingTaskListActions(
           text: m(msg("Delete", { $context: "verb, deletes a pending task" })),
           style: "destructive",
           onPress: () => {
+            if (!canDiscard()) {
+              showVerifying();
+              return;
+            }
             // Hold delivery from confirmation so reconnects cannot send a task during removal.
             // The editor can release the shared hold mid-animation; remove edited tasks at once.
             // Keep an editor's hold unless removal succeeds.
@@ -90,15 +113,19 @@ export function usePendingTaskListActions(
             const releaseUnlessEditing = () => {
               if (!heldByEditor) releaseEditingQueuedMessage(messageId);
             };
-            const remove = () => removeThreadOutboxMessage(pendingTask.message);
+            const remove = () => removeThreadOutboxMessage(message, undefined, canDiscard);
             void (
               heldByEditor
                 ? remove()
                 : withThreadDismissal(pendingTask.key, remove, (removed) => removed)
             )
-              .then((removed) =>
-                removed ? releaseEditingQueuedMessage(messageId) : releaseUnlessEditing(),
-              )
+              .then((removed) => {
+                if (removed) releaseEditingQueuedMessage(messageId);
+                else {
+                  releaseUnlessEditing();
+                  if (!canDiscard()) showVerifying();
+                }
+              })
               .catch((error) => {
                 releaseUnlessEditing();
                 Dialog.alert(

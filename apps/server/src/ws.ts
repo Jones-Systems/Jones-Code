@@ -24,6 +24,12 @@ import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as NodeCrypto from "node:crypto";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import {
+  AutoLaunchIntent,
+  autoLaunchRequest,
+  withAccountLaunchBinding,
+} from "./jones/accountRouting/accountBinding.ts";
 import * as Context from "effect/Context";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -153,6 +159,7 @@ import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as McpSignIn from "./mcpApps/McpSignIn.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
+import { resolveLaunchAutoAccount } from "./jones/accountRouting/launchIngress.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
@@ -1571,6 +1578,8 @@ export const layerWsRpc = (
         | ServerSettings.ServerSettingsService
         | DocumentText.DocumentText
       >();
+      const autoLaunchContext =
+        yield* Effect.context<Effect.Services<ReturnType<typeof resolveLaunchAutoAccount>>>();
       const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
       const projectStore = yield* ProjectStore.ProjectStoreV2;
       const projectService = yield* ProjectService.ProjectService;
@@ -1671,6 +1680,7 @@ export const layerWsRpc = (
       );
       const prepareDestinationShell = yield* makeDestinationShellLaunch;
       const conversationHandoffs = yield* WorktreeMcpService.make;
+      const launchCommands = yield* KeyedLock.make<string>();
       // A conversation-bound checkout is attached first; upstream recovery then leases its root.
       const attachTerminalInput = <
         Input extends { readonly threadId: string; readonly cwd?: string | undefined },
@@ -2275,6 +2285,21 @@ export const layerWsRpc = (
                           (cause) => cause._tag !== "EnvironmentAuthorizationError",
                           (cause) =>
                             threadManagement.getDispatchDeliveryEvidence(command).pipe(
+                              Effect.flatMap((evidence) => {
+                                const readAutoLaunch = threadLaunch.readAutoLaunch;
+                                if (
+                                  command.type !== "thread.create" ||
+                                  readAutoLaunch === undefined
+                                )
+                                  return Effect.succeed(evidence);
+                                const unknown = { ...evidence, status: "unknown" as const };
+                                return readAutoLaunch(command.commandId).pipe(
+                                  Effect.map((decision) =>
+                                    decision === undefined ? evidence : unknown,
+                                  ),
+                                  Effect.orElseSucceed(() => unknown),
+                                );
+                              }),
                               Effect.flatMap((deliveryEvidence) => {
                                 const detail = userFacingDispatchErrorMessage(cause);
                                 return Effect.fail(
@@ -2431,22 +2456,26 @@ export const layerWsRpc = (
                 ),
             ),
           ),
-        [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) =>
-          Effect.annotateCurrentSpan({
+        [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) => {
+          const request = autoLaunchRequest(input);
+          return Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": input.commandId,
             "orchestration_v2.project_id": input.projectId,
           }).pipe(
             Effect.andThen(
               startup
                 .enqueueCommand(
-                  threadLaunch
-                    .checkWorktreeBase({
-                      commandId: input.commandId,
-                      projectId: input.projectId,
-                      workspaceStrategy: input.workspaceStrategy,
-                    })
-                    .pipe(
-                      Effect.andThen(
+                  resolveLaunchAutoAccount(input, threadLaunch, request).pipe(
+                    Effect.provide(autoLaunchContext),
+                    Effect.tap(() =>
+                      threadLaunch.checkWorktreeBase({
+                        commandId: input.commandId,
+                        projectId: input.projectId,
+                        workspaceStrategy: input.workspaceStrategy,
+                      }),
+                    ),
+                    Effect.flatMap(({ modelSelection, binding, workspace }) =>
+                      withAccountLaunchBinding(
                         ThreadMessageIntake.launchThread({
                           commandId: input.commandId,
                           ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
@@ -2458,10 +2487,14 @@ export const layerWsRpc = (
                           ...(input.generateTitle === undefined
                             ? {}
                             : { generateTitle: input.generateTitle }),
-                          modelSelection: input.modelSelection,
+                          modelSelection,
                           runtimeMode: input.runtimeMode,
                           interactionMode: input.interactionMode,
-                          workspaceStrategy: input.workspaceStrategy,
+                          workspaceStrategy:
+                            input.workspaceStrategy.type === "existing_worktree" &&
+                            workspace?.worktreePath != null
+                              ? { ...input.workspaceStrategy, worktreePath: workspace.worktreePath }
+                              : input.workspaceStrategy,
                           ...(input.workspaceStrategy.type === "worktree" &&
                           input.workspaceStrategy.baseFreshness === "fetch-now" &&
                           currentSession.scopes.includes(AuthSourceControlWriteScope)
@@ -2484,9 +2517,19 @@ export const layerWsRpc = (
                           createdBy: "user",
                           creationSource: input.creationSource ?? "web",
                         }),
+                        input.commandId,
+                        binding,
+                      ).pipe(
+                        Effect.provideService(
+                          AutoLaunchIntent,
+                          request === undefined
+                            ? undefined
+                            : { request, ...(workspace === undefined ? {} : { workspace }) },
+                        ),
                       ),
-                      Effect.provide(intakeContext),
                     ),
+                    Effect.provide(intakeContext),
+                  ),
                 )
                 .pipe(
                   // A resumed launch is a retry of one already counted.
@@ -2582,23 +2625,27 @@ export const layerWsRpc = (
                   // A failed launch still reports what its durable receipts prove was delivered.
                   Effect.catchTags({
                     OrchestrationV2ThreadLaunchError: (error) =>
-                      threadLaunch.getDeliveryEvidence(input).pipe(
-                        Effect.flatMap((deliveryEvidence) =>
-                          Effect.fail(
-                            new OrchestrationV2ThreadLaunchError({
-                              commandId: error.commandId,
-                              projectId: error.projectId,
-                              message: error.message,
-                              deliveryEvidence,
-                              cause: error.cause,
-                            }),
+                      error.deliveryEvidence !== undefined
+                        ? Effect.fail(error)
+                        : threadLaunch.getDeliveryEvidence(input, { autoRequest: request }).pipe(
+                            Effect.flatMap((deliveryEvidence) =>
+                              Effect.fail(
+                                new OrchestrationV2ThreadLaunchError({
+                                  commandId: error.commandId,
+                                  projectId: error.projectId,
+                                  message: error.message,
+                                  deliveryEvidence,
+                                  cause: error.cause,
+                                }),
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
                   }),
                 ),
             ),
-          ),
+            (launch) => launchCommands.withLock(input.commandId, launch),
+          );
+        },
         [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input) =>
           Stream.unwrap(subscribeOrchestrationV2Shell(input)),
         [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input) =>

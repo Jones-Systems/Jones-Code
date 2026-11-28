@@ -515,6 +515,108 @@ it.effect(
     ),
 );
 
+it.effect.each([true, false])("start gates Auto on the destination capability (%s)", (supported) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-thread-auto-" });
+    yield* persistServerRuntimeState({
+      path: path.join(baseDir, "userdata", "server-runtime.json"),
+      state: yield* makePersistedServerRuntimeState({
+        config: { host: "127.0.0.1", devUrl: undefined },
+        port: 3_773,
+      }),
+    });
+    const projectId = ProjectId.make("auto-project");
+    const threadId = ThreadId.make("auto-thread");
+    const modelSelection = { instanceId: "codex-winner", model: "gpt-6.2-sol" };
+    const call = vi.fn<McpBridge.McpToolSession["call"]>((tool) => {
+      switch (tool) {
+        case "orchestrator_capabilities":
+          return Effect.succeed({
+            structuredContent: { features: supported ? { accountAutoRouting: true } : {} },
+          });
+        case "t3_project_list":
+          return Effect.succeed({
+            structuredContent: {
+              projects: [{ id: projectId, title: "Auto", workspaceRoot: baseDir }],
+              nextCursor: null,
+            },
+          });
+        case "t3_thread_launch":
+          return Effect.succeed({
+            structuredContent: { threadId, projectId, runId: null, modelSelection },
+          });
+        default:
+          return Effect.die(`unexpected tool ${tool}`);
+      }
+    });
+    using session = vi.spyOn(McpBridge, "mcpToolSession").mockReturnValue(Effect.succeed({ call }));
+    const launch = Command.runWith(threadCommand, { version: "0.0.0" })([
+      "start",
+      projectId,
+      "Inspect the project",
+      "--provider",
+      "codex-representative",
+      "--model",
+      modelSelection.model,
+      "--account-routing",
+      "auto",
+      "--json",
+      "--base-dir",
+      baseDir,
+    ]);
+    if (!supported) {
+      const error = yield* Effect.flip(launch);
+      assert.include(error.message, "does not support Auto account routing");
+      assert.deepEqual(call.mock.calls, [["orchestrator_capabilities", {}]]);
+    } else {
+      yield* launch;
+      assert.deepEqual(
+        call.mock.calls.map(([tool]) => tool),
+        ["orchestrator_capabilities", "t3_project_list", "t3_thread_launch"],
+      );
+      assert.deepEqual(call.mock.calls[2]?.[1], {
+        projectId,
+        title: "Inspect the project",
+        message: "Inspect the project",
+        workspaceStrategy: { type: "root" },
+        accountRouting: { mode: "auto" },
+        modelSelection: { instanceId: "codex-representative", model: modelSelection.model },
+      });
+      assert.strictEqual(
+        (yield* TestConsole.logLines).at(-1),
+        JSON.stringify({ threadId, projectId, runId: null, modelSelection }),
+      );
+    }
+    assert.strictEqual(session.mock.calls.length, 1);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        NetService.layer,
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_PORT: "3773" } })),
+      ),
+    ),
+  ),
+);
+
+it.effect("start requires a provider and model for Auto", () =>
+  Effect.gen(function* () {
+    const error = yield* Command.runWith(threadCommand, { version: "0.0.0" })([
+      "start",
+      ".",
+      "Inspect the project",
+      "--account-routing",
+      "auto",
+    ]).pipe(Effect.flip);
+    assert.strictEqual(error._tag, "ThreadUsageError");
+    assert.strictEqual(error.message, "--account-routing auto needs --provider and --model.");
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer))),
+);
+
 it.effect("does not sign in to whatever took over a dead server's port", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

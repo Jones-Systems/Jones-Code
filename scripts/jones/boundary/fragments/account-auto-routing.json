@@ -1,0 +1,243 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "account-auto-routing",
+  "jonesOwnedPaths": [
+    "apps/mobile/src/jones/accountRouting/",
+    "apps/server/src/jones/accountRouting/",
+    "apps/server/src/jones/mcp/accountRouting.ts",
+    "apps/server/src/jones/mcp/launchModelSelection.ts",
+    "apps/web/src/jones/accountRouting/"
+  ],
+  "hookPaths": ["packages/provider-core/src/server/failure.test.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/mobile/src/features/home/usePendingTaskListActions.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
+      "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadSettingsSheet.tsx",
+      "to": "apps/mobile/src/jones/accountRouting/selection.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/new-task-flow-provider.tsx",
+      "to": "apps/mobile/src/jones/accountRouting/selection.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/thread-settings-sheet-state.ts",
+      "to": "apps/mobile/src/jones/accountRouting/selection.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/thread-list-v2-items.tsx",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/thread-outbox-model.ts",
+      "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/thread-outbox.ts",
+      "to": "apps/mobile/src/jones/accountRouting/cloudOutboxFence.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
+      "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/threadOutboxDelivery.ts",
+      "to": "apps/mobile/src/jones/accountRouting/selection.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/threads.ts",
+      "to": "apps/mobile/src/jones/accountRouting/observeLaunch.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-composer-drafts.test.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-composer-drafts.test.ts",
+      "to": "packages/client-runtime/src/jones/preparedThreadTurn.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-composer-drafts.ts",
+      "to": "apps/mobile/src/jones/accountRouting/cloudOutboxFence.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/mcp/accountRouting.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+      "to": "apps/server/src/jones/mcp/accountRouting.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
+      "to": "apps/server/src/jones/mcp/accountRouting.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
+      "to": "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
+      "to": "apps/server/src/jones/mcp/launchModelSelection.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+      "to": "apps/server/src/jones/accountRouting/claudeEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/accountRouting/claudeEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/accountRouting/codexEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBindingStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationStageDispatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
+      "to": "apps/server/src/jones/accountRouting/codexEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/orchestration-v2/CommandObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/accountRouting/launchIngress.ts"
+    },
+    {
+      "from": "apps/server/src/provider/CodexProvider.ts",
+      "to": "apps/server/src/jones/accountRouting/codexEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Drivers/ClaudeDriver.ts",
+      "to": "apps/server/src/jones/accountRouting/accountObservation.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Drivers/ClaudeDriver.ts",
+      "to": "apps/server/src/jones/accountRouting/claudeEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Drivers/CodexDriver.ts",
+      "to": "apps/server/src/jones/accountRouting/accountObservation.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Drivers/CodexDriver.ts",
+      "to": "apps/server/src/jones/accountRouting/codexEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/accountRouting/launchIngress.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/accountRouting/composerAccountRouting.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerControlsBar.tsx",
+      "to": "apps/web/src/jones/accountRouting/composerAccountRouting.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ModelPickerContent.tsx",
+      "to": "apps/web/src/jones/accountRouting/AccountRoutingChoices.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ModelPickerContent.tsx",
+      "to": "apps/web/src/jones/accountRouting/composerAccountRouting.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ProviderModelPicker.tsx",
+      "to": "apps/web/src/jones/accountRouting/AccountRoutingChoices.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ProviderModelPicker.tsx",
+      "to": "apps/web/src/jones/accountRouting/composerAccountRouting.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSelection.ts",
+      "to": "apps/web/src/jones/accountRouting/composerAccountRouting.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/jones/accountRouting/autoLaunchRecovery.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/jones/accountRouting/composerAccountRouting.ts"
+    },
+    {
+      "from": "apps/web/src/composerDraftStore.ts",
+      "to": "apps/web/src/jones/accountRouting/autoLaunchRecovery.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/accountRouting.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/jones/accountRouting.ts"
+    }
+  ]
+}

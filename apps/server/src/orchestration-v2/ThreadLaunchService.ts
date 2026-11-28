@@ -14,6 +14,13 @@ import * as AutoLaunchStrategy from "../jones/conversationWorkspace/LaunchStrate
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
+import {
+  AccountLaunchIntent,
+  AutoLaunchIntent,
+  matchesAutoLaunch,
+  type AutoLaunchRequest,
+} from "../jones/accountRouting/accountBinding.ts";
+import { autoLaunchDeliveryEvidence } from "../jones/accountRouting/launchIngress.ts";
 import { taskFolderProgressId } from "../jones/orchestration/WorkspacePreparationRead.ts";
 import {
   launchDeliveryEvidence,
@@ -358,7 +365,12 @@ export class ThreadLaunchService extends Context.Service<
     /** Jones hook: read-only delivery evidence of an earlier launch, from its durable receipts. */
     readonly getDeliveryEvidence: (
       input: LaunchDeliveryRequest,
+      publicLaunch?: { readonly autoRequest?: AutoLaunchRequest | undefined },
     ) => Effect.Effect<LaunchDeliveryEvidence>;
+    readonly readAutoLaunch?: NonNullable<EventSink.EventSinkV2["Service"]["readAutoLaunch"]>;
+    readonly commitAutoLaunchRefusal?: NonNullable<
+      EventSink.EventSinkV2["Service"]["commitAutoLaunchRefusal"]
+    >;
     /** Check a new worktree's base ref and branch name before creation for early errors; launch otherwise accepts and reports these failures inside the thread. */
     readonly checkWorktreeBase: (
       input: Pick<ThreadLaunchInput, "projectId" | "workspaceStrategy"> & {
@@ -2086,7 +2098,88 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
       yield* requirePreparationGraph.pipe(
         Effect.mapError(mapError(request, "create-thread", request.threadId)),
       );
-      const priorLaunchReceipt = yield* readReceipt(request, request.commandId);
+      const autoIntent = yield* AutoLaunchIntent;
+      const accountIntent = yield* AccountLaunchIntent;
+      const keyedWorkspace =
+        accountIntent?.commandId === request.commandId ? accountIntent.workspace : undefined;
+      let priorLaunchReceipt = yield* readReceipt(request, request.commandId);
+      const autoDecision = yield* (
+        eventSink.readAutoLaunch?.(request.commandId) ?? Effect.undefined
+      ).pipe(Effect.mapError(mapError(request, "read-receipt", request.threadId)));
+      if (autoDecision !== undefined) {
+        if (!matchesAutoLaunch(autoIntent?.request, autoDecision) || autoDecision.refusal !== null)
+          return yield* mapError(
+            request,
+            "read-receipt",
+            request.threadId,
+          )("The launch command belongs to another request or was refused.");
+        const proof = autoDecision.acceptance;
+        const first = proof?.firstMessage;
+        if (
+          autoDecision.threadId !== null &&
+          proof !== undefined &&
+          (request.initialMessage === undefined ||
+            (first != null &&
+              (request.initialMessage.messageId === undefined ||
+                request.initialMessage.messageId === first.messageId)))
+        ) {
+          const threadId = autoDecision.threadId;
+          const projection = yield* threads
+            .getThreadProjection(threadId)
+            .pipe(Effect.mapError(mapError(request, "read-receipt", threadId)));
+          if (
+            projection.thread.projectId !== request.projectId ||
+            projection.thread.deletedAt !== null
+          )
+            return yield* mapError(
+              request,
+              "read-receipt",
+              threadId,
+            )("The recorded Auto launch thread is no longer available.");
+          // Accepted launches do not need the original events after compaction. A run
+          // still preparing continues through the existing scheduling path below.
+          if (
+            request.initialMessage === undefined ||
+            (first != null &&
+              projection.runs.some(
+                (run) =>
+                  run.id === first.runId &&
+                  run.userMessageId === first.messageId &&
+                  run.status !== "preparing",
+              ))
+          )
+            return {
+              threadId,
+              projection,
+              resumed: true,
+              ...(first == null ? {} : { sequence: proof.sequence }),
+            };
+        }
+        // The creation can commit between the receipt and sidecar reads.
+        if (Option.isNone(priorLaunchReceipt))
+          priorLaunchReceipt = yield* readReceipt(request, request.commandId);
+        if (
+          Option.isNone(priorLaunchReceipt) ||
+          priorLaunchReceipt.value.threadId !== autoDecision.threadId
+        )
+          return yield* mapError(
+            request,
+            "read-receipt",
+            request.threadId,
+          )("The accepted Auto launch has no matching creation receipt.");
+      } else if (autoIntent !== undefined) {
+        if (
+          Option.isSome(priorLaunchReceipt) ||
+          autoIntent.workspace === undefined ||
+          accountIntent?.commandId !== request.commandId ||
+          eventSink.readAutoLaunch === undefined
+        )
+          return yield* mapError(
+            request,
+            "read-receipt",
+            request.threadId,
+          )("The Auto launch has no matching request and account admission.");
+      }
       const claimEvents = Option.isSome(priorLaunchReceipt)
         ? yield* eventSink
             .readByCommandId({ commandId: request.commandId })
@@ -2104,6 +2197,45 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
           request.reuseExistingThread ? "update-thread" : "create-thread",
           request.threadId,
         )("The launch command cannot be replayed without its matching accepted immutable claim.");
+      if (autoDecision !== undefined && recordedClaim?.worktreePath !== autoDecision.worktreePath)
+        return yield* mapError(
+          request,
+          "read-receipt",
+          recordedClaim?.id,
+        )("The accepted Auto launch workspace does not match its creation.");
+      if (
+        keyedWorkspace !== undefined &&
+        ((request.workspaceStrategy.type === "root"
+          ? null
+          : request.workspaceStrategy.type === "existing_worktree"
+            ? request.workspaceStrategy.worktreePath
+            : undefined) !== keyedWorkspace.worktreePath ||
+          (recordedClaim !== undefined &&
+            (recordedClaim.worktreePath !== keyedWorkspace.worktreePath ||
+              recordedClaim.modelSelection.instanceId !== accountIntent?.binding.instanceId)))
+      )
+        return yield* mapError(
+          request,
+          "read-receipt",
+          request.threadId,
+        )("The keyed Auto launch does not match its admitted account and workspace.");
+      if (
+        autoDecision === undefined &&
+        recordedClaim !== undefined &&
+        request.createdBy === "user" &&
+        request.reuseExistingThread !== true &&
+        (yield* (
+          eventSink.readAutoAccountBinding?.(
+            recordedClaim.id,
+            recordedClaim.modelSelection.instanceId,
+          ) ?? Effect.undefined
+        ).pipe(Effect.mapError(mapError(request, "read-receipt", recordedClaim.id)))) !== undefined
+      )
+        return yield* mapError(
+          request,
+          "read-receipt",
+          recordedClaim.id,
+        )("The original Auto launch request is unavailable.");
       const replayMessage = yield* Effect.gen(function* () {
         if (!recordedClaim || Option.isNone(priorLaunchReceipt) || !request.initialMessage) return;
         const result = yield* readLaunchMessage(
@@ -2129,6 +2261,16 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
             : "The first message cannot be replayed without its matching accepted immutable receipt.",
         );
       });
+      if (
+        autoDecision !== undefined &&
+        request.initialMessage !== undefined &&
+        replayMessage === undefined
+      )
+        return yield* mapError(
+          request,
+          "read-receipt",
+          recordedClaim?.id,
+        )("The Auto launch's original first-message receipt is unavailable.");
       const needsAdmission =
         recordedClaim === undefined ||
         (request.initialMessage !== undefined && replayMessage === undefined);
@@ -2204,6 +2346,17 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
         needsAdmission || (resumeAllocation && input.workspaceStrategy.type === "auto")
           ? yield* resolveLaunchProject(input)
           : null;
+      const admittedWorkspace = autoIntent?.workspace ?? keyedWorkspace;
+      if (
+        admittedWorkspace !== undefined &&
+        project !== null &&
+        project.workspaceRoot !== admittedWorkspace.projectRoot
+      )
+        return yield* mapError(
+          input,
+          "resolve-project",
+          input.threadId,
+        )("The Auto launch project workspace changed during admission.");
       if (input.reuseExistingThread === true && input.threadId === undefined) {
         return yield* mapError(
           input,
@@ -2232,7 +2385,9 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
         }
 
         const requestedWorkspaceStrategy: ThreadLaunchWorkspaceStrategy =
-          input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
+          input.workspaceStrategy.type === "root" &&
+          Option.isNone(launchReceipt) &&
+          autoIntent === undefined
             ? Option.match(
                 yield* managedFolders
                   .folderForThread({
@@ -2604,6 +2759,16 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
             ) {
               return yield* releasePreparation(input.commandId);
             }
+            const fixedWorkspace = autoDecision ?? admittedWorkspace;
+            if (fixedWorkspace !== undefined) {
+              const currentProject = yield* resolveLaunchProject(input);
+              if (currentProject.workspaceRoot !== fixedWorkspace.projectRoot)
+                return yield* mapError(
+                  input,
+                  "resolve-project",
+                  threadId,
+                )("The accepted Auto launch project workspace changed before preparation.");
+            }
             // Jones hook: inspect durable progress only while owning this reservation.
             if (input.holdPreparationAfterProgress === true && runId !== null) {
               for (const suffix of [":progress:worktree", ":progress:setup"]) {
@@ -2844,6 +3009,10 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
           ),
     ),
     launch,
+    ...(eventSink.readAutoLaunch === undefined ? {} : { readAutoLaunch: eventSink.readAutoLaunch }),
+    ...(eventSink.commitAutoLaunchRefusal === undefined
+      ? {}
+      : { commitAutoLaunchRefusal: eventSink.commitAutoLaunchRefusal }),
     preflightLegacyBootstrap: Effect.fn("ThreadLaunchService.preflightLegacyBootstrap")(
       function* (binding) {
         if (Option.isNone(legacyBootstrap))
@@ -2857,8 +3026,70 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
         return yield* (yield* legacyBootstrap.value).preflightLegacyBootstrap(binding);
       },
     ),
-    getDeliveryEvidence: Effect.fn("ThreadLaunchService.getDeliveryEvidence")((input) =>
-      launchDeliveryEvidence(receipts, eventSink, input),
+    getDeliveryEvidence: Effect.fn("ThreadLaunchService.getDeliveryEvidence")(
+      function* (input, publicLaunch) {
+        if (publicLaunch === undefined)
+          return yield* launchDeliveryEvidence(receipts, eventSink, input);
+        const { autoRequest } = publicLaunch;
+        const unknown = autoLaunchDeliveryEvidence(input, "unknown");
+        const read = yield* (eventSink.readAutoLaunch?.(input.commandId) ?? Effect.undefined).pipe(
+          Effect.result,
+        );
+        if (read._tag === "Failure") return unknown;
+        const decision = read.success;
+        if (decision !== undefined) {
+          if (!matchesAutoLaunch(autoRequest, decision)) return unknown;
+          if (decision.refusal !== null) return autoLaunchDeliveryEvidence(input, "rejected");
+          const first = decision.acceptance?.firstMessage;
+          if (
+            decision.threadId !== null &&
+            decision.acceptance !== undefined &&
+            (input.initialMessage === undefined || first != null)
+          ) {
+            return {
+              ...unknown,
+              creation: { status: "accepted", threadId: decision.threadId },
+              initialMessage:
+                input.initialMessage !== undefined &&
+                first != null &&
+                (input.initialMessage.messageId === undefined ||
+                  input.initialMessage.messageId === first.messageId)
+                  ? {
+                      status: "accepted",
+                      commandId: initialMessageCommandId(input.commandId),
+                      messageId: first.messageId,
+                    }
+                  : unknown.initialMessage,
+            };
+          }
+          const evidence = yield* launchDeliveryEvidence(receipts, eventSink, input);
+          return evidence.creation.status === "accepted" &&
+            evidence.creation.threadId === decision.threadId
+            ? evidence
+            : unknown;
+        }
+        if (autoRequest !== undefined) return unknown;
+        const evidence = yield* launchDeliveryEvidence(receipts, eventSink, input);
+        const readBinding = eventSink.readAutoAccountBinding;
+        if (
+          input.reuseExistingThread === true ||
+          evidence.creation.status !== "accepted" ||
+          readBinding === undefined
+        )
+          return evidence;
+        // Older Auto bindings do not prove the original public request.
+        return yield* Effect.gen(function* () {
+          const receipt = yield* receipts.getByCommandId(input.commandId);
+          if (Option.isNone(receipt)) return unknown;
+          const events = yield* eventSink
+            .readByCommandId({ commandId: input.commandId })
+            .pipe(Stream.runCollect);
+          const claim = recordedLaunchClaim(input, receipt.value, events);
+          if (claim === undefined) return unknown;
+          const digest = yield* readBinding(claim.id, claim.modelSelection.instanceId);
+          return digest === undefined ? evidence : unknown;
+        }).pipe(Effect.catchCause(() => Effect.succeed(unknown)));
+      },
     ),
     checkWorktreeBase,
     isNonGitProject,

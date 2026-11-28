@@ -1,4 +1,6 @@
 import { useComposerPickerSession } from "../../jones/composer/useComposerPickerSession";
+import { useAccountRoutingLabel } from "../../jones/accountRouting/AccountRoutingChoices";
+import type { ComposerAccountRoutingPicker } from "../../jones/accountRouting/composerAccountRouting";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
@@ -96,6 +98,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   model: string;
   selectedModels?: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }>;
   onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
+  accountRouting?: ComposerAccountRoutingPicker | undefined;
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey?: string | null;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
@@ -151,6 +154,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     if (isMenuOpen) refreshModelCatalog();
   }, [isMenuOpen]);
   const gt = useGT();
+  const accountRoutingLabel = useAccountRoutingLabel();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
@@ -174,18 +178,25 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     (activeEntry?.driverKind === "opencode" || activeEntry?.driverKind === "antigravity"
       ? undefined
       : selectedInstanceOptions[0]);
-  const triggerTitle = selectedModel
+  const modelTitle = selectedModel
     ? getTriggerDisplayModelName(selectedModel, activeEntry?.driverKind)
     : props.model === ANTIGRAVITY_DEFAULT_MODEL
       ? gt("Choose model")
       : props.model || gt("Choose model");
   const withUnavailable = (model: string, isUnavailable: boolean | undefined) =>
     isUnavailable ? gt("{model} (Unavailable)", { model }) : model;
-  const triggerLabel = selectedModel
+  const modelLabel = selectedModel
     ? withUnavailable(getDisplayModelName(selectedModel), selectedModel.isUnavailable)
-    : triggerTitle;
+    : modelTitle;
+  const autoLabel = props.accountRouting?.active
+    ? accountRoutingLabel(props.accountRouting.active)
+    : null;
+  const triggerTitle = autoLabel ? `${autoLabel} · ${modelTitle}` : modelTitle;
+  const triggerLabel = autoLabel ? `${autoLabel} · ${modelLabel}` : modelLabel;
   const showInstanceBadge =
-    activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
+    autoLabel === null &&
+    activeEntry !== null &&
+    shouldShowInstanceBadge(activeEntry, props.instanceEntries);
 
   const setIsMenuOpen = (open: boolean) => {
     props.onOpenChange?.(open);
@@ -300,6 +311,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       workspaceCwd={props.workspaceCwd ?? null}
       activeInstanceId={activeInstanceId}
       model={props.model}
+      accountRouting={props.disabled ? undefined : props.accountRouting}
       {...(props.selectedModels !== undefined ? { selectedModels: props.selectedModels } : {})}
       {...(props.onToggleModel
         ? {
@@ -475,7 +487,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         touchBackdrop
       >
         {props.effortColumn ? (
-          <DockedPickerContext value={{ modelLabel: triggerTitle }}>
+          <DockedPickerContext value={{ modelLabel: modelTitle }}>
             <div className="flex max-h-(--available-height) flex-col">
               {/* One fixed height, so a model with more options never resizes the popup. Short
                   windows shrink it and keep the footer. */}

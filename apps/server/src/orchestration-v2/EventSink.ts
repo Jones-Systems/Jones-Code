@@ -45,9 +45,17 @@ import {
   planDigests,
 } from "../jones/ordinaryCheckout/CheckoutPreparationSchema.ts";
 import { makeOwnerSelectionStore } from "../jones/threadConfiguration/ownerSelectionStore.ts";
+import {
+  isReservedAutoLaunchCommand,
+  matchesAutoLaunch,
+  type AccountBinding,
+  type AutoLaunchCommit,
+  type AutoLaunchDecision,
+} from "../jones/accountRouting/accountBinding.ts";
+import { makeAccountBindingStore } from "../jones/accountRouting/accountBindingStore.ts";
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as CodexFailoverStore from "../jones/codexFailover/CodexFailoverStore.ts";
-import type { ModelSelection, MessageId } from "@t3tools/contracts";
+import type { ModelSelection, MessageId, ProviderInstanceId } from "@t3tools/contracts";
 import type { HoldReservation, RefusalReason } from "../jones/startRefusal/model.ts";
 import {
   bindRecreatedCheckout,
@@ -93,6 +101,7 @@ import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts"
 import * as WorkspaceProvenanceStore from "../jones/workspaceLifecycle/TransitionStore.ts";
 import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import * as NativeCreationRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
+import { refusePublicNativeReservation } from "../jones/nativeCreation/NativeCreationStageDispatch.ts";
 import { identityForRequest } from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   CommandId,
@@ -459,6 +468,8 @@ export interface EventSinkV2Shape {
     readonly codexFailover?: CodexFailoverCommitContext;
     readonly threadSelfConfiguration?: ThreadSelfConfigurationCommitContext;
     readonly ownerSelection?: ModelSelection | undefined;
+    readonly autoAccountBinding?: AccountBinding;
+    readonly autoLaunch?: AutoLaunchCommit;
     readonly settlementRestore?: { readonly settleCommandId: CommandId };
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
@@ -560,6 +571,17 @@ export interface EventSinkV2Shape {
     run: OrchestrationV2Run,
     attempt: OrchestrationV2RunAttempt,
   ) => Effect.Effect<boolean, EventSinkV2Error>;
+  readonly readAutoAccountBinding?: (
+    threadId: ThreadId,
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<string | undefined, EventSinkV2Error>;
+  readonly readAutoLaunch?: (
+    commandId: CommandId,
+  ) => Effect.Effect<AutoLaunchDecision | undefined, EventSinkV2Error>;
+  readonly commitAutoLaunchRefusal?: (
+    input: AutoLaunchCommit,
+    message: string,
+  ) => Effect.Effect<AutoLaunchDecision | undefined, EventSinkV2Error>;
   readonly readByCommandId: (input: {
     readonly commandId: CommandId;
   }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
@@ -603,6 +625,15 @@ const layerBase: Layer.Layer<
     const nativeCreation = yield* Effect.serviceOption(
       NativeCreationRepository.NativeCreationRepository,
     );
+    const assertPublicNativeCommand = (commandId: CommandId) =>
+      Option.isNone(nativeCreation)
+        ? Effect.void
+        : refusePublicNativeReservation(commandId).pipe(
+            Effect.provideService(
+              NativeCreationRepository.NativeCreationRepository,
+              nativeCreation.value,
+            ),
+          );
     const captureSettlementProof = (
       receipt: CommandReceiptStore.CommandReceiptV2,
       storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
@@ -643,6 +674,7 @@ const layerBase: Layer.Layer<
     const tables = makeJonesTablePresence(sql);
     const importedHistoryCommit = yield* ImportedHistoryCommit.make;
     const ownerSelections = makeOwnerSelectionStore(sql, tables);
+    const autoAccountBindings = makeAccountBindingStore(sql, tables);
     const codexFailoverStore = yield* CodexFailoverStore.make;
     const dependencies = makeDependencyStore(
       sql,
@@ -1759,6 +1791,20 @@ const layerBase: Layer.Layer<
               message: "Native queued effect differs from its acceptance envelope.",
             });
           const choice = yield* importedHistoryCommit.reserve(input);
+          const publicCommand = legacy === undefined && input.nativeCreation === undefined;
+          const assertAutoLaunch = Effect.gen(function* () {
+            const decision = yield* autoAccountBindings.readLaunch(input.commandId);
+            if (
+              decision !== undefined &&
+              (decision.refusal !== null || !matchesAutoLaunch(input.autoLaunch?.request, decision))
+            )
+              return yield* new EventSinkWriteError({
+                commandId: input.commandId,
+                eventCount: 0,
+                cause: "The command belongs to a different or refused Auto launch.",
+              });
+          });
+          if (publicCommand && input.commandType === "thread.create") yield* assertAutoLaunch;
           const reservation = privateDelete
             ? undefined
             : yield* CheckoutCommit.reserveCommand(
@@ -1784,6 +1830,12 @@ const layerBase: Layer.Layer<
                 reason: "accepted_receipt_unavailable",
               });
             const existing = yield* existingCommandResult(input.commandId);
+            if (
+              publicCommand &&
+              input.commandType !== "thread.create" &&
+              existing.receipt.commandType === "thread.create"
+            )
+              yield* assertAutoLaunch;
             if (input.providerConversationReselection !== undefined)
               yield* input.providerConversationReselection.revalidate(input, existing);
             yield* importedHistoryCommit.replay(input, choice, existing.receipt);
@@ -2120,6 +2172,55 @@ const layerBase: Layer.Layer<
             });
           }
           if (input.runtimeStop !== undefined) yield* runtimeStops.record(input.runtimeStop);
+          if (input.autoAccountBinding !== undefined)
+            yield* autoAccountBindings.commit(
+              input.autoAccountBinding,
+              input.events.filter((event) => event.type === "thread.created"),
+            );
+          if (input.autoLaunch !== undefined) {
+            const { request, workspace } = input.autoLaunch;
+            const creation = input.events.find(
+              (event) => event.type === "thread.created" && event.threadId === input.threadId,
+            );
+            const project = yield* projectStore.get(request.projectId);
+            if (
+              !publicCommand ||
+              isReservedAutoLaunchCommand(input.commandId) ||
+              input.commandType !== "thread.create" ||
+              creation?.type !== "thread.created" ||
+              input.autoAccountBinding === undefined ||
+              input.commandId !== request.commandId ||
+              creation.payload.projectId !== request.projectId ||
+              (request.threadId !== undefined && request.threadId !== input.threadId) ||
+              creation.payload.worktreePath !== workspace.worktreePath ||
+              Option.isNone(project) ||
+              project.value.workspaceRoot !== workspace.projectRoot
+            )
+              return yield* new EventSinkWriteError({
+                commandId: input.commandId,
+                eventCount: 0,
+                cause: "Auto launch does not match the accepted project and workspace.",
+              });
+            yield* assertPublicNativeCommand(input.commandId);
+            const run = input.events.find(
+              (event) => event.type === "run.created" && event.threadId === input.threadId,
+            );
+            const firstMessage =
+              run?.type === "run.created" &&
+              input.events.some(
+                (event) =>
+                  event.type === "message.updated" &&
+                  event.threadId === input.threadId &&
+                  event.payload.role === "user" &&
+                  event.payload.id === run.payload.userMessageId,
+              )
+                ? { messageId: run.payload.userMessageId, runId: run.payload.id }
+                : null;
+            yield* autoAccountBindings.recordLaunch(input.autoLaunch, input.threadId, null, {
+              sequence: receipt.resultSequence,
+              firstMessage,
+            });
+          }
           yield* ownerSelections.commit({
             threadId: input.threadId,
             commandId: input.commandId,
@@ -2215,6 +2316,49 @@ const layerBase: Layer.Layer<
           (cause) => new EventSinkWriteError({ commandId: input.commandId, eventCount: 1, cause }),
         ),
       );
+
+    const commitAutoLaunchRefusal = Effect.fn("EventSink.commitAutoLaunchRefusal")(function* (
+      { request, workspace }: AutoLaunchCommit,
+      message: string,
+    ) {
+      const { commandId, projectId, threadId } = request;
+      // This outcome is for public launches only. Private command owners may reserve their
+      // identifiers after this request arrives, so check both namespaces and live custody.
+      if (
+        isReservedAutoLaunchCommand(commandId) ||
+        Option.isSome(yield* Effect.serviceOption(sql.transactionService))
+      )
+        return undefined;
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* assertPublicNativeCommand(commandId);
+          yield* legacyStorage.assertUnreserved(commandId);
+          const project = yield* projectStore.get(projectId);
+          if (Option.isNone(project) || project.value.workspaceRoot !== workspace.projectRoot)
+            return undefined;
+          const prior = yield* autoAccountBindings.readLaunch(commandId);
+          if (prior !== undefined) return prior;
+          if (
+            Option.isSome(yield* commandReceipts.getByCommandId(commandId)) ||
+            Option.isSome(yield* commandReceipts.getProjectByCommandId(commandId)) ||
+            (threadId !== undefined && (yield* projectionStore.findThread(threadId)) !== null)
+          )
+            return undefined;
+          yield* autoAccountBindings.recordLaunch(
+            { request, workspace },
+            threadId ?? null,
+            message,
+          );
+          return {
+            ...workspace,
+            projectId,
+            threadId: threadId ?? null,
+            digest: request.digest,
+            refusal: message,
+          };
+        }),
+      );
+    });
 
     const commitRejectedCommandEffect = Effect.fn(
       "orchestrationV2.EventSink.commitRejectedCommand",
@@ -2903,6 +3047,25 @@ const layerBase: Layer.Layer<
       readUnreleasedStartBirth: (run, attempt) =>
         readUnreleasedStartBirth(sql, run, attempt).pipe(
           Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })),
+        ),
+      readAutoAccountBinding: (threadId, instanceId) =>
+        autoAccountBindings
+          .read(threadId, instanceId)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      readAutoLaunch: (commandId) =>
+        autoAccountBindings
+          .readLaunch(commandId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new EventSinkWriteError({ commandId, eventCount: 0, cause }),
+            ),
+          ),
+      commitAutoLaunchRefusal: (input, message) =>
+        commitAutoLaunchRefusal(input, message).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EventSinkWriteError({ commandId: input.request.commandId, eventCount: 0, cause }),
+          ),
         ),
       readLifecycleByCommandId: ({ commandId }) =>
         Stream.fromEffect(legacyStorage.readLifecycleByCommandId(commandId)).pipe(

@@ -21,6 +21,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { automaticAccountWorkspaceError } from "../../jones/accountRouting/outbox";
 import {
   CommonActions,
   StackActions,
@@ -654,11 +655,13 @@ export function NewTaskDraftScreen(props: {
     const draft = getComposerDraftSnapshot(draftKey);
     if (appAtomRegistry.get(composerContextImportsAtom)[draftKey]) return null;
     const modelSelection =
+      draft.automaticAccountModel ??
       resolveSelectableModelSelection(
         selectedEnvironmentServerConfig,
         draft.modelSelection ?? null,
         selectedProject.id,
-      ) ?? flow.selectedModel;
+      ) ??
+      flow.selectedModel;
     const workspaceSelection = flow.resolveWorkspaceSelection(draft.workspaceSelection);
     const workspaceMode = workspaceSelection.mode;
     const selectedBranchName = workspaceSelection.branch;
@@ -673,8 +676,20 @@ export function NewTaskDraftScreen(props: {
     ) {
       return null;
     }
+    if (draft.automaticAccountModel !== undefined) {
+      const workspaceError = automaticAccountWorkspaceError({
+        mode: workspaceMode,
+        pullRequestReference: workspaceSelection.pullRequestReference,
+        scratch: flow.isScratchDraft,
+      });
+      if (workspaceError !== undefined) {
+        Dialog.alert(gt("Choose an account"), workspaceError);
+        return null;
+      }
+    }
     if (
       environmentConnected &&
+      draft.automaticAccountModel === undefined &&
       isModelSelectionUnavailable(
         selectedEnvironmentServerConfig,
         modelSelection,
@@ -1128,6 +1143,7 @@ export function NewTaskDraftScreen(props: {
         draftMode={{
           content: heroViewport,
           controls: draftControls,
+          automaticAccountLabel: flow.automaticAccountLabel,
           editorRef: promptInputRef,
           sendBlockedReason: setupBlockReason,
           interactionLocked: isComposerInteractionLocked,

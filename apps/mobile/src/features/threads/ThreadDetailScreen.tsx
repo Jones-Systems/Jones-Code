@@ -241,6 +241,7 @@ export interface ThreadDetailScreenProps {
       viewportHeight: number,
     ) => React.ReactNode;
     readonly controls: (viewportHeight: number) => React.ReactNode;
+    readonly automaticAccountLabel?: string | undefined;
     readonly editorRef: React.RefObject<ComposerEditorHandle | null>;
     readonly sendBlockedReason: string | null;
     readonly interactionLocked: boolean;
@@ -2025,6 +2026,7 @@ function ThreadDetailBody(
                     <>
                       <ThreadComposer
                         isDraft={Boolean(props.draftMode)}
+                        automaticAccountLabel={props.draftMode?.automaticAccountLabel}
                         canOperateThread={props.canOperateThread}
                         reportedModelSelection={reportedModelSelection}
                         editorRef={composerEditorRef}

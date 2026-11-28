@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { ProjectId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import {
   canonicalRequestJson,
   clientLaunchDigest,
@@ -93,4 +93,27 @@ it("binds new launch choices without changing legacy request digests", () => {
       projectId,
     ),
   ).not.toBe(clientLaunchDigest(worktree, projectId));
+});
+
+it("preserves a legacy concrete digest and binds Auto to its requested representative", () => {
+  const projectId = ProjectId.make("project");
+  const concrete = {
+    clientRequestId: "key",
+    title: "hi",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+  };
+  const explicit = clientLaunchDigest(concrete, projectId);
+  expect(explicit).toBe("2eb4b54a8e10c64118a1a09ca815d1a2cb15c97edb00941b7479e800bd7defd8");
+  expect(clientLaunchDigest({ ...concrete, accountRouting: undefined }, projectId)).toBe(explicit);
+  const auto = { ...concrete, accountRouting: { mode: "auto" as const } };
+  expect(clientLaunchDigest(auto, projectId)).not.toBe(explicit);
+  expect(
+    clientLaunchDigest(
+      {
+        ...auto,
+        modelSelection: { ...auto.modelSelection, instanceId: ProviderInstanceId.make("codex-2") },
+      },
+      projectId,
+    ),
+  ).not.toBe(clientLaunchDigest(auto, projectId));
 });

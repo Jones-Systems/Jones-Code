@@ -52,4 +52,5 @@ t3 thread list
 ```
 
 - Pass `--worktree <base-branch>`, `--title` / `--generate-title`, `--provider <id> --model <slug>`, `--option id=value` (e.g. `reasoningEffort=high` for Codex, `effort=high` for Claude), or `-` to read the prompt from stdin.
+- Pass `--account-routing auto --provider <id> --model <slug>` to let the server choose a native subscription for a new thread in the project folder. The provider ID identifies the account family and model options. For a launch that creates a worktree, select a specific account.
 - `--wait` prints the reply and exits `1` on failure/stop or `2` when waiting for user input. Add `--json` for structured output including the thread ID.

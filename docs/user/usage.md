@@ -41,6 +41,12 @@ Usage aggregates history across Codex, Claude Code, Grok Build, OpenCode, Antigr
   - Pure API-key accounts generally do not report subscription limits.
 - **Mobile widget**: Add the **Subscription usage** widget on iOS or Android to monitor Codex and Claude quotas from your home screen.
 
+## Choose an account for a new thread
+
+With multiple accounts for the same provider on your connected environment, open the new-thread model picker and choose **Codex Auto** or **Claude Auto**. The server selects a verified native subscription that supports the requested model and settings, using the available allowance and reset times. API keys and custom endpoints remain available as explicit picks.
+
+The thread shows the provider instance selected for its first run. Follow-up messages use the saved instance. If that instance's login changes, the server holds the turn until it can verify the original account. Codex's existing recovery rules still apply if it hits a limit. Auto needs an existing execution directory, such as the project root or an existing worktree. For a launch that creates a worktree, choose a specific account. If Auto cannot admit an account, the composer shows the reason and keeps the draft available.
+
 ## Connect a CLIProxyAPI hub
 
 Open **Settings → Providers → Usage providers → Add hub**, choose the environment, and enter the hub URL and management key. Pools Codex, Claude, and Grok accounts under **Usage → Limits** (including Codex **Use reset**). Configure the provider's endpoint to the same URL if you want threads to display that hub's limits.

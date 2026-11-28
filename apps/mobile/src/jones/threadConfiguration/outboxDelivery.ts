@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts/jones/deliveryEvidence";
 
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
+import { preparedUsesAutomaticAccounts } from "../accountRouting/outbox";
 import { queuedThreadTurnMatches } from "./outboxDeliveryContract";
 
 type DeliveryEvidence = DispatchDeliveryEvidence | LaunchDeliveryEvidence;
@@ -127,6 +128,14 @@ export function queuedThreadDeliveryStatus(message: QueuedThreadMessage) {
   return evidence === undefined ? "unknown" : threadTurnDeliveryStatus(evidence);
 }
 
+export function automaticLaunchNeedsReconciliation(message: QueuedThreadMessage): boolean {
+  return (
+    message.issuance?.state === "issued" &&
+    preparedUsesAutomaticAccounts(message.issuance.prepared) &&
+    queuedThreadDeliveryStatus(message) !== "rejected"
+  );
+}
+
 export function canRestoreQueuedThreadMessage(message: QueuedThreadMessage): boolean {
   return (
     message.issuance?.state === "unissued" || queuedThreadDeliveryStatus(message) === "rejected"
@@ -168,6 +177,9 @@ export function preserveQueuedThreadIssuance(
     threadId: previous.threadId,
     messageId: previous.messageId,
     commandId: previous.commandId,
+    ...(previous.accountRouting !== undefined || next.accountRouting !== undefined
+      ? { accountRouting: previous.accountRouting, modelSelection: previous.modelSelection }
+      : {}),
     ...(previous.creation === undefined
       ? {}
       : {

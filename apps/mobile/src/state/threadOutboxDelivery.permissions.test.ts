@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { automaticLaunchNeedsReconciliation } from "../jones/threadConfiguration/outboxDelivery";
 import {
   decodeQueuedThreadMessage,
   threadOutboxRetryDelayMs,
@@ -35,6 +36,7 @@ const state = vi.hoisted(() => ({
     readonly dispose: () => void;
   } | null,
   start: vi.fn(),
+  observeAuto: vi.fn(),
   prepareTurn: vi.fn(),
   metadata: vi.fn(),
   runtime: vi.fn(),
@@ -77,7 +79,7 @@ const state = vi.hoisted(() => ({
   config: {
     shellThreadFamilies: false,
     providers: [{ instanceId: "codex", driver: "codex", models: [] }],
-    environment: { capabilities: {} },
+    environment: { capabilities: {} as { accountAutoRouting?: boolean } },
   },
 }));
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
@@ -129,6 +131,7 @@ vi.mock("./threads", async () => {
       setRuntimeMode: state.command(Effect, state.runtime),
       setInteractionMode: state.command(Effect, state.interaction),
     },
+    observeMobileAutomaticLaunch: state.command(Effect, state.observeAuto),
     environmentThreadShells: { threadShellsAtom: state.threadShells },
     threadFamilies: {
       mount: state.familyMount,
@@ -213,6 +216,9 @@ vi.mock("./use-thread-outbox", async () => {
 vi.mock("./use-composer-drafts", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
+    cloudOutboxArchiveFencesAtom: Atom.make<ReadonlyMap<EnvironmentId, ReadonlyArray<never>>>(
+      new Map(),
+    ).pipe(Atom.keepAlive),
     composerDraftsAtom: Atom.make({}),
     removeDeliveredCloudQueuedMessage: async () => {},
     appendComposerDraftAttachments: vi.fn(),
@@ -249,7 +255,10 @@ import { environmentSession } from "./session";
 import { dispatchingQueuedMessageIdsAtom, editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 
 const sendingMessageIds = () => Object.keys(appAtomRegistry.get(dispatchingQueuedMessageIdsAtom));
+import { threadComposerErrorsAtom } from "./thread-composer-error";
 import { createThreadOutboxDelivery } from "./threadOutboxDelivery";
+import { pendingThreadCreationOutcomesAtom } from "./pending-thread-creation";
+import { cloudOutboxArchiveFencesAtom } from "./use-composer-drafts";
 import { workspaceConnections } from "./workspace";
 
 const message = (overrides: Partial<QueuedThreadMessage> = {}): QueuedThreadMessage => ({
@@ -306,6 +315,9 @@ beforeEach(() => {
   setOperateGrant("secondary", false);
   state.draftText = "Keep this draft separate";
   state.config.shellThreadFamilies = false;
+  delete state.config.environment.capabilities.accountAutoRouting;
+  appAtomRegistry.set(threadComposerErrorsAtom, {});
+  appAtomRegistry.set(pendingThreadCreationOutcomesAtom, {});
   state.modelUnavailable.mockReset().mockReturnValue(false);
   state.familyMount.mockReset().mockReturnValue(() => {});
   appAtomRegistry.set(state.threadShells, [state.thread]);
@@ -313,10 +325,12 @@ beforeEach(() => {
   state.beforeWrite.mockReset();
   state.beforeRemove.mockReset();
   state.restartManager();
+  appAtomRegistry.set(cloudOutboxArchiveFencesAtom, new Map());
   appAtomRegistry.set(dispatchingQueuedMessageIdsAtom, {});
   appAtomRegistry.set(editingQueuedMessageIdsAtom, {});
   for (const command of [
     state.start,
+    state.observeAuto,
     state.metadata,
     state.runtime,
     state.interaction,
@@ -341,6 +355,9 @@ beforeEach(() => {
                 title: input.titleSeed ?? creation.title,
                 generateTitle: true,
                 modelSelection: input.modelSelection ?? creation.modelSelection,
+                ...(input.accountRouting === undefined
+                  ? {}
+                  : { accountRouting: input.accountRouting }),
                 runtimeMode: input.runtimeMode,
                 interactionMode: input.interactionMode,
                 creationSource: "mobile",
@@ -410,6 +427,176 @@ beforeEach(() => {
       draftAttachments: attachments,
       pendingAttachmentIds: [],
     }),
+  );
+});
+
+describe("automatic account launches", () => {
+  const automaticTask = () =>
+    message({
+      threadId: ThreadId.make("auto-thread"),
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+      accountRouting: { mode: "auto" },
+      creation: {
+        projectId: ProjectId.make("project"),
+        projectCwd: "/repo",
+        workspaceMode: "local",
+        branch: null,
+        worktreePath: null,
+      },
+    });
+
+  it("sends a connected new task with Auto and its exact representative model and options", async () => {
+    setOperateGrant("secondary", true);
+    state.config.environment.capabilities.accountAutoRouting = true;
+    const queued = automaticTask();
+    await state.manager.enqueue(queued);
+    await runDrain();
+    expect(state.start).toHaveBeenCalledExactlyOnceWith({
+      environmentId: queued.environmentId,
+      input: {
+        method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+        payload: expect.objectContaining({
+          accountRouting: { mode: "auto" },
+          modelSelection: queued.modelSelection,
+          commandId: queued.commandId,
+        }),
+      },
+    });
+    expect(state.observeAuto).not.toHaveBeenCalled();
+    expect(remaining()).toEqual([]);
+  });
+
+  it("leaves a new task unissued with an actionable reason on an older server", async () => {
+    setOperateGrant("secondary", true);
+    const queued = automaticTask();
+    await state.manager.enqueue(queued);
+    const visible = Promise.withResolvers<string>();
+    const unsubscribe = appAtomRegistry.subscribe(threadComposerErrorsAtom, (errors) => {
+      const error = errors["secondary:auto-thread"];
+      if (error) visible.resolve(error.message);
+    });
+    startDelivery();
+    await expect(visible.promise.finally(unsubscribe)).resolves.toContain(
+      "Update the destination server",
+    );
+    expect(state.prepare).not.toHaveBeenCalled();
+    expect(state.prepareTurn).not.toHaveBeenCalled();
+    expect(state.start).not.toHaveBeenCalled();
+    expect(savedMessage(queued.messageId)).toEqual(queued);
+    expect(automaticLaunchNeedsReconciliation(savedMessage(queued.messageId))).toBe(false);
+  });
+
+  it.each([undefined, "https://github.com/example/project/pull/7"])(
+    "returns an unissued Auto workspace request before attachments or checkout (PR %s)",
+    async (pullRequestReference) => {
+      setOperateGrant("secondary", true);
+      state.config.environment.capabilities.accountAutoRouting = true;
+      const task = automaticTask();
+      const queued = {
+        ...task,
+        creation: {
+          ...task.creation!,
+          workspaceMode: "worktree",
+          branch: "feature",
+          ...(pullRequestReference === undefined ? {} : { pullRequestReference }),
+        },
+      } satisfies QueuedThreadMessage;
+      await state.manager.enqueue(queued);
+      await runDrain();
+      expect(state.prepare).not.toHaveBeenCalled();
+      expect(state.checkout).not.toHaveBeenCalled();
+      expect(state.prepareTurn).not.toHaveBeenCalled();
+      expect(state.start).not.toHaveBeenCalled();
+      expect(remaining()).toEqual([]);
+      expect(
+        appAtomRegistry.get(pendingThreadCreationOutcomesAtom)["secondary:auto-thread"],
+      ).toMatchObject({
+        kind: "failed",
+        reason: expect.stringContaining("needs an existing project folder or worktree"),
+      });
+    },
+  );
+
+  it("fences Auto issuance when cloud sign-out starts during launch preparation", async () => {
+    setOperateGrant("secondary", true);
+    state.config.environment.capabilities.accountAutoRouting = true;
+    const queued = automaticTask();
+    await state.manager.enqueue(queued);
+    const preparing = Promise.withResolvers<void>();
+    const resumePreparation = Promise.withResolvers<void>();
+    const prepare = state.prepareTurn.getMockImplementation()!;
+    state.prepareTurn.mockImplementationOnce(async (input) => {
+      preparing.resolve();
+      await resumePreparation.promise;
+      return prepare(input);
+    });
+
+    const drained = runDrain();
+    await preparing.promise;
+    appAtomRegistry.set(cloudOutboxArchiveFencesAtom, new Map([[queued.environmentId, []]]));
+    resumePreparation.resolve();
+    await drained;
+
+    expect(state.start).not.toHaveBeenCalled();
+    expect(state.beforeWrite).toHaveBeenCalledExactlyOnceWith(queued);
+    expect(savedMessage(queued.messageId)).toEqual(queued);
+  });
+
+  it.each([undefined, 27])(
+    "observes the original launch without resending after capability loss (sequence %s)",
+    async (sequence) => {
+      setOperateGrant("secondary", true);
+      state.config.environment.capabilities.accountAutoRouting = true;
+      const queued = automaticTask();
+      await state.manager.enqueue(queued);
+      state.beforeWrite.mockImplementation((next) => {
+        if (next.issuance?.state === "issued") {
+          delete state.config.environment.capabilities.accountAutoRouting;
+        }
+      });
+      state.observeAuto.mockResolvedValue(AsyncResult.success(sequence));
+      await runDrain();
+
+      expect(state.prepareTurn).toHaveBeenCalledWith({
+        environmentId: queued.environmentId,
+        input: expect.objectContaining({
+          accountRouting: { mode: "auto" },
+          serverSupportsAccountAutoRouting: true,
+          modelSelection: queued.modelSelection,
+        }),
+      });
+      expect(state.observeAuto).toHaveBeenCalledExactlyOnceWith({
+        environmentId: queued.environmentId,
+        input: {
+          method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+          payload: expect.objectContaining({
+            commandId: queued.commandId,
+            threadId: queued.threadId,
+            accountRouting: { mode: "auto" },
+            modelSelection: queued.modelSelection,
+            initialMessage: expect.objectContaining({ messageId: queued.messageId }),
+          }),
+        },
+      });
+      expect(state.start).not.toHaveBeenCalled();
+      if (sequence === undefined) {
+        expect(automaticLaunchNeedsReconciliation(savedMessage(queued.messageId))).toBe(true);
+        expect(savedMessage(queued.messageId)).toMatchObject({
+          accountRouting: { mode: "auto" },
+          issuance: { state: "issued" },
+        });
+        expect(
+          appAtomRegistry.get(threadComposerErrorsAtom)["secondary:auto-thread"]?.message,
+        ).toContain("verify this task's original launch");
+      } else {
+        expect(remaining()).toEqual([]);
+        expect(state.records.has(queued.messageId)).toBe(false);
+      }
+    },
   );
 });
 

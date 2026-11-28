@@ -172,6 +172,7 @@ function composerSendSettingsChanged(
       : Object.keys((before ?? after)?.modelSelectionByProvider ?? {}).length > 0;
   return (
     modelsChanged ||
+    before?.accountRouting?.mode !== after?.accountRouting?.mode ||
     (before?.activeProvider ?? null) !== (after?.activeProvider ?? null) ||
     (before?.runtimeMode ?? null) !== (after?.runtimeMode ?? null) ||
     (before?.interactionMode ?? null) !== (after?.interactionMode ?? null)

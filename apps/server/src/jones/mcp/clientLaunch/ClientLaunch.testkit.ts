@@ -65,7 +65,7 @@ const otherProject = {
   title: "Other",
 } as const;
 
-const adapter = {
+export const clientLaunchTestAdapter = {
   instanceId: modelSelection.instanceId,
   driver: ProviderDriverKind.make("codex"),
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
@@ -100,7 +100,9 @@ export function makeClientLaunchHarness(options: ClientLaunchHarnessOptions = {}
   const project = options.projectRecord ?? defaultProject;
   const projectId = project.id;
   const database = SqlitePersistence.layerMemory;
-  const registry = ProviderAdapterRegistry.layerFromAdapters(options.adapters ?? [adapter]);
+  const registry = ProviderAdapterRegistry.layerFromAdapters(
+    options.adapters ?? [clientLaunchTestAdapter],
+  );
   const orchestrator = ProviderReplayHarness.layerWithRegistry(
     { name: "thread-launch" },
     registry,

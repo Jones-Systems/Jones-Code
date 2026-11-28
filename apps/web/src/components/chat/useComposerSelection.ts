@@ -42,6 +42,7 @@ import {
 import { useMessages } from "gt-react";
 import { cancelHeldComposerSend } from "./preparingComposerImages";
 import { composerTargetKey } from "../../composerDraftStore";
+import type { AccountRoutingModelSelectOptions } from "../../jones/accountRouting/composerAccountRouting";
 
 interface ComposerSelectionInput {
   readonly providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry>;
@@ -154,7 +155,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const onProviderModelSelect = (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: ComposerModelSelectOptions,
+    options?: ComposerModelSelectOptions & AccountRoutingModelSelectOptions,
   ) => {
     if (
       !activeThread ||
@@ -205,8 +206,10 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       { preserveUnavailableSelection: true },
     );
     const storedDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
-    const draft = draftModelSelectionApplies(storedDraft, threadHasStarted(activeThread))
-      ? storedDraft
+    if (options?.accountRouting && !isLocalDraftThread) return;
+    const pickerDraft = isLocalDraftThread || !storedDraft?.accountRouting ? storedDraft : null;
+    const draft = draftModelSelectionApplies(pickerDraft, threadHasStarted(activeThread))
+      ? pickerDraft
       : null;
     const shownInstanceId =
       draft?.activeProvider ??
@@ -217,6 +220,8 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     if (
       !resolvedModel ||
       (!options?.effort &&
+        !options?.accountRouting &&
+        !storedDraft?.accountRouting &&
         instanceId === shownInstanceId &&
         shownSelection.instanceId === instanceId &&
         shownSelection.model === resolvedModel)
@@ -229,7 +234,6 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     // Resolve remembered traits first; a shortcut supplies its explicit effort
     // before the complete model selection is persisted.
     const store = useComposerDraftStore.getState();
-    const pickerDraft = store.getComposerDraft(composerDraftTarget);
     const currentInstance = pickerDraft?.activeProvider ?? activeThread.modelSelection.instanceId;
     const currentSelection =
       pickerDraft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
@@ -246,13 +250,17 @@ export function useComposerSelection(input: ComposerSelectionInput) {
           getAppModelOptionsForInstance(settings, configuredEntry, storedSelection.model),
         ) === resolvedModel);
     const pickerSelection =
-      returnsToStoredModel && storedSelection.options?.length
-        ? { ...selection, options: storedSelection.options }
-        : resolveComposerPickerModelSelection({
-            ...selection,
-            currentSelection,
-            rememberedOptions,
-          });
+      (options?.accountRouting || storedDraft?.accountRouting) &&
+      shownInstanceId === instanceId &&
+      shownSelection.model === resolvedModel
+        ? shownSelection
+        : returnsToStoredModel && storedSelection.options?.length
+          ? { ...selection, options: storedSelection.options }
+          : resolveComposerPickerModelSelection({
+              ...selection,
+              currentSelection,
+              rememberedOptions,
+            });
     const nextModelSelection = options?.effort
       ? withShortcutEffort(pickerSelection, resolvedModel, entry.models, options.effort)
       : pickerSelection;
@@ -276,8 +284,9 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     setComposerDraftModelSelection(composerDraftTarget, nextModelSelection, {
       explicit: true,
       replaceOptions: true,
+      ...(options?.accountRouting ? { accountRouting: options.accountRouting } : {}),
     });
-    setStickyComposerModelSelection(nextModelSelection);
+    if (!options?.accountRouting) setStickyComposerModelSelection(nextModelSelection);
     if (!isLocalDraftThread) applyThreadModelPick(composerDraftTarget);
     if (options?.focusComposer !== false) scheduleComposerFocus();
   };

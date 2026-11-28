@@ -70,6 +70,7 @@ export function draftTerminalLabel(
 const SidebarDraftRow = memo(function SidebarDraftRow(props: {
   draftId: DraftId;
   composer: ComposerThreadDraftState | null;
+  pendingAutoLaunch: boolean;
   terminalLabel: string | null;
   project: ProjectFaviconProject | null;
   projectDisplayName: string | null;
@@ -110,8 +111,9 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
     composer.terminalContexts.length +
     composer.previewAnnotations.length +
     composer.reviewComments.length;
-  const preview =
-    promptPreview.length > 0
+  const preview = props.pendingAutoLaunch
+    ? gt("Auto launch pending")
+    : promptPreview.length > 0
       ? promptPreview
       : attachmentCount === 0 && props.terminalLabel !== null
         ? props.terminalLabel
@@ -120,7 +122,7 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
           });
   const accessibility = resolveSidebarRowAccessibility({
     title: preview,
-    statusLabel: gt("Unsent draft"),
+    statusLabel: props.pendingAutoLaunch ? null : gt("Unsent draft"),
     projectDisplayName: props.projectDisplayName,
     isActive: props.isActive,
   });
@@ -132,6 +134,7 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
     if ((event.target as HTMLElement).closest("button")) return;
     if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
       event.preventDefault();
+      if (props.pendingAutoLaunch) return;
       const rect = event.currentTarget.getBoundingClientRect();
       onContextMenu(draftId, { x: rect.left, y: rect.bottom }, "keyboard");
     } else if (event.key === "Enter" || event.key === " ") {
@@ -141,6 +144,7 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
   };
   const handleContextMenu = (event: ReactMouseEvent) => {
     event.preventDefault();
+    if (props.pendingAutoLaunch) return;
     onContextMenu(draftId, { x: event.clientX, y: event.clientY }, contextMenuSourceOf(event));
   };
   const handleDiscard = (event: ReactMouseEvent) => {
@@ -181,23 +185,25 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
                 props.jumpLabel && JUMP_HINT_SLOT_CLASS_NAME,
               )}
             >
-              <SharedTooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label={gt("Discard draft")}
-                    onClick={handleDiscard}
-                    className="pointer-events-none inline-flex cursor-pointer items-center rounded-md bg-transparent px-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/sidebar-row:pointer-events-auto group-hover/sidebar-row:opacity-100"
-                  >
-                    <XIcon className="size-3" />
-                  </button>
-                }
-                label={
-                  <>
-                    <T>Discard draft</T>
-                  </>
-                }
-              />
+              {props.pendingAutoLaunch ? null : (
+                <SharedTooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label={gt("Discard draft")}
+                      onClick={handleDiscard}
+                      className="pointer-events-none inline-flex cursor-pointer items-center rounded-md bg-transparent px-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/sidebar-row:pointer-events-auto group-hover/sidebar-row:opacity-100"
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  }
+                  label={
+                    <>
+                      <T>Discard draft</T>
+                    </>
+                  }
+                />
+              )}
               {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
             </span>
           </div>
@@ -243,14 +249,15 @@ export function useSidebarDrafts(
       const listed: [string, DraftSessionState][] = [];
       for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
         if (
-          session.promotedTo != null ||
           excludedEnvironmentIds?.has(session.environmentId) ||
-          pending.some(
-            (entry) =>
-              entry.sidebarThread &&
-              entry.environmentId === session.environmentId &&
-              entry.threadId === session.threadId,
-          )
+          (!session.pendingAutoLaunch &&
+            (session.promotedTo != null ||
+              pending.some(
+                (entry) =>
+                  entry.sidebarThread &&
+                  entry.environmentId === session.environmentId &&
+                  entry.threadId === session.threadId,
+              )))
         ) {
           continue;
         }
@@ -262,6 +269,7 @@ export function useSidebarDrafts(
         }
         // Composer edits stay frozen while open; terminals come and go live.
         const isListed =
+          session.pendingAutoLaunch !== undefined ||
           draftTerminalLabel(session, terminalLabels) !== null ||
           (draftKey === routeDraftId
             ? routeDraftComposer !== null
@@ -317,6 +325,7 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
             key={draftId}
             draftId={draftId}
             composer={composer}
+            pendingAutoLaunch={session.pendingAutoLaunch !== undefined}
             terminalLabel={draftTerminalLabel(session, props.terminalLabels)}
             project={props.projectByKey.get(projectKey) ?? null}
             projectDisplayName={props.projectDisplayNameByKey.get(projectKey) ?? null}

@@ -346,6 +346,7 @@ function startWithMissingWorktree(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({
           supersededTerminalTrace: SupersededTerminalTrace.make(),
+          readAutoAccountBinding: () => Effect.undefined,
           writeIfRunCurrent,
           assertRuntimeStopStartAllowed: () => Effect.void,
         }),
@@ -1989,6 +1990,12 @@ function makeLocalCommandHarness(
         }),
         Layer.mock(EventSink.EventSinkV2)({
           supersededTerminalTrace: SupersededTerminalTrace.make(),
+          readAutoAccountBinding: (threadId, instanceId) =>
+            Effect.suspend(
+              () =>
+                workerPersistence?.sink.readAutoAccountBinding?.(threadId, instanceId) ??
+                Effect.undefined,
+            ),
           // No stopped runtime: the same null/false the optional readers fall back to.
           readStoppedRuntime: () => Effect.succeed(null),
           hasStoppedRuntime: () => Effect.succeed(false),

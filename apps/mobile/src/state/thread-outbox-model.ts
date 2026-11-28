@@ -8,6 +8,7 @@ import {
 import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
 import type { ThreadFamilyRead } from "@t3tools/client-runtime/state/threads";
 import {
+  AccountRouting,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EnvironmentId,
@@ -30,6 +31,10 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import {
+  AUTO_ROUTING_OUTBOX_VERSION,
+  preparedUsesAutomaticAccounts,
+} from "../jones/accountRouting/outbox";
 import { resolveQueuedModelSelection } from "../jones/threadConfiguration/modelSelection";
 import {
   QueuedThreadIssuance,
@@ -60,7 +65,13 @@ const QueuedThreadCreationSchema = Schema.Struct({
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
-  schemaVersion: Schema.Literals([1, 2, THREAD_OUTBOX_SCHEMA_VERSION, 4]),
+  schemaVersion: Schema.Literals([
+    1,
+    2,
+    THREAD_OUTBOX_SCHEMA_VERSION,
+    4,
+    AUTO_ROUTING_OUTBOX_VERSION,
+  ]),
   environmentId: EnvironmentId,
   threadId: ThreadId,
   messageId: MessageId,
@@ -70,6 +81,7 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   context: Schema.optional(OrchestrationMessageContext),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   modelSelection: Schema.optional(ModelSelection),
+  accountRouting: Schema.optional(AccountRouting),
   modelSelectionExplicit: Schema.optional(Schema.Boolean),
   dispatchMode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
   compactBeforeSend: Schema.optional(Schema.Boolean),
@@ -110,6 +122,7 @@ export interface QueuedThreadMessage {
   readonly context?: OrchestrationMessageContext;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly modelSelection?: ModelSelectionType;
+  readonly accountRouting?: AccountRouting;
   readonly modelSelectionExplicit?: boolean;
   readonly runtimeMode?: RuntimeModeType;
   readonly interactionMode?: ProviderInteractionModeType;
@@ -149,10 +162,13 @@ export function resolveQueuedThreadSettings(
     }
   > = [],
 ): ThreadSettingsSnapshot {
-  const modelSelection = withImplicitFastModeSelection(
-    resolveQueuedModelSelection(message, thread.modelSelection),
-    providers,
-  );
+  const modelSelection =
+    message.accountRouting?.mode === "auto" && message.modelSelection !== undefined
+      ? message.modelSelection
+      : withImplicitFastModeSelection(
+          resolveQueuedModelSelection(message, thread.modelSelection),
+          providers,
+        );
   const provider = providers.find(
     (candidate) => candidate.instanceId === modelSelection.instanceId,
   );
@@ -195,14 +211,37 @@ export function encodeQueuedThreadMessage(message: QueuedThreadMessage): unknown
   ) {
     throw new Error("Worktree repository settings require a compatible mobile outbox reader.");
   }
+  const schemaVersion =
+    message.accountRouting === undefined
+      ? THREAD_OUTBOX_SCHEMA_VERSION
+      : AUTO_ROUTING_OUTBOX_VERSION;
+  validateQueuedAccountRouting(schemaVersion, message);
   return encodeStoredQueuedThreadMessage({
-    schemaVersion: THREAD_OUTBOX_SCHEMA_VERSION,
+    schemaVersion,
     ...message,
   });
 }
 
+function validateQueuedAccountRouting(schemaVersion: number, message: QueuedThreadMessage) {
+  const prepared = message.issuance?.state === "issued" ? message.issuance.prepared : undefined;
+  if (schemaVersion === AUTO_ROUTING_OUTBOX_VERSION) {
+    if (
+      message.accountRouting?.mode !== "auto" ||
+      !message.creation ||
+      !message.modelSelection ||
+      message.issuance === undefined ||
+      (prepared && !queuedThreadTurnMatches(message, prepared))
+    ) {
+      throw new Error("Invalid automatic account selection in the queued launch.");
+    }
+  } else if (message.accountRouting !== undefined || preparedUsesAutomaticAccounts(prepared)) {
+    throw new Error("Automatic account selection requires a compatible mobile outbox reader.");
+  }
+}
+
 export function decodeQueuedThreadMessage(value: unknown): QueuedThreadMessage {
-  const { schemaVersion: _, ...message } = decodeStoredQueuedThreadMessage(value);
+  const { schemaVersion, ...message } = decodeStoredQueuedThreadMessage(value);
+  validateQueuedAccountRouting(schemaVersion, message);
   if (
     message.issuance?.state === "issued" &&
     !queuedThreadTurnMatches(message, message.issuance.prepared)

@@ -100,6 +100,7 @@ import { threadAllowsProviderSwitch } from "../../state/thread-provider-switchin
 import { environmentServerConfigsAtom, serverEnvironment } from "../../state/server";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { isAccountAutoOption } from "../../jones/accountRouting/selection";
 import { useNewTaskFlow } from "./new-task-flow-provider";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import {
@@ -299,6 +300,7 @@ type ThreadSettingsSessionProps = {
   readonly lockedProviderInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly selectedModel: ModelSelection | null;
+  readonly selectedModelKey?: string | null;
   readonly prompt: string;
   readonly onPromptChange: (prompt: string) => void;
   readonly reportedModelSelection?: ModelSelection | null;
@@ -529,8 +531,10 @@ function ThreadSettingsSessionProvider(
   const displayedPrompt = pendingModel ? (pendingPrompt ?? props.prompt) : props.prompt;
 
   const isApplied = (option: ModelOption) =>
-    option.selection.instanceId === props.selectedModel?.instanceId &&
-    option.selection.model === props.selectedModel.model;
+    props.selectedModelKey !== undefined
+      ? option.key === props.selectedModelKey
+      : option.selection.instanceId === props.selectedModel?.instanceId &&
+        option.selection.model === props.selectedModel.model;
   const isDisplayed = (option: ModelOption) =>
     pendingModel ? option.key === pendingModel.key : isApplied(option);
 
@@ -617,7 +621,9 @@ function ThreadSettingsSessionProvider(
       return;
     }
     if (pendingModel) {
-      rememberModelOptions(pendingModel.selection.instanceId, pendingModel.selection.model, next);
+      if (!isAccountAutoOption(pendingModel)) {
+        rememberModelOptions(pendingModel.selection.instanceId, pendingModel.selection.model, next);
+      }
       setPendingModel({
         ...pendingModel,
         selection: { ...pendingModel.selection, options: next },
@@ -647,7 +653,10 @@ function ThreadSettingsSessionProvider(
         current,
         pressed: option,
         pressedIsApplied: isApplied(option),
-        restoreSelection: props.restoreSelection,
+        restoreSelection:
+          isAccountAutoOption(option) && option.selection.options !== undefined
+            ? undefined
+            : props.restoreSelection,
       }),
     );
   };
@@ -791,7 +800,7 @@ function ThreadSettingsModelListRow(props: {
       isLast={props.isLast}
       onPress={onPress}
       isFavorite={session.favoriteKeys.has(props.option.key)}
-      favoritesLoaded={session.favoritesLoaded}
+      favoritesLoaded={session.favoritesLoaded && !isAccountAutoOption(props.option)}
       onToggleFavorite={() => session.toggleFavorite(props.option)}
       onToggleHidden={
         session.manageHidden && props.option.canHide
@@ -1640,9 +1649,16 @@ export function NewTaskThreadSettingsRouteScreen() {
       {...(flow.selectedModel ? { providerInstanceId: flow.selectedModel.instanceId } : {})}
       providerGroups={flow.providerGroups}
       selectedModel={flow.selectedModel}
+      selectedModelKey={flow.selectedModelKey}
       prompt={flow.prompt}
       onPromptChange={flow.setPrompt}
-      onSelectModel={(option) => flow.setSelectedModelKey(option.key, option.selection.options)}
+      onSelectModel={(option) =>
+        flow.setSelectedModelKey(
+          option.key,
+          option.selection.options,
+          isAccountAutoOption(option) ? option.selection : undefined,
+        )
+      }
       restoreSelection={withRememberedModelOptions}
       optionDescriptors={optionDescriptors}
       onUpdateOptionSelections={flow.setSelectedModelOptions}

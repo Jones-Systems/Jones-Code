@@ -29,6 +29,7 @@ import {
   query as claudeQuery,
   type ModelInfo as ClaudeModelInfo,
   type Options as ClaudeQueryOptions,
+  type Query as ClaudeQuery,
   type SlashCommand as ClaudeSlashCommand,
   type SDKControlGetUsageResponse,
   type SDKUserMessage,
@@ -275,6 +276,7 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
   readonly cwd: string | undefined;
   readonly managedMcpConfig: boolean;
   readonly spawnVia: "env" | "launcher-thread" | undefined;
+  readonly autoRouting?: boolean;
 }): ClaudeQueryOptions {
   return {
     ...(input.spawnVia === "env" ? { spawnClaudeCodeProcess: spawnClaudeProbeThroughEnv } : {}),
@@ -284,17 +286,24 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
     persistSession: false,
     pathToClaudeCodeExecutable: input.executablePath,
     abortController: input.abortController,
-    settingSources: [...CLAUDE_CAPABILITIES_PROBE_SETTING_SOURCES],
+    settingSources: input.autoRouting ? [] : [...CLAUDE_CAPABILITIES_PROBE_SETTING_SOURCES],
     // Keep settings for slash-command discovery, but disable hooks so health checks do not run SessionStart repeatedly.
-    settings: { disableAllHooks: true },
+    settings: {
+      disableAllHooks: true,
+      ...(input.autoRouting ? { env: { CLAUDE_CODE_PLUGIN_DIRS: "" } } : {}),
+    },
     allowedTools: [],
+    ...(input.autoRouting ? { tools: [], plugins: [] } : {}),
     // Exclude filesystem MCP servers; omit strict mode when managed-mcp.json already excludes them and forbids the flag.
     mcpServers: {},
-    ...(input.managedMcpConfig ? {} : { strictMcpConfig: true }),
+    ...(input.autoRouting || !input.managedMcpConfig ? { strictMcpConfig: true } : {}),
     env: {
       ...providerProbeEnvironment(input.environment),
       // Disable claude.ai MCP separately; it is discovered outside filesystem config.
       ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+      ...(input.autoRouting
+        ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", CLAUDE_CODE_PLUGIN_DIRS: "" }
+        : {}),
       // Skipping this avoids a Windows tasklist | findstr process tree on every refresh.
       FORCE_CODE_TERMINAL: undefined,
       CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
@@ -312,6 +321,7 @@ function nonEmptyProbeString(value: string): string | undefined {
 
 export type ClaudeCapabilitiesProbe = {
   readonly email: string | undefined;
+  readonly organization?: string | undefined;
   readonly workspaceId?: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
@@ -374,7 +384,7 @@ function parseClaudeEffortCapSource(settings: unknown): ClaudeEffortCapSource | 
 
 // `sources` holds each settings file's raw settings. CLIs that report only the merged `effective`
 // settings are read as a single source.
-function parseClaudeEffortCapSources(
+export function parseClaudeEffortCapSources(
   settings: { readonly effective?: unknown; readonly sources?: unknown } | undefined,
 ): ReadonlyArray<ClaudeEffortCapSource> | undefined {
   const sources = Array.isArray(settings?.sources)
@@ -478,12 +488,33 @@ function claudeGatewayDiscoveryGraceMs(environment: Readonly<Record<string, unkn
 
 class ClaudeCapabilitiesProbeSdkError extends Schema.TaggedError<ClaudeCapabilitiesProbeSdkError>()(
   "ClaudeCapabilitiesProbeSdkError",
-  { operation: Schema.Literals(["initialize", "usage", "settings"]), cause: Schema.Defect() },
+  {
+    operation: Schema.Literals(["initialize", "usage", "settings", "managedMcp"]),
+    cause: Schema.Defect(),
+  },
 ) {
   override get message(): string {
     return `Claude capability probe ${this.operation} failed.`;
   }
 }
+
+export const readClaudeQueryUsage = Effect.fn("ClaudeProvider.readClaudeQueryUsage")(function* (
+  query: Pick<ClaudeQuery, "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET">,
+) {
+  // get_usage is a control request. Skip the transcript scan and cap the wait
+  // separately from startup, including when an older CLI rejects the control.
+  const usage = yield* Effect.tryPromise({
+    try: () =>
+      query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }),
+    catch: (cause) => new ClaudeCapabilitiesProbeSdkError({ operation: "usage", cause }),
+  }).pipe(
+    Effect.timeout(DEFAULT_TIMEOUT_MS),
+    Effect.orElseSucceed(() => undefined),
+  );
+  return usage
+    ? { rate_limits_available: usage.rate_limits_available, rate_limits: usage.rate_limits }
+    : undefined;
+});
 
 /** A never-yielding prompt allows local initialization IPC without sending an Anthropic request. */
 const probeClaudeCapabilities = (
@@ -491,6 +522,7 @@ const probeClaudeCapabilities = (
   environment?: NodeJS.ProcessEnv,
   cwd?: string,
   includeStatus = true,
+  autoRouting = false,
 ) => {
   const abort = new AbortController();
   const abortProbe = Effect.sync(() => {
@@ -498,18 +530,25 @@ const probeClaudeCapabilities = (
   });
   return Effect.gen(function* () {
     const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+    const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
+    if (autoRouting && managedMcpConfig) {
+      return yield* new ClaudeCapabilitiesProbeSdkError({
+        operation: "managedMcp",
+        cause: "Managed MCP cannot be suppressed by this probe.",
+      });
+    }
     const executablePath = yield* resolveClaudeSdkExecutablePath(
       claudeSettings.binaryPath,
       claudeEnvironment,
     );
-    const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
     // Workspace probes (no usage) discard models; the machine probe refreshes the shared cache.
-    const graceMs = includeStatus
-      ? claudeGatewayDiscoveryGraceMs({
-          ...claudeEnvironment,
-          ...(yield* readClaudeSettingsEnv(claudeSettings, cwd, claudeEnvironment)),
-        })
-      : 0;
+    const graceMs =
+      includeStatus && !autoRouting
+        ? claudeGatewayDiscoveryGraceMs({
+            ...claudeEnvironment,
+            ...(yield* readClaudeSettingsEnv(claudeSettings, cwd, claudeEnvironment)),
+          })
+        : 0;
     const platform = yield* HostProcess.Platform;
     const spawnVia =
       platform === "win32"
@@ -531,6 +570,7 @@ const probeClaudeCapabilities = (
             cwd,
             managedMcpConfig,
             spawnVia,
+            autoRouting,
           }),
         });
         const init = await q.initializationResult();
@@ -544,24 +584,12 @@ const probeClaudeCapabilities = (
     ),
     Effect.flatMap(({ q, init, graceMs }) =>
       Effect.gen(function* () {
-        // Usage has its own deadline so a slow optional request cannot discard initialization.
-        // Only the rate limits are read, so skip the local transcript scan that fills
-        // `behaviors`: with a few GB of transcripts it outlasts the deadline.
         // The effort caps are read in parallel under the same deadline; workspace probes skip both.
         const usageCheckedAt = DateTime.formatIso(yield* DateTime.now);
         const { getSettings } = q as ClaudeSettingsQuery;
-        const [usageResult, settingsResult] = yield* Effect.all(
+        const [usage, settingsResult] = yield* Effect.all(
           [
-            includeStatus
-              ? Effect.tryPromise({
-                  try: () =>
-                    q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({
-                      skipBehaviors: true,
-                    }),
-                  catch: (cause) =>
-                    new ClaudeCapabilitiesProbeSdkError({ operation: "usage", cause }),
-                }).pipe(Effect.timeout(DEFAULT_TIMEOUT_MS), Effect.result)
-              : Effect.undefined,
+            includeStatus ? readClaudeQueryUsage(q) : Effect.undefined,
             includeStatus && getSettings
               ? Effect.tryPromise({
                   try: () => getSettings.call(q),
@@ -572,27 +600,19 @@ const probeClaudeCapabilities = (
           ],
           { concurrency: "unbounded" },
         );
-        const usage =
-          usageResult && Result.isSuccess(usageResult)
-            ? {
-                rate_limits_available: usageResult.success.rate_limits_available,
-                rate_limits: usageResult.success.rate_limits,
-              }
-            : undefined;
+        if (autoRouting && (!settingsResult || Result.isFailure(settingsResult))) {
+          return yield* new ClaudeCapabilitiesProbeSdkError({
+            operation: "settings",
+            cause: "Effective settings were unavailable from the strict probe.",
+          });
+        }
         const effortCapSources = parseClaudeEffortCapSources(
           settingsResult && Result.isSuccess(settingsResult) ? settingsResult.success : undefined,
         );
-        const account = init.account as
-          | {
-              readonly email?: string;
-              readonly subscriptionType?: string;
-              readonly tokenSource?: string;
-              readonly apiKeySource?: string;
-              readonly apiProvider?: string;
-            }
-          | undefined;
+        const account = init.account;
         return {
           email: account?.email,
+          organization: account?.organization,
           subscriptionType: account?.subscriptionType,
           tokenSource: account?.tokenSource,
           apiKeySource: account?.apiKeySource,
@@ -675,6 +695,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   /** Shared with the adapter so turn events reuse the scoped-bucket names this probe saw. */
   scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>,
   resolveResetCredits?: (version: string) => Effect.Effect<ServerProviderResetCredits | undefined>,
+  skipSkills = false,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -798,7 +819,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     ),
     capabilities?.effortCapSources ?? [],
   );
-  const skills = yield* discoverClaudeSkills(claudeSettings, cwd, resolvedEnvironment);
+  const skills = skipSkills
+    ? []
+    : yield* discoverClaudeSkills(claudeSettings, cwd, resolvedEnvironment);
   const slashCommands = [COMPACT_SLASH_COMMAND, ...(capabilities?.slashCommands ?? [])];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 

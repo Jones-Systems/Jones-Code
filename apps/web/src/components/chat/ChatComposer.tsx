@@ -5,6 +5,13 @@ import {
 } from "../../jones/workstreams/workstreamReferenceDrop";
 import type { ReactNode } from "react";
 import { requiredComposerProvider } from "../../jones/threadConfiguration/composerSelection";
+import {
+  accountRoutingChoices,
+  accountRoutingFamily,
+  AUTO_ACCOUNT_ROUTING,
+  type AccountRoutingModelSelectOptions,
+  type ComposerAccountRoutingPicker,
+} from "../../jones/accountRouting/composerAccountRouting";
 import { ComposerShortcutRails } from "../../jones/composer/ComposerShortcutPlate";
 import {
   ComposerLayoutBody,
@@ -400,6 +407,8 @@ export interface ChatComposerProps {
   composerDraftTarget: ScopedThreadRef | DraftId;
   environmentId: EnvironmentId;
   canOperateThread: boolean;
+  /** Undefined once the thread is bound. False for fresh drafts without an eligible destination. */
+  freshAccountRoutingCapability?: boolean | undefined;
   attachmentUploadsCapabilityKnown: boolean;
   supportsAttachmentUploads: boolean;
   supportsQuestionAttachments: boolean;
@@ -534,7 +543,7 @@ export interface ChatComposerProps {
   onProviderModelSelect: (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: ComposerModelSelectOptions,
+    options?: ComposerModelSelectOptions & AccountRoutingModelSelectOptions,
   ) => void;
   onOpenProviderSetup: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
@@ -691,6 +700,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const isEditingQueuedMessage = editingQueuedAttachments !== null;
   const applyThreadModelPick = useApplyThreadModelPick();
   const composerDraft = useComposerThreadDraft(composerDraftTarget);
+  const freshAccountRoutingCapability = props.freshAccountRoutingCapability;
+  const ignoreDraftModelSelection =
+    composerDraft.accountRouting !== undefined && freshAccountRoutingCapability === undefined;
   const composerDraftTargetKeyRef = useRef("");
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes the committed draft target key to a ref read by async handlers
   useLayoutEffect(() => {
@@ -1014,8 +1026,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     projectModelSelection: activeProjectDefaultModelSelection,
     promptInjectionState: getComposerPromptInjectionState(prompt),
     threadStarted: threadHasStarted(activeThread),
+    ignoreDraftModelSelection,
     requiredInstanceId: requiredComposerProvider(
-      composerDraft,
+      ignoreDraftModelSelection ? null : composerDraft,
       activeThreadModelSelection,
       routeKind === "draft",
     ),
@@ -1125,6 +1138,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ? selectedModelForPicker
       : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
   })();
+  const accountRoutingPicker: ComposerAccountRoutingPicker | undefined =
+    freshAccountRoutingCapability === undefined
+      ? undefined
+      : {
+          active:
+            composerDraft.accountRouting && composerDraft.activeProvider
+              ? (accountRoutingFamily(
+                  providerInstanceEntries.find(
+                    (entry) => entry.instanceId === composerDraft.activeProvider,
+                  )?.driverKind ?? settings.providerInstances[composerDraft.activeProvider]?.driver,
+                ) ?? "unavailable")
+              : null,
+          choices:
+            freshAccountRoutingCapability && lockedProvider === null
+              ? accountRoutingChoices(
+                  providerInstanceEntries,
+                  modelOptionsByInstance,
+                  selectedModelSelection,
+                )
+              : [],
+          select: (instanceId, model) => {
+            if (!freshAccountRoutingCapability) return;
+            setMultipleModelSelections(null);
+            onProviderModelSelect(instanceId, model, {
+              accountRouting: AUTO_ACCOUNT_ROUTING,
+              focusComposer: false,
+            });
+          },
+        };
 
   const [composerCursor, setComposerCursor] = useState(() => {
     const value = isLiteralPendingAnswer ? (activePendingProgress?.customAnswer ?? prompt) : prompt;
@@ -2826,6 +2868,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         providerInstanceEntries={providerInstanceEntries}
         keybindings={keybindings}
         modelOptionsByInstance={modelOptionsByInstance}
+        accountRouting={accountRoutingPicker}
         terminalOpen={terminalOpen}
         modelPickerOpen={isComposerModelPickerOpen}
         onModelPickerOpenChange={setIsComposerModelPickerOpen}

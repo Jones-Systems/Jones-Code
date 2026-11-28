@@ -4,6 +4,7 @@ import {
   CommandId,
   MessageId,
   ThreadId,
+  type AccountRouting,
   type ModelSelection,
   type ProjectId,
   type ProviderInteractionMode,
@@ -20,6 +21,7 @@ export interface ClientLaunchRequest {
   readonly title: string;
   readonly generateTitle?: boolean | undefined;
   readonly modelSelection?: ModelSelection | undefined;
+  readonly accountRouting?: AccountRouting | undefined;
   readonly runtimeMode?: RuntimeMode | undefined;
   readonly interactionMode?: ProviderInteractionMode | undefined;
   readonly workspaceStrategy?: ThreadLaunchWorkspaceStrategy | undefined;
@@ -96,6 +98,7 @@ export function clientLaunchDigest(input: ClientLaunchRequest, projectId: Projec
       title: input.title.trim(),
       ...(input.generateTitle === true ? { generateTitle: true } : {}),
       modelSelection: input.modelSelection ?? null,
+      ...(input.accountRouting === undefined ? {} : { accountRouting: input.accountRouting }),
       runtimeMode: input.runtimeMode ?? null,
       interactionMode: input.interactionMode ?? null,
       workspaceStrategy,

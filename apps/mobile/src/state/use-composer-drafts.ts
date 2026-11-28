@@ -36,7 +36,7 @@ import {
 import * as Schema from "effect/Schema";
 import { useEffect, useState } from "react";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type {
   EnvironmentShellState,
   EnvironmentThreadShell,
@@ -87,10 +87,18 @@ import {
 } from "./thread-outbox-model";
 import { flushThreadOutbox, threadOutboxManager } from "./thread-outbox";
 import { composerDraftEnvironmentId } from "../lib/composerAttachmentUploadQueue";
+import {
+  cloudOutboxArchiveFencesAtom,
+  type ArchivedOutboxRow,
+} from "../jones/accountRouting/cloudOutboxFence";
+
+export { cloudOutboxArchiveFencesAtom } from "../jones/accountRouting/cloudOutboxFence";
 
 const COMPOSER_DRAFTS_SCHEMA_VERSION = 1;
 const COMPOSER_DRAFTS_DIRECTORY = "composer-drafts";
 const COMPOSER_DRAFTS_FILE = "drafts.json";
+const AUTO_ACCOUNT_ARCHIVE_FILE = "signed-out-auto-account-outbox.json";
+const AUTO_ACCOUNT_ARCHIVE_VERSION = 1;
 const PERSIST_DEBOUNCE_MS = 200;
 
 export const composerContextImportsAtom = Atom.make<Record<string, boolean>>({}).pipe(
@@ -460,6 +468,8 @@ export interface ComposerDraft {
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly importedShareIds?: ReadonlyArray<string>;
   readonly modelSelection?: ModelSelection;
+  /** Model and options for an explicitly selected fresh-launch automatic account. */
+  readonly automaticAccountModel?: ModelSelection;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: ProviderInteractionMode;
   /** `/clear` armed this draft: its next message starts a fresh provider session. */
@@ -503,6 +513,7 @@ export interface ComposerDraftWorkspaceSelection {
 export type ComposerDraftSettingsUpdate = Pick<
   ComposerDraft,
   | "modelSelection"
+  | "automaticAccountModel"
   | "runtimeMode"
   | "interactionMode"
   | "freshContext"
@@ -539,6 +550,7 @@ const ComposerDraftSchema = Schema.Struct({
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   importedShareIds: Schema.optional(Schema.Array(Schema.String)),
   modelSelection: Schema.optional(ModelSelectionSchema),
+  automaticAccountModel: Schema.optional(ModelSelectionSchema),
   runtimeMode: Schema.optional(RuntimeModeSchema),
   interactionMode: Schema.optional(ProviderInteractionModeSchema),
   freshContext: Schema.optional(Schema.Boolean),
@@ -557,12 +569,14 @@ const PersistedComposerDraftsSchema = Schema.Struct({
     ),
   ),
   cloudAccountId: Schema.optional(Schema.String),
+  restoredCloudEnvironmentIds: Schema.optional(Schema.Array(EnvironmentIdSchema)),
   signedOutDrafts: Schema.optional(
     Schema.Record(
       Schema.String,
       Schema.Struct({
         drafts: Schema.Record(Schema.String, ComposerDraftSchema),
         queuedMessages: Schema.Array(QueuedThreadMessageSchema),
+        draftEnvironmentIds: Schema.optional(Schema.Array(EnvironmentIdSchema)),
       }),
     ),
   ),
@@ -570,6 +584,13 @@ const PersistedComposerDraftsSchema = Schema.Struct({
 
 const decodePersistedComposerDraftsDocument = Schema.decodeUnknownSync(
   PersistedComposerDraftsSchema,
+);
+
+const decodeAutoAccountArchive = Schema.decodeUnknownSync(
+  Schema.Struct({
+    schemaVersion: Schema.Literal(AUTO_ACCOUNT_ARCHIVE_VERSION),
+    accounts: Schema.Record(Schema.String, Schema.Array(QueuedThreadMessageSchema)),
+  }),
 );
 
 const EMPTY_DRAFT: ComposerDraft = {
@@ -609,10 +630,12 @@ export const modelOptionMemoryAtom = Atom.make<ModelOptionMemoryState>({}).pipe(
 interface SignedOutDrafts {
   readonly drafts: Record<string, ComposerDraft>;
   readonly queuedMessages: ReadonlyArray<QueuedThreadMessage>;
+  readonly draftEnvironmentIds?: ReadonlyArray<EnvironmentId> | undefined;
 }
 
 interface ComposerCloudDraftState {
   readonly accountId: string | null;
+  readonly restoredEnvironmentIds?: ReadonlyArray<EnvironmentId> | undefined;
   readonly signedOut: Record<string, SignedOutDrafts>;
 }
 
@@ -625,6 +648,7 @@ let loadPromise: Promise<void> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let persistRetryNeeded = false;
 const persistenceQueue = new SerializedAsyncQueue();
+let persistedAutoAccountArchive: string | null = null;
 
 export function resetComposerDraftsLoadState(): void {
   loadPromise = null;
@@ -721,6 +745,7 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.text.length === 0 &&
     draft.attachments.length === 0 &&
     draft.modelSelection === undefined &&
+    draft.automaticAccountModel === undefined &&
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
     draft.freshContext !== true &&
@@ -806,6 +831,7 @@ export function decodePersistedComposerState(value: unknown): {
     modelOptionMemory: parsed.modelOptionMemory ?? {},
     cloudDrafts: {
       accountId: parsed.cloudAccountId ?? null,
+      restoredEnvironmentIds: parsed.restoredCloudEnvironmentIds,
       signedOut: Object.fromEntries(
         Object.entries(parsed.signedOutDrafts ?? {}).map(([id, saved]) => [
           id,
@@ -816,6 +842,7 @@ export function decodePersistedComposerState(value: unknown): {
               ),
             ),
             queuedMessages: saved.queuedMessages.map(decodeQueuedThreadMessage),
+            draftEnvironmentIds: saved.draftEnvironmentIds,
           },
         ]),
       ),
@@ -823,36 +850,69 @@ export function decodePersistedComposerState(value: unknown): {
   };
 }
 
-async function getComposerDraftsFile() {
+async function getComposerDraftsFile(fileName = COMPOSER_DRAFTS_FILE) {
   const { Directory, File, Paths } = await import("expo-file-system");
   const directory = new Directory(Paths.document, COMPOSER_DRAFTS_DIRECTORY);
   directory.create({ idempotent: true, intermediates: true });
-  return new File(directory, COMPOSER_DRAFTS_FILE);
+  return new File(directory, fileName);
+}
+
+function mergeAutoAccountArchive(
+  cloudDrafts: ComposerCloudDraftState,
+  document: string,
+): ComposerCloudDraftState {
+  const archive = decodeAutoAccountArchive(JSON.parse(document));
+  const signedOut = { ...cloudDrafts.signedOut };
+  for (const [accountId, rows] of Object.entries(archive.accounts)) {
+    const saved = signedOut[accountId];
+    const messages = new Map(saved?.queuedMessages.map((message) => [message.messageId, message]));
+    for (const row of rows) {
+      const message = decodeQueuedThreadMessage(row);
+      if (!message.accountRouting) throw new Error("Expected an automatic account outbox row.");
+      messages.set(message.messageId, message);
+    }
+    signedOut[accountId] = {
+      ...saved,
+      drafts: saved?.drafts ?? {},
+      queuedMessages: [...messages.values()],
+    };
+  }
+  return { ...cloudDrafts, signedOut };
 }
 
 async function loadPersistedComposerState(): Promise<
   ReturnType<typeof decodePersistedComposerState>
 > {
   let operation: ComposerDraftPersistenceError["operation"] = "open";
+  let fileName = COMPOSER_DRAFTS_FILE;
   try {
     const file = await getComposerDraftsFile();
-    if (!file.exists) {
-      return {
-        drafts: {},
-        stickyModelSelection: null,
-        modelOptionMemory: {},
-        cloudDrafts: { accountId: null, signedOut: {} },
-      };
+    operation = "read";
+    const document = file.exists ? await file.text() : undefined;
+    operation = "decode";
+    const persisted = decodePersistedComposerState(
+      document === undefined
+        ? { schemaVersion: COMPOSER_DRAFTS_SCHEMA_VERSION, drafts: {} }
+        : JSON.parse(document),
+    );
+    fileName = AUTO_ACCOUNT_ARCHIVE_FILE;
+    operation = "open";
+    const archiveFile = await getComposerDraftsFile(fileName);
+    if (!archiveFile.exists) {
+      persistedAutoAccountArchive = null;
+      return persisted;
     }
     operation = "read";
-    const raw = await file.text();
+    const archive = await archiveFile.text();
     operation = "decode";
-    return decodePersistedComposerState(JSON.parse(raw) as unknown);
+    const cloudDrafts = mergeAutoAccountArchive(persisted.cloudDrafts, archive);
+    persistedAutoAccountArchive = archive;
+    return { ...persisted, cloudDrafts };
   } catch (cause) {
     throw new ComposerDraftPersistenceError({
       operation,
       directory: COMPOSER_DRAFTS_DIRECTORY,
-      fileName: COMPOSER_DRAFTS_FILE,
+      fileName,
       cause,
     });
   }
@@ -863,10 +923,26 @@ async function writePersistedComposerState(
   stickyModelSelection: ModelSelection | null,
   cloudDrafts = appAtomRegistry.get(composerCloudDraftsAtom),
 ): Promise<void> {
-  let operation: ComposerDraftPersistenceError["operation"] = "open";
+  let operation: ComposerDraftPersistenceError["operation"] = "encode";
+  let fileName = COMPOSER_DRAFTS_FILE;
   try {
-    const file = await getComposerDraftsFile();
-    operation = "encode";
+    const accounts = new Map<string, ReadonlyArray<unknown>>();
+    const signedOutDrafts = Object.fromEntries(
+      Object.entries(cloudDrafts.signedOut).map(([id, saved]) => {
+        const queuedMessages: Array<unknown> = [];
+        const automaticMessages: Array<unknown> = [];
+        for (const message of saved.queuedMessages) {
+          (message.accountRouting === undefined ? queuedMessages : automaticMessages).push(
+            encodeQueuedThreadMessage(message),
+          );
+        }
+        if (automaticMessages.length > 0) accounts.set(id, automaticMessages);
+        return [
+          id,
+          { drafts: saved.drafts, queuedMessages, draftEnvironmentIds: saved.draftEnvironmentIds },
+        ];
+      }),
+    );
     const nonEmptyDrafts = Object.fromEntries(
       Object.entries(drafts).filter(([, draft]) => !isEmptyDraft(draft)),
     );
@@ -878,28 +954,37 @@ async function writePersistedComposerState(
         ? { modelOptionMemory: appAtomRegistry.get(modelOptionMemoryAtom) }
         : {}),
       ...(cloudDrafts.accountId ? { cloudAccountId: cloudDrafts.accountId } : {}),
-      ...(Object.keys(cloudDrafts.signedOut).length > 0
-        ? {
-            signedOutDrafts: Object.fromEntries(
-              Object.entries(cloudDrafts.signedOut).map(([id, saved]) => [
-                id,
-                {
-                  drafts: saved.drafts,
-                  queuedMessages: saved.queuedMessages.map(encodeQueuedThreadMessage),
-                },
-              ]),
-            ),
-          }
+      ...(cloudDrafts.restoredEnvironmentIds?.length
+        ? { restoredCloudEnvironmentIds: cloudDrafts.restoredEnvironmentIds }
         : {}),
+      ...(Object.keys(signedOutDrafts).length > 0 ? { signedOutDrafts } : {}),
     } as const;
     const encoded = JSON.stringify(document);
+    // Persist the protected rows before replacing a document that may still contain them.
+    if (persistedAutoAccountArchive !== null || accounts.size > 0) {
+      fileName = AUTO_ACCOUNT_ARCHIVE_FILE;
+      const archive = JSON.stringify({
+        schemaVersion: AUTO_ACCOUNT_ARCHIVE_VERSION,
+        accounts: Object.fromEntries(accounts),
+      });
+      if (archive !== persistedAutoAccountArchive) {
+        operation = "open";
+        const archiveFile = await getComposerDraftsFile(fileName);
+        operation = "write";
+        await writeFileAtomically(archiveFile, archive);
+        persistedAutoAccountArchive = archive;
+      }
+    }
+    fileName = COMPOSER_DRAFTS_FILE;
+    operation = "open";
+    const file = await getComposerDraftsFile();
     operation = "write";
     await writeFileAtomically(file, encoded);
   } catch (cause) {
     throw new ComposerDraftPersistenceError({
       operation,
       directory: COMPOSER_DRAFTS_DIRECTORY,
-      fileName: COMPOSER_DRAFTS_FILE,
+      fileName,
       cause,
     });
   }
@@ -1200,6 +1285,62 @@ export async function getComposerCloudAccountId(): Promise<string | null> {
   return appAtomRegistry.get(composerCloudDraftsAtom).accountId;
 }
 
+export async function getRestoredCloudEnvironmentIds(): Promise<ReadonlyArray<EnvironmentId>> {
+  await waitForComposerDraftsLoaded();
+  return appAtomRegistry.get(composerCloudDraftsAtom).restoredEnvironmentIds ?? [];
+}
+
+/** Release ownership only after sign-out has preserved the data and removed the relay routes. */
+export async function finishCloudOutboxArchive(): Promise<void> {
+  const cloud = appAtomRegistry.get(composerCloudDraftsAtom);
+  const restoredEnvironmentIds = cloud.restoredEnvironmentIds;
+  if (!restoredEnvironmentIds?.length) return;
+  appAtomRegistry.set(composerCloudDraftsAtom, { ...cloud, restoredEnvironmentIds: undefined });
+  schedulePersistComposerState();
+  try {
+    await flushComposerDrafts();
+  } catch (error) {
+    appAtomRegistry.set(composerCloudDraftsAtom, {
+      ...appAtomRegistry.get(composerCloudDraftsAtom),
+      restoredEnvironmentIds,
+    });
+    throw error;
+  }
+}
+
+function archivedDraftEnvironmentIds(saved: SignedOutDrafts): Set<EnvironmentId> {
+  if (Object.keys(saved.drafts).length === 0) return new Set();
+  if (saved.draftEnvironmentIds !== undefined) return new Set(saved.draftEnvironmentIds);
+  const environmentIds = new Set<EnvironmentId>();
+  // Archives written before environment IDs were recorded can still identify scoped drafts.
+  for (const [key, draft] of Object.entries(saved.drafts)) {
+    const scoped = parseScopedThreadKey(key);
+    const environmentId = composerDraftEnvironmentId(
+      key,
+      scoped === null ? [] : [scoped.environmentId],
+      saved.queuedMessages,
+      draft,
+    );
+    if (environmentId !== null) environmentIds.add(environmentId);
+  }
+  return environmentIds;
+}
+
+/** Hold delivery from before the archive snapshot until relay removal and its cleanup finish. */
+export function beginCloudOutboxArchive(environmentIds: ReadonlySet<EnvironmentId>): () => void {
+  const next = new Map(appAtomRegistry.get(cloudOutboxArchiveFencesAtom));
+  for (const environmentId of environmentIds) {
+    if (next.has(environmentId)) throw new Error(m(msg("Could not preserve queued messages.")));
+    next.set(environmentId, []);
+  }
+  appAtomRegistry.set(cloudOutboxArchiveFencesAtom, next);
+  return () => {
+    const remaining = new Map(appAtomRegistry.get(cloudOutboxArchiveFencesAtom));
+    for (const environmentId of environmentIds) remaining.delete(environmentId);
+    appAtomRegistry.set(cloudOutboxArchiveFencesAtom, remaining);
+  };
+}
+
 export async function archiveCloudComposerDrafts(
   accountId: string | null,
   environmentIds: ReadonlySet<EnvironmentId>,
@@ -1210,38 +1351,85 @@ export async function archiveCloudComposerDrafts(
     throw new Error(m(msg("Could not preserve queued messages.")));
   await flushThreadOutbox();
   const cloud = appAtomRegistry.get(composerCloudDraftsAtom);
-  const owner = accountId ?? cloud.accountId;
+  // A failed or superseded activation can pass a different ID from the persisted live owner.
+  const owner = cloud.restoredEnvironmentIds?.length
+    ? cloud.accountId
+    : (accountId ?? cloud.accountId);
+  if (cloud.restoredEnvironmentIds?.length && owner === null)
+    throw new Error(m(msg("Could not preserve queued messages.")));
   if (owner === null) return;
   const queued = Object.values(
     appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
   ).flat();
   const current = appAtomRegistry.get(composerDraftsAtom);
   const remaining = { ...current };
-  const savedDrafts = { ...cloud.signedOut[owner]?.drafts };
+  const saved = cloud.signedOut[owner];
+  const savedDrafts = { ...saved?.drafts };
+  const savedDraftEnvironmentIds = saved
+    ? archivedDraftEnvironmentIds(saved)
+    : new Set<EnvironmentId>();
   for (const [key, draft] of Object.entries(current)) {
     const environmentId = composerDraftEnvironmentId(key, knownEnvironmentIds, queued, draft);
     if (environmentId !== null && environmentIds.has(environmentId)) {
+      savedDraftEnvironmentIds.add(environmentId);
       savedDrafts[key] = draft;
       delete remaining[key];
     }
   }
   const savedMessages = new Map(
-    (cloud.signedOut[owner]?.queuedMessages ?? []).map((message) => [message.messageId, message]),
+    saved?.queuedMessages.map((message) => [message.messageId, message]),
   );
+  const archivedRows = new Map<EnvironmentId, ArchivedOutboxRow[]>();
   for (const message of queued) {
-    if (environmentIds.has(message.environmentId)) savedMessages.set(message.messageId, message);
+    if (!environmentIds.has(message.environmentId)) continue;
+    savedMessages.set(message.messageId, message);
+    const row = { message, revision: threadOutboxManager.revisionOf(message.messageId) };
+    const rows = archivedRows.get(message.environmentId);
+    if (rows) rows.push(row);
+    else archivedRows.set(message.environmentId, [row]);
   }
   appAtomRegistry.set(composerDraftsAtom, remaining);
   appAtomRegistry.set(composerCloudDraftsAtom, {
+    ...cloud,
     // Retain the owner through removal so cold-start cleanup can retry before another account activates.
     accountId: owner,
     signedOut: {
       ...cloud.signedOut,
-      [owner]: { drafts: savedDrafts, queuedMessages: [...savedMessages.values()] },
+      [owner]: {
+        drafts: savedDrafts,
+        queuedMessages: [...savedMessages.values()],
+        draftEnvironmentIds: [...savedDraftEnvironmentIds],
+      },
     },
+  });
+  // A disconnected environment has no registry removal to abort its open draft operations.
+  abortComposerDraftOperationsWhere((key) => {
+    const environmentId = composerDraftEnvironmentId(
+      key,
+      knownEnvironmentIds,
+      queued,
+      current[key],
+    );
+    return environmentId !== null && environmentIds.has(environmentId);
   });
   schedulePersistComposerState();
   await flushComposerDrafts();
+  const fences = appAtomRegistry.get(cloudOutboxArchiveFencesAtom);
+  if (fences.size > 0) {
+    const durable = new Set(
+      appAtomRegistry.get(composerCloudDraftsAtom).signedOut[owner]?.queuedMessages,
+    );
+    const next = new Map(fences);
+    for (const [environmentId, rows] of archivedRows) {
+      if (next.has(environmentId)) {
+        next.set(
+          environmentId,
+          rows.filter(({ message }) => durable.has(message)),
+        );
+      }
+    }
+    appAtomRegistry.set(cloudOutboxArchiveFencesAtom, next);
+  }
 }
 
 function sameDraftAttachmentIds(
@@ -1279,6 +1467,7 @@ export async function removeDeliveredCloudQueuedMessage(
     if (
       JSON.stringify([
         archived.modelSelection,
+        archived.accountRouting,
         archived.modelSelectionExplicit,
         archived.runtimeMode,
         archived.interactionMode,
@@ -1286,6 +1475,7 @@ export async function removeDeliveredCloudQueuedMessage(
       ]) !==
       JSON.stringify([
         message.modelSelection,
+        message.accountRouting,
         message.modelSelectionExplicit,
         message.runtimeMode,
         message.interactionMode,
@@ -1319,6 +1509,7 @@ export async function removeDeliveredCloudQueuedMessage(
     const drafts = { ...saved.drafts };
     delete drafts[editorKey];
     signedOut[accountId] = {
+      ...saved,
       drafts,
       queuedMessages: saved.queuedMessages.filter((candidate) => candidate !== archived),
     };
@@ -1338,28 +1529,69 @@ export async function removeDeliveredCloudQueuedMessage(
 
 export async function restoreCloudComposerDrafts(accountId: string): Promise<void> {
   await waitForComposerDraftsLoaded();
+  const before = appAtomRegistry.get(composerCloudDraftsAtom);
+  if (before.accountId !== accountId && before.restoredEnvironmentIds?.length)
+    throw new Error(m(msg("Could not restore queued messages.")));
+  const archived = before.signedOut[accountId];
+  if (archived) {
+    const environmentIds = archivedDraftEnvironmentIds(archived);
+    for (const message of archived.queuedMessages) environmentIds.add(message.environmentId);
+    if (environmentIds.size > 0) {
+      // Record the owner before the first live write. A crash can leave both copies on disk.
+      const restoredEnvironmentIds = [
+        ...new Set([...(before.restoredEnvironmentIds ?? []), ...environmentIds]),
+      ];
+      appAtomRegistry.set(composerCloudDraftsAtom, {
+        ...before,
+        accountId,
+        restoredEnvironmentIds,
+      });
+      schedulePersistComposerState();
+      await flushComposerDrafts();
+    }
+    if (!(await threadOutboxManager.load()))
+      throw new Error(m(msg("Could not restore queued messages.")));
+    for (const message of archived.queuedMessages) {
+      // Delivery can retire a snapshot while an outbox write settles. Recheck before enqueueing.
+      while (true) {
+        const stillArchived = appAtomRegistry
+          .get(composerCloudDraftsAtom)
+          .signedOut[accountId]?.queuedMessages.includes(message);
+        if (!stillArchived) break;
+        const queued = Object.values(
+          appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
+        )
+          .flat()
+          .find((current) => current.messageId === message.messageId);
+        if (queued === undefined) {
+          await threadOutboxManager.enqueue(message);
+          break;
+        }
+        if (await threadOutboxManager.confirmQueued(queued)) break;
+      }
+    }
+  }
   const cloud = appAtomRegistry.get(composerCloudDraftsAtom);
   const saved = cloud.signedOut[accountId];
   if (saved) {
-    if (!(await threadOutboxManager.load()))
-      throw new Error(m(msg("Could not restore queued messages.")));
-    for (const message of saved.queuedMessages) {
-      const alreadyQueued = Object.values(
-        appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
-      )
-        .flat()
-        .some((current) => current.messageId === message.messageId);
-      if (!alreadyQueued) await threadOutboxManager.enqueue(message);
-    }
     updateComposerDrafts((current) => {
       const restored = { ...current };
       for (const [key, draft] of Object.entries(saved.drafts)) {
         const existing = current[key];
         const attachmentIds = new Set(existing?.attachments.map((attachment) => attachment.id));
+        const selection =
+          existing?.modelSelection !== undefined || existing?.automaticAccountModel !== undefined
+            ? existing
+            : draft;
         restored[key] = existing
           ? {
               ...draft,
               ...existing,
+              modelSelection: selection.modelSelection,
+              automaticAccountModel:
+                selection.modelSelection === undefined
+                  ? selection.automaticAccountModel
+                  : undefined,
               text: mergeComposerDraftText(existing.text, draft.text),
               context: mergeReferencedComposerContext(
                 mergeComposerDraftText(existing.text, draft.text),
@@ -1385,7 +1617,7 @@ export async function restoreCloudComposerDrafts(accountId: string): Promise<voi
   }
   const signedOut = { ...cloud.signedOut };
   delete signedOut[accountId];
-  appAtomRegistry.set(composerCloudDraftsAtom, { accountId, signedOut });
+  appAtomRegistry.set(composerCloudDraftsAtom, { ...cloud, accountId, signedOut });
   schedulePersistComposerState();
   await flushComposerDrafts();
 }
@@ -1630,7 +1862,10 @@ export function updateComposerDraftSettings(
   draftKey: string,
   settings: Partial<ComposerDraftSettingsUpdate>,
 ): ComposerDraft {
-  if (Object.hasOwn(settings, "modelSelection")) {
+  if (
+    Object.hasOwn(settings, "modelSelection") ||
+    Object.hasOwn(settings, "automaticAccountModel")
+  ) {
     recordComposerModelSelectionInteraction(draftKey);
   }
   // Bind before publishing: subscribers may synchronously clear or reselect a model.
@@ -1714,6 +1949,7 @@ export function clearComposerDraftContentState(
     importedShareIds: _importedShareIds,
     context: _context,
     modelSelection,
+    automaticAccountModel,
     workspaceSelection,
     project: _project,
     ...retained
@@ -1721,6 +1957,9 @@ export function clearComposerDraftContentState(
   const draft = {
     ...retained,
     ...(options?.clearModelSelection || modelSelection === undefined ? {} : { modelSelection }),
+    ...(options?.clearModelSelection || automaticAccountModel === undefined
+      ? {}
+      : { automaticAccountModel }),
     ...(options?.clearWorkspaceSelection || workspaceSelection === undefined
       ? {}
       : { workspaceSelection }),
@@ -1890,6 +2129,7 @@ export function sameComposerDraftState(a: ComposerDraft, b: ComposerDraft): bool
     a.context === b.context &&
     a.importedShareIds === b.importedShareIds &&
     a.modelSelection === b.modelSelection &&
+    a.automaticAccountModel === b.automaticAccountModel &&
     a.runtimeMode === b.runtimeMode &&
     a.interactionMode === b.interactionMode &&
     a.freshContext === b.freshContext &&
@@ -1921,6 +2161,7 @@ export function undoComposerDraftMergeState(
   const undoSetting = <
     K extends
       | "modelSelection"
+      | "automaticAccountModel"
       | "runtimeMode"
       | "interactionMode"
       | "freshContext"
@@ -1944,6 +2185,9 @@ export function undoComposerDraftMergeState(
     modelSelection: modelSelectionUntouched
       ? undoSetting("modelSelection")
       : existing.modelSelection,
+    automaticAccountModel: modelSelectionUntouched
+      ? undoSetting("automaticAccountModel")
+      : existing.automaticAccountModel,
     runtimeMode: undoSetting("runtimeMode"),
     interactionMode: undoSetting("interactionMode"),
     freshContext: undoSetting("freshContext"),

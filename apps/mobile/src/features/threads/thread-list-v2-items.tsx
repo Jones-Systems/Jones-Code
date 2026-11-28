@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { settlementRestoreMenuItems } from "../../jones/settlementRestore/menu";
+import { automaticLaunchNeedsReconciliation } from "../../jones/threadConfiguration/outboxDelivery";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -535,6 +536,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   const gt = useGT();
   const m = useMessages();
   const isDraft = pendingTask.kind === "draft";
+  const verifying = !isDraft && automaticLaunchNeedsReconciliation(pendingTask.message);
   const deleteLabel = isDraft
     ? gt("Discard", { $context: "verb, thread action" })
     : gt("Delete", { $context: "verb, thread action" });
@@ -657,7 +659,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
                 : rowAppearance.tertiaryForegroundClassName,
             )}
           >
-            <T>Sends on reconnect</T>
+            {verifying ? <T>Verifying delivery</T> : <T>Sends on reconnect</T>}
           </Text>
         </View>
       ) : null}
@@ -719,12 +721,12 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
     <>
       {props.showPendingDivider ? (
         <ThreadListV2SectionDivider
-          label={gt("Unsent", { $context: "section of tasks not yet sent" })}
+          label={gt("Pending", { $context: "section of tasks awaiting delivery or confirmation" })}
           pane={props.pane}
         />
       ) : null}
       <ThreadSwipeable
-        dormant={dormant}
+        dormant={dormant || verifying}
         threadKey={pendingTask.key}
         backgroundColor={rowAppearance.swipeBackgroundColor}
         containerStyle={rowAppearance.swipeContainerStyle}
@@ -743,22 +745,26 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
       >
         {() => (
           <Menu
-            actions={(isDraft ? DRAFT_TASK_MENU_ACTIONS : PENDING_TASK_MENU_ACTIONS).map(
-              (action) => ({
-                ...action,
-                title: m(action.title),
-              }),
-            )}
+            actions={
+              verifying
+                ? []
+                : (isDraft ? DRAFT_TASK_MENU_ACTIONS : PENDING_TASK_MENU_ACTIONS).map((action) => ({
+                    ...action,
+                    title: m(action.title),
+                  }))
+            }
             onPressAction={handleMenuAction}
-            shouldOpenOnLongPress
+            shouldOpenOnLongPress={!verifying}
           >
             <RowPressable
               accessibilityHint={
-                isDraft
-                  ? gt("Opens the draft in the new task composer. Swipe left to discard.")
-                  : gt(
-                      "Sends when the environment reconnects. Opens the task for editing. Swipe left to delete.",
-                    )
+                verifying
+                  ? gt("Opens a task whose delivery is being verified.")
+                  : isDraft
+                    ? gt("Opens the draft in the new task composer. Swipe left to discard.")
+                    : gt(
+                        "Sends when the environment reconnects. Opens the task for editing. Swipe left to delete.",
+                      )
               }
               accessibilityLabel={pendingTask.title}
               accessibilityRole="button"

@@ -24,7 +24,7 @@ export function useApplyThreadModelPick() {
     if (typeof target === "string") return;
     const store = useComposerDraftStore.getState();
     const draft = store.draftsByThreadKey[scopedThreadKey(target)];
-    if (!draft?.modelSelectionExplicit || !draft.activeProvider) return;
+    if (!draft?.modelSelectionExplicit || !draft.activeProvider || draft.accountRouting) return;
     const pick = draft.modelSelectionByProvider[draft.activeProvider];
     const thread = registry.get(environmentThreadShells.threadShellAtom(target));
     if (!pick || !thread || store.draftThreadsByThreadKey[scopedThreadKey(target)]) return;
