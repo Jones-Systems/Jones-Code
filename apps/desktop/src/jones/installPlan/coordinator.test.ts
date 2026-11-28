@@ -9,6 +9,8 @@ import type { FleetPlanDirectiveFenceEvidence } from "@t3tools/contracts/jones/f
 import {
   JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES,
   JONES_INSTALL_PLAN_HISTORY_LIMIT,
+  JONES_INSTALL_PLAN_COMMAND_LIMIT,
+  JonesInstallPlanResult,
 } from "@t3tools/contracts/jones/installPlan";
 import type {
   JonesInstallPlanCliRequest,
@@ -25,6 +27,7 @@ import type {
   JonesOperationReceipt,
 } from "@t3tools/contracts/jones/jonesOperations";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import type { JonesDesktopUpdateController } from "../updates/JonesDesktopUpdates.ts";
 import { dispatchInstallPlanCli } from "./cliControl.ts";
 import { createInstallPlanCoordinator } from "./coordinator.ts";
@@ -46,6 +49,7 @@ const selection = { environmentId: remote, label: "Host", route: "operations" } 
 const timestamp = "2026-10-27T00:00:00.000Z";
 const id = (n: number) => `${String(n).padStart(8, "0")}-1111-4111-8111-111111111111`;
 const persistentRoots = new Set<string>();
+const encodePlanResult = Schema.encodeSync(JonesInstallPlanResult);
 function fixture(persistentStore?: InstallPlanStore) {
   let clock = Date.parse(timestamp),
     sequence = 0;
@@ -2556,6 +2560,53 @@ describe("native client command reservations", () => {
         expectedRevision: plan.revision,
       },
     }) as const;
+
+  it("encodes the full set of publication holds for evicted legacy commands", async () => {
+    const f = fixture();
+    const original = (
+      await f.coordinator.request({
+        type: "start",
+        origin: "connections",
+        target,
+        select: [selection],
+        expectedRunningGeneration: transaction,
+      })
+    ).state.current!;
+    await f.coordinator.request(claimedDownload(original, id(601)));
+    const entry = f.snapshot().document.commands![0]!;
+    const environments = Array.from({ length: JONES_INSTALL_PLAN_COMMAND_LIMIT }, (_, index) =>
+      EnvironmentId.make(`legacy-host-${index}`),
+    );
+    const commands = environments.map((environmentId, index) => {
+      const planId = id(1000 + index);
+      return {
+        ...entry,
+        receipt: {
+          ...entry.receipt,
+          planId,
+          command: { ...entry.receipt.command, planId, environmentId, commandId: id(3000 + index) },
+          operationId: id(5000 + index),
+          outcome: "terminal" as const,
+          code: "unsupported" as const,
+        },
+      };
+    });
+    const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-publication-holds-"));
+    persistentRoots.add(home);
+    const store = createInstallPlanStore({ home, profile: undefined });
+    await store.transact(async () => ({
+      document: { schema: 2, documentRevision: 1, current: null, last: null, older: [], commands },
+      dispositions: f.snapshot().dispositions,
+      result: undefined,
+    }));
+    const coordinator = createInstallPlanCoordinator({ ...f.options, store });
+    const result = await coordinator.request({ type: "publication", acceptHostOnlyHolds: 1 });
+    expect(encodePlanResult(result).publication).toMatchObject({
+      kind: "committed",
+      heldEnvironments: environments,
+    });
+    expect(result.state.orphanedCommands).toHaveLength(environments.length);
+  });
 
   it("recovers an evicted legacy V2 unsupported claim only from exact terminal evidence", async () => {
     const f = fixture();

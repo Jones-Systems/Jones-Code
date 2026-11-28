@@ -6,6 +6,7 @@ import { canonicalJonesCommand } from "@t3tools/client-runtime/jones/updates/act
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   JonesInstallPlanRequest as RequestSchema,
+  JONES_INSTALL_PLAN_COMMAND_LIMIT,
   ordinaryJonesLaptopProof as ordinaryProof,
   verifiedRunningLaptop,
   type JonesInstallPlanRequest,
@@ -43,7 +44,6 @@ import { RecoveryPreflightRefused } from "../updates/recoveryPreflight.ts";
 import type { JonesDesktopUpdateController } from "../updates/JonesDesktopUpdates.ts";
 import {
   PlanStorageError,
-  MAX_PLAN_COMMANDS,
   MAX_PLAN_DISPOSITIONS,
   closedPlans,
   retainedPlans,
@@ -1153,7 +1153,7 @@ export function createInstallPlanCoordinator(options: {
                     },
             };
           }
-          if ((document.commands?.length ?? 0) >= MAX_PLAN_COMMANDS) {
+          if ((document.commands?.length ?? 0) >= JONES_INSTALL_PLAN_COMMAND_LIMIT) {
             document = commitRevision(snapshot.document, document);
             return {
               document,

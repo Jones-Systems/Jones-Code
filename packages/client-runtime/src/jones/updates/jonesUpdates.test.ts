@@ -6,6 +6,7 @@ import type {
 import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import { normalizeDpopHtu } from "@t3tools/shared/dpopCommon";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -20,6 +21,7 @@ import { JonesUpdateState as JonesUpdateStateSchema } from "@t3tools/contracts/j
 import {
   compareJonesSource,
   createJonesUpdateAtoms,
+  isJonesOperationNotSentError,
   jonesExactSourceResultError,
   jonesInstallRefusal,
   jonesFollowerHold,
@@ -1300,9 +1302,9 @@ it("presents same-minute outcomes with exact-version stamps without changing ide
   ).toBe(`Blocked: ${fromVersion}0 → ${targetVersion}0`);
 });
 
-it.effect(
-  "Stop bypasses a long operation request while later operation reads remain serialized",
-  () =>
+it.effect.each(["active", "expired"] as const)(
+  "Stop bypasses a long operation request while a queued %s read rechecks its guard",
+  (poll) =>
     Effect.gen(function* () {
       const environmentId = EnvironmentId.make("operation-lanes");
       const target = new PrimaryConnectionTarget({
@@ -1410,10 +1412,11 @@ it.effect(
           ),
         ),
       );
+      let polling = true;
       const read = yield* Effect.forkChild(
         updates.operation.run(registry, {
           environmentId,
-          input: { action: "operationRead", input: readInput },
+          input: { action: "operationRead", input: readInput, beforeSend: () => polling },
         }),
         { startImmediately: true },
       );
@@ -1443,21 +1446,29 @@ it.effect(
         _tag: "Success",
         value: staged,
       });
+      polling = poll === "active";
       release();
       expect(yield* Fiber.await(started)).toMatchObject({
         _tag: "Success",
         value: receipt,
       });
-      expect(yield* Fiber.await(read)).toMatchObject({
-        _tag: "Success",
-        value: { receipts: [{ operationId, receipt }] },
-      });
+      const readResult = yield* Fiber.await(read);
+      if (polling) {
+        expect(readResult).toMatchObject({
+          _tag: "Success",
+          value: { receipts: [{ operationId, receipt }] },
+        });
+      } else {
+        expect(readResult._tag).toBe("Failure");
+        if (readResult._tag === "Failure")
+          expect(isJonesOperationNotSentError(Cause.squash(readResult.cause))).toBe(true);
+      }
       expect(calls).toEqual([
         "/api/jones-updates/operations/start",
         "/api/jones-updates/operations/stop",
         "/api/jones-updates/check",
-        "/api/jones-updates/operations/read",
+        ...(polling ? ["/api/jones-updates/operations/read"] : []),
       ]);
-      expect(payloads).toEqual([input, stopInput, readInput]);
+      expect(payloads).toEqual([input, stopInput, ...(polling ? [readInput] : [])]);
     }).pipe(Effect.scoped),
 );

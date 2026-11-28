@@ -833,12 +833,11 @@ export async function refreshArchivedDeviceEvidence(
       stillCurrent: stillShowing,
     });
 
-  if (
-    !stillShowing() ||
-    !canReadDeviceReceipts(binding, device, observed) ||
-    !hasOperationReadScope(services, environmentId)
-  )
-    return;
+  const canSend = () =>
+    stillShowing() &&
+    canReadDeviceReceipts(binding, device, observed) &&
+    hasOperationReadScope(services, environmentId);
+  if (!canSend()) return;
   const exact = pending
     .flatMap((operation) => {
       const input = exactOperationRequest(plan.planId, environmentId, operation);
@@ -846,11 +845,17 @@ export async function refreshArchivedDeviceEvidence(
     })
     .slice(0, MAX_ARCHIVED_RECEIPTS_PER_POLL);
   if (exact.length === 0) return;
-  const result = await services.operation(environmentId, {
-    action: "operationRead",
-    input: { environmentId, operationIds: exact.map(({ input }) => input.operationId) },
-  });
-  if (!("receipts" in result)) return;
+  const result = await services
+    .operation(environmentId, {
+      action: "operationRead",
+      input: { environmentId, operationIds: exact.map(({ input }) => input.operationId) },
+      beforeSend: canSend,
+    })
+    .catch((error: unknown) => {
+      if (isJonesOperationNotSentError(error)) return undefined;
+      throw error;
+    });
+  if (result === undefined || !("receipts" in result)) return;
   let saved = false;
   for (const { operation, input } of exact) {
     if (

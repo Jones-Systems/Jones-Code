@@ -2153,6 +2153,7 @@ describe("bound Install status actions", () => {
         await refresh();
         expect(operation).toHaveBeenCalledExactlyOnceWith(hostId, {
           action: "operationRead",
+          ...(method === "poll" ? { beforeSend: expect.any(Function) } : {}),
           input: { environmentId: hostId, operationIds: [hostOperationId] },
         });
         expect(f.installPlan).toHaveBeenCalledWith({
@@ -2231,7 +2232,7 @@ describe("bound Install status actions", () => {
     }
   });
 
-  it.each(["observe", "first report"] as const)(
+  it.each(["observe", "queued receipt read", "first report"] as const)(
     "expires an archive poll during %s without starting more work",
     async (delay) => {
       vi.useFakeTimers();
@@ -2267,12 +2268,22 @@ describe("bound Install status actions", () => {
         return { state, ...(request.type === "read-history" ? { historyPlan: archived } : {}) };
       });
       const observed = await f.services.observe(hostId);
-      const operation = vi.fn<InstallPlanServices["operation"]>(async () => ({
-        receipts: [first, second].map(({ operationId }) => ({
-          operationId,
-          receipt: { ...running, operationId, phase: "failed" },
-        })),
-      }));
+      const sent = vi.fn();
+      const operation = vi.fn<InstallPlanServices["operation"]>(async (_id, request) => {
+        if (delay === "queued receipt read") {
+          entered.resolve();
+          await release.promise;
+          if ("beforeSend" in request && request.beforeSend && !(await request.beforeSend()))
+            throw new JonesOperationNotSentError({});
+        }
+        sent();
+        return {
+          receipts: [first, second].map(({ operationId }) => ({
+            operationId,
+            receipt: { ...running, operationId, phase: "failed" },
+          })),
+        };
+      });
       let now = Date.parse(at);
       const unbind = bindInstallPlanServices(
         {
@@ -2301,8 +2312,11 @@ describe("bound Install status actions", () => {
         release.resolve();
         await vi.advanceTimersByTimeAsync(0);
         expect(operation).toHaveBeenCalledTimes(delay === "observe" ? 0 : 1);
+        expect(sent).toHaveBeenCalledTimes(delay === "first report" ? 1 : 0);
         expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(
-          delay === "observe" ? [] : ["read", "read-history", "report"],
+          delay === "observe"
+            ? []
+            : ["read", "read-history", ...(delay === "first report" ? ["report"] : [])],
         );
       } finally {
         release.resolve();
@@ -2401,6 +2415,7 @@ describe("bound Install status actions", () => {
       expect(operation).toHaveBeenCalledExactlyOnceWith(hostId, {
         action: "operationRead",
         input: { environmentId: hostId, operationIds: pending.map((item) => item.operationId) },
+        beforeSend: expect.any(Function),
       });
       expect(
         f.installPlan.mock.calls.flatMap(([request]) =>

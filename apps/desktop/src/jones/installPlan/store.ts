@@ -6,6 +6,7 @@ import {
   JonesInstallPlan,
   JonesInstallPlanCommandReceipt,
   JONES_INSTALL_PLAN_HISTORY_LIMIT,
+  JONES_INSTALL_PLAN_COMMAND_LIMIT,
   type JonesInstallPlanState,
 } from "@t3tools/contracts/jones/installPlan";
 import {
@@ -25,7 +26,6 @@ const PLAN_BYTES = 1024 * 1024;
 // recovery fields and repeated identities. New admissions use a much smaller budget.
 const RECOVERY_DOCUMENT_BYTES = 20 * 1024 * 1024;
 // Keep replay identities and publication dispositions even after old plan detail ages out.
-export const MAX_PLAN_COMMANDS = 1024;
 export const MAX_PLAN_DISPOSITIONS = 2048;
 const slots = {
   current: Schema.NullOr(JonesInstallPlan),
@@ -50,7 +50,9 @@ const RecoveryDocument = Schema.Struct({
   older: Schema.Array(JonesInstallPlan).check(
     Schema.isMaxLength(JONES_INSTALL_PLAN_HISTORY_LIMIT - 1),
   ),
-  commands: Schema.optionalKey(Commands.check(Schema.isMaxLength(MAX_PLAN_COMMANDS))),
+  commands: Schema.optionalKey(
+    Commands.check(Schema.isMaxLength(JONES_INSTALL_PLAN_COMMAND_LIMIT)),
+  ),
 });
 const Document = Schema.Union([LegacyDocument, RecoveryDocument]);
 const Dispositions = Schema.Struct({
