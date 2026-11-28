@@ -1,4 +1,5 @@
 import type { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
+import { T, useGT } from "gt-react";
 import { usePendingSends } from "./hooks";
 import { pendingSends } from "./store";
 
@@ -7,6 +8,7 @@ export function PendingSendStatus(props: {
   threadId: ThreadId;
   messageId: MessageId;
 }) {
+  const gt = useGT();
   const entry = usePendingSends().find(
     (entry) =>
       entry.environmentId === props.environmentId &&
@@ -16,10 +18,10 @@ export function PendingSendStatus(props: {
   if (!entry || entry.delivery === "accepted") return null;
   const label =
     entry.delivery === "sending"
-      ? "Sending"
+      ? gt("Sending")
       : entry.delivery === "uncertain"
-        ? "Waiting for confirmation"
-        : "Couldn't send";
+        ? gt("Waiting for confirmation")
+        : gt("Couldn't send");
   return (
     <div
       className="flex items-center gap-1.5 text-xs text-muted-foreground"
@@ -32,29 +34,35 @@ export function PendingSendStatus(props: {
       />
       <span role="status">{label}</span>
       {entry.delivery === "uncertain" ? (
-        <span>{entry.durable ? "Saved on this device" : "Kept in this window"}</span>
+        <span>
+          {entry.durable
+            ? entry.retry
+              ? gt("Saved on this device")
+              : gt("Status saved. Retry is unavailable after reload.")
+            : gt("Kept in this window")}
+        </span>
       ) : null}
       {entry.retry && entry.delivery !== "sending" ? (
         <button
           type="button"
-          aria-label="Retry sending this message"
+          aria-label={gt("Retry sending this message")}
           disabled={entry.inFlight}
           className="underline"
           onClick={() => {
             void entry.retry?.();
           }}
         >
-          Retry
+          <T>Retry</T>
         </button>
       ) : null}
       {entry.delivery !== "sending" && (!entry.durable || entry.delivery === "failed") ? (
         <button
           type="button"
-          aria-label="Dismiss unsent message"
+          aria-label={gt("Dismiss unsent message")}
           className="underline"
           onClick={() => pendingSends.dismiss(entry.key)}
         >
-          Dismiss
+          <T>Dismiss</T>
         </button>
       ) : null}
     </div>

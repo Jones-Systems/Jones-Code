@@ -187,6 +187,14 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
     retainDurably(entryKey: string) {
       update(entryKey, (entry) => (entry.durable ? entry : { ...entry, durable: true }));
     },
+    restoreUncertain(entryKey: string) {
+      update(entryKey, (entry) => ({
+        ...entry,
+        durable: true,
+        issued: true,
+        delivery: "uncertain",
+      }));
+    },
     confirmThreadCreation(environmentId: EnvironmentId, threadId: ThreadId, messageId: MessageId) {
       const entry = get(environmentId, threadId, messageId);
       if (entry) update(entry.key, (entry) => ({ ...entry, creationAccepted: true }));

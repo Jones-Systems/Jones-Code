@@ -6,6 +6,11 @@ import {
 } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { DraftId } from "./draftId";
 import {
+  normalizePendingAutoLaunch,
+  PendingAutoLaunch,
+  type AutoLaunchRecoveryRecord,
+} from "./jones/accountRouting/autoLaunchRecovery";
+import {
   composerFileAttachmentMimeType,
   composerImageDedupKey,
   rememberComposerImageBytes,
@@ -183,6 +188,23 @@ function mergeComposerDraftStates(
   local: PersistedComposerDraftStoreState,
   baseline: PersistedComposerDraftStoreState,
 ): PersistedComposerDraftStoreState {
+  const draftThreadsByThreadKey = mergeDraftRecord(
+    stored.draftThreadsByThreadKey,
+    local.draftThreadsByThreadKey,
+    baseline.draftThreadsByThreadKey,
+  );
+  for (const [key, draft] of Object.entries(stored.draftThreadsByThreadKey ?? {})) {
+    if (
+      draft.pendingAutoLaunch &&
+      !Equal.equals(
+        draft.pendingAutoLaunch,
+        baseline.draftThreadsByThreadKey[key]?.pendingAutoLaunch,
+      )
+    ) {
+      // Another tab reserved this draft since our last snapshot.
+      draftThreadsByThreadKey[key] = draft;
+    }
+  }
   const pick = <K extends keyof PersistedComposerDraftStoreState>(key: K) => {
     const value = Equal.equals(local[key], baseline[key]) ? stored[key] : local[key];
     return value === undefined ? {} : { [key]: value };
@@ -193,11 +215,7 @@ function mergeComposerDraftStates(
       local.draftsByThreadKey,
       baseline.draftsByThreadKey,
     ),
-    draftThreadsByThreadKey: mergeDraftRecord(
-      stored.draftThreadsByThreadKey,
-      local.draftThreadsByThreadKey,
-      baseline.draftThreadsByThreadKey,
-    ),
+    draftThreadsByThreadKey,
     logicalProjectDraftThreadKeyByLogicalProjectKey: mergeDraftRecord(
       stored.logicalProjectDraftThreadKeyByLogicalProjectKey,
       local.logicalProjectDraftThreadKeyByLogicalProjectKey,
@@ -432,6 +450,7 @@ const PersistedDraftThreadState = Schema.Struct({
   ),
   worktreeRepositories: Schema.optionalKey(Schema.Array(Schema.String)),
   newThreadWorkstreamId: Schema.optionalKey(Schema.String),
+  pendingAutoLaunch: Schema.optionalKey(PendingAutoLaunch),
   promotedTo: Schema.optionalKey(
     Schema.NullOr(
       Schema.Struct({
@@ -536,6 +555,7 @@ export interface DraftSessionState {
   /** Tracked repository paths selected for this draft. Absence uses the project's default. */
   worktreeRepositories?: ReadonlyArray<string>;
   newThreadWorkstreamId?: string;
+  pendingAutoLaunch?: PendingAutoLaunch;
   promotedTo?: ScopedThreadRef | null;
 }
 
@@ -1908,6 +1928,7 @@ function removeDraftThreadReferences(
   | "draftsByThreadKey"
   | "logicalProjectDraftThreadKeyByLogicalProjectKey"
 > {
+  if (state.draftThreadsByThreadKey[threadKey]?.pendingAutoLaunch) return state;
   const nextLogicalMappings = Object.fromEntries(
     Object.entries(state.logicalProjectDraftThreadKeyByLogicalProjectKey).filter(
       ([, draftThreadKey]) => draftThreadKey !== threadKey,
@@ -2024,6 +2045,11 @@ function normalizePersistedDraftThreads(
         continue;
       }
       const normalizedEnvironmentId = environmentId as EnvironmentId;
+      const pendingAutoLaunch = normalizePendingAutoLaunch(candidateDraftThread.pendingAutoLaunch, {
+        environmentId: normalizedEnvironmentId,
+        projectId: projectId as ProjectId,
+        threadId,
+      });
       draftThreadsByThreadKey[threadKey] = {
         threadId,
         environmentId: normalizedEnvironmentId,
@@ -2074,7 +2100,10 @@ function normalizePersistedDraftThreads(
               ),
             }
           : {}),
-        promotedTo,
+        ...(pendingAutoLaunch ? { pendingAutoLaunch } : {}),
+        promotedTo: pendingAutoLaunch
+          ? scopeThreadRef(normalizedEnvironmentId, threadId)
+          : promotedTo,
       };
     }
   }
@@ -2873,6 +2902,9 @@ function toHydratedDraftThreadState(
     ...(persistedDraftThread.worktreeRepositories
       ? { worktreeRepositories: persistedDraftThread.worktreeRepositories }
       : {}),
+    ...(persistedDraftThread.pendingAutoLaunch
+      ? { pendingAutoLaunch: persistedDraftThread.pendingAutoLaunch }
+      : {}),
     promotedTo: persistedDraftThread.promotedTo
       ? scopeThreadRef(
           persistedDraftThread.promotedTo.environmentId as EnvironmentId,
@@ -2994,6 +3026,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           }
           set((state) => {
             const existingThread = state.draftThreadsByThreadKey[draftId];
+            if (existingThread?.pendingAutoLaunch) return state;
             const previousThreadKeyForLogicalProject =
               state.logicalProjectDraftThreadKeyByLogicalProjectKey[normalizedLogicalProjectKey];
             const nextDraftThread = createDraftThreadState(
@@ -3095,7 +3128,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           }
           set((state) => {
             const existing = state.draftThreadsByThreadKey[threadKey];
-            if (!existing) {
+            if (!existing || existing.pendingAutoLaunch) {
               return state;
             }
             const nextProjectRef = options.projectRef ?? {
@@ -3277,7 +3310,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           }
           set((state) => {
             const existing = state.draftThreadsByThreadKey[threadKey];
-            if (!existing?.promotedTo) {
+            if (!existing?.promotedTo || existing.pendingAutoLaunch) {
               return state;
             }
             return {
@@ -4663,6 +4696,88 @@ composerDraftLoadedState = partializeComposerDraftStoreState(composerDraftStore.
 
 export const useComposerDraftStore = composerDraftStore;
 
+export function hasUnresolvedAutoDraftLaunch(draftId: DraftId): boolean {
+  if (composerDraftStore.getState().getDraftSession(draftId)?.pendingAutoLaunch) return true;
+  try {
+    return !!readStoredComposerDraftState()?.draftThreadsByThreadKey?.[draftId]?.pendingAutoLaunch;
+  } catch {
+    return false;
+  }
+}
+
+export async function reserveAutoDraftLaunch(
+  draftId: DraftId,
+  record: AutoLaunchRecoveryRecord,
+  clearSubmitted: () => void,
+): Promise<void> {
+  const reserve = () => {
+    const session = composerDraftStore.getState().getDraftSession(draftId);
+    if (
+      !session ||
+      session.environmentId !== record.environmentId ||
+      session.projectId !== record.projectId ||
+      session.threadId !== record.threadId ||
+      hasUnresolvedAutoDraftLaunch(draftId)
+    )
+      throw new Error("This draft already has an unresolved Auto launch or has moved.");
+    if (typeof localStorage === "undefined")
+      throw new Error("Saved Auto launch recovery is unavailable in this window.");
+
+    composerDraftStore.setState((state) => ({
+      draftThreadsByThreadKey: {
+        ...state.draftThreadsByThreadKey,
+        [draftId]: {
+          ...session,
+          promotedTo: scopeThreadRef(record.environmentId, record.threadId),
+          pendingAutoLaunch: record,
+        },
+      },
+    }));
+    try {
+      clearSubmitted();
+      // Persist the reserved draft and cleared composer together, before the RPC can issue.
+      composerDebouncedStorage.flush();
+      const saved = readStoredComposerDraftState()?.draftThreadsByThreadKey?.[draftId];
+      if (!Equal.equals(saved?.pendingAutoLaunch, record))
+        throw new Error("Saved Auto launch could not be verified.");
+    } catch {
+      settleAutoDraftLaunch(draftId, record, false);
+      throw new Error("Could not save Auto launch recovery. The message was not sent.");
+    }
+  };
+
+  // Tabs for the same origin can edit the same draft. Serialize their storage check and write.
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  if (locks) await locks.request(`jones:auto-launch:${draftId}`, reserve);
+  else reserve();
+}
+
+export function settleAutoDraftLaunch(
+  draftId: DraftId,
+  record: AutoLaunchRecoveryRecord,
+  creationAccepted: boolean,
+): void {
+  const session = composerDraftStore.getState().getDraftSession(draftId);
+  if (
+    !session?.pendingAutoLaunch ||
+    session.pendingAutoLaunch === "unavailable" ||
+    session.pendingAutoLaunch.commandId !== record.commandId
+  )
+    return;
+  const { pendingAutoLaunch: _pending, ...rest } = session;
+  composerDraftStore.setState((state) => ({
+    draftThreadsByThreadKey: {
+      ...state.draftThreadsByThreadKey,
+      [draftId]: { ...rest, promotedTo: creationAccepted ? (session.promotedTo ?? null) : null },
+    },
+  }));
+  try {
+    composerDebouncedStorage.flush();
+  } catch {
+    // A stale saved record can still be reconciled using its original command.
+  }
+}
+
 export function subscribeComposerDraftModelReconciliation(input: {
   readonly registry: AtomRegistry.AtomRegistry;
   readonly threadRefsAtom: Atom.Atom<ReadonlyArray<ScopedThreadRef>>;
@@ -4885,17 +5000,21 @@ export function restoreFailedDraftThread(
   draftThread: DraftThreadState,
   threadId: ThreadId,
 ): void {
-  useComposerDraftStore.setState((state) => ({
-    draftThreadsByThreadKey: {
-      ...state.draftThreadsByThreadKey,
-      [draftId]: {
-        ...(state.draftThreadsByThreadKey[draftId] ?? draftThread),
-        threadId,
-        ...(threadId !== draftThread.threadId ? { createdAt: new Date().toISOString() } : {}),
-        promotedTo: null,
+  useComposerDraftStore.setState((state) => {
+    const current = state.draftThreadsByThreadKey[draftId];
+    if (current?.pendingAutoLaunch) return state;
+    return {
+      draftThreadsByThreadKey: {
+        ...state.draftThreadsByThreadKey,
+        [draftId]: {
+          ...(current ?? draftThread),
+          threadId,
+          ...(threadId !== draftThread.threadId ? { createdAt: new Date().toISOString() } : {}),
+          promotedTo: null,
+        },
       },
-    },
-  }));
+    };
+  });
 }
 
 export function finalizePromotedDraftThreadByRef(threadRef: ScopedThreadRef): void {
@@ -4973,6 +5092,7 @@ export function subscribeDraftThreadPromotion(input: {
     const arrived: Array<readonly [DraftId, ScopedThreadRef]> = [];
     const owned: Array<readonly [DraftId, ScopedThreadRef]> = [];
     for (const [draftId, draftThread] of Object.entries(state.draftThreadsByThreadKey)) {
+      if (draftThread.pendingAutoLaunch) continue;
       const ref =
         draftThread.promotedTo ?? scopeThreadRef(draftThread.environmentId, draftThread.threadId);
       const threadKey = scopedThreadKey(ref);
@@ -5006,7 +5126,12 @@ export function subscribeDraftThreadPromotion(input: {
           finalizing.delete(draftId);
           if (disposed) return;
           const current = composerDraftStore.getState().draftThreadsByThreadKey[draftId];
-          if (!current || !scopedThreadRefsEqual(current.promotedTo, ref)) return;
+          if (
+            !current ||
+            current.pendingAutoLaunch ||
+            !scopedThreadRefsEqual(current.promotedTo, ref)
+          )
+            return;
           finalizePromotedDraftThreadByRef(ref);
         });
       }

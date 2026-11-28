@@ -221,7 +221,15 @@
     },
     {
       "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/jones/accountRouting/autoLaunchRecovery.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
       "to": "apps/web/src/jones/accountRouting/composerAccountRouting.ts"
+    },
+    {
+      "from": "apps/web/src/composerDraftStore.ts",
+      "to": "apps/web/src/jones/accountRouting/autoLaunchRecovery.ts"
     },
     {
       "from": "packages/contracts/src/index.ts",

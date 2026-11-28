@@ -5,6 +5,10 @@ import {
   canRouteAccountForSelection,
 } from "../../jones/accountRouting/composerAccountRouting";
 import {
+  captureAutoLaunch,
+  type AutoLaunchRecoveryRecord,
+} from "../../jones/accountRouting/autoLaunchRecovery";
+import {
   resolveFirstSendWorktreePreparation,
   usesVerifiedDefault,
 } from "../../jones/composer/firstSendWorktree";
@@ -86,8 +90,11 @@ import {
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
   finalizePromotedDraftThreadByRef,
+  hasUnresolvedAutoDraftLaunch,
   markPromotedDraftThreadByRef,
+  reserveAutoDraftLaunch,
   restoreFailedDraftThread,
+  settleAutoDraftLaunch,
   checkoutPullRequestUrlToLink,
   composerDraftHasUserContent,
   composerTargetKey,
@@ -465,6 +472,17 @@ export function useComposerSend(input: ComposerSendInput) {
     },
   ) => {
     e?.preventDefault();
+    if (draftId && draftThread && hasUnresolvedAutoDraftLaunch(draftId)) {
+      setThreadError(
+        draftThread.threadId,
+        m(
+          msg(
+            "This draft has an Auto launch waiting for confirmation. Check its message for recovery options.",
+          ),
+        ),
+      );
+      return;
+    }
     // What the user pressed send on; uploads below can take a while, and a redirect must not
     // decline approvals for a draft that changed meanwhile.
     let promptAtSend = detachedOverride ? detachedOverride.prompt : promptRef.current;
@@ -1718,7 +1736,8 @@ export function useComposerSend(input: ComposerSendInput) {
       : null;
     // Keep new-thread flows from reusing this draft while attachments and worktree setup settle.
     if (sentDraftThreadRef) markPromotedDraftThreadByRef(sentDraftThreadRef);
-    const clearedComposer = clearSendingComposer();
+    let clearedComposer = accountRouting ? null : clearSendingComposer();
+    let savedAutoLaunch: AutoLaunchRecoveryRecord | undefined;
     let backgroundDraftOpened = false;
     const recoveryTarget = () =>
       draftId && !useComposerDraftStore.getState().draftThreadsByThreadKey[draftId]
@@ -1756,6 +1775,8 @@ export function useComposerSend(input: ComposerSendInput) {
       const creationAccepted =
         entry.deliveryEvidence?.kind === "launch" &&
         entry.deliveryEvidence.creation.status === "accepted";
+      if (draftId && savedAutoLaunch)
+        settleAutoDraftLaunch(draftId, savedAutoLaunch, creationAccepted);
       if (
         !creationAccepted &&
         isLocalDraftThread &&
@@ -1989,6 +2010,7 @@ export function useComposerSend(input: ComposerSendInput) {
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
       pendingSends.whenAccepted(environmentId, threadIdForSend, messageIdForSend, () => {
         turnStartSucceeded = true;
+        if (draftId && savedAutoLaunch) settleAutoDraftLaunch(draftId, savedAutoLaunch, true);
         if (sentDraftThreadRef) input.onNewThreadAccepted?.(sentDraftThreadRef);
         if (accountRouting) {
           acknowledgeAccountRouting(recoveryTarget(), submittedComposerDraft);
@@ -2018,6 +2040,22 @@ export function useComposerSend(input: ComposerSendInput) {
       });
       const startPromise = startThreadTurn({
         environmentId,
+        ...(accountRouting && draftId
+          ? {
+              beforeDispatch: async (prepared) => {
+                const record = captureAutoLaunch(
+                  prepared,
+                  { environmentId, threadId: threadIdForSend, projectId: activeProject.id },
+                  messageCreatedAt,
+                  outgoingMessageContext === undefined ? sendSnapshot.draftText : undefined,
+                );
+                await reserveAutoDraftLaunch(draftId, record, () => {
+                  clearedComposer = clearSendingComposer();
+                });
+                savedAutoLaunch = record;
+              },
+            }
+          : {}),
         input: {
           threadId: threadIdForSend,
           serverResolvesWorktreeBase:
