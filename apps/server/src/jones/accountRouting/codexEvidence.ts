@@ -1,6 +1,9 @@
 import type { QualifiedQuota, QualifiedQuotaMap } from "@t3tools/contracts";
 
-import { readAccountRoutingQuotaProof } from "../../provider/qualifiedQuota.ts";
+import {
+  makeAccountRoutingQuota,
+  readAccountRoutingQuotaProof,
+} from "../../provider/qualifiedQuota.ts";
 import {
   blockingReset,
   currentObservation,
@@ -10,18 +13,70 @@ import {
 } from "./policy.ts";
 
 const WEEK_IN_MINUTES = 7 * 24 * 60;
+type QuotaBucket = QualifiedQuotaMap[string];
+const legacyBuckets = new WeakMap<QualifiedQuota, QuotaBucket>();
+
+export function makeCodexRoutingQuota(
+  input: Parameters<typeof makeAccountRoutingQuota>[0] & { readonly legacyRateLimit: QuotaBucket },
+): QualifiedQuota {
+  const quota = makeAccountRoutingQuota(input);
+  legacyBuckets.set(quota, input.legacyRateLimit);
+  return quota;
+}
 
 function resetMillis(seconds: number | null | undefined): number | null {
   // Bound the conversion to the range supported by Date.
   return seconds != null && seconds > 0 && seconds <= 8.64e12 ? seconds * 1_000 : null;
 }
 
-function bucketApplies(id: string, bucket: QualifiedQuotaMap[string], model: string): boolean {
-  const limitId = bucket.limitId ?? id;
+function bucketApplies(id: string, bucket: QuotaBucket, model: string): boolean {
   return (
-    limitId === "codex" ||
-    bucket.normalModelSlug === model ||
-    (bucket.normalModelSlug == null && limitId === model)
+    id === "codex" ||
+    bucket.limitId === "codex" ||
+    id === model ||
+    bucket.limitId === model ||
+    bucket.normalModelSlug === model
+  );
+}
+
+function bucketBlockers(bucket: QuotaBucket, now: number): ReadonlyArray<number | null> {
+  const blockers: Array<number | null> = [];
+  for (const window of [bucket.primary, bucket.secondary]) {
+    if (window?.usedPercent !== 100) continue;
+    const reset = resetMillis(window.resetsAt);
+    if (reset === null || reset > now) blockers.push(reset);
+  }
+  const individualReset = resetMillis(bucket.individualLimit?.resetsAt);
+  const individualBlocked =
+    bucket.individualLimit?.remainingPercent === 0 &&
+    (individualReset === null || individualReset > now);
+  if (individualBlocked) blockers.push(individualReset);
+  if (bucket.spendControlReached && !individualBlocked) blockers.push(null);
+  if (
+    bucket.rateLimitReachedType != null &&
+    (bucket.rateLimitReachedType !== "rate_limit_reached" || blockers.length === 0)
+  ) {
+    blockers.push(null);
+  }
+  return blockers;
+}
+
+function conflictingBucketEvidence(a: QuotaBucket, b: QuotaBucket): boolean {
+  const disagree = (left: unknown, right: unknown) =>
+    left != null && right != null && left !== right;
+  return (
+    disagree(a.normalModelSlug, b.normalModelSlug) ||
+    disagree(a.planType, b.planType) ||
+    disagree(a.spendControlReached, b.spendControlReached) ||
+    disagree(a.rateLimitReachedType, b.rateLimitReachedType) ||
+    disagree(a.individualLimit?.remainingPercent, b.individualLimit?.remainingPercent) ||
+    disagree(a.individualLimit?.resetsAt, b.individualLimit?.resetsAt) ||
+    (["primary", "secondary"] as const).some(
+      (key) =>
+        disagree(a[key]?.usedPercent, b[key]?.usedPercent) ||
+        disagree(a[key]?.resetsAt, b[key]?.resetsAt) ||
+        disagree(a[key]?.windowDurationMins, b[key]?.windowDurationMins),
+    )
   );
 }
 
@@ -34,22 +89,29 @@ export function codexAllowance(
   const observedAt = Date.parse(quota.quotaReceivedAt ?? "");
   if (!proof || !currentObservation(observedAt, now)) return undefined;
 
-  const blockers: Array<number | null> = [];
+  const legacy = legacyBuckets.get(quota);
+  const legacyId = legacy?.limitId ?? "codex";
+  const legacyApplies = legacy !== undefined && bucketApplies(legacyId, legacy, model);
+  const blockers = legacyApplies ? [...bucketBlockers(legacy, now)] : [];
   const weekly: Array<AllowanceWindow> = [];
   let hasGeneralBucket = false;
   let complete = true;
+  let conflicting = false;
   for (const [id, bucket] of Object.entries(quota.rateLimitsByLimitId ?? {})) {
-    if (!bucketApplies(id, bucket, model)) continue;
-    hasGeneralBucket ||= (bucket.limitId ?? id) === "codex";
+    const duplicatedLegacy =
+      legacy !== undefined && (id === legacyId || bucket.limitId === legacyId);
+    if (!bucketApplies(id, bucket, model) && !(duplicatedLegacy && legacyApplies)) continue;
+    conflicting ||=
+      (bucket.limitId != null && bucket.limitId !== id) ||
+      (duplicatedLegacy && conflictingBucketEvidence(legacy, bucket));
+    hasGeneralBucket ||= id === "codex";
     const windows = [bucket.primary, bucket.secondary].filter((window) => window != null);
     if (windows.length === 0) complete = false;
-    const bucketBlockers: Array<number | null> = [];
     for (const window of windows) {
       const resetsAt = resetMillis(window.resetsAt);
       const used = window.usedPercent;
       const mins = window.windowDurationMins;
       const active = resetsAt !== null && resetsAt > now;
-      if (used === 100 && (resetsAt === null || active)) bucketBlockers.push(resetsAt);
       if (!validPercent(used) || !active || mins == null || !Number.isFinite(mins) || mins <= 0) {
         complete = false;
         continue;
@@ -57,27 +119,14 @@ export function codexAllowance(
       if (mins === WEEK_IN_MINUTES)
         weekly.push({ usedPercent: used, resetsAt, durationMs: mins * 60_000 });
     }
-    let individualBlocked = false;
-    if (bucket.individualLimit != null) {
-      const reset = resetMillis(bucket.individualLimit.resetsAt);
-      if (bucket.individualLimit.remainingPercent === 0 && (reset === null || reset > now)) {
-        bucketBlockers.push(reset);
-        individualBlocked = true;
-      }
-      complete = false;
-    }
-    if (bucket.spendControlReached && !individualBlocked) bucketBlockers.push(null);
-    if (
-      bucket.rateLimitReachedType != null &&
-      (bucket.rateLimitReachedType !== "rate_limit_reached" || bucketBlockers.length === 0)
-    )
-      bucketBlockers.push(null);
-    blockers.push(...bucketBlockers);
+    if (bucket.individualLimit != null) complete = false;
+    blockers.push(...bucketBlockers(bucket, now));
   }
 
   if (blockers.length > 0 || !proof.ordinaryUsageAllowed) {
     return { status: "blocked", resetsAt: blockingReset(blockers) };
   }
+  if (conflicting) return undefined;
   // A bucket for another model can make the complete map unqualified. Here
   // the same private observation must supply every applicable active window.
   if (

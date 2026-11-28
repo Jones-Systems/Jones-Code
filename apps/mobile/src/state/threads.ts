@@ -13,11 +13,13 @@ import {
 import { createSteadyShellAtoms } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { msg } from "gt-react-native";
 
 import { createEnvironmentCommand } from "@t3tools/client-runtime/state/runtime";
 import { observeAutomaticLaunch } from "../jones/accountRouting/observeLaunch";
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
+import { m } from "../i18n/messages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
 import {
@@ -42,7 +44,7 @@ export const threadEnvironment = createThreadEnvironmentAtoms(
   environmentShell.statusAtom,
 );
 export const observeMobileAutomaticLaunch = createEnvironmentCommand(connectionAtomRuntime, {
-  label: "observe automatic account launch",
+  label: m(msg("Observe automatic account launch")),
   execute: observeAutomaticLaunch,
 });
 export const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime);

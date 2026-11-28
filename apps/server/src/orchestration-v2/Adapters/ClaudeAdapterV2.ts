@@ -63,6 +63,12 @@ import {
 } from "../../provider/ClaudeTurnTokenUsage.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
 import { forkClaudeHistorySession } from "../../claudeHistoryWorker.ts";
+import { accountIdentityDigest } from "../../jones/accountRouting/accountBinding.ts";
+import {
+  hasNativeClaudeRoute,
+  readClaudeAutoIdentity,
+} from "../../jones/accountRouting/claudeEvidence.ts";
+import { claudeAccountConfigPath } from "../../provider/claudeResetCredits.ts";
 import {
   type CanUseTool,
   type ElicitationRequest,
@@ -832,6 +838,9 @@ export interface ClaudeAgentSdkQueryOpenInput {
   readonly options: ClaudeAgentSdkQueryOptions;
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
+  readonly verifyAutoAccount?: (
+    account: Awaited<ReturnType<ClaudeQuery["initializationResult"]>>["account"] | undefined,
+  ) => Effect.Effect<boolean>;
   /** Reports the step the CLI is on before the turn can start, such as `mcp`; `undefined` ends it. */
   readonly onStartupPhase?: (phase: string | undefined) => Effect.Effect<void>;
 }
@@ -1966,6 +1975,20 @@ export const layerQueryRunner: Layer.Layer<
           Effect.tap((queryRuntime) =>
             restore(
               Effect.gen(function* () {
+                if (input.verifyAutoAccount !== undefined) {
+                  const account = yield* Effect.tryPromise(() =>
+                    queryRuntime.initializationResult(),
+                  ).pipe(
+                    Effect.map((init) => init.account),
+                    Effect.timeout(CLAUDE_BOOT_TIMEOUT),
+                    Effect.orElseSucceed(() => undefined),
+                  );
+                  if (!(yield* input.verifyAutoAccount(account)))
+                    return yield* queryRunnerError(
+                      "The selected Claude subscription could not be verified on the running provider. Restore its original login and try again.",
+                      "verifyAutoAccount",
+                    );
+                }
                 if (mcpServers !== undefined) {
                   const timedOut = (phase: ClaudeMcpRegistrationTimeoutError["phase"]) => () =>
                     Effect.logWarning("orchestration-v2.claude-mcp-registration-timeout", {
@@ -6400,6 +6423,28 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const customHome =
     adapterOptions.settings.homePath.trim().length > 0 ||
     !(yield* usesClaudeHostConfig(adapterOptions.environment));
+  const verifyAutoAccount = (
+    digest: string,
+  ): NonNullable<ClaudeAgentSdkQueryOpenInput["verifyAutoAccount"]> =>
+    Effect.fn("ClaudeAdapterV2.verifyAutoAccount")(function* (account) {
+      const source = account?.tokenSource?.toLowerCase().replace(/[.\s_-]+/g, "");
+      const provider = (account as { readonly apiProvider?: string } | undefined)?.apiProvider;
+      if (
+        !account ||
+        !account.email?.trim() ||
+        (provider !== undefined && provider !== "firstParty") ||
+        (source !== "claudeai" && source !== "oauth") ||
+        (account.apiKeySource && account.apiKeySource !== "none")
+      )
+        return false;
+      const configPath = yield* claudeAccountConfigPath(customHome ? homePath : undefined).pipe(
+        Effect.provideService(Path.Path, path),
+      );
+      const identity = yield* readClaudeAutoIdentity(configPath, account.email).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+      );
+      return identity !== undefined && accountIdentityDigest("claudeAgent", identity) === digest;
+    });
   const announcedBypassDowngrades = new Set<ThreadId>();
   // Native session ids, so a resumed session does not repeat its notice.
   const announcedAutoFallbacks = new Set<string>();
@@ -14853,6 +14898,25 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const openQueryRuntime = Effect.gen(function* () {
             const program = yield* readProgram;
             yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            const accountDigest = turnInput.runtimePolicy.autoAccountDigest;
+            if (accountDigest !== undefined) {
+              const native =
+                queryOptions.cwd !== undefined &&
+                (yield* hasNativeClaudeRoute({
+                  cwd: queryOptions.cwd,
+                  configDir: homePath,
+                  customHome,
+                  environment: queryOptions.env ?? adapterOptions.environment ?? process.env,
+                }).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  Effect.provideService(Path.Path, path),
+                ));
+              if (!native)
+                return yield* queryRunnerError(
+                  "The selected Claude subscription route changed before startup.",
+                  "verifyAutoAccount",
+                );
+            }
             yield* (
               input.runtimeLifecycle?.admit({ runtimeGeneration, threadId: turnInput.threadId }) ??
               Effect.void
@@ -14863,6 +14927,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 threadId: turnInput.threadId,
                 providerSessionId: input.providerSessionId,
                 options: queryOptions,
+                ...(accountDigest === undefined
+                  ? {}
+                  : {
+                      verifyAutoAccount: verifyAutoAccount(accountDigest),
+                    }),
                 ...(turnInput.resume ? { resume: true } : {}),
                 onStartupPhase: reportStartupPhase,
               })

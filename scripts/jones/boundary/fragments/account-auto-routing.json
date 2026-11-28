@@ -6,9 +6,7 @@
     "apps/server/src/jones/accountRouting/",
     "apps/server/src/jones/mcp/accountRouting.ts",
     "apps/server/src/jones/mcp/launchModelSelection.ts",
-    "apps/web/src/jones/accountRouting/",
-    "packages/contracts/src/jones/accountRouting.test.ts",
-    "packages/contracts/src/jones/accountRouting.ts"
+    "apps/web/src/jones/accountRouting/"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -42,6 +40,18 @@
       "to": "apps/mobile/src/jones/accountRouting/observeLaunch.ts"
     },
     {
+      "from": "apps/mobile/src/state/use-composer-drafts.test.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-composer-drafts.test.ts",
+      "to": "packages/client-runtime/src/jones/preparedThreadTurn.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
       "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
       "to": "apps/server/src/jones/mcp/accountRouting.ts"
     },
@@ -51,11 +61,47 @@
     },
     {
       "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
       "to": "apps/server/src/jones/mcp/accountRouting.ts"
     },
     {
       "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
+      "to": "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
       "to": "apps/server/src/jones/mcp/launchModelSelection.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/accountRouting/claudeEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBindingStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
+    },
+    {
+      "from": "apps/server/src/provider/CodexProvider.ts",
+      "to": "apps/server/src/jones/accountRouting/codexEvidence.ts"
     },
     {
       "from": "apps/server/src/provider/Drivers/ClaudeDriver.ts",
@@ -72,6 +118,10 @@
     {
       "from": "apps/server/src/provider/Drivers/CodexDriver.ts",
       "to": "apps/server/src/jones/accountRouting/codexEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
     },
     {
       "from": "apps/server/src/ws.ts",

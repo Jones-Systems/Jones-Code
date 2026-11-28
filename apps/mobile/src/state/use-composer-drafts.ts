@@ -1263,6 +1263,30 @@ export async function getComposerCloudAccountId(): Promise<string | null> {
   return appAtomRegistry.get(composerCloudDraftsAtom).accountId;
 }
 
+interface ArchivedOutboxRow {
+  readonly message: QueuedThreadMessage;
+  readonly revision: number;
+}
+
+export const cloudOutboxArchiveFencesAtom = Atom.make<
+  ReadonlyMap<EnvironmentId, ReadonlyArray<ArchivedOutboxRow>>
+>(new Map()).pipe(Atom.keepAlive);
+
+/** Hold delivery from before the archive snapshot until relay removal and its cleanup finish. */
+export function beginCloudOutboxArchive(environmentIds: ReadonlySet<EnvironmentId>): () => void {
+  const next = new Map(appAtomRegistry.get(cloudOutboxArchiveFencesAtom));
+  for (const environmentId of environmentIds) {
+    if (next.has(environmentId)) throw new Error(m(msg("Could not preserve queued messages.")));
+    next.set(environmentId, []);
+  }
+  appAtomRegistry.set(cloudOutboxArchiveFencesAtom, next);
+  return () => {
+    const remaining = new Map(appAtomRegistry.get(cloudOutboxArchiveFencesAtom));
+    for (const environmentId of environmentIds) remaining.delete(environmentId);
+    appAtomRegistry.set(cloudOutboxArchiveFencesAtom, remaining);
+  };
+}
+
 export async function archiveCloudComposerDrafts(
   accountId: string | null,
   environmentIds: ReadonlySet<EnvironmentId>,
@@ -1291,8 +1315,14 @@ export async function archiveCloudComposerDrafts(
   const savedMessages = new Map(
     (cloud.signedOut[owner]?.queuedMessages ?? []).map((message) => [message.messageId, message]),
   );
+  const archivedRows = new Map<EnvironmentId, ArchivedOutboxRow[]>();
   for (const message of queued) {
-    if (environmentIds.has(message.environmentId)) savedMessages.set(message.messageId, message);
+    if (!environmentIds.has(message.environmentId)) continue;
+    savedMessages.set(message.messageId, message);
+    const row = { message, revision: threadOutboxManager.revisionOf(message.messageId) };
+    const rows = archivedRows.get(message.environmentId);
+    if (rows) rows.push(row);
+    else archivedRows.set(message.environmentId, [row]);
   }
   appAtomRegistry.set(composerDraftsAtom, remaining);
   appAtomRegistry.set(composerCloudDraftsAtom, {
@@ -1305,6 +1335,22 @@ export async function archiveCloudComposerDrafts(
   });
   schedulePersistComposerState();
   await flushComposerDrafts();
+  const fences = appAtomRegistry.get(cloudOutboxArchiveFencesAtom);
+  if (fences.size > 0) {
+    const durable = new Set(
+      appAtomRegistry.get(composerCloudDraftsAtom).signedOut[owner]?.queuedMessages,
+    );
+    const next = new Map(fences);
+    for (const [environmentId, rows] of archivedRows) {
+      if (next.has(environmentId)) {
+        next.set(
+          environmentId,
+          rows.filter(({ message }) => durable.has(message)),
+        );
+      }
+    }
+    appAtomRegistry.set(cloudOutboxArchiveFencesAtom, next);
+  }
 }
 
 function sameDraftAttachmentIds(
@@ -1409,11 +1455,11 @@ export async function restoreCloudComposerDrafts(accountId: string): Promise<voi
       throw new Error(m(msg("Could not restore queued messages.")));
     for (const message of archived.queuedMessages) {
       // Delivery can retire a snapshot while an outbox write settles. Recheck before enqueueing.
-      while (
-        appAtomRegistry
+      while (true) {
+        const stillArchived = appAtomRegistry
           .get(composerCloudDraftsAtom)
-          .signedOut[accountId]?.queuedMessages.includes(message)
-      ) {
+          .signedOut[accountId]?.queuedMessages.includes(message);
+        if (!stillArchived) break;
         const queued = Object.values(
           appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
         )
@@ -1435,10 +1481,19 @@ export async function restoreCloudComposerDrafts(accountId: string): Promise<voi
       for (const [key, draft] of Object.entries(saved.drafts)) {
         const existing = current[key];
         const attachmentIds = new Set(existing?.attachments.map((attachment) => attachment.id));
+        const selection =
+          existing?.modelSelection !== undefined || existing?.automaticAccountModel !== undefined
+            ? existing
+            : draft;
         restored[key] = existing
           ? {
               ...draft,
               ...existing,
+              modelSelection: selection.modelSelection,
+              automaticAccountModel:
+                selection.modelSelection === undefined
+                  ? selection.automaticAccountModel
+                  : undefined,
               text: mergeComposerDraftText(existing.text, draft.text),
               context: mergeReferencedComposerContext(
                 mergeComposerDraftText(existing.text, draft.text),

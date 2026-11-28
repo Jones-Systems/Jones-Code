@@ -121,6 +121,7 @@ import {
 } from "./threads";
 import {
   appendComposerDraftAttachments,
+  cloudOutboxArchiveFencesAtom,
   composerDraftsAtom,
   flushComposerDrafts,
   type ComposerDraft,
@@ -358,11 +359,10 @@ function isQueuedMessagePayloadCurrent(
 }
 
 function currentQueuedMessage(message: QueuedThreadMessage): QueuedThreadMessage | undefined {
-  return appAtomRegistry
-    .get(threadOutboxManager.queuedMessagesByThreadKeyAtom)
-    [scopedThreadKey(message.environmentId, message.threadId)]?.find(
-      (candidate) => candidate.messageId === message.messageId,
-    );
+  const messages = appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom);
+  return messages[scopedThreadKey(message.environmentId, message.threadId)]?.find(
+    (candidate) => candidate.messageId === message.messageId,
+  );
 }
 
 const forgetCloudQueuedMessage = (queuedMessage: QueuedThreadMessage) =>
@@ -804,6 +804,7 @@ const deliveryInputsAtom = Atom.make((get) => {
     }
   }
   return {
+    cloudOutboxArchiveFences: get(cloudOutboxArchiveFencesAtom),
     editingQueuedMessageIds: get(editingQueuedMessageIdsAtom),
     queuedMessagesByThreadKey,
     legacyStates,
@@ -995,7 +996,10 @@ export function createThreadOutboxDelivery(): {
       const hasAccess = () =>
         readEnvironmentScope(queuedMessage.environmentId, AuthOrchestrationOperateScope);
       const canDispatch = () =>
-        !disposed && !isEditingQueuedMessage(queuedMessage.messageId) && hasAccess();
+        !disposed &&
+        !appAtomRegistry.get(cloudOutboxArchiveFencesAtom).has(queuedMessage.environmentId) &&
+        !isEditingQueuedMessage(queuedMessage.messageId) &&
+        hasAccess();
       if (
         !canDispatch() ||
         !(yield* confirmQueued(queuedMessage)) ||
@@ -1013,8 +1017,15 @@ export function createThreadOutboxDelivery(): {
         }
         const issued = withIssuedQueuedThreadTurn(message, prepared);
         // The request, including its resolved attachments and workspace, is durable before the RPC starts.
+        // Sign-out can acquire its fence while this write waits in the outbox queue.
         const persisted = yield* storage("persist-issued-request", message.messageId, () =>
-          updateThreadOutboxMessage(issued, revision),
+          modifyThreadOutboxMessage(message.messageId, (current) =>
+            current === message &&
+            threadOutboxRevision(message.messageId) === revision &&
+            canDispatch()
+              ? issued
+              : null,
+          ),
         );
         const current = currentQueuedMessage(message);
         if (
@@ -1471,6 +1482,7 @@ export function createThreadOutboxDelivery(): {
     inputs: Atom.Type<typeof deliveryInputsAtom>,
   ): ThreadDeliveryStep {
     const {
+      cloudOutboxArchiveFences,
       editingQueuedMessageIds,
       shellStatuses,
       threads,
@@ -1481,7 +1493,7 @@ export function createThreadOutboxDelivery(): {
       legacyStates,
     } = inputs;
     const nextQueuedMessage = queuedMessages[0];
-    if (!nextQueuedMessage) {
+    if (!nextQueuedMessage || cloudOutboxArchiveFences.has(nextQueuedMessage.environmentId)) {
       return { _tag: "Wait" };
     }
     const messageId = nextQueuedMessage.messageId;

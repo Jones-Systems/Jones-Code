@@ -92,6 +92,7 @@ import { resolveMessageModelSelection } from "@t3tools/contracts";
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { queuedToolBoundaryTarget } from "./QueuedToolBoundary.ts";
 import { OwnerSelectionIngress } from "../jones/threadConfiguration/ownerIngress.ts";
+import { AccountLaunchIntent } from "../jones/accountRouting/accountBinding.ts";
 import {
   isOwnerSelectionExplicit,
   isOwnerSelectionMessage,
@@ -19582,6 +19583,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       idleWorktreeAdmission: yield* IdleWorktreeAdmission.LaunchIntent,
       linkedMessage: yield* IncomingLinkedMessage,
       ownerSelection: yield* OwnerSelectionIngress,
+      accountLaunchIntent: yield* AccountLaunchIntent,
       titleAssessment: yield* ThreadTitleAssessment,
     };
   });
@@ -20253,6 +20255,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           taskContinuation: captured.taskContinuation,
           idleWorktreeAdmission: captured.idleWorktreeAdmission,
           ownerSelection: ownerSelectionCommit(command, captured.ownerSelection, plan.events),
+          ...(captured.accountLaunchIntent?.commandId === command.commandId
+            ? { autoAccountBinding: captured.accountLaunchIntent.binding }
+            : {}),
           commandId: command.commandId,
           threadId: commandThreadId(command),
           commandType: command.type,

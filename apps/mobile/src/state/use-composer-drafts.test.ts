@@ -132,6 +132,10 @@ const composerDraftFileMocks = vi.hoisted(() => {
 
       create() {}
 
+      delete() {
+        documents.delete(this.name);
+      }
+
       async copy() {}
 
       moveSync(destination: { readonly name: string }) {
@@ -231,6 +235,7 @@ import {
   resolveQuestionImagePreparations,
 } from "./question-attachment-preparation";
 import { threadOutboxManager } from "./thread-outbox";
+import { clearThreadOutboxEnvironment } from "./thread-outbox-removal";
 import {
   decodeQueuedThreadMessage,
   QueuedThreadMessageSchema,
@@ -249,6 +254,7 @@ import {
   countComposerDraftAttachmentsAfterSelection,
   getComposerDraftAfterSelection,
   archiveCloudComposerDrafts,
+  beginCloudOutboxArchive,
   clearComposerDraftContent,
   clearComposerDraftContentState,
   consumeSubmittedComposerModelPick,
@@ -1898,6 +1904,78 @@ describe("mobile composer drafts", () => {
       resetComposerDraftsLoadState();
       await restoreCloudComposerDrafts("owner");
       expect(enqueue).toHaveBeenCalledTimes(alreadyQueued ? 1 : 2);
+    },
+  );
+
+  it("clears the copied outbox revision and retains a newer issued Auto request", async () => {
+    const issued = archivedAutoLaunch();
+    const unissued = { ...issued, issuance: { state: "unissued" } } satisfies QueuedThreadMessage;
+    const other = {
+      ...unissued,
+      messageId: MessageId.make("unchanged-during-archive"),
+      commandId: CommandId.make("unchanged-during-archive"),
+    };
+    await threadOutboxManager.enqueue(unissued);
+    await threadOutboxManager.enqueue(other);
+    const revision = threadOutboxManager.revisionOf(unissued.messageId);
+    const environments = new Set([issued.environmentId]);
+    const release = beginCloudOutboxArchive(environments);
+    const issuance = Promise.withResolvers<boolean>();
+    composerDraftFileMocks.setOnWrite(() => {
+      composerDraftFileMocks.setOnWrite(null);
+      void threadOutboxManager.update(issued, revision).then(issuance.resolve, issuance.reject);
+    });
+    try {
+      await archiveCloudComposerDrafts("owner", environments, environments);
+      await expect(issuance.promise).resolves.toBe(true);
+      expect(JSON.parse(composerDraftFileMocks.getAutoArchive()!)).toMatchObject({
+        accounts: {
+          owner: [{ issuance: { state: "unissued" } }, { issuance: { state: "unissued" } }],
+        },
+      });
+
+      await clearThreadOutboxEnvironment(issued.environmentId);
+      expect(composerDraftFileMocks.getQueuedMessage(other.messageId)).toBeUndefined();
+      const queuedFile = composerDraftFileMocks.getQueuedMessage(issued.messageId)!;
+      expect(decodeQueuedThreadMessage(JSON.parse(queuedFile))).toEqual(issued);
+    } finally {
+      release();
+    }
+
+    await restoreCloudComposerDrafts("owner");
+    const restored = Object.values(
+      appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
+    ).flat();
+    expect(restored).toHaveLength(2);
+    expect(restored).toEqual(expect.arrayContaining([issued, other]));
+  });
+
+  it.each(["manual", "auto", "untouched"] as const)(
+    "restores a coherent model selection with a %s live draft",
+    async (liveMode) => {
+      const environmentId = EnvironmentId.make("cloud-environment");
+      const key = `${environmentId}:selection-merge`;
+      const auto = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
+      const manual = { instanceId: ProviderInstanceId.make("codex-other"), model: "gpt-5.5" };
+      const archivedSelection =
+        liveMode === "auto" ? { modelSelection: manual } : { automaticAccountModel: auto };
+      const liveSelection =
+        liveMode === "manual"
+          ? { modelSelection: manual }
+          : liveMode === "auto"
+            ? { automaticAccountModel: auto }
+            : {};
+      appAtomRegistry.set(composerDraftsAtom, { [key]: { ...DRAFT, ...archivedSelection } });
+      await archiveCloudComposerDrafts("owner", new Set([environmentId]), [environmentId]);
+      appAtomRegistry.set(composerDraftsAtom, {
+        [key]: { text: "new text", attachments: [], ...liveSelection },
+      });
+
+      await restoreCloudComposerDrafts("owner");
+      const restored = getComposerDraftSnapshot(key);
+      expect(restored.text).toBe("new text\n\nhello");
+      expect(restored.modelSelection).toEqual(liveMode === "manual" ? manual : undefined);
+      expect(restored.automaticAccountModel).toEqual(liveMode === "manual" ? undefined : auto);
     },
   );
 

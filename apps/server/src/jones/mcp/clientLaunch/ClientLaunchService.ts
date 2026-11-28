@@ -24,6 +24,7 @@ import { unavailable } from "../../../mcp/threadAccess.ts";
 import { callerLinkOrigin } from "../../../mcp/linkOrigin.ts";
 import { existingAccountRoutingWorkspaceRequired } from "../accountRouting.ts";
 import { resolveAutoLaunchModel } from "../launchModelSelection.ts";
+import { withAccountLaunchBinding } from "../../accountRouting/accountBinding.ts";
 import { recordedLaunchClaim } from "../../orchestration/deliveryEvidence.ts";
 import type { StartedModes, ThreadStartGate } from "../../../mcp/McpToolAccess.ts";
 import {
@@ -377,9 +378,9 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
       modes,
       Effect.succeed(project),
     );
-    const admittedModelSelection =
+    const routedSelection =
       autoModelSelection === undefined
-        ? modelSelection
+        ? undefined
         : yield* resolveAutoLaunchModel({
             caller,
             projectId,
@@ -433,16 +434,20 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
       const result = yield* gate
         .continueWithin(
           modes,
-          invoke({
-            ...common,
-            ...(autoModelSelection !== undefined && workspaceStrategy.type === "existing_worktree"
-              ? { workspaceStrategy: { ...workspaceStrategy, worktreePath: cwd } }
-              : {}),
-            modelSelection: admittedModelSelection,
-            runtimeMode,
-            interactionMode: modes.interactionMode,
-            ...(modes.linkOrigin === undefined ? {} : { linkOrigin: modes.linkOrigin }),
-          }),
+          withAccountLaunchBinding(
+            invoke({
+              ...common,
+              ...(autoModelSelection !== undefined && workspaceStrategy.type === "existing_worktree"
+                ? { workspaceStrategy: { ...workspaceStrategy, worktreePath: cwd } }
+                : {}),
+              modelSelection: routedSelection?.modelSelection ?? modelSelection,
+              runtimeMode,
+              interactionMode: modes.interactionMode,
+              ...(modes.linkOrigin === undefined ? {} : { linkOrigin: modes.linkOrigin }),
+            }),
+            ids.commandId,
+            routedSelection?.binding,
+          ),
         )
         .pipe(
           Effect.catch((error) =>

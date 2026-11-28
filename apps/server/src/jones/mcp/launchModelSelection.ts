@@ -91,7 +91,7 @@ export const resolveAutoLaunchModel = Effect.fn("mcp.resolveAutoLaunchModel")(fu
 }) {
   yield* checkAutoAccountRuntimeCeiling(input.runtimeMode, input.caller.scope.runtimeModeCeiling);
   const router = yield* makeMcpAutoAccountSelector;
-  const { modelSelection, provider } = yield* router.select({
+  const { modelSelection, provider, binding } = yield* router.select({
     projectId: input.projectId,
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,
@@ -109,5 +109,6 @@ export const resolveAutoLaunchModel = Effect.fn("mcp.resolveAutoLaunchModel")(fu
     modelSelection,
     supportedRuntimeModes: provider.supportedRuntimeModes,
   });
-  return yield* validateProviderSelection(input.caller, provider, modelSelection);
+  const selection = yield* validateProviderSelection(input.caller, provider, modelSelection);
+  return { modelSelection: selection, binding };
 });

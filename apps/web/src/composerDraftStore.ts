@@ -361,6 +361,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
 });
 type PersistedComposerThreadDraftState = typeof PersistedComposerThreadDraftState.Type;
+const isAccountRouting = Schema.is(AccountRouting);
 
 type ProviderOptionSelectionsByProvider = Partial<
   Record<string, ReadonlyArray<ProviderOptionSelection>>
@@ -2371,7 +2372,7 @@ function normalizePersistedDraftsByThreadId(
             ...(modelSelectionExplicit &&
             activeProvider !== null &&
             modelSelectionByProvider[activeProvider] !== undefined &&
-            Schema.is(AccountRouting)(draftCandidate.accountRouting)
+            isAccountRouting(draftCandidate.accountRouting)
               ? { accountRouting: draftCandidate.accountRouting }
               : {}),
           }

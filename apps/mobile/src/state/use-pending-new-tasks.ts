@@ -12,6 +12,7 @@ import {
   type ThreadOutboxSendGate,
 } from "./pending-new-tasks-model";
 import { pendingThreadCreationOutcomesAtom, withLaunchingThreads } from "./pending-thread-creation";
+import { environmentServerConfigsAtom } from "./server";
 import { flattenQueuedThreadMessages } from "./thread-outbox-model";
 import { environmentThreadShells } from "./threads";
 import { newTaskComposerDraftsAtom } from "./use-composer-drafts";
@@ -33,6 +34,7 @@ const threadOutboxSendGateAtom = Atom.make((get): ThreadOutboxSendGate => {
   const connected = get(workspaceConnections.environmentsAtom).flatMap((environment) =>
     environment.connectionState === "connected" ? [environment.environmentId] : [],
   );
+  const serverConfigs = get(environmentServerConfigsAtom);
   return {
     connectedEnvironmentIds: new Set(connected),
     operableEnvironmentIds: new Set(
@@ -41,6 +43,12 @@ const threadOutboxSendGateAtom = Atom.make((get): ThreadOutboxSendGate => {
           get(environmentSession.sessionStateAtom(environmentId)),
           AuthOrchestrationOperateScope,
         ),
+      ),
+    ),
+    automaticAccountEnvironmentIds: new Set(
+      connected.filter(
+        (environmentId) =>
+          serverConfigs.get(environmentId)?.environment.capabilities.accountAutoRouting === true,
       ),
     ),
     shellStatuses: get(threadOutboxShellStatusesAtom),

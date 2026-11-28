@@ -45,9 +45,11 @@ import {
   planDigests,
 } from "../jones/ordinaryCheckout/CheckoutPreparationSchema.ts";
 import { makeOwnerSelectionStore } from "../jones/threadConfiguration/ownerSelectionStore.ts";
+import type { AccountBinding } from "../jones/accountRouting/accountBinding.ts";
+import { makeAccountBindingStore } from "../jones/accountRouting/accountBindingStore.ts";
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as CodexFailoverStore from "../jones/codexFailover/CodexFailoverStore.ts";
-import type { ModelSelection, MessageId } from "@t3tools/contracts";
+import type { ModelSelection, MessageId, ProviderInstanceId } from "@t3tools/contracts";
 import type { HoldReservation, RefusalReason } from "../jones/startRefusal/model.ts";
 import {
   bindRecreatedCheckout,
@@ -459,6 +461,7 @@ export interface EventSinkV2Shape {
     readonly codexFailover?: CodexFailoverCommitContext;
     readonly threadSelfConfiguration?: ThreadSelfConfigurationCommitContext;
     readonly ownerSelection?: ModelSelection | undefined;
+    readonly autoAccountBinding?: AccountBinding;
     readonly settlementRestore?: { readonly settleCommandId: CommandId };
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
@@ -560,6 +563,10 @@ export interface EventSinkV2Shape {
     run: OrchestrationV2Run,
     attempt: OrchestrationV2RunAttempt,
   ) => Effect.Effect<boolean, EventSinkV2Error>;
+  readonly readAutoAccountBinding?: (
+    threadId: ThreadId,
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<string | undefined, EventSinkV2Error>;
   readonly readByCommandId: (input: {
     readonly commandId: CommandId;
   }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
@@ -643,6 +650,7 @@ const layerBase: Layer.Layer<
     const tables = makeJonesTablePresence(sql);
     const importedHistoryCommit = yield* ImportedHistoryCommit.make;
     const ownerSelections = makeOwnerSelectionStore(sql, tables);
+    const autoAccountBindings = makeAccountBindingStore(sql, tables);
     const codexFailoverStore = yield* CodexFailoverStore.make;
     const dependencies = makeDependencyStore(
       sql,
@@ -2120,6 +2128,11 @@ const layerBase: Layer.Layer<
             });
           }
           if (input.runtimeStop !== undefined) yield* runtimeStops.record(input.runtimeStop);
+          if (input.autoAccountBinding !== undefined)
+            yield* autoAccountBindings.commit(
+              input.autoAccountBinding,
+              input.events.filter((event) => event.type === "thread.created"),
+            );
           yield* ownerSelections.commit({
             threadId: input.threadId,
             commandId: input.commandId,
@@ -2904,6 +2917,10 @@ const layerBase: Layer.Layer<
         readUnreleasedStartBirth(sql, run, attempt).pipe(
           Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })),
         ),
+      readAutoAccountBinding: (threadId, instanceId) =>
+        autoAccountBindings
+          .read(threadId, instanceId)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       readLifecycleByCommandId: ({ commandId }) =>
         Stream.fromEffect(legacyStorage.readLifecycleByCommandId(commandId)).pipe(
           Stream.flatMap(Stream.fromIterable),

@@ -8,6 +8,7 @@
       "tests": [
         "apps/server/src/jones/accountRouting/policy.test.ts",
         "apps/server/src/jones/accountRouting/launchIngress.test.ts",
+        "apps/server/src/jones/accountRouting/accountBindingStore.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
@@ -18,6 +19,7 @@
         "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts",
         "apps/mobile/src/state/use-composer-drafts.test.ts",
         "apps/mobile/src/state/threadOutboxDelivery.test.ts",
+        "apps/mobile/src/state/pending-new-tasks-model.test.ts",
         "apps/mobile/src/jones/threadConfiguration/outboxRecovery.test.ts",
         "apps/web/src/jones/pendingSends/send.test.ts",
         "apps/web/src/jones/accountRouting/composerAccountRouting.browser.test.tsx",

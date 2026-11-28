@@ -48,6 +48,7 @@ import {
   formatCodexModelName,
 } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import {
   buildServerProvider,
@@ -60,7 +61,8 @@ import {
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
-import { beginQuotaProbe, makeAccountRoutingQuota, makeQualifiedQuota } from "./qualifiedQuota.ts";
+import { beginQuotaProbe, makeQualifiedQuota } from "./qualifiedQuota.ts";
+import { makeCodexRoutingQuota } from "../jones/accountRouting/codexEvidence.ts";
 import {
   codexRateLimitsFailureMessage,
   codexRateLimitsToLimits,
@@ -98,6 +100,7 @@ const decodeCodexAutoRoute = Schema.decodeUnknownOption(
     openai_base_url: Schema.optionalKey(Schema.NullOr(Schema.String)),
     chatgpt_base_url: Schema.optionalKey(Schema.NullOr(Schema.String)),
     forced_login_method: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    model_catalog_json: Schema.optionalKey(Schema.NullOr(Schema.String)),
   }),
 );
 
@@ -107,6 +110,7 @@ export function isNativeCodexAutoRoute(config: unknown, environment: NodeJS.Proc
     Option.isNone(decoded) ||
     (decoded.value.model_provider ?? "openai") !== "openai" ||
     decoded.value.forced_login_method === "api" ||
+    !!decoded.value.model_catalog_json ||
     !!environment.OPENAI_API_KEY ||
     !!environment.CODEX_API_KEY
   ) {
@@ -123,6 +127,48 @@ export function isNativeCodexAutoRoute(config: unknown, environment: NodeJS.Proc
     matchesDefault(decoded.value.chatgpt_base_url, "https://chatgpt.com/backend-api") &&
     matchesDefault(environment.CHATGPT_BASE_URL, "https://chatgpt.com/backend-api")
   );
+}
+
+// Match CodexTextGeneration's trailing overrides. The plugin feature also gates marketplace warmup.
+const CODEX_AUTO_PROBE_CONFIG = [
+  "features.connectors=false",
+  "features.plugins=false",
+  "features.apps=false",
+  "features.codex_hooks=false",
+  "features.hooks=false",
+].flatMap((value) => ["--config", value]);
+
+const CODEX_AUTO_PROBE_CONFIG_KEYS = new Set([
+  "approval_policy",
+  "chatgpt_base_url",
+  "forced_chatgpt_workspace_id",
+  "forced_login_method",
+  "model",
+  "model_provider",
+  "model_reasoning_effort",
+  "openai_base_url",
+  "sandbox_mode",
+  "service_tier",
+]);
+
+export function codexAutoProbeConfigArgs(launchArgs: string): ReadonlyArray<string> | undefined {
+  const args = tokenizeCliArgs(launchArgs);
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!.replace(/^(-[cp])(?=[^=])/u, "$1=");
+    if (arg === "--strict-config") continue;
+    const override = /^(--config|-c|--profile|-p)(?:=(.*))?$/u.exec(arg);
+    if (!override) return undefined;
+    const value = override[2] ?? args[++index];
+    if (!value || value.startsWith("-")) return undefined;
+    if (override[1] === "--profile" || override[1] === "-p") {
+      if (!/^[\w][\w.-]*$/u.test(value)) return undefined;
+    } else {
+      const separator = value.indexOf("=");
+      if (separator < 0 || !CODEX_AUTO_PROBE_CONFIG_KEYS.has(value.slice(0, separator).trim()))
+        return undefined;
+    }
+  }
+  return CODEX_AUTO_PROBE_CONFIG;
 }
 
 const CodexCyberAccessConfig = Schema.Struct({
@@ -624,14 +670,26 @@ const requestCodexChatGptModels = Effect.fn("requestCodexChatGptModels")(functio
   readonly codexHome: string;
   readonly spawnedAtMs: number;
   readonly deadlineMs: number;
+  readonly requireFresh?: boolean;
 }) {
-  const models = yield* withCodexDiscoveryDeadline(
-    requestAllCodexModels(input.client),
-    input.deadlineMs,
-  );
-  if (models === undefined) return undefined;
+  const models = input.requireFresh
+    ? undefined
+    : yield* withCodexDiscoveryDeadline(requestAllCodexModels(input.client), input.deadlineMs);
+  if (!input.requireFresh && models === undefined) return undefined;
+  const readStamp = readCodexModelsCacheFetchedAt(input.codexHome);
+  const readValidStamp = input.requireFresh
+    ? readStamp.pipe(
+        Effect.flatMap((fetchedAtMs) =>
+          DateTime.now.pipe(
+            Effect.map((now) =>
+              fetchedAtMs <= DateTime.toEpochMillis(now) ? fetchedAtMs : Number.NaN,
+            ),
+          ),
+        ),
+      )
+    : readStamp;
   const refreshed = yield* withCodexDiscoveryDeadline(
-    readCodexModelsCacheFetchedAt(input.codexHome).pipe(
+    readValidStamp.pipe(
       Effect.repeat({
         schedule: Schedule.spaced(CODEX_CATALOG_REFRESH_POLL),
         until: (fetchedAtMs) => fetchedAtMs >= input.spawnedAtMs,
@@ -641,6 +699,7 @@ const requestCodexChatGptModels = Effect.fn("requestCodexChatGptModels")(functio
     CODEX_CATALOG_REFRESH_TIMEOUT_MS,
   );
   if (refreshed === undefined) {
+    if (input.requireFresh) return undefined;
     yield* Effect.logWarning(
       "Codex did not refresh its model catalog in time; using the cached catalog.",
     );
@@ -691,6 +750,7 @@ export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(fu
   readonly binaryPath: string;
   readonly homePath?: string | undefined;
   readonly launchArgs?: string | undefined;
+  readonly trailingArgs?: ReadonlyArray<string> | undefined;
   readonly cwd: string;
   readonly environment?: NodeJS.ProcessEnv | undefined;
 }) {
@@ -698,7 +758,7 @@ export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(fu
   const environment = yield* codexProcessEnvironment(input);
   const spawnCommand = yield* resolveSpawnCommand(
     input.binaryPath,
-    codexAppServerArgs(input.launchArgs),
+    [...codexAppServerArgs(input.launchArgs), ...(input.trailingArgs ?? [])],
     { env: environment, extendEnv: true },
   );
   const child = yield* spawner
@@ -786,6 +846,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   readonly binaryPath: string;
   readonly homePath?: string;
   readonly launchArgs?: string;
+  readonly trailingArgs?: ReadonlyArray<string>;
   readonly cwd: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly skipNativeUsage?: boolean;
@@ -797,7 +858,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   let pid: number | undefined;
   // Returning the snapshot must not wait for Codex's own startup work.
   yield* Effect.addFinalizer(() =>
-    pid === undefined
+    pid === undefined || input.routingCwd !== undefined
       ? Scope.close(processScope, Exit.void)
       : stopCodexAfterStartupWork(pid, processScope).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -825,35 +886,56 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
 
   // Optional discovery must finish before the outer timeout can discard the account result.
   const deadlineMs = spawnedAtMs + input.probeTimeoutMs - CODEX_DISCOVERY_MARGIN_MS;
-  const [skillsResponse, models, { config, nativeUsage, rateLimits }] = yield* Effect.all(
+  const readConfig = (cwd?: string) =>
+    withCodexDiscoveryDeadline(
+      client.request("config/read", {
+        includeLayers: false,
+        ...(cwd === undefined ? {} : { cwd }),
+      }),
+      deadlineMs,
+      CODEX_CONFIG_PROBE_TIMEOUT_MS,
+    ).pipe(
+      Effect.catch(() => Effect.logDebug("Codex config read failed.").pipe(Effect.as(undefined))),
+    );
+  const autoRouting = input.routingCwd !== undefined;
+  const probeConfig = readConfig(input.routingCwd).pipe(
+    Effect.flatMap((config) =>
+      autoRouting && input.routingCwd !== input.cwd
+        ? readConfig(input.cwd).pipe(Effect.map((startup) => ({ config, startup })))
+        : Effect.succeed({ config, startup: config }),
+    ),
+  );
+  const [skillsResponse, discoveredModels, { config, nativeUsage, rateLimits }] = yield* Effect.all(
     [
-      withCodexDiscoveryDeadline(client.request("skills/list", { cwds: [input.cwd] }), deadlineMs),
-      accountResponse.account?.type === "chatgpt"
-        ? requestCodexChatGptModels({
-            client,
-            codexHome: initialize.codexHome,
-            spawnedAtMs,
+      // Only account, config and model RPCs are issued by Auto. Opening a thread or
+      // asking for MCP/skill discovery can load workspace integrations.
+      autoRouting
+        ? Effect.undefined
+        : withCodexDiscoveryDeadline(
+            client.request("skills/list", { cwds: [input.cwd] }),
             deadlineMs,
-          })
-        : withCodexDiscoveryDeadline(requestAllCodexModels(client), deadlineMs),
+          ),
+      autoRouting
+        ? Effect.undefined
+        : accountResponse.account?.type === "chatgpt"
+          ? requestCodexChatGptModels({
+              client,
+              codexHome: initialize.codexHome,
+              spawnedAtMs,
+              deadlineMs,
+            })
+          : withCodexDiscoveryDeadline(requestAllCodexModels(client), deadlineMs),
       // The shared catalog must exclude config from the server's launch project.
-      withCodexDiscoveryDeadline(
-        client.request("config/read", {
-          includeLayers: false,
-          ...(input.routingCwd === undefined ? {} : { cwd: input.routingCwd }),
-        }),
-        deadlineMs,
-        CODEX_CONFIG_PROBE_TIMEOUT_MS,
-      ).pipe(
-        Effect.catch(() => Effect.logDebug("Codex config read failed.").pipe(Effect.as(undefined))),
-        Effect.flatMap((config) => {
+      probeConfig.pipe(
+        Effect.flatMap(({ config, startup }) => {
           // Only a confirmed native route may probe or publish the login's quota.
           const nativeUsage =
             !input.skipNativeUsage &&
             config !== undefined &&
             codexRoutesSpendNativeQuota(accountResponse, config.config) &&
-            (input.routingCwd === undefined ||
+            (!autoRouting ||
               (accountResponse.account?.type === "chatgpt" &&
+                isNativeCodexAutoRoute(startup?.config, input.environment ?? {}) &&
                 isNativeCodexAutoRoute(config.config, input.environment ?? {})));
           const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> = nativeUsage
             ? readCodexRateLimits(client, deadlineMs)
@@ -870,6 +952,18 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     ],
     { concurrency: "unbounded" },
   );
+
+  // Auto uses a post-refresh model list on the same native connection that observed the quota.
+  const models =
+    autoRouting && nativeUsage
+      ? yield* requestCodexChatGptModels({
+          client,
+          codexHome: initialize.codexHome,
+          spawnedAtMs,
+          deadlineMs,
+          requireFresh: true,
+        })
+      : discoveredModels;
 
   const cyberAccess = Option.getOrUndefined(decodeCodexCyberAccessConfig(config));
   return {
@@ -898,6 +992,9 @@ export const probeCodexAutoRouting = Effect.fn("probeCodexAutoRouting")(function
 }) {
   const { instanceId, settings, environment, cwd } = input;
   if (!settings.enabled || settings.setupMode === "managed") return undefined;
+  const launchArgs = resolveCodexLaunchArgs(settings.launchArgs, environment);
+  const trailingArgs = codexAutoProbeConfigArgs(launchArgs);
+  if (!trailingArgs || !isNativeCodexAutoRoute({}, environment)) return undefined;
   const attemptedAt = DateTime.formatIso(yield* DateTime.now);
   const probeTimeoutMs = Math.min(
     CODEX_AUTH_PROBE_TIMEOUT_MS,
@@ -907,7 +1004,8 @@ export const probeCodexAutoRouting = Effect.fn("probeCodexAutoRouting")(function
     probeTimeoutMs,
     binaryPath: settings.binaryPath,
     homePath: settings.homePath,
-    launchArgs: resolveCodexLaunchArgs(settings.launchArgs, environment),
+    launchArgs,
+    trailingArgs,
     cwd: process.cwd(),
     routingCwd: cwd,
     environment: providerProbeEnvironment(environment),
@@ -918,12 +1016,14 @@ export const probeCodexAutoRouting = Effect.fn("probeCodexAutoRouting")(function
   );
   if (Option.isNone(result)) return undefined;
   const { nativeUsage, account, rateLimits, models, serviceTier } = result.value;
+  const accountIdentity =
+    rateLimits && "accountId" in rateLimits ? rateLimits.accountId?.trim() : undefined;
   if (
     !nativeUsage ||
     account.account?.type !== "chatgpt" ||
     !rateLimits ||
     "failure" in rateLimits ||
-    !rateLimits.accountId?.trim() ||
+    !accountIdentity ||
     typeof rateLimits.ordinaryUsageAllowed !== "boolean" ||
     models === undefined
   ) {
@@ -931,21 +1031,22 @@ export const probeCodexAutoRouting = Effect.fn("probeCodexAutoRouting")(function
   }
   const map = rateLimits.rateLimitsByLimitId;
   const hasMap = !!map && Object.keys(map).length > 0;
-  const legacyLimitId = rateLimits.snapshot.limitId ?? "codex";
-  const quota = makeAccountRoutingQuota({
+  const quota = makeCodexRoutingQuota({
     instanceId,
     probeId: NodeCrypto.randomUUID(),
     attemptedAt,
     probeCompletedAt: DateTime.formatIso(yield* DateTime.now),
     quotaReceivedAt: rateLimits.quotaReceivedAt,
-    rateLimitsByLimitId: hasMap ? map : { [legacyLimitId]: rateLimits.snapshot },
+    rateLimitsByLimitId: map,
+    legacyRateLimit: rateLimits.snapshot,
     ordinaryUsageAllowed: rateLimits.ordinaryUsageAllowed,
-    accountId: rateLimits.accountId,
+    accountId: accountIdentity,
     models,
     // The legacy bucket can prove a block but cannot certify a complete set of model limits.
     ...(hasMap ? {} : { failureCode: "missing_map" as const }),
   });
   return {
+    accountIdentity,
     quota,
     models: applyConfiguredCodexCyberAccess(
       applyConfiguredCodexServiceTier(models, serviceTier),

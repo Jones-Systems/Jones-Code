@@ -215,6 +215,9 @@ vi.mock("./use-thread-outbox", async () => {
 vi.mock("./use-composer-drafts", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
+    cloudOutboxArchiveFencesAtom: Atom.make<ReadonlyMap<EnvironmentId, ReadonlyArray<never>>>(
+      new Map(),
+    ).pipe(Atom.keepAlive),
     composerDraftsAtom: Atom.make({}),
     removeDeliveredCloudQueuedMessage: async () => {},
     appendComposerDraftAttachments: vi.fn(),
@@ -253,6 +256,7 @@ import { dispatchingQueuedMessageIdsAtom, editingQueuedMessageIdsAtom } from "./
 const sendingMessageIds = () => Object.keys(appAtomRegistry.get(dispatchingQueuedMessageIdsAtom));
 import { threadComposerErrorsAtom } from "./thread-composer-error";
 import { createThreadOutboxDelivery } from "./threadOutboxDelivery";
+import { cloudOutboxArchiveFencesAtom } from "./use-composer-drafts";
 import { workspaceConnections } from "./workspace";
 
 const message = (overrides: Partial<QueuedThreadMessage> = {}): QueuedThreadMessage => ({
@@ -318,6 +322,7 @@ beforeEach(() => {
   state.beforeWrite.mockReset();
   state.beforeRemove.mockReset();
   state.restartManager();
+  appAtomRegistry.set(cloudOutboxArchiveFencesAtom, new Map());
   appAtomRegistry.set(dispatchingQueuedMessageIdsAtom, {});
   appAtomRegistry.set(editingQueuedMessageIdsAtom, {});
   for (const command of [
@@ -478,6 +483,31 @@ describe("automatic account launches", () => {
     expect(state.prepare).not.toHaveBeenCalled();
     expect(state.prepareTurn).not.toHaveBeenCalled();
     expect(state.start).not.toHaveBeenCalled();
+    expect(savedMessage(queued.messageId)).toEqual(queued);
+  });
+
+  it("fences Auto issuance when cloud sign-out starts during launch preparation", async () => {
+    setOperateGrant("secondary", true);
+    state.config.environment.capabilities.accountAutoRouting = true;
+    const queued = automaticTask();
+    await state.manager.enqueue(queued);
+    const preparing = Promise.withResolvers<void>();
+    const resumePreparation = Promise.withResolvers<void>();
+    const prepare = state.prepareTurn.getMockImplementation()!;
+    state.prepareTurn.mockImplementationOnce(async (input) => {
+      preparing.resolve();
+      await resumePreparation.promise;
+      return prepare(input);
+    });
+
+    const drained = runDrain();
+    await preparing.promise;
+    appAtomRegistry.set(cloudOutboxArchiveFencesAtom, new Map([[queued.environmentId, []]]));
+    resumePreparation.resolve();
+    await drained;
+
+    expect(state.start).not.toHaveBeenCalled();
+    expect(state.beforeWrite).toHaveBeenCalledExactlyOnceWith(queued);
     expect(savedMessage(queued.messageId)).toEqual(queued);
   });
 

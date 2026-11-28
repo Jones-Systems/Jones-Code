@@ -16,6 +16,8 @@ const concreteLaunch = {
 
 const decodeLaunch = Schema.decodeUnknownSync(OrchestrationV2ThreadLaunchInput);
 const decodeCapabilities = Schema.decodeUnknownSync(ExecutionEnvironmentCapabilities);
+const { accountAutoRouting: _auto, ...legacyFields } = ExecutionEnvironmentCapabilities.fields;
+const decodeLegacyCapabilities = Schema.decodeUnknownSync(Schema.Struct(legacyFields));
 
 describe("automatic account routing compatibility", () => {
   it("accepts legacy explicit selections and decodes the launch-only intent", () => {
@@ -31,9 +33,6 @@ describe("automatic account routing compatibility", () => {
     expect(decodeCapabilities({}).accountAutoRouting).toBeUndefined();
     expect(decodeCapabilities({ accountAutoRouting: true }).accountAutoRouting).toBe(true);
     expect(decodeCapabilities({ accountAutoRouting: false }).accountAutoRouting).toBe(false);
-    const { accountAutoRouting: _auto, ...legacyFields } = ExecutionEnvironmentCapabilities.fields;
-    expect(
-      Schema.decodeUnknownSync(Schema.Struct(legacyFields))({ accountAutoRouting: true }),
-    ).toEqual(decodeCapabilities({}));
+    expect(decodeLegacyCapabilities({ accountAutoRouting: true })).toEqual(decodeCapabilities({}));
   });
 });

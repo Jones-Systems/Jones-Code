@@ -501,6 +501,7 @@ it.effect(
           [166, "TaskFolderTeardown"],
           [167, "WorkflowAgentJournal"],
           [168, "PersonalWorkstreamFleet"],
+          [169, "AutoAccountBindings"],
         ],
       );
       assert.deepStrictEqual(
@@ -751,6 +752,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [166, "TaskFolderTeardown"],
       [167, "WorkflowAgentJournal"],
       [168, "PersonalWorkstreamFleet"],
+      [169, "AutoAccountBindings"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

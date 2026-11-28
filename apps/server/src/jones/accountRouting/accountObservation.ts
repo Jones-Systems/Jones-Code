@@ -5,6 +5,7 @@ import type * as Effect from "effect/Effect";
 import type { AccountAllowance } from "./policy.ts";
 
 interface AccountObservation {
+  readonly accountIdentity: string;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly allowance: (model: string, now: number) => AccountAllowance | undefined;
 }

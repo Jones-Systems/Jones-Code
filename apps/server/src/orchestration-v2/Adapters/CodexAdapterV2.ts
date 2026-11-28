@@ -84,6 +84,7 @@ import {
   buildCodexInitializeParams,
   codexAppServerEnvironment,
   codexDefaultReasoningEffortOverride,
+  isNativeCodexAutoRoute,
 } from "../../provider/CodexProvider.ts";
 import {
   codexRateLimitsToUpdate,
@@ -152,6 +153,7 @@ import type {
   RuntimeMode,
 } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
+import { accountIdentityDigest } from "../../jones/accountRouting/accountBinding.ts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import type * as CodexRpc from "effect-codex-app-server/rpc";
 import * as CodexSchema from "effect-codex-app-server/schema";
@@ -535,6 +537,38 @@ function toProtocolError(
     ...(payload === undefined ? {} : { payload }),
   });
 }
+
+const requireRoutedCodexAccount = Effect.fn("CodexAdapterV2.requireRoutedAccount")(function* (
+  client: CodexClient.CodexAppServerClient["Service"],
+  policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
+) {
+  if (policy?.autoAccountDigest === undefined) return;
+  const verify = Effect.gen(function* () {
+    const account = yield* client.request("account/read", {});
+    if (!account.requiresOpenaiAuth || account.account?.type !== "chatgpt") return false;
+    const config = yield* client.request("config/read", {
+      includeLayers: false,
+      ...(policy.cwd === null ? {} : { cwd: policy.cwd }),
+    });
+    if (!isNativeCodexAutoRoute(config.config, {})) return false;
+    const quota = yield* client.request("account/rateLimits/read", null);
+    const accountId = quota.accountId?.trim();
+    return (
+      quota.ordinaryUsageAllowed === true &&
+      !!accountId &&
+      accountIdentityDigest("codex", accountId) === policy.autoAccountDigest
+    );
+  });
+  if (
+    !(yield* verify.pipe(
+      Effect.timeout("10 seconds"),
+      Effect.orElseSucceed(() => false),
+    ))
+  )
+    return yield* toProtocolError(
+      "The selected Codex subscription could not be verified on the running provider. Restore its original login and try again.",
+    );
+});
 
 const CODEX_THREAD_IN_USE_MESSAGE =
   "This conversation is open in another Codex client, such as the Codex app, the Codex CLI, or an IDE extension. Codex lets one client write to a conversation at a time. Quit that client, then send your message again.";
@@ -9979,6 +10013,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
           // Revalidate after the asynchronous admission/continuity work, on the exact producer.
           yield* request.input.revalidateStartAdmission ?? Effect.void;
+          const producer = currentProducer;
+          yield* requireRoutedCodexAccount(producer.client, request.input.runtimePolicy);
           if (!currentCapacityBinding(request))
             return yield* toProtocolError("Native physical binding changed before dispatch.");
           // A native goal successor may have been adopted while admission ran.
@@ -9989,7 +10025,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return;
           request.startDispatched = true;
           request.startSent = true;
-          const producer = currentProducer;
           // Completion can retire the old context while the start is in flight.
           // Keep its ownership across the reply, as in upstream's start path.
           const previousTurns = new Map([
@@ -11082,6 +11117,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               });
               yield* guard;
               yield* ensureInitialized;
+              yield* requireRoutedCodexAccount(producer.client, threadInput.runtimePolicy);
               const stdioMcpServers = yield* readStdioMcpServers(threadInput.runtimePolicy.cwd);
               const mcpSession = yield* mcpSessions.read(threadInput.threadId);
               yield* guard;
@@ -11193,6 +11229,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }),
               });
               const response = yield* ensureInitialized.pipe(
+                Effect.andThen(
+                  requireRoutedCodexAccount(producer.client, threadInput.runtimePolicy),
+                ),
                 Effect.andThen(
                   appThreadId === null
                     ? resume

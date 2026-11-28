@@ -21,6 +21,7 @@ import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegist
 import * as ServerSettings from "../../serverSettings.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import { selectionAdmissionReason } from "../threadConfiguration/selectionAdmission.ts";
+import { accountIdentityDigest } from "./accountBinding.ts";
 import { accountObserverFor } from "./accountObservation.ts";
 import { chooseAccount } from "./policy.ts";
 
@@ -34,6 +35,7 @@ export class AccountAutoRoutingError extends Schema.TaggedError<AccountAutoRouti
       "no_verified_account",
       "no_available_allowance",
       "verification_unavailable",
+      "previously_rejected",
     ]),
     message: Schema.String,
     nextResetAt: Schema.optionalKey(Schema.String),
@@ -70,7 +72,8 @@ export interface SelectAutoAccountInput {
   readonly interactionMode?: ProviderInteractionMode;
   /** Existing launch directory already resolved by the caller. Omitted uses the project root. */
   readonly cwd?: string;
-  readonly candidateAllowed?: (provider: ServerProvider) => boolean;
+  readonly selectionForCandidate?: (provider: ServerProvider) => ModelSelection;
+  readonly candidateAllowed?: (provider: ServerProvider, selection: ModelSelection) => boolean;
 }
 
 /** Bind a fresh launch to an existing native instance without creating any launch state. */
@@ -193,12 +196,17 @@ export const selectAutoAccount = Effect.fn("AccountRouting.selectAutoAccount")(f
       !Object.is(registry.getCatalogSource(instance.instanceId), instance)
     )
       continue;
-    const provider = {
+    const provider: ServerProvider = {
       ...snapshot,
       installed: true, // The contextual native probe started this exact executable.
+      status: "ready",
+      auth: { status: "authenticated" },
       models: observation.models.filter((model) => !model.isCustom),
     };
-    const selection = { ...input.modelSelection, instanceId: instance.instanceId };
+    const selection = input.selectionForCandidate?.(provider) ?? {
+      ...input.modelSelection,
+      instanceId: instance.instanceId,
+    };
     if (
       selectionAdmissionReason({
         providers: [provider],
@@ -206,15 +214,31 @@ export const selectAutoAccount = Effect.fn("AccountRouting.selectAutoAccount")(f
         settings,
         projectId: input.projectId,
       }) ||
-      input.candidateAllowed?.(provider) === false
+      input.candidateAllowed?.(provider, selection) === false
     )
       continue;
     const allowance = observation.allowance(selection.model, now);
-    if (allowance !== undefined) members.push({ instanceId: instance.instanceId, allowance });
+    if (allowance !== undefined)
+      members.push({
+        instanceId: instance.instanceId,
+        allowance,
+        identity: observation.accountIdentity,
+        selection,
+      });
   }
 
   const winner = chooseAccount(driver, members, now);
-  if ("instanceId" in winner) return { ...input.modelSelection, instanceId: winner.instanceId };
+  if ("instanceId" in winner) {
+    const selected = members.find((member) => member.instanceId === winner.instanceId);
+    if (selected === undefined) return yield* verificationUnavailable();
+    return {
+      modelSelection: selected.selection,
+      binding: {
+        instanceId: winner.instanceId,
+        digest: accountIdentityDigest(driver, selected.identity),
+      },
+    };
+  }
   const nextResetAt =
     winner.nextReset === null
       ? undefined

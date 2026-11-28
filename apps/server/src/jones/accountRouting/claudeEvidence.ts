@@ -1,24 +1,27 @@
 import { resolveSettings } from "@anthropic-ai/claude-agent-sdk";
-import type { ClaudeSettings } from "@t3tools/contracts";
+import type { ClaudeSettings, ServerProviderModel } from "@t3tools/contracts";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
 import {
   checkClaudeProviderStatus,
+  parseClaudeEffortCapSources,
   probeClaudeCapabilities,
   type ClaudeCapabilitiesProbe,
 } from "../../provider/ClaudeProvider.ts";
 import {
+  capClaudeCatalogEffort,
+  normalizeClaudeCatalogEffort,
   resolveClaudeReportedModelSlug,
   type ClaudeModelCatalog,
 } from "../../provider/ClaudeModelCatalog.ts";
 import { windowLimitsModel } from "../../provider/claudeUsageLimits.ts";
+import { claudeAccountConfigPath } from "../../provider/claudeResetCredits.ts";
 import { claudeLocalSettingsDirectory } from "../../provider/Drivers/ClaudeHome.ts";
 import { classifyClaudeEvaluatorLaunchArgs } from "../../textGeneration/jones/claudeEvaluatorLaunch.ts";
 import {
@@ -55,6 +58,15 @@ function hasClaudeSubscription(probe: ClaudeCapabilitiesProbe): boolean {
     (!probe.apiKeySource || probe.apiKeySource === "none") &&
     SUBSCRIPTION_TYPES.has(probe.subscriptionType?.toLowerCase().replace(/[\s_-]+/g, "") ?? "")
   );
+}
+
+export function claudeAutoAccountIdentity(
+  workspaceId: string | null | undefined,
+  email: string | null | undefined,
+): string | undefined {
+  const workspace = workspaceId?.trim().toLowerCase();
+  const address = email?.trim().toLowerCase();
+  return workspace && address ? JSON.stringify([workspace, address]) : undefined;
 }
 
 const ALTERNATE_CREDENTIALS = [
@@ -98,7 +110,7 @@ function hasAlternateRoute(
   const base = environment.ANTHROPIC_BASE_URL;
   if (base == null || base === "") return false;
   const url = typeof base === "string" ? URL.parse(base) : null;
-  return url?.origin !== "https://api.anthropic.com" || !!url.username || !!url.password;
+  return url?.href.replace(/\/$/, "") !== "https://api.anthropic.com";
 }
 
 const SettingsObject = Schema.Record(Schema.String, Schema.Unknown);
@@ -106,20 +118,30 @@ const decodeSettings = Schema.decodeUnknownEffect(fromLenientJson(SettingsObject
 const asSettings = Schema.decodeUnknownOption(SettingsObject);
 
 function hasAlternateSettings(settings: Readonly<Record<string, unknown>>): boolean {
-  if (settings.apiKeyHelper || settings.awsAuthRefresh || settings.awsCredentialExport) return true;
+  if (
+    settings.apiKeyHelper ||
+    settings.awsAuthRefresh ||
+    settings.awsCredentialExport ||
+    settings.policyHelper
+  )
+    return true;
+  if (settings.modelOverrides != null) {
+    const overrides = asSettings(settings.modelOverrides);
+    if (overrides._tag !== "Some" || Object.keys(overrides.value).length > 0) return true;
+  }
   if (settings.env === undefined) return false;
   const env = asSettings(settings.env);
   return env._tag !== "Some" || hasAlternateRoute(env.value);
 }
 
 /** Inspect the same workspace-local and account settings that can supersede the spawn environment. */
-const hasNativeClaudeRoute = Effect.fn("AccountRouting.hasNativeClaudeRoute")(function* (input: {
+const readNativeClaudeRoute = Effect.fn("AccountRouting.readNativeClaudeRoute")(function* (input: {
   readonly cwd: string;
   readonly configDir: string;
   readonly customHome: boolean;
   readonly environment: NodeJS.ProcessEnv;
 }) {
-  if (hasAlternateRoute(input.environment, true)) return false;
+  if (hasAlternateRoute(input.environment, true)) return undefined;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const localRoot = yield* claudeLocalSettingsDirectory(input.cwd);
@@ -130,31 +152,139 @@ const hasNativeClaudeRoute = Effect.fn("AccountRouting.hasNativeClaudeRoute")(fu
     path.join(input.cwd, ".claude", "settings.local.json"),
     ...(localRoot === input.cwd ? [] : [path.join(localRoot, ".claude", "settings.local.json")]),
   ];
-  const localNative = yield* Effect.forEach(paths, (file) =>
+  const localSettings = yield* Effect.forEach(paths, (file) =>
     fs.readFileString(file).pipe(
       Effect.flatMap(decodeSettings),
-      Effect.map((settings) => !hasAlternateSettings(settings)),
-      Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(true)),
-      Effect.orElseSucceed(() => false),
+      Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(null)),
+      Effect.orElseSucceed(() => undefined),
     ),
   );
-  if (!localNative.every(Boolean)) return false;
+  if (localSettings.some((settings) => settings === undefined)) return undefined;
   return yield* Effect.tryPromise({
     try: () =>
       resolveSettings({
         cwd: input.cwd,
         settingSources: input.customHome ? ["project", "local"] : ["user", "project", "local"],
       }),
-    catch: () => false,
+    catch: () => undefined,
   }).pipe(
-    Effect.map(({ effective, sources }) =>
-      [effective, ...sources.map(({ settings }) => settings)].every(
-        (settings) => !hasAlternateSettings(settings),
-      ),
-    ),
-    Effect.orElseSucceed(() => false),
+    Effect.map(({ effective, sources }) => {
+      const records = [
+        ...localSettings.filter((settings) => settings != null),
+        ...sources.map(({ settings }) => settings),
+      ];
+      return [effective, ...records].some(hasAlternateSettings) ? undefined : records;
+    }),
+    Effect.orElseSucceed(() => undefined),
   );
 });
+
+export const hasNativeClaudeRoute = Effect.fn("AccountRouting.hasNativeClaudeRoute")(function* (
+  input: Parameters<typeof readNativeClaudeRoute>[0],
+) {
+  return (yield* readNativeClaudeRoute(input)) !== undefined;
+});
+
+const decodeClaudeAccountMetadata = Schema.decodeUnknownEffect(
+  fromLenientJson(
+    Schema.Struct({
+      oauthAccount: Schema.Struct({ organizationUuid: Schema.String, emailAddress: Schema.String }),
+    }),
+  ),
+);
+
+export const readClaudeAutoIdentity = Effect.fn("AccountRouting.readClaudeAutoIdentity")(function* (
+  configPath: string,
+  email?: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readFileString(configPath).pipe(
+    Effect.flatMap(decodeClaudeAccountMetadata),
+    Effect.map(({ oauthAccount }) => {
+      const identity = claudeAutoAccountIdentity(
+        oauthAccount.organizationUuid,
+        oauthAccount.emailAddress,
+      );
+      return email === undefined ||
+        identity === claudeAutoAccountIdentity(oauthAccount.organizationUuid, email)
+        ? identity
+        : undefined;
+    }),
+    Effect.orElseSucceed(() => undefined),
+  );
+});
+
+export function claudeAutoModels(
+  catalog: ClaudeModelCatalog,
+  models: ReadonlyArray<ServerProviderModel>,
+  capabilities: ClaudeCapabilitiesProbe,
+): ReadonlyArray<ServerProviderModel> {
+  // The display helper needs a level at or below the cap in order to relabel an option.
+  // Supply a low option only to the cap calculation for models without a low effort.
+  const capInputs = models.map((model) => {
+    if (!model.capabilities?.optionDescriptors) return model;
+    return {
+      ...model,
+      capabilities: {
+        ...model.capabilities,
+        optionDescriptors: model.capabilities.optionDescriptors.map((descriptor) =>
+          descriptor.id === "effort" &&
+          descriptor.type === "select" &&
+          !descriptor.options.some(({ id }) => id === "low")
+            ? { ...descriptor, options: [...descriptor.options, { id: "low", label: "Low" }] }
+            : descriptor,
+        ),
+      },
+    };
+  });
+  const capped = new Map(
+    capClaudeCatalogEffort(catalog, capInputs, capabilities.effortCapSources ?? []).map((model) => [
+      model.slug,
+      model,
+    ]),
+  );
+  return models.flatMap((model) => {
+    if (model.isCustom) return [];
+    const native = (capabilities.models ?? []).filter(
+      ({ value, resolvedModel }) =>
+        value !== "default" &&
+        resolveClaudeReportedModelSlug(catalog, resolvedModel ?? value) === model.slug,
+    );
+    if (native.length === 0) return [];
+    const descriptors = model.capabilities?.optionDescriptors;
+    if (!descriptors || !model.capabilities) return [model];
+    const effectiveEffort = capped
+      .get(model.slug)
+      ?.capabilities?.optionDescriptors?.find((descriptor) => descriptor.id === "effort");
+    return [
+      {
+        ...model,
+        capabilities: {
+          ...model.capabilities,
+          optionDescriptors: descriptors.map((descriptor) => {
+            if (descriptor.id !== "effort" || descriptor.type !== "select") return descriptor;
+            const options = descriptor.options.filter((option) => {
+              if (option.id === "default") return true;
+              const nativeEffort = normalizeClaudeCatalogEffort(catalog, option.id, model.slug);
+              return (
+                effectiveEffort?.type === "select" &&
+                effectiveEffort.options.some(
+                  ({ id, label }) => id === option.id && label === option.label,
+                ) &&
+                native.every(
+                  ({ supportsEffort, supportedEffortLevels }) =>
+                    supportsEffort !== false &&
+                    supportedEffortLevels?.some((effort) => effort === nativeEffort),
+                )
+              );
+            });
+            return { ...descriptor, options };
+          }),
+        },
+      },
+    ];
+  });
+}
 
 export const observeClaudeNativeAccount = Effect.fn("AccountRouting.observeClaudeNativeAccount")(
   function* (input: {
@@ -165,41 +295,54 @@ export const observeClaudeNativeAccount = Effect.fn("AccountRouting.observeClaud
     readonly environment: NodeJS.ProcessEnv;
     readonly catalog: ClaudeModelCatalog;
   }) {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
+    if (!input.settings.enabled) return undefined;
     const args = classifyClaudeEvaluatorLaunchArgs(input.settings.launchArgs);
-    // The stock promptless probe owns its setting sources and model selection.
+    // Auto's promptless probe owns its setting sources and model selection.
     const modelOverridden = tokenizeCliArgs(input.settings.launchArgs).some((arg) =>
       /^--(?:fallback-)?model(?:=|$)/.test(arg),
     );
     if (!args.qualified || args.args.length > 0 || modelOverridden) return undefined;
-    if (!(yield* hasNativeClaudeRoute(input))) return undefined;
+    const routeSettings = yield* readNativeClaudeRoute(input);
+    if (!routeSettings) return undefined;
+    const accountConfig = yield* claudeAccountConfigPath(
+      input.settings.homePath.trim() || input.environment.CLAUDE_CONFIG_DIR?.trim()
+        ? input.configDir
+        : undefined,
+    );
+    const priorIdentity = yield* readClaudeAutoIdentity(accountConfig);
+    if (!priorIdentity) return undefined;
     const observedAt = yield* Clock.currentTimeMillis;
-    const capabilities = yield* Ref.make<ClaudeCapabilitiesProbe | undefined>(undefined);
+    const verified = yield* probeClaudeCapabilities(
+      input.settings,
+      input.environment,
+      input.cwd,
+      true,
+      true,
+    ).pipe(Effect.orElseSucceed(() => undefined));
+    if (!verified || !hasClaudeSubscription(verified)) return undefined;
+    const accountIdentity = yield* readClaudeAutoIdentity(accountConfig, verified.email);
+    if (accountIdentity !== priorIdentity) return undefined;
+    const { effortCapSources: managedCaps, ...uncapped } = verified;
     const draft = yield* checkClaudeProviderStatus(
       input.settings,
-      () =>
-        probeClaudeCapabilities(input.settings, input.environment, input.cwd).pipe(
-          Effect.tap((probe) => Ref.set(capabilities, probe)),
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-        ),
+      () => Effect.succeed(uncapped),
       input.environment,
       input.cwd,
       input.catalog,
+      undefined,
+      undefined,
+      true,
     );
-    const verified = yield* Ref.get(capabilities);
-    if (!verified || !hasClaudeSubscription(verified)) return undefined;
     if (draft.auth.status !== "authenticated" || draft.auth.endpoint) return undefined;
-    const advertised = new Set(
-      (verified.models ?? []).flatMap(({ value, resolvedModel }) =>
-        [value, resolvedModel].flatMap((id) =>
-          id === undefined ? [] : [resolveClaudeReportedModelSlug(input.catalog, id)],
-        ),
-      ),
-    );
+    const launchCaps = parseClaudeEffortCapSources({
+      sources: routeSettings.map((settings) => ({ settings })),
+    });
     return {
-      models: draft.models.filter((model) => advertised.has(model.slug)),
+      accountIdentity,
+      models: claudeAutoModels(input.catalog, draft.models, {
+        ...verified,
+        effortCapSources: [...(launchCaps ?? []), ...(managedCaps ?? [])],
+      }),
       allowance: (model: string, now: number) =>
         claudeProbeAllowance(verified, model, observedAt, now),
     };
@@ -219,8 +362,7 @@ export function claudeProbeAllowance(
   const checkedAt = capabilities.usageCheckedAt ?? "";
   if (!currentObservation(Date.parse(checkedAt), now)) return undefined;
   const limits = capabilities.usage.rate_limits;
-  if (!capabilities.usage.rate_limits_available || !limits)
-    return limits?.extra_usage?.is_enabled ? undefined : { status: "unknown" as const };
+  if (!limits) return { status: "unknown" as const };
   const modelNames = [model];
   for (const reported of capabilities.models ?? []) {
     if (reported.value === model && reported.resolvedModel) modelNames.push(reported.resolvedModel);
@@ -229,30 +371,44 @@ export function claudeProbeAllowance(
   const week = 7 * 24 * hour;
   const session = readWindow(limits.five_hour, 5 * hour);
   const overallWeek = readWindow(limits.seven_day, week);
-  const scoped = limits as { readonly model_scoped?: unknown; readonly seven_day_sonnet?: unknown };
+  const scoped = limits as {
+    readonly model_scoped?: unknown;
+    readonly seven_day_sonnet?: unknown;
+    readonly spend?: unknown;
+  };
   const applicable = [
     { id: "seven_day_opus", value: limits.seven_day_opus },
     { id: "seven_day_sonnet", value: scoped.seven_day_sonnet },
     ...readScopedWindows(scoped.model_scoped),
-  ].filter((window) => modelNames.some((name) => windowLimitsModel(window, name)));
-  const weekly = [overallWeek, ...applicable.map(({ value }) => readWindow(value, week))].filter(
-    (window) => window !== undefined,
+  ].filter(
+    ({ id, value }) =>
+      id === undefined ||
+      (value != null && modelNames.some((name) => windowLimitsModel({ id }, name))),
   );
-  const allowance = claudeAllowance({ session, weekly, hasOverallWeek: !!overallWeek, now });
-  return allowance.status === "unknown" && limits.extra_usage?.is_enabled ? undefined : allowance;
+  const scopedWindows = applicable.map(({ id, value }) =>
+    id === undefined ? undefined : readWindow(value, week),
+  );
+  const weekly = [overallWeek, ...scopedWindows].filter((window) => window !== undefined);
+  const allowance = claudeAllowance({
+    session,
+    weekly,
+    hasOverallWeek: capabilities.usage.rate_limits_available === true && !!overallWeek,
+    hasUnreadableWindows: scopedWindows.some((window) => window === undefined),
+    now,
+  });
+  const paid = asSettings(scoped.spend);
+  const mayUsePaidAllowance =
+    (limits.extra_usage != null && limits.extra_usage.is_enabled !== false) ||
+    (scoped.spend != null && (paid._tag !== "Some" || paid.value.enabled !== false));
+  return allowance.status === "unknown" && mayUsePaidAllowance ? undefined : allowance;
 }
 
-const readRawWindow = Schema.decodeUnknownOption(
-  Schema.Struct({
-    utilization: Schema.Number,
-    resets_at: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  }),
-);
-
 function readWindow(raw: unknown, durationMs: number): AllowanceWindow | undefined {
-  const result = readRawWindow(raw);
+  const result = asSettings(raw);
   if (result._tag !== "Some" || !validPercent(result.value.utilization)) return undefined;
-  const reset = Date.parse(result.value.resets_at ?? "");
+  const reset = Date.parse(
+    typeof result.value.resets_at === "string" ? result.value.resets_at : "",
+  );
   return {
     usedPercent: result.value.utilization,
     resetsAt: Number.isFinite(reset) ? reset : null,
@@ -262,12 +418,19 @@ function readWindow(raw: unknown, durationMs: number): AllowanceWindow | undefin
 
 function readScopedWindows(
   raw: unknown,
-): ReadonlyArray<{ readonly id: string; readonly value: unknown }> {
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((entry: unknown) => {
+): ReadonlyArray<{ readonly id?: string; readonly value: unknown }> {
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) return [{ value: raw }];
+  return raw.map((entry: unknown) => {
     const value = asSettings(entry);
-    if (value._tag !== "Some" || typeof value.value.display_name !== "string") return [];
-    const id = value.value.display_name.toLowerCase().replace(/[^a-z0-9]+/g, "_");
-    return id ? [{ id: `seven_day_${id}`, value: value.value }] : [];
+    if (value._tag !== "Some" || typeof value.value.display_name !== "string")
+      return { value: entry };
+    const name = value.value.display_name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_");
+    return /[a-z0-9]/.test(name)
+      ? { id: `seven_day_${name}`, value: value.value }
+      : { value: entry };
   });
 }

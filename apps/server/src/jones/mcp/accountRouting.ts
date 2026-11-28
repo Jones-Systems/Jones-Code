@@ -95,10 +95,10 @@ export const makeMcpAutoAccountSelector = Effect.gen(function* () {
       if (Option.isNone(dependencies)) return yield* unavailable();
       const services = dependencies.value;
       const candidates = new Map<ProviderInstanceId, ServerProvider>();
-      const modelSelection = yield* selectAutoAccount({
+      const selected = yield* selectAutoAccount({
         ...input,
-        candidateAllowed: (provider) => {
-          if (input.candidateAllowed?.(provider) === false) return false;
+        candidateAllowed: (provider, selection) => {
+          if (input.candidateAllowed?.(provider, selection) === false) return false;
           candidates.set(provider.instanceId, provider);
           return true;
         },
@@ -112,9 +112,9 @@ export const makeMcpAutoAccountSelector = Effect.gen(function* () {
         Effect.provideService(ServerSettings.ServerSettingsService, settings),
         Effect.mapError(fromAutoAccountError),
       );
-      const provider = candidates.get(modelSelection.instanceId);
+      const provider = candidates.get(selected.modelSelection.instanceId);
       if (provider === undefined) return yield* unavailable();
-      return { provider, modelSelection };
+      return { ...selected, provider };
     }),
   };
 });

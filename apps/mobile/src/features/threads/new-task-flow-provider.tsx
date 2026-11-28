@@ -5,7 +5,7 @@ import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { useNowMinuteMs } from "../../lib/clock";
 import { m, type MessageResolver } from "../../i18n/messages";
 import * as Dialog from "../../components/ui/Dialog";
-import React, { useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 
 import type {
   EnvironmentId,
@@ -507,11 +507,18 @@ export function NewTaskFlowProvider(
     storedStickyModelSelection,
     selectedProject?.id ?? null,
   );
-  const modelOptions = buildModelOptions(
-    selectedEnvironmentServerConfig,
-    draftModelSelection ?? projectDefaultModelSelection ?? stickyModelSelection,
-    undefined,
-    selectedProject?.id ?? null,
+  const catalogModelSelection =
+    draftModelSelection ?? projectDefaultModelSelection ?? stickyModelSelection;
+  const catalogProjectId = selectedProject?.id ?? null;
+  const modelOptions = useMemo(
+    () =>
+      buildModelOptions(
+        selectedEnvironmentServerConfig,
+        catalogModelSelection,
+        undefined,
+        catalogProjectId,
+      ),
+    [selectedEnvironmentServerConfig, catalogModelSelection, catalogProjectId],
   );
 
   const selectedDefaultModel = resolveNewTaskModelSelection({
@@ -572,7 +579,9 @@ export function NewTaskFlowProvider(
     if (!key || !selectedProjectDraftKey) {
       return;
     }
-    const option = [...autoOptions, ...modelOptions].find((candidate) => candidate.key === key);
+    const option =
+      autoOptions.find((candidate) => candidate.key === key) ??
+      modelOptions.find((candidate) => candidate.key === key);
     if (!option) {
       return;
     }

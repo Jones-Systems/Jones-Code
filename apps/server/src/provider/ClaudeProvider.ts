@@ -275,6 +275,7 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
   readonly cwd: string | undefined;
   readonly managedMcpConfig: boolean;
   readonly spawnVia: "env" | "launcher-thread" | undefined;
+  readonly autoRouting?: boolean;
 }): ClaudeQueryOptions {
   return {
     ...(input.spawnVia === "env" ? { spawnClaudeCodeProcess: spawnClaudeProbeThroughEnv } : {}),
@@ -284,17 +285,19 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
     persistSession: false,
     pathToClaudeCodeExecutable: input.executablePath,
     abortController: input.abortController,
-    settingSources: [...CLAUDE_CAPABILITIES_PROBE_SETTING_SOURCES],
+    settingSources: input.autoRouting ? [] : [...CLAUDE_CAPABILITIES_PROBE_SETTING_SOURCES],
     // Keep settings for slash-command discovery, but disable hooks so health checks do not run SessionStart repeatedly.
     settings: { disableAllHooks: true },
     allowedTools: [],
+    ...(input.autoRouting ? { tools: [], plugins: [] } : {}),
     // Exclude filesystem MCP servers; omit strict mode when managed-mcp.json already excludes them and forbids the flag.
     mcpServers: {},
-    ...(input.managedMcpConfig ? {} : { strictMcpConfig: true }),
+    ...(input.autoRouting || !input.managedMcpConfig ? { strictMcpConfig: true } : {}),
     env: {
       ...providerProbeEnvironment(input.environment),
       // Disable claude.ai MCP separately; it is discovered outside filesystem config.
       ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+      ...(input.autoRouting ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" } : {}),
       // Skipping this avoids a Windows tasklist | findstr process tree on every refresh.
       FORCE_CODE_TERMINAL: undefined,
       CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
@@ -374,7 +377,7 @@ function parseClaudeEffortCapSource(settings: unknown): ClaudeEffortCapSource | 
 
 // `sources` holds each settings file's raw settings. CLIs that report only the merged `effective`
 // settings are read as a single source.
-function parseClaudeEffortCapSources(
+export function parseClaudeEffortCapSources(
   settings: { readonly effective?: unknown; readonly sources?: unknown } | undefined,
 ): ReadonlyArray<ClaudeEffortCapSource> | undefined {
   const sources = Array.isArray(settings?.sources)
@@ -478,7 +481,10 @@ function claudeGatewayDiscoveryGraceMs(environment: Readonly<Record<string, unkn
 
 class ClaudeCapabilitiesProbeSdkError extends Schema.TaggedError<ClaudeCapabilitiesProbeSdkError>()(
   "ClaudeCapabilitiesProbeSdkError",
-  { operation: Schema.Literals(["initialize", "usage", "settings"]), cause: Schema.Defect() },
+  {
+    operation: Schema.Literals(["initialize", "usage", "settings", "managedMcp"]),
+    cause: Schema.Defect(),
+  },
 ) {
   override get message(): string {
     return `Claude capability probe ${this.operation} failed.`;
@@ -491,6 +497,7 @@ const probeClaudeCapabilities = (
   environment?: NodeJS.ProcessEnv,
   cwd?: string,
   includeStatus = true,
+  autoRouting = false,
 ) => {
   const abort = new AbortController();
   const abortProbe = Effect.sync(() => {
@@ -498,18 +505,25 @@ const probeClaudeCapabilities = (
   });
   return Effect.gen(function* () {
     const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+    const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
+    if (autoRouting && managedMcpConfig) {
+      return yield* new ClaudeCapabilitiesProbeSdkError({
+        operation: "managedMcp",
+        cause: "Managed MCP cannot be suppressed by this probe.",
+      });
+    }
     const executablePath = yield* resolveClaudeSdkExecutablePath(
       claudeSettings.binaryPath,
       claudeEnvironment,
     );
-    const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
     // Workspace probes (no usage) discard models; the machine probe refreshes the shared cache.
-    const graceMs = includeStatus
-      ? claudeGatewayDiscoveryGraceMs({
-          ...claudeEnvironment,
-          ...(yield* readClaudeSettingsEnv(claudeSettings, cwd, claudeEnvironment)),
-        })
-      : 0;
+    const graceMs =
+      includeStatus && !autoRouting
+        ? claudeGatewayDiscoveryGraceMs({
+            ...claudeEnvironment,
+            ...(yield* readClaudeSettingsEnv(claudeSettings, cwd, claudeEnvironment)),
+          })
+        : 0;
     const platform = yield* HostProcess.Platform;
     const spawnVia =
       platform === "win32"
@@ -531,6 +545,7 @@ const probeClaudeCapabilities = (
             cwd,
             managedMcpConfig,
             spawnVia,
+            autoRouting,
           }),
         });
         const init = await q.initializationResult();
@@ -579,6 +594,12 @@ const probeClaudeCapabilities = (
                 rate_limits: usageResult.success.rate_limits,
               }
             : undefined;
+        if (autoRouting && (!settingsResult || Result.isFailure(settingsResult))) {
+          return yield* new ClaudeCapabilitiesProbeSdkError({
+            operation: "settings",
+            cause: "Effective settings were unavailable from the strict probe.",
+          });
+        }
         const effortCapSources = parseClaudeEffortCapSources(
           settingsResult && Result.isSuccess(settingsResult) ? settingsResult.success : undefined,
         );
@@ -675,6 +696,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   /** Shared with the adapter so turn events reuse the scoped-bucket names this probe saw. */
   scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>,
   resolveResetCredits?: (version: string) => Effect.Effect<ServerProviderResetCredits | undefined>,
+  skipSkills = false,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -798,7 +820,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     ),
     capabilities?.effortCapSources ?? [],
   );
-  const skills = yield* discoverClaudeSkills(claudeSettings, cwd, resolvedEnvironment);
+  const skills = skipSkills
+    ? []
+    : yield* discoverClaudeSkills(claudeSettings, cwd, resolvedEnvironment);
   const slashCommands = [COMPACT_SLASH_COMMAND, ...(capabilities?.slashCommands ?? [])];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 

@@ -99,6 +99,7 @@ export function resolvePendingDraftBranch(input: {
 export interface ThreadOutboxSendGate {
   readonly connectedEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly operableEnvironmentIds: ReadonlySet<EnvironmentId>;
+  readonly automaticAccountEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly shellStatuses: ReadonlyMap<EnvironmentId, EnvironmentShellStatus>;
   readonly retryingMessageIds: Readonly<Partial<Record<MessageId, true>>>;
 }
@@ -111,6 +112,8 @@ export function isQueuedCreationSending(
   const environmentId = message.environmentId;
   return (
     isQueuedThreadCreationSendable(message) &&
+    (message.accountRouting === undefined ||
+      gate.automaticAccountEnvironmentIds.has(environmentId)) &&
     gate.retryingMessageIds[message.messageId] !== true &&
     gate.operableEnvironmentIds.has(environmentId) &&
     resolveThreadOutboxDeliveryAction({

@@ -50,6 +50,7 @@ import {
   resolveRuntimeMode,
 } from "../../delegatedTaskModes.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import { withAccountLaunchBinding } from "../../../jones/accountRouting/accountBinding.ts";
 import {
   existingAccountRoutingWorkspaceRequired,
   localAccountRoutingRequired,
@@ -529,10 +530,10 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
           Effect.orElseSucceed(() => runtimeMode),
         )
       : runtimeMode;
-  let routedModelSelection;
+  let routedSelection;
   if (input.accountRouting !== undefined) {
     if (cwd === undefined || input.modelSelection === undefined) return yield* unavailable();
-    routedModelSelection = yield* resolveAutoLaunchModel({
+    routedSelection = yield* resolveAutoLaunchModel({
       caller: context,
       projectId,
       modelSelection: input.modelSelection,
@@ -542,7 +543,7 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
     });
   }
   const modelSelection =
-    routedModelSelection ??
+    routedSelection?.modelSelection ??
     validatedModelSelection ??
     launchedModel ??
     caller?.modelSelection ??
@@ -580,35 +581,39 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
     commandId,
     input.delegatedFrom !== undefined,
   );
-  const result = yield* ThreadMessageIntake.launchThread({
+  const result = yield* withAccountLaunchBinding(
+    ThreadMessageIntake.launchThread({
+      commandId,
+      threadId,
+      projectId,
+      title: input.title,
+      ...(input.generateTitle === undefined ? {} : { generateTitle: input.generateTitle }),
+      ...(input.generateTitle === true ? {} : { titleRenamed: true }),
+      modelSelection,
+      runtimeMode: startedRuntimeMode,
+      interactionMode,
+      workspaceStrategy: strategy ?? { type: "root" },
+      ...(input.message === undefined && attachments.length === 0
+        ? {}
+        : {
+            initialMessage: {
+              messageId,
+              ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+              text: input.message ?? "",
+              attachments,
+              ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
+            },
+          }),
+      createdBy: "agent",
+      creationSource: "mcp",
+      ...(linkOrigin === undefined ? {} : { linkOrigin }),
+      // Kept only alongside linkOrigin: thread.create drops it otherwise.
+      ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
+      ...(workflowRun === undefined ? {} : { workflowRun }),
+    }),
     commandId,
-    threadId,
-    projectId,
-    title: input.title,
-    ...(input.generateTitle === undefined ? {} : { generateTitle: input.generateTitle }),
-    ...(input.generateTitle === true ? {} : { titleRenamed: true }),
-    modelSelection,
-    runtimeMode: startedRuntimeMode,
-    interactionMode,
-    workspaceStrategy: strategy ?? { type: "root" },
-    ...(input.message === undefined && attachments.length === 0
-      ? {}
-      : {
-          initialMessage: {
-            messageId,
-            ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-            text: input.message ?? "",
-            attachments,
-            ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
-          },
-        }),
-    createdBy: "agent",
-    creationSource: "mcp",
-    ...(linkOrigin === undefined ? {} : { linkOrigin }),
-    // Kept only alongside linkOrigin: thread.create drops it otherwise.
-    ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
-    ...(workflowRun === undefined ? {} : { workflowRun }),
-  }).pipe(
+    routedSelection?.binding,
+  ).pipe(
     Effect.mapError((error) => {
       if (error._tag === "AttachmentClaimError") {
         return new OrchestratorMcpFailure({

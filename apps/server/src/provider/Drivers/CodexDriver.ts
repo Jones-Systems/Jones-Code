@@ -434,6 +434,7 @@ export const CodexDriver: ProviderDriver<
           result === undefined
             ? undefined
             : {
+                accountIdentity: result.accountIdentity,
                 models: result.models,
                 allowance: (model: string, now: number) => codexAllowance(result.quota, model, now),
               },

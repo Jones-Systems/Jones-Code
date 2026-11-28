@@ -7,6 +7,8 @@ import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -38,6 +40,48 @@ it("drops strict MCP mode, and only that, next to an administrator's managed-mcp
   assert.deepEqual(options.mcpServers, {});
   assert.equal(options.env?.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
 });
+
+it("isolates Claude Auto from ambient settings, tools, and MCP", () => {
+  const options = buildClaudeCapabilitiesProbeQueryOptions({
+    executablePath: "/usr/bin/claude",
+    abortController: new AbortController(),
+    environment: { HOME: "/home/user", ENABLE_CLAUDEAI_MCP_SERVERS: "true" },
+    cwd: "/synthetic/project",
+    managedMcpConfig: false,
+    spawnVia: undefined,
+    autoRouting: true,
+  });
+  assert.equal(options.strictMcpConfig, true);
+  assert.deepEqual(options.settingSources, []);
+  assert.deepEqual(options.tools, []);
+  assert.deepEqual(options.plugins, []);
+  assert.deepEqual(options.mcpServers, {});
+  assert.deepEqual(options.settings, { disableAllHooks: true });
+  assert.equal(options.env?.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
+});
+
+it.effect("refuses the Claude Auto probe before SDK startup when MCP is managed", () =>
+  Effect.gen(function* () {
+    const settings = yield* decodeClaudeSettings({ binaryPath: "/synthetic/claude" });
+    const result = yield* probeClaudeCapabilities(
+      settings,
+      {},
+      "/synthetic/project",
+      true,
+      true,
+    ).pipe(Effect.result);
+    assert.equal(Result.isFailure(result), true);
+    if (Result.isFailure(result)) {
+      assert.equal(result.failure.message, "Claude capability probe managedMcp failed.");
+    }
+  }).pipe(
+    Effect.provideService(HostProcess.Platform, "linux"),
+    Effect.provide(
+      FileSystem.layerNoop({ exists: (file) => Effect.succeed(file.endsWith("managed-mcp.json")) }),
+    ),
+    Effect.provide(Path.layer),
+  ),
+);
 
 // A shell trampoline would not do: dash drops the exported function, and the launcher exits 127.
 it.live.skipIf(HostProcess.Platform.defaultValue() !== "linux")(

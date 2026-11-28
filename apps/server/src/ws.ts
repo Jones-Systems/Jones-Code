@@ -24,6 +24,8 @@ import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as NodeCrypto from "node:crypto";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import { withAccountLaunchBinding } from "./jones/accountRouting/accountBinding.ts";
 import * as Context from "effect/Context";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -1674,6 +1676,7 @@ export const layerWsRpc = (
       );
       const prepareDestinationShell = yield* makeDestinationShellLaunch;
       const conversationHandoffs = yield* WorktreeMcpService.make;
+      const launchCommands = yield* KeyedLock.make<string>();
       // A conversation-bound checkout is attached first; upstream recovery then leases its root.
       const attachTerminalInput = <
         Input extends { readonly threadId: string; readonly cwd?: string | undefined },
@@ -2451,44 +2454,48 @@ export const layerWsRpc = (
                         workspaceStrategy: input.workspaceStrategy,
                       }),
                     ),
-                    Effect.flatMap((modelSelection) =>
-                      ThreadMessageIntake.launchThread({
-                        commandId: input.commandId,
-                        ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
-                        ...(input.reuseExistingThread === undefined
-                          ? {}
-                          : { reuseExistingThread: input.reuseExistingThread }),
-                        projectId: input.projectId,
-                        title: input.title,
-                        ...(input.generateTitle === undefined
-                          ? {}
-                          : { generateTitle: input.generateTitle }),
-                        modelSelection,
-                        runtimeMode: input.runtimeMode,
-                        interactionMode: input.interactionMode,
-                        workspaceStrategy: input.workspaceStrategy,
-                        ...(input.workspaceStrategy.type === "worktree" &&
-                        input.workspaceStrategy.baseFreshness === "fetch-now" &&
-                        currentSession.scopes.includes(AuthSourceControlWriteScope)
-                          ? { syncPrimaryOnFreshFetch: true as const }
-                          : {}),
-                        ...(input.initialMessage === undefined
-                          ? {}
-                          : {
-                              initialMessage: {
-                                ...(input.initialMessage.messageId === undefined
-                                  ? {}
-                                  : { messageId: input.initialMessage.messageId }),
-                                text: input.initialMessage.text,
-                                attachments: input.initialMessage.attachments,
-                                ...(input.initialMessage.context === undefined
-                                  ? {}
-                                  : { context: input.initialMessage.context }),
-                              },
-                            }),
-                        createdBy: "user",
-                        creationSource: input.creationSource ?? "web",
-                      }),
+                    Effect.flatMap(({ modelSelection, binding }) =>
+                      withAccountLaunchBinding(
+                        ThreadMessageIntake.launchThread({
+                          commandId: input.commandId,
+                          ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+                          ...(input.reuseExistingThread === undefined
+                            ? {}
+                            : { reuseExistingThread: input.reuseExistingThread }),
+                          projectId: input.projectId,
+                          title: input.title,
+                          ...(input.generateTitle === undefined
+                            ? {}
+                            : { generateTitle: input.generateTitle }),
+                          modelSelection,
+                          runtimeMode: input.runtimeMode,
+                          interactionMode: input.interactionMode,
+                          workspaceStrategy: input.workspaceStrategy,
+                          ...(input.workspaceStrategy.type === "worktree" &&
+                          input.workspaceStrategy.baseFreshness === "fetch-now" &&
+                          currentSession.scopes.includes(AuthSourceControlWriteScope)
+                            ? { syncPrimaryOnFreshFetch: true as const }
+                            : {}),
+                          ...(input.initialMessage === undefined
+                            ? {}
+                            : {
+                                initialMessage: {
+                                  ...(input.initialMessage.messageId === undefined
+                                    ? {}
+                                    : { messageId: input.initialMessage.messageId }),
+                                  text: input.initialMessage.text,
+                                  attachments: input.initialMessage.attachments,
+                                  ...(input.initialMessage.context === undefined
+                                    ? {}
+                                    : { context: input.initialMessage.context }),
+                                },
+                              }),
+                          createdBy: "user",
+                          creationSource: input.creationSource ?? "web",
+                        }),
+                        input.commandId,
+                        binding,
+                      ),
                     ),
                     Effect.provide(intakeContext),
                   ),
@@ -2587,22 +2594,25 @@ export const layerWsRpc = (
                   // A failed launch still reports what its durable receipts prove was delivered.
                   Effect.catchTags({
                     OrchestrationV2ThreadLaunchError: (error) =>
-                      threadLaunch.getDeliveryEvidence(input).pipe(
-                        Effect.flatMap((deliveryEvidence) =>
-                          Effect.fail(
-                            new OrchestrationV2ThreadLaunchError({
-                              commandId: error.commandId,
-                              projectId: error.projectId,
-                              message: error.message,
-                              deliveryEvidence,
-                              cause: error.cause,
-                            }),
+                      error.deliveryEvidence !== undefined
+                        ? Effect.fail(error)
+                        : threadLaunch.getDeliveryEvidence(input).pipe(
+                            Effect.flatMap((deliveryEvidence) =>
+                              Effect.fail(
+                                new OrchestrationV2ThreadLaunchError({
+                                  commandId: error.commandId,
+                                  projectId: error.projectId,
+                                  message: error.message,
+                                  deliveryEvidence,
+                                  cause: error.cause,
+                                }),
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
                   }),
                 ),
             ),
+            (launch) => launchCommands.withLock(input.commandId, launch),
           ),
         [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input) =>
           Stream.unwrap(subscribeOrchestrationV2Shell(input)),

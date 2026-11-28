@@ -115,6 +115,7 @@ import {
 } from "@t3tools/shared/model";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/jones/threadAttention";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import { withAccountLaunchBinding } from "../jones/accountRouting/accountBinding.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -1969,13 +1970,43 @@ const make = Effect.gen(function* () {
         );
       }
       const orchestrationCapable = yield* loadOrchestrationCapableInstanceIds();
-      const { modelSelection: selection, provider } = yield* autoAccountRouter.select({
+      const {
+        modelSelection: selection,
+        provider,
+        binding,
+      } = yield* autoAccountRouter.select({
         projectId,
         modelSelection,
         runtimeMode,
         interactionMode,
         ...(cwd === undefined ? {} : { cwd }),
-        candidateAllowed: (provider) => {
+        selectionForCandidate: (provider) => {
+          const base = { ...modelSelection, instanceId: provider.instanceId };
+          const inherited = parent.thread.modelSelection;
+          const model = advertisedModel(provider, base.model);
+          if (
+            provider.instanceId !== inherited.instanceId ||
+            (model?.slug ?? base.model) !==
+              (advertisedModel(provider, inherited.model)?.slug ?? inherited.model) ||
+            requested.options?.length === 0
+          )
+            return base;
+          const descriptors = model?.capabilities?.optionDescriptors;
+          const options = knownOptions(
+            withLegacyUltracodeEffort(descriptors, inherited.options),
+            descriptors,
+          );
+          if (options === undefined) return base;
+          const overrides = new Set(requested.options?.map(({ id }) => id));
+          return {
+            ...base,
+            options: [
+              ...options.filter(({ id }) => !overrides.has(id)),
+              ...(requested.options ?? []),
+            ],
+          };
+        },
+        candidateAllowed: (provider, selection) => {
           const { instanceId } = provider;
           if (providerConstraints(provider, orchestrationCapable.has(instanceId)).length > 0)
             return false;
@@ -1984,7 +2015,7 @@ const make = Effect.gen(function* () {
             agentModePickProblem({
               callerRuntimeMode: parent.thread.runtimeMode,
               descriptors: model?.capabilities?.optionDescriptors ?? [],
-              picked: modelSelection.options,
+              picked: selection.options,
               held:
                 parent.thread.modelSelection.instanceId === instanceId
                   ? parent.thread.modelSelection.options
@@ -1993,7 +2024,7 @@ const make = Effect.gen(function* () {
           );
         },
       });
-      return yield* resolveTarget({
+      const target = yield* resolveTarget({
         ...input,
         inheritOptions: false,
         providers: [provider],
@@ -2004,6 +2035,7 @@ const make = Effect.gen(function* () {
           options: selection.options,
         },
       });
+      return { ...target, binding };
     },
   );
 
@@ -3445,9 +3477,9 @@ const make = Effect.gen(function* () {
                 return yield* existingAccountRoutingWorkspaceRequired();
             }
           }
-          const target =
+          const autoTarget =
             autoRuntimeMode === undefined
-              ? yield* resolveTargetRechecking(targetInput)
+              ? undefined
               : yield* resolveAutoDelegatedTarget(
                   {
                     ...targetInput,
@@ -3456,6 +3488,7 @@ const make = Effect.gen(function* () {
                   autoRuntimeMode,
                   interactionMode,
                 );
+          const target = autoTarget ?? (yield* resolveTargetRechecking(targetInput));
           const runtimeMode = yield* resolveRuntimeMode(
             parent.thread.runtimeMode,
             autoRuntimeMode ?? input.runtimeMode,
@@ -3464,8 +3497,9 @@ const make = Effect.gen(function* () {
           // ThreadManagementService.dispatch is the chokepoint for this command
           // type's own enablement check, using the same command id and its
           // receipt-replay exemption, so no separate assert runs here.
-          return threadManagement
-            .dispatch({
+          const binding = autoTarget?.binding;
+          return withAccountLaunchBinding(
+            threadManagement.dispatch({
               type: "delegated_task.request",
               createdBy: "agent",
               creationSource: "mcp",
@@ -3484,17 +3518,19 @@ const make = Effect.gen(function* () {
                 : { projectId: childProject.commandProjectId }),
               // awaitTask upgrades a blocking delegation's wake when its wait ends early.
               completionWake: input.mode === "wait" ? "settled_only" : "always",
-            })
-            .pipe(
-              Effect.mapError((error) =>
-                error._tag === "ThreadManagementProviderInstanceDisabledError"
-                  ? threadManagementFailure(error)
-                  : failure(
-                      "orchestration_error",
-                      `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                    ),
-              ),
-            );
+            }),
+            commandId,
+            binding,
+          ).pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadManagementProviderInstanceDisabledError"
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                  ),
+            ),
+          );
         },
       );
       return yield* Effect.uninterruptibleMask((restore) =>

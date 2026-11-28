@@ -118,8 +118,12 @@ it.effect("Auto launches and local delegation bind a concrete account before rep
         assert.equal(request.projectId, projectId);
         assert.equal(request.cwd, cwd);
         assert.deepEqual(request.modelSelection, modelSelection);
-        assert.isTrue(request.candidateAllowed?.(currentWinner));
-        return { ...modelSelection, instanceId: currentWinner.instanceId };
+        const selection = { ...modelSelection, instanceId: currentWinner.instanceId };
+        assert.isTrue(request.candidateAllowed?.(currentWinner, selection));
+        return {
+          modelSelection: selection,
+          binding: { instanceId: selection.instanceId, digest: "synthetic" },
+        };
       }),
     );
     const adapters = [

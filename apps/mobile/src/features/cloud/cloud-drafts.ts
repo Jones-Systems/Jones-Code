@@ -7,7 +7,10 @@ import { msg } from "gt-react-native";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { m } from "../../i18n/messages";
-import { archiveCloudComposerDrafts } from "../../state/use-composer-drafts";
+import {
+  archiveCloudComposerDrafts,
+  beginCloudOutboxArchive,
+} from "../../state/use-composer-drafts";
 
 export class CloudDraftArchiveError extends Schema.TaggedError<CloudDraftArchiveError>()(
   "CloudDraftArchiveError",
@@ -35,22 +38,26 @@ export const removeCloudEnvironments = createRuntimeCommand(connectionAtomRuntim
     const environmentIds = new Set(
       [...entries.values()].filter(removedWithRelay).map((entry) => entry.target.environmentId),
     );
-    // Backup failure must retain local file owners so a later sign-in can retry.
-    yield* Effect.tryPromise({
-      // Resolve draft owners against every environment, not just the removed ones.
-      try: () =>
-        archiveCloudComposerDrafts(
-          accountId,
-          environmentIds,
-          [...entries.values()].map((entry) => entry.target.environmentId),
-        ),
-      catch: (cause) =>
-        new CloudDraftArchiveError({
-          environmentCount: environmentIds.size,
-          hasAccountId: accountId !== null,
-          cause,
-        }),
-    });
-    yield* registry.removeRelayEnvironments();
+    const archiveError = (cause: unknown) =>
+      new CloudDraftArchiveError({
+        environmentCount: environmentIds.size,
+        hasAccountId: accountId !== null,
+        cause,
+      });
+    yield* Effect.acquireUseRelease(
+      Effect.try({ try: () => beginCloudOutboxArchive(environmentIds), catch: archiveError }),
+      () =>
+        Effect.tryPromise({
+          // Resolve draft owners against every environment, including retained direct routes.
+          try: () =>
+            archiveCloudComposerDrafts(
+              accountId,
+              environmentIds,
+              [...entries.values()].map((entry) => entry.target.environmentId),
+            ),
+          catch: archiveError,
+        }).pipe(Effect.uninterruptible, Effect.andThen(registry.removeRelayEnvironments())),
+      (release) => Effect.sync(release),
+    );
   }),
 });

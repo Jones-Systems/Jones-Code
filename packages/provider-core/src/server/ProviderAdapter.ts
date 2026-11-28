@@ -89,6 +89,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * it; adapters use it to refuse native mode choices a user makes beside T3 Code's own.
    */
   maxRuntimeMode: Schema.optional(RuntimeMode),
+  /** Server-owned digest of the native login chosen at automatic account admission. */
+  autoAccountDigest: Schema.optionalKey(Schema.String),
   workspace: Schema.optional(ProviderAdapterV2RuntimeWorkspace),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;

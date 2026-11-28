@@ -2248,10 +2248,15 @@ export const layer: Layer.Layer<
         });
         return;
       }
-      const resolvedRuntimePolicy =
-        conversationTurn === null
-          ? resolvedPolicy.success
-          : { ...resolvedPolicy.success, cwd: conversationTurn.binding.path };
+      const autoAccountDigest = yield* (
+        eventSink.readAutoAccountBinding?.(input.threadId, run.modelSelection.instanceId) ??
+        Effect.undefined
+      );
+      const resolvedRuntimePolicy = {
+        ...resolvedPolicy.success,
+        ...(conversationTurn === null ? {} : { cwd: conversationTurn.binding.path }),
+        ...(autoAccountDigest === undefined ? {} : { autoAccountDigest }),
+      };
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,

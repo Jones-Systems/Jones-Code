@@ -1,16 +1,25 @@
-import { ProviderInstanceId, type QualifiedQuotaMap } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  type QualifiedQuotaMap,
+  type ServerProviderModel,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { isNativeCodexAutoRoute } from "../../provider/CodexProvider.ts";
 import type { ClaudeCapabilitiesProbe } from "../../provider/ClaudeProvider.ts";
+import type { ClaudeModelCatalog } from "../../provider/ClaudeModelCatalog.ts";
 import {
   beginQuotaProbe,
   makeAccountRoutingQuota,
   makeQualifiedQuota,
   readPrivateQuotaProof,
 } from "../../provider/qualifiedQuota.ts";
-import { claudeProbeAllowance } from "./claudeEvidence.ts";
-import { codexAllowance } from "./codexEvidence.ts";
+import {
+  claudeAutoAccountIdentity,
+  claudeAutoModels,
+  claudeProbeAllowance,
+} from "./claudeEvidence.ts";
+import { codexAllowance, makeCodexRoutingQuota } from "./codexEvidence.ts";
 import { chooseAccount, claudeAllowance, type AllowanceWindow } from "./policy.ts";
 
 const checkedAt = "2026-11-18T16:00:00.000Z";
@@ -178,6 +187,46 @@ describe("Codex contextual evidence", () => {
     expect(codexAllowance(quota, "gpt-scoped", now)?.status).toBe("blocked");
   });
 
+  it("preserves legacy and model-scoped blockers when both response forms are present", () => {
+    const quota = makeCodexRoutingQuota({
+      ...input,
+      rateLimitsByLimitId: map,
+      legacyRateLimit: { limitId: "codex", spendControlReached: true },
+    });
+    expect(codexAllowance(quota, "gpt-general", now)).toEqual({
+      status: "blocked",
+      resetsAt: null,
+    });
+    const legacyScoped = makeCodexRoutingQuota({
+      ...input,
+      rateLimitsByLimitId: { codex: map.codex },
+      legacyRateLimit: { ...map.tool_model, limitId: "tool_model" },
+    });
+    expect(codexAllowance(legacyScoped, "gpt-scoped", now)).toEqual({
+      status: "blocked",
+      resetsAt: now + hour,
+    });
+    expect(codexAllowance(legacyScoped, "gpt-general", now)?.status).toBe("eligible");
+  });
+
+  it("excludes contradictory quota evidence from verified-unknown fallback", () => {
+    const inconsistent = makeCodexRoutingQuota({
+      ...input,
+      rateLimitsByLimitId: map,
+      legacyRateLimit: {
+        limitId: "codex",
+        secondary: { ...map.codex.secondary, usedPercent: 10 },
+      },
+    });
+    expect(codexAllowance(inconsistent, "gpt-general", now)).toBeUndefined();
+    expect(codexAllowance(inconsistent, "gpt-scoped", now)?.status).toBe("blocked");
+    const conflictingScope = makeAccountRoutingQuota({
+      ...input,
+      rateLimitsByLimitId: { codex: { ...map.codex, limitId: "other_bucket" } },
+    });
+    expect(codexAllowance(conflictingScope, "gpt-general", now)).toBeUndefined();
+  });
+
   it("keeps contextual and failover proof lifetimes independent", () => {
     const probeBinding = beginQuotaProbe(input.instanceId, input.probeId);
     const failover = makeQualifiedQuota({ ...input, rateLimitsByLimitId: map, probeBinding });
@@ -224,6 +273,78 @@ describe("Claude contextual evidence", () => {
     expect(claudeProbeAllowance(probe, "claude-sonnet-4-6", now, now)?.status).toBe("eligible");
     expect(claudeProbeAllowance(probe, "claude-opus-4-6", now, now)?.status).toBe("blocked");
     expect(claudeProbeAllowance(probe, "claude-fable-5", now, now)?.status).toBe("blocked");
+  });
+
+  it("keeps unreadable applicable windows and excludes paid-enabled incomplete observations", () => {
+    const usageWith = (fields: Record<string, unknown>): ClaudeCapabilitiesProbe => ({
+      ...probe,
+      usage: { ...probe.usage, rate_limits: { ...probe.usage.rate_limits, ...fields } },
+    });
+    const unreadableSonnet = { seven_day_sonnet: { utilization: null, resets_at: resetAt } };
+    expect(
+      claudeProbeAllowance(usageWith(unreadableSonnet), "claude-sonnet-4-6", now, now),
+    ).toEqual({
+      status: "unknown",
+    });
+    for (const paid of [{ extra_usage: { is_enabled: true } }, { spend: { enabled: true } }]) {
+      const incomplete = usageWith({ ...unreadableSonnet, ...paid });
+      expect(claudeProbeAllowance(incomplete, "claude-sonnet-4-6", now, now)).toBeUndefined();
+      expect(claudeProbeAllowance(incomplete, "claude-opus-4-6", now, now)?.status).toBe("blocked");
+    }
+    const malformedScope = usageWith({ model_scoped: [{ utilization: 1 }] });
+    expect(claudeProbeAllowance(malformedScope, "claude-sonnet-4-6", now, now)?.status).toBe(
+      "unknown",
+    );
+    const unreadableReset = usageWith({ seven_day_sonnet: { utilization: 95, resets_at: {} } });
+    expect(claudeProbeAllowance(unreadableReset, "claude-sonnet-4-6", now, now)).toEqual({
+      status: "blocked",
+      resetsAt: null,
+    });
+  });
+
+  it("admits only reported native efforts within the effective model cap", () => {
+    const model: ServerProviderModel = {
+      slug: "claude-test-opus",
+      name: "Synthetic Opus",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Reasoning",
+            type: "select",
+            options: ["low", "medium", "high", "xhigh", "max"].map((id) => ({ id, label: id })),
+          },
+        ],
+      },
+    };
+    const catalog: ClaudeModelCatalog = { models: [{ model, runtime: {}, compatibility: {} }] };
+    const models = claudeAutoModels(catalog, [model], {
+      ...probe,
+      models: [
+        {
+          value: "claude-test-opus",
+          displayName: model.name,
+          description: "",
+          supportsEffort: true,
+          supportedEffortLevels: ["medium", "high", "xhigh", "max"],
+        },
+      ],
+      effortCapSources: [{ modelMaxEffortLevels: new Map([[model.slug, "high"]]) }],
+    });
+    const effort = models[0]?.capabilities?.optionDescriptors?.[0];
+    expect(effort?.type === "select" && effort.options.map(({ id }) => id)).toEqual([
+      "medium",
+      "high",
+    ]);
+  });
+
+  it("normalizes private Claude account identity and requires workspace and email", () => {
+    expect(claudeAutoAccountIdentity(" ORG-TEST ", " Person@EXAMPLE.invalid ")).toBe(
+      claudeAutoAccountIdentity("org-test", "person@example.invalid"),
+    );
+    expect(claudeAutoAccountIdentity("", "person@example.invalid")).toBeUndefined();
+    expect(claudeAutoAccountIdentity("org-test", undefined)).toBeUndefined();
   });
 
   it("keeps missing usage unknown only under verified native auth", () => {

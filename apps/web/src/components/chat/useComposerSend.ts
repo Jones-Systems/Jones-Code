@@ -1136,6 +1136,17 @@ export function useComposerSend(input: ComposerSendInput) {
     const isFirstMessage = !sendQueuesBehindSetup && (!isServerThread || activeMessageCount === 0);
     const shouldCreateWorktree =
       isFirstMessage && effectiveSendEnvMode === "worktree" && activeThread.worktreePath === null;
+    if (accountRouting && (shouldCreateWorktree || shouldStartConversation)) {
+      setThreadError(
+        threadIdForSend,
+        m(
+          msg(
+            "Automatic account selection needs an existing workspace. Choose the project root or an existing worktree, or select a specific account for a new workspace.",
+          ),
+        ),
+      );
+      return;
+    }
     if (
       missingWorktreeBaseBranch &&
       appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities

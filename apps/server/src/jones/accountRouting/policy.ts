@@ -40,6 +40,7 @@ export function claudeAllowance(input: {
   readonly session: AllowanceWindow | undefined;
   readonly weekly: ReadonlyArray<AllowanceWindow>;
   readonly hasOverallWeek: boolean;
+  readonly hasUnreadableWindows?: boolean;
   readonly now: number;
 }): AccountAllowance {
   const { session, weekly, hasOverallWeek, now } = input;
@@ -56,6 +57,7 @@ export function claudeAllowance(input: {
   if (
     !session ||
     !hasOverallWeek ||
+    input.hasUnreadableWindows ||
     !hasCurrentReset(session, now) ||
     !weekly.every((window) => hasCurrentReset(window, now))
   ) {

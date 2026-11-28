@@ -1,10 +1,12 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 
+import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
 import { threadOutboxManager } from "./thread-outbox";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 import {
   clearComposerDraft,
+  cloudOutboxArchiveFencesAtom,
   composerDraftsAtom,
   flushComposerDrafts,
   scheduleUnusedComposerAttachmentCleanup,
@@ -71,6 +73,18 @@ export async function removeThreadOutboxMessage(
 }
 
 export async function clearThreadOutboxEnvironment(environmentId: EnvironmentId): Promise<void> {
+  const archivedRows = appAtomRegistry.get(cloudOutboxArchiveFencesAtom).get(environmentId);
+  if (archivedRows !== undefined) {
+    // A delivery receipt or editor can advance the row while its archive is written.
+    for (const { message, revision } of archivedRows) {
+      const key = scopedThreadKey(environmentId, message.threadId);
+      await removeThreadOutboxMessage(message, revision, () => {
+        const queued = appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom);
+        return queued[key]?.includes(message) === true;
+      });
+    }
+    return;
+  }
   // Use the actual removed set, including persisted messages missed by an earlier failed hydration.
   const removed = await threadOutboxManager.clearEnvironment(environmentId);
   await cleanUpRemovedMessages(removed);
