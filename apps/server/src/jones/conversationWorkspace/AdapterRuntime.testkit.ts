@@ -23,7 +23,10 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
+import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
 import * as ServerConfig from "../../config.ts";
 import * as Codex from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -31,6 +34,18 @@ import * as Claude from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 
 const codexSettings = Schema.decodeSync(CodexSettings)({});
 const claudeSettings = Schema.decodeSync(ClaudeSettings)({});
+const decodeCodexRequest = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      id: Schema.optionalKey(Schema.Number),
+      method: Schema.String,
+      params: Schema.optionalKey(Schema.Unknown),
+    }),
+  ),
+);
+const encodeCodexReply = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ id: Schema.Number, result: Schema.Unknown })),
+);
 
 /** Exercises the shipped adapter runtime. The synthetic transport proves only
  * request routing/configuration and bounded fixture behavior, not live providers. */
@@ -52,11 +67,16 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
   };
   const observed: Array<{ method: string; cwd: string | null; mcp: boolean; resume: boolean }> = [];
   const nativeThreadId = "native-c9";
-  const nativeThread = (cwd: string | null) => ({
+  const nativeThread = (cwd: string) => ({
     id: nativeThreadId,
     sessionId: nativeThreadId,
+    cliVersion: "synthetic",
     cwd,
     createdAt: 1,
+    ephemeral: false,
+    preview: "",
+    projectId: null,
+    source: "appServer",
     updatedAt: 1,
     turns: [],
     status: { type: "idle" },
@@ -80,8 +100,13 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
           mcp: input.config?.["mcp_servers.t3-code"] !== undefined,
           resume: method === "thread/resume",
         });
+        const cwd = input.cwd ?? config.stateDir;
         return {
-          thread: nativeThread(input.cwd ?? null),
+          thread: nativeThread(cwd),
+          cwd,
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          sandbox: { type: "dangerFullAccess" },
           model: modelSelection.model,
           modelProvider: "openai",
           serviceTier: null,
@@ -107,24 +132,31 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
       if (method === "thread/unsubscribe") return { status: "notSubscribed" };
       throw new Error(`Unmodelled C9 transport call: ${method}`);
     });
-  const unused = () => Effect.die("Unused synthetic transport operation");
-  const codexClient: CodexClient.CodexAppServerClient["Service"] = {
-    awaitTermination: Effect.never,
-    request: respond as CodexClient.CodexAppServerClient["Service"]["request"],
-    notify: () => Effect.void,
-    handleServerRequest: () => Effect.void,
-    handleServerNotification: () => Effect.void,
-    handleUnknownServerRequest: () => Effect.void,
-    handleUnknownServerNotification: () => Effect.void,
-    raw: {
-      request: respond as CodexClient.CodexAppServerClient["Service"]["raw"]["request"],
-      notify: () => Effect.void,
-      respond: unused,
-      respondError: unused,
-      requests: Stream.empty,
-      notifications: Stream.empty,
-    },
-  };
+  const openCodex = Effect.gen(function* () {
+    const replies = yield* Queue.unbounded<Uint8Array>();
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    // Use the real request queue so the fixture exercises the adapter's enqueue receipt.
+    return yield* CodexClient.make(
+      Stdio.make({
+        args: Effect.succeed([]),
+        stdin: Stream.fromQueue(replies),
+        stdout: () =>
+          Sink.forEach((chunk: string | Uint8Array) =>
+            Effect.gen(function* () {
+              const request = yield* decodeCodexRequest(
+                typeof chunk === "string" ? chunk : decoder.decode(chunk),
+              ).pipe(Effect.orDie);
+              if (request.id === undefined) return;
+              const result = yield* respond(request.method, request.params);
+              const reply = encodeCodexReply({ id: request.id, result });
+              yield* Queue.offer(replies, encoder.encode(`${reply}\n`));
+            }),
+          ),
+        stderr: () => Sink.drain,
+      }),
+    );
+  });
   const adapter =
     driver === "codex"
       ? yield* Codex.makeCodexAdapterV2({
@@ -135,7 +167,7 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
           fileSystem,
           idAllocator,
           serverConfig: config,
-          clientFactory: { open: () => Effect.succeed(codexClient) },
+          clientFactory: { open: () => openCodex },
         })
       : yield* Claude.makeClaudeAdapterV2({
           instanceId: modelSelection.instanceId,
@@ -182,7 +214,7 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
                   interrupt: Effect.void,
                 };
               }),
-            forkSession: unused,
+            forkSession: () => Effect.die("Unexpected Claude fork in the adapter probe"),
             subagentLaunchToolUseId: () => Effect.succeed(null),
             // The fixture's transcripts record no subagent model.
             subagentModel: () => Effect.succeed(null),

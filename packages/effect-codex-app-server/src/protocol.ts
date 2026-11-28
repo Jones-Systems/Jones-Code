@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -38,6 +39,24 @@ export interface CodexAppServerIncomingRequest {
   readonly method: string;
   readonly params?: unknown;
 }
+
+interface CodexAppServerRequestAdmission {
+  /** Runs synchronously at the outgoing queue, after logging and encoding. */
+  readonly canEnqueue: () => boolean;
+  /** Runs in the same step, only after the queue accepts the frame. */
+  readonly onEnqueued?: () => void;
+}
+
+const RequestAdmission = Context.Reference<CodexAppServerRequestAdmission | undefined>(
+  "effect-codex-app-server/protocol/RequestAdmission",
+  { defaultValue: () => undefined },
+);
+
+/** Scope the admission to one request effect, including through client decorators. */
+export const withRequestAdmission = <A, E, R>(
+  request: Effect.Effect<A, E, R>,
+  admission: CodexAppServerRequestAdmission,
+) => Effect.provideService(request, RequestAdmission, admission);
 
 export interface CodexAppServerPatchedProtocolOptions {
   readonly stdio: Stdio.Stdio;
@@ -251,7 +270,10 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
 
     const offerOutgoing =
       /* Every protocol write reaches this helper; request spans cover the operation. */
-      Effect.fnUntraced(function* (message: Record<string, unknown>) {
+      Effect.fnUntraced(function* (
+        message: Record<string, unknown>,
+        admission?: CodexAppServerRequestAdmission,
+      ) {
         const failure = yield* Ref.get(terminationFailure);
         if (Option.isSome(failure)) return yield* failure.value;
 
@@ -266,14 +288,28 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
           stage: "raw",
           payload: encoded,
         });
-        const accepted = yield* Queue.offer(outgoing, encoded);
-        if (!accepted) {
-          const closed = yield* Ref.get(terminationFailure);
-          return yield* Option.getOrElse(
-            closed,
-            () => new CodexError.CodexAppServerInputStreamEndedError({}),
-          );
-        }
+        yield* Effect.suspend(() => {
+          const closed = Ref.getUnsafe(terminationFailure);
+          if (Option.isSome(closed)) return Effect.fail(closed.value);
+          if (admission?.canEnqueue() === false)
+            return Effect.fail(
+              CodexError.CodexAppServerRequestError.internalError(
+                "The Codex App Server request was not admitted to the outgoing queue.",
+                undefined,
+                {
+                  method: String(message.method),
+                  requestId: String(message.id),
+                  operation: "enqueue-request",
+                },
+              ),
+            );
+          // The unbounded queue never waits for capacity. Keep the decision,
+          // offer and caller bookkeeping in the same synchronous step.
+          if (!Queue.offerUnsafe(outgoing, encoded))
+            return Effect.fail(new CodexError.CodexAppServerInputStreamEndedError({}));
+          admission?.onEnqueued?.();
+          return Effect.void;
+        });
       });
 
     const removePending = (requestId: string) =>
@@ -537,6 +573,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       method: string,
       payload?: unknown,
     ) {
+      const admission = yield* RequestAdmission;
       const requestId = yield* Ref.modify(
         nextRequestId,
         (current) => [current, current + 1] as const,
@@ -554,11 +591,17 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
         ),
         () =>
           Effect.gen(function* () {
-            yield* offerOutgoing({
-              id: requestId,
-              method,
-              ...(payload !== undefined ? { params: payload } : {}),
-            }).pipe(Effect.withSpan("CodexAppServerProtocol.request.enqueue", { attributes }));
+            yield* offerOutgoing(
+              {
+                id: requestId,
+                method,
+                ...(payload !== undefined ? { params: payload } : {}),
+              },
+              admission,
+            ).pipe(
+              Effect.provideService(RequestAdmission, undefined),
+              Effect.withSpan("CodexAppServerProtocol.request.enqueue", { attributes }),
+            );
             // Includes queue/stdin delivery, Codex work and response routing, not just T3 CPU.
             return yield* Deferred.await(deferred).pipe(
               Effect.withSpan("CodexAppServerProtocol.request.awaitResponse", { attributes }),

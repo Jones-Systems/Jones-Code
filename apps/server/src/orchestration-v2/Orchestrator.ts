@@ -21273,7 +21273,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               yield* dispatchWithReceiptEffect({
                 type: "queued-message.promote-to-steer",
                 commandId: CommandId.make(
-                  `command:deferred-steer:${queued.id}:${run.id}:${turn.runAttemptId}`,
+                  // A wake can re-defer when the native turn has already ended. A later
+                  // running event in this same attempt must be able to try again.
+                  `command:deferred-steer:${queued.id}:${run.id}:${stored.sequence}`,
                 ),
                 threadId,
                 queuedRunId: queued.id,

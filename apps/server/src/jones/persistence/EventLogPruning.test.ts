@@ -169,6 +169,14 @@ const readers: ReadonlyArray<Reader> = [
       "provider/UnsentStartProof.test.ts (receipt mismatch, promotion and unavailable unreleased birth)",
   },
   {
+    file: "provider/codex/HistoryDeliveryOutcome.ts",
+    classification: "tolerate",
+    after:
+      "Restoring unsent inline history and reconciling late acceptance both require the exact pending event above the prune boundary. An unavailable receipt leaves the pending handoff in place.",
+    proof:
+      "provider/codex/HistoryDeliveryOutcome.test.ts (pruned marker); provider/codex/CodexInlineHandoffRejection.test.ts (late acceptance after pruning and SQLite reopen)",
+  },
+  {
     file: "nativeCreation/NativeCreationExecutionSqlite.ts",
     classification: "tolerate",
     after:

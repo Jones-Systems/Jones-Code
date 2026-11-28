@@ -47,7 +47,16 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
 import { startFailureCauseMessage } from "../jones/provider/startFailureMessage.ts";
-import { promptWasNotApplied } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
+import {
+  CodexPendingStartStop,
+  CodexQueuedStartStop,
+} from "../jones/provider/codex/CodexLateStartRecovery.ts";
+import {
+  CodexInlineHistoryStart,
+  codexUnconfirmedStoppedRuns,
+  makeCodexHistoryDeliveryPersistence,
+  promptWasNotApplied,
+} from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import { classifyCodexManagedError } from "../provider/CodexManagedErrors.ts";
 import {
   modelSelectionsEqual,
@@ -76,6 +85,7 @@ import {
   parseGoalCommand,
   RunId,
   RunAttemptId,
+  type ProviderTurnId,
   NodeId,
   RuntimeRequestId,
   ThreadId,
@@ -87,6 +97,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -124,12 +135,16 @@ import {
   historicalMessage,
   latestNativeContextUsage,
 } from "@t3tools/provider-core/server/handoffBudget";
-import { deliverContextHandoffs, isSlashCommandMessage } from "./ContextHandoffDelivery.ts";
+import {
+  ContextHandoffDeliveryUncertainError,
+  deliverContextHandoffs,
+  isSlashCommandMessage,
+} from "./ContextHandoffDelivery.ts";
+import { deliverWithHandoffRecovery } from "../jones/provider/codex/ContextHandoffRecovery.ts";
 import { isProviderCommand, outputInstructions } from "./runOutput.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { deliverWithHandoffRecovery } from "../jones/provider/codex/ContextHandoffRecovery.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
@@ -157,6 +172,8 @@ export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStart
     rootNodeId: Schema.optional(NodeId),
   },
 ) {}
+
+const isContextHandoffDeliveryUncertain = Schema.is(ContextHandoffDeliveryUncertainError);
 
 class WorktreeSetupScriptFailedError extends Schema.TaggedError<WorktreeSetupScriptFailedError>()(
   "WorktreeSetupScriptFailedError",
@@ -561,8 +578,66 @@ export const layer: Layer.Layer<
           );
       const isCurrentAttemptInStatus = (expectedStatus: OrchestrationV2Run["status"]) =>
         isCurrentAttemptIn([expectedStatus]);
+      const loadRunInterruptRequest = () =>
+        projectionStore
+          .getThreadRecords(input.threadId, ["turnItems"], {
+            turnItemTypes: ["run_interrupt_request"],
+            turnItemRunIds: [input.runId],
+          })
+          .pipe(
+            Effect.map(({ turnItems }) =>
+              turnItems.find((item) => item.type === "run_interrupt_request"),
+            ),
+            Effect.catchCause(() => Effect.undefined),
+          );
+      const readStop = Effect.fnUntraced(
+        function* (providerTurnId: ProviderTurnId | null) {
+          const run = yield* projectionStore.getRun(input.threadId, input.runId);
+          if (run?.activeAttemptId !== input.attemptId) return false;
+          if (run.status !== "running" && run.status !== "interrupted") return false;
+          const request = yield* loadRunInterruptRequest();
+          if (
+            request === undefined ||
+            request.nodeId !== run.rootNodeId ||
+            request.providerThreadId !== input.providerThreadId
+          )
+            return false;
+          return request.providerTurnId === null
+            ? run.status === "interrupted"
+            : request.providerTurnId === providerTurnId;
+        },
+        Effect.orElseSucceed(() => false),
+      );
       return {
         isCurrentAttemptInStatus,
+        wasStopped: readStop(null),
+        queuedStartStop: (providerTurnId: ProviderTurnId) => {
+          const wasStopped = readStop(providerTurnId);
+          return {
+            wasStopped,
+            awaitStop: Effect.gen(function* () {
+              const afterSequence = yield* eventSink.latestSequence({ threadId: input.threadId });
+              if (yield* wasStopped) return true;
+              // A turn-bound Stop records intent without changing the run status.
+              const stop = yield* eventSink
+                .stream({ threadId: input.threadId, eventType: "turn-item.updated", afterSequence })
+                .pipe(
+                  Stream.filter(
+                    ({ event }) =>
+                      event.type === "turn-item.updated" &&
+                      event.payload.type === "run_interrupt_request" &&
+                      event.payload.runId === input.runId &&
+                      event.payload.providerThreadId === input.providerThreadId &&
+                      (event.payload.providerTurnId === null ||
+                        event.payload.providerTurnId === providerTurnId),
+                  ),
+                  Stream.filterEffect(() => wasStopped),
+                  Stream.runHead,
+                );
+              return Option.isSome(stop);
+            }).pipe(Effect.orElseSucceed(() => false)),
+          };
+        },
         loadInheritedBackgroundTurnItems: () =>
           projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
             Effect.map((current) =>
@@ -611,18 +686,7 @@ export const layer: Layer.Layer<
               }),
             ),
         loadRunInterruptReason: () =>
-          projectionStore
-            .getThreadRecords(input.threadId, ["turnItems"], {
-              turnItemTypes: ["run_interrupt_request"],
-              turnItemRunIds: [input.runId],
-            })
-            .pipe(
-              Effect.map(({ turnItems }) => {
-                const request = turnItems.find((item) => item.type === "run_interrupt_request");
-                return request?.type === "run_interrupt_request" ? request.message : undefined;
-              }),
-              Effect.catchCause(() => Effect.undefined),
-            ),
+          loadRunInterruptRequest().pipe(Effect.map((request) => request?.message)),
       };
     };
 
@@ -2461,8 +2525,12 @@ export const layer: Layer.Layer<
       ) {
         const loaded = yield* Effect.result(guardClaim(load));
         if (loaded._tag === "Success") return loaded.success;
+        const uncertainHistoryDelivery =
+          isProviderAdapterTurnStartError(loaded.failure) &&
+          isContextHandoffDeliveryUncertain(loaded.failure.cause);
         if (
           input.willRetry === true &&
+          !uncertainHistoryDelivery &&
           !outcomeUnknown(loaded.failure) &&
           !terminalStartFailure(loaded.failure) &&
           findSteerFailure(loaded.failure) === undefined &&
@@ -2716,6 +2784,7 @@ export const layer: Layer.Layer<
           deliveredItemIds,
           coveredItemIds,
           acceptedAttempts,
+          droppedAttemptIds,
           nativeInputRunIds,
           legacyInputRunIds,
           missedRuns,
@@ -2737,13 +2806,29 @@ export const layer: Layer.Layer<
       };
       const prepareRetryHandoff = Effect.fn("ProviderTurnStartService.prepareRetryHandoff")(
         function* (context: ReturnType<typeof handoffContextForThread>) {
-          const { missedRunIds, coveredItemIds, missedRuns, acceptedAttempts } = context;
-          const missedHistory =
+          const { missedRunIds, coveredItemIds, acceptedAttempts } = context;
+          const history =
             missedRunIds.size === 0
               ? []
               : (yield* projectionStore.getTurnStartHistory(input.threadId, [
                   ...missedRunIds,
                 ])).filter((item) => item.runId !== null && missedRunIds.has(item.runId));
+          // Stop can commit without a turn receipt after Codex has saved the input.
+          // Rejoining the same native conversation is not evidence that input was dropped.
+          const uncertainStoppedRuns = codexUnconfirmedStoppedRuns({
+            history,
+            runs: context.missedRuns,
+            attempts: projection.attempts,
+            droppedAttemptIds: context.droppedAttemptIds,
+            nativeThreadId:
+              session.driver === "codex" && context.sameNativeThread
+                ? providerThread.nativeThreadRef?.nativeId
+                : undefined,
+          });
+          const missedRuns = context.missedRuns.filter((run) => !uncertainStoppedRuns.has(run.id));
+          const missedHistory = history.filter(
+            (item) => item.runId !== null && !uncertainStoppedRuns.has(item.runId),
+          );
           const missedItems = missedHistory.filter(
             (item) => !coveredItemIds.has(item.id) && historicalMessage(item) !== null,
           );
@@ -3268,7 +3353,9 @@ export const layer: Layer.Layer<
                   providerThreadId: providerThread.id,
                   runId,
                   cause: uncertainDelivery
-                    ? "Uncertain native history injection"
+                    ? session.driver === "codex"
+                      ? new ContextHandoffDeliveryUncertainError()
+                      : "Uncertain native history injection"
                     : nativeSessionLacksKeptTurns
                       ? "Native session holds none of the kept conversation"
                       : "Rejected native history",
@@ -3930,11 +4017,11 @@ export const layer: Layer.Layer<
           subagent.origin === "provider_native" &&
           RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
-      const persistHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (
+      const writeHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (
         handoff: OrchestrationV2ContextHandoff,
       ) {
         const updatedAt = yield* DateTime.now;
-        yield* eventSink.write({
+        return yield* eventSink.write({
           events: [
             {
               id: yield* idAllocator.allocate.event({
@@ -3950,7 +4037,10 @@ export const layer: Layer.Layer<
           ],
         });
       });
+      const persistHandoff = (handoff: OrchestrationV2ContextHandoff) =>
+        writeHandoff(handoff).pipe(Effect.asVoid);
       let inlineDeliveredHandoffs: ReadonlyArray<OrchestrationV2ContextHandoff> = [];
+      let restoreDroppedCodexHandoffs = Effect.void;
       let promptDroppedOnTerminal = false;
       const inlineDeliveryLock = yield* Semaphore.make(1);
       const retryHandoffIds = new Set(retryHandoff.handoffs.map((handoff) => handoff.id));
@@ -3961,17 +4051,16 @@ export const layer: Layer.Layer<
             : Effect.void,
         ),
       );
+      const withNativeStartContext = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provideService(RequiredNativeSession, requiredNativeSession),
+          Effect.provideService(CodexPendingStartStop, runControls.wasStopped),
+          Effect.provideService(CodexQueuedStartStop, runControls.queuedStartStop),
+        );
       const startWithConfiguredEffort = Effect.fn(
         "ProviderTurnStartService.startWithConfiguredEffort",
       )(
-        (
-          turnInput: Parameters<typeof session.startTurn>[0],
-          compact: boolean = false,
-          unsent: Effect.Effect<
-            void,
-            Effect.Error<ReturnType<typeof persistHandoff>> | ProviderAdapter.ProviderAdapterV2Error
-          > = Effect.void,
-        ) =>
+        (turnInput: Parameters<typeof session.startTurn>[0], compact = false) =>
           Effect.gen(function* () {
             let dispatchInput = continuationPrompt(turnInput, {
               sameNativeThread,
@@ -4032,12 +4121,13 @@ export const layer: Layer.Layer<
                   dispatchInput = { ...dispatchInput, configuredReasoningEffort: effort };
               }
             }
-            if (!(yield* isCurrentAttemptInStatus("running"))) return yield* unsent;
+            if (!(yield* isCurrentAttemptInStatus("running"))) return false;
             yield* revalidateDispatch;
             // The adapter confirms the captured continuation session at its native boundary.
-            yield* (
-              compact ? session.compactThread!(dispatchInput) : session.startTurn(dispatchInput)
-            ).pipe(Effect.provideService(RequiredNativeSession, requiredNativeSession));
+            yield* withNativeStartContext(
+              compact ? session.compactThread!(dispatchInput) : session.startTurn(dispatchInput),
+            );
+            return true;
           }),
         Effect.mapError((cause) =>
           isProviderAdapterTurnStartError(cause)
@@ -4057,20 +4147,18 @@ export const layer: Layer.Layer<
           return session.providerSession;
         },
         startTurn: (value: Parameters<typeof session.startTurn>[0]) =>
-          startWithConfiguredEffort(value),
+          startWithConfiguredEffort(value).pipe(Effect.asVoid),
         ...(session.resumeTurn === undefined
           ? {}
           : {
               resumeTurn: (value: ProviderAdapter.ProviderAdapterV2ResumeTurnInput) =>
-                session.resumeTurn!(value).pipe(
-                  Effect.provideService(RequiredNativeSession, requiredNativeSession),
-                ),
+                withNativeStartContext(session.resumeTurn!(value)),
             }),
         ...(session.compactThread === undefined
           ? {}
           : {
               compactThread: (value: Parameters<typeof session.startTurn>[0]) =>
-                startWithConfiguredEffort(value, true),
+                startWithConfiguredEffort(value, true).pipe(Effect.asVoid),
             }),
       };
       const dispatchContinuity = goalContinuity.context(
@@ -4098,7 +4186,11 @@ export const layer: Layer.Layer<
             ),
           );
           const { reclaimableBudget } = handoffContext;
-          const delivery = yield* deliverWithHandoffRecovery(
+          const codexHistory =
+            session.driver === "codex"
+              ? makeCodexHistoryDeliveryPersistence(writeHandoff, eventSink.withProviderBatch)
+              : undefined;
+          const prepareDelivery = deliverWithHandoffRecovery(
             {
               handoffs: [...effectiveHandoffs, ...retryHandoff.handoffs],
               deferInline: compact || slashCommand,
@@ -4114,7 +4206,7 @@ export const layer: Layer.Layer<
                         ...history,
                       }),
                   }),
-              persist: persistHandoff,
+              ...(codexHistory ?? { persist: persistHandoff }),
             },
             {
               input: turnInput,
@@ -4126,21 +4218,52 @@ export const layer: Layer.Layer<
               reclaimableBudget: reclaimableBudget ?? 0,
             },
           );
-          if (!(yield* isCurrentAttemptInStatus("running"))) return;
-          const start = (value: Parameters<typeof session.startTurn>[0]) =>
-            startWithConfiguredEffort(value, compact, delivery.unsent);
+          const restoreUnsent = (unsent: Effect.Effect<void, unknown>) =>
+            unsent.pipe(
+              Effect.catchCause(() =>
+                Effect.logWarning("Failed to restore unsent context handoffs", { runId: run.id }),
+              ),
+              Effect.uninterruptible,
+            );
+          const { delivery, inlineHistory } = yield* Effect.uninterruptibleMask((restore) =>
+            restore(prepareDelivery).pipe(
+              Effect.map((delivery) => ({
+                delivery,
+                inlineHistory: codexHistory?.trackInlineStart(
+                  eventSink.write,
+                  idAllocator,
+                  delivery.inlineHandoffs,
+                ),
+              })),
+              Effect.tap(({ delivery, inlineHistory }) =>
+                Effect.addFinalizer(() =>
+                  delivery.context !== "" && inlineHistory?.closeUnsent() === true
+                    ? restoreUnsent(delivery.unsent)
+                    : Effect.void,
+                ),
+              ),
+            ),
+          );
+          if (!(yield* isCurrentAttemptInStatus("running")))
+            return yield* restoreUnsent(delivery.unsent);
           // Like history, the side chat context waits for a turn that sends a prompt.
           const sideChatContext =
             sideChatHandoff === undefined || compact || slashCommand
               ? ""
               : sideChatHandoff.summaryText;
           // Record inline handoffs before startTurn so an immediate dropped terminal can restore them.
+          const inlineHandoffs = delivery.inlineHandoffs.map((handoff) =>
+            retryHandoffIds.has(handoff.id)
+              ? { ...handoff, status: "superseded" as const }
+              : handoff,
+          );
+          if (codexHistory !== undefined) {
+            restoreDroppedCodexHandoffs = restoreUnsent(
+              Effect.forEach(inlineHandoffs, codexHistory.restoreDropped, { discard: true }),
+            );
+          }
           inlineDeliveredHandoffs = [
-            ...delivery.inlineHandoffs.map((handoff) =>
-              retryHandoffIds.has(handoff.id)
-                ? { ...handoff, status: "superseded" as const }
-                : handoff,
-            ),
+            ...(codexHistory === undefined ? inlineHandoffs : []),
             ...(sideChatContext === "" || sideChatHandoff === undefined ? [] : [sideChatHandoff]),
           ];
           const context = [delivery.context, sideChatContext, restartNote]
@@ -4168,36 +4291,10 @@ export const layer: Layer.Layer<
             userText: requestText,
           });
           const inlineContextLength = startInput.message.text.length - requestText.length;
-          const operation = start({
-            ...startInput,
-            ...(missedAttachments.length === 0
-              ? {}
-              : {
-                  message: {
-                    ...startInput.message,
-                    attachments: [...missedAttachments, ...turnInput.message.attachments],
-                  },
-                }),
-            ...(inlineContextLength === 0 ? {} : { inlineContextLength }),
-          });
-          yield* revalidateDispatch;
-          yield* operation.pipe(
-            // Clear pending handoff markers for refused prompts so the next turn retains the native session.
-            // Jones: a current-attempt proof that Codex did not apply the prompt also restores them.
-            Effect.tapError((error) =>
-              refusedBeforePrompt(error) || promptWasNotApplied(error)
-                ? delivery.unsent.pipe(
-                    Effect.catchCause(() =>
-                      Effect.logWarning("Failed to restore unsent context handoffs", {
-                        runId: run.id,
-                      }),
-                    ),
-                  )
-                : Effect.void,
-            ),
-          );
+          const inlineStart =
+            delivery.context === "" && sideChatContext === "" ? undefined : inlineHistory;
           // Serialize acceptance writes against dropped-terminal restoration so neither overwrites the other.
-          yield* inlineDeliveryLock.withPermits(1)(
+          const recordDelivered = inlineDeliveryLock.withPermits(1)(
             Effect.gen(function* () {
               if (promptDroppedOnTerminal) return;
               // After provider acceptance, failed delivery bookkeeping must not stop live ingestion.
@@ -4230,6 +4327,33 @@ export const layer: Layer.Layer<
               );
             }),
           );
+          inlineStart?.deferDelivery(recordDelivered);
+          const started = yield* startWithConfiguredEffort(
+            {
+              ...startInput,
+              ...(missedAttachments.length === 0
+                ? {}
+                : {
+                    message: {
+                      ...startInput.message,
+                      attachments: [...missedAttachments, ...turnInput.message.attachments],
+                    },
+                  }),
+              ...(inlineContextLength === 0 ? {} : { inlineContextLength }),
+            },
+            compact,
+          ).pipe(
+            Effect.provideService(CodexInlineHistoryStart, inlineStart),
+            Effect.tapError((error) =>
+              refusedBeforePrompt(error) ||
+              promptWasNotApplied(error, { beforeDispatchOnly: codexHistory !== undefined })
+                ? restoreUnsent(delivery.unsent)
+                : Effect.void,
+            ),
+          );
+          if (!started) return yield* restoreUnsent(delivery.unsent);
+          if (inlineStart !== undefined && !inlineStart.acceptedOnAcknowledgement) return;
+          yield* recordDelivered;
         },
         Effect.scoped,
         Effect.mapError((cause) =>
@@ -4310,8 +4434,9 @@ export const layer: Layer.Layer<
         hasWorkspaceMoved: runControls.hasWorkspaceMoved,
         loadDroppedInlineHandoffs: () =>
           inlineDeliveryLock.withPermits(1)(
-            Effect.sync(() => {
+            Effect.gen(function* () {
               promptDroppedOnTerminal = true;
+              yield* restoreDroppedCodexHandoffs;
               return inlineDeliveredHandoffs;
             }),
           ),
