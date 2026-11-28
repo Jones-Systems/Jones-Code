@@ -96,18 +96,20 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
     const reviewing = phase === "review";
     let readArchive = archived === true;
     let { result, plan } = await readTargetPlan(binding, target);
-    requireWritablePlan(binding, result);
-    // Finishing records evidence from the original attempt even if it closed in flight.
+    // The accepted native state can already show closure while the IPC reply is older.
+    const accepted = binding.store.get().native;
     if (
       phase === "finish" &&
       !readArchive &&
-      plan === null &&
-      result.state.view.recoveryHistory === 1
+      nativePlanIssue(result) === undefined &&
+      accepted?.view.recoveryHistory === 1 &&
+      accepted.current?.planId !== planId
     ) {
+      requireWritablePlan(binding);
       readArchive = true;
       ({ result, plan } = await readTargetPlan(binding, { planId, archived: true }));
-      requireWritablePlan(binding, result);
     }
+    requireWritablePlan(binding, result);
     if (plan === null || (reviewing && plan.revision !== target.expectedRevision))
       throw new Error("This update plan or attempt changed. Refresh Install status.");
     const device = plan.devices.find((item) => item.environmentId === environmentId);
@@ -331,28 +333,37 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
         throw new Error("The original follower directive release is unconfirmed.");
     }
   }
-  const latest = await readExact("finish");
-  if (directiveRelease === undefined) authorizedStatus();
-  else if (!hasOperationReadScope(services, environmentId))
-    throw new Error(m(msg("The host confirmed release. Read permission is required to save it.")));
-  const finished = await requestInstallPlan(
-    {
-      type: "abandon-device",
-      phase: "finish",
-      planId,
-      environmentId,
-      expectedRevision: latest.plan.revision,
-      ...(directiveRelease === undefined ? {} : { directiveRelease }),
-      ...(runningTarget === undefined ? {} : { runningTarget }),
-      ...(stageReplacement === undefined || runningTarget !== undefined
-        ? {}
-        : { stageReplacement }),
-    },
-    binding,
-  );
+  const finish = async () => {
+    const latest = await readExact("finish");
+    if (directiveRelease === undefined) authorizedStatus();
+    else if (!hasOperationReadScope(services, environmentId))
+      throw new Error(
+        m(msg("The host confirmed release. Read permission is required to save it.")),
+      );
+    const result = await requestInstallPlan(
+      {
+        type: "abandon-device",
+        phase: "finish",
+        planId,
+        environmentId,
+        expectedRevision: latest.plan.revision,
+        ...(directiveRelease === undefined ? {} : { directiveRelease }),
+        ...(runningTarget === undefined ? {} : { runningTarget }),
+        ...(stageReplacement === undefined || runningTarget !== undefined
+          ? {}
+          : { stageReplacement }),
+      },
+      binding,
+    );
+    return { finished: result, savedInArchive: latest.archived };
+  };
+  let { finished, savedInArchive } = await finish();
+  // A revision refusal proves the save did not happen; only repeat the native save.
+  if (directiveRelease !== undefined && finished.refused?.code === "stale-revision")
+    ({ finished, savedInArchive } = await finish());
   const issue = nativePlanIssue(finished);
   if (issue !== undefined) throw new Error(issue);
-  const verified = latest.archived
+  const verified = savedInArchive
     ? (await readTargetPlan(binding, { planId, archived: true })).plan
     : exactPlan(finished, planId, false);
   const outcome = verified?.devices.find((item) => item.environmentId === environmentId);

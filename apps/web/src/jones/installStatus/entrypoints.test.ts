@@ -1170,6 +1170,9 @@ describe("bound Install status actions", () => {
     "read scope lost after release",
     "plan closed before release send",
     "plan closed after release send",
+    "plan closed before the final read reply",
+    "plan closed before the native save",
+    "plan closed before the native save with Read revoked",
   ] as const)("binds follower abandonment to exact release evidence after %s", async (scenario) => {
     const f = bindFixture();
     const current = f.state.current!;
@@ -1264,6 +1267,7 @@ describe("bound Install status actions", () => {
       closed = true;
       retained = { ...retained, dismissedAt: at, revision: retained.revision + 1 };
     };
+    const closeWhileSaving = scenario.startsWith("plan closed before the native save");
     const sent = vi.fn();
     const host = vi.fn<InstallPlanServices["host"]>(async (id, request) => {
       if (request.action !== "releaseDirective") throw new Error("Unexpected host command.");
@@ -1318,8 +1322,33 @@ describe("bound Install status actions", () => {
       return { ...fleetStatus(), releasedDirectiveId: directive.directiveId };
     });
     f.installPlan.mockImplementation(async (request) => {
+      if (
+        released &&
+        request.type === "read" &&
+        !closed &&
+        scenario === "plan closed before the final read reply"
+      ) {
+        const stale = state();
+        closePlan();
+        liveEnrollmentId = localStopId;
+        f.store.update({ native: state() });
+        return { state: stale };
+      }
       if (request.type === "abandon-device" && request.phase === "finish") {
+        expect(request.planId).toBe(retained.planId);
+        expect(request.environmentId).toBe(hostId);
         expect(request.directiveRelease?.releasedDirectiveId).toBe(directive.directiveId);
+        expect(request.directiveRelease?.enrollment?.enrollmentId).toBe(enrollmentId);
+        if (closeWhileSaving && !closed) {
+          expect(request.expectedRevision).toBe(7);
+          closePlan();
+          liveEnrollmentId = localStopId;
+          if (scenario === "plan closed before the native save with Read revoked") canRead = false;
+          return {
+            state: state(),
+            refused: { code: "stale-revision", message: "The plan changed." },
+          };
+        }
         expect(request.expectedRevision).toBe(retained.revision);
         const { abandoning: _abandoning, ...member } = device;
         retained = {
@@ -1355,7 +1384,9 @@ describe("bound Install status actions", () => {
       const finishes =
         scenario === "lost release reply" ||
         scenario === "permission revoked after release" ||
-        scenario === "plan closed after release send";
+        scenario === "plan closed after release send" ||
+        scenario === "plan closed before the final read reply" ||
+        scenario === "plan closed before the native save";
       if (finishes) {
         if (scenario === "lost release reply") {
           await expect(abandonDevice(attempt)).rejects.toThrow("release response was lost");
@@ -1365,13 +1396,28 @@ describe("bound Install status actions", () => {
         expect(host).toHaveBeenCalledTimes(scenario === "lost release reply" ? 2 : 1);
         expect(host).toHaveBeenLastCalledWith(hostId, request);
         expect(retained.devices[0]?.membership).toBe("removed");
-        if (scenario === "plan closed after release send") {
+        if (scenario.startsWith("plan closed")) {
           expect(sent).toHaveBeenCalledExactlyOnceWith(hostId, directive);
           expect(f.installPlan).toHaveBeenLastCalledWith({
             type: "read-history",
             planId: retained.planId,
           });
         }
+        if (closeWhileSaving)
+          expect(
+            f.installPlan.mock.calls.flatMap(([call]) =>
+              call.type === "abandon-device" ? [call.expectedRevision] : [],
+            ),
+          ).toEqual([7, 8]);
+      } else if (scenario === "plan closed before the native save with Read revoked") {
+        await expect(abandonDevice(attempt)).rejects.toThrow("Read permission");
+        expect(sent).toHaveBeenCalledExactlyOnceWith(hostId, directive);
+        expect(retained.devices[0]?.abandoning).toBe(true);
+        expect(
+          f.installPlan.mock.calls.flatMap(([call]) =>
+            call.type === "abandon-device" ? [call.expectedRevision] : [],
+          ),
+        ).toEqual([7]);
       } else if (scenario === "plan closed before release send") {
         await expect(abandonDevice(attempt)).rejects.toThrow("attempt changed");
         expect(sent).not.toHaveBeenCalled();
@@ -1392,7 +1438,7 @@ describe("bound Install status actions", () => {
         expect(retained.devices[0]?.abandoning).toBe(resume ? true : undefined);
         expect(host).toHaveBeenCalledTimes(scenario === "refused release on resume" ? 1 : 0);
       }
-      if (!finishes)
+      if (!finishes && !closeWhileSaving)
         expect(
           f.installPlan.mock.calls.every(([request]) => request.type !== "abandon-device"),
         ).toBe(true);
