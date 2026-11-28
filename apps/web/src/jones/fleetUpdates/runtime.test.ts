@@ -1,5 +1,5 @@
 import { EnvironmentId } from "@t3tools/contracts";
-import type { ConnectionCatalogEntry } from "@t3tools/client-runtime/connection";
+import type { ConnectionCatalogEntry, NetworkStatus } from "@t3tools/client-runtime/connection";
 import type { FleetHostRequest } from "@t3tools/client-runtime/jones/fleet-updates";
 import { expect, it, vi } from "vite-plus/test";
 import { fleetHost } from "./runtime";
@@ -25,11 +25,13 @@ vi.mock("../../connection/runtime", async () => {
     enabled: true,
   };
   const registry = Layer.unwrap(
-    SubscriptionRef.make<ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>>(
-      new Map([[entry.target.environmentId, entry]]),
-    ).pipe(
-      Effect.map((entries) => Layer.mock(EnvironmentRegistry.EnvironmentRegistry)({ entries })),
-    ),
+    Effect.gen(function* () {
+      const entries = yield* SubscriptionRef.make<
+        ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
+      >(new Map([[entry.target.environmentId, entry]]));
+      const networkStatus = yield* SubscriptionRef.make<NetworkStatus>("online");
+      return Layer.mock(EnvironmentRegistry.EnvironmentRegistry)({ entries, networkStatus });
+    }),
   );
   return { connectionAtomRuntime: Atom.runtime(registry) };
 });
