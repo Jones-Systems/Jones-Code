@@ -240,6 +240,21 @@ it("keeps unrecognized reasons and provider text out of category messages", () =
   );
 });
 
+it("explains an Auto allowance refusal without exposing the Claude diagnostic", () => {
+  const failure = makeProviderFailure({
+    cause: {
+      _tag: "ProviderAdapterTurnStartError",
+      cause: {
+        _tag: "ClaudeAgentSdkQueryRunnerError",
+        method: "verifyAutoAllowance",
+        cause: "Private usage response",
+      },
+    },
+  });
+  assert.include(failure.message, "Check the subscription's extra usage setting, then retry.");
+  assert.notInclude(failure.message, "Private usage response");
+});
+
 it("names a managed Codex policy that refuses the thread's access mode", () => {
   const message = makeProviderFailure({
     cause: {

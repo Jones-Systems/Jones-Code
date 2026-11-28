@@ -155,6 +155,13 @@ function curatedCauseMessages(cause: unknown): {
           return { known: stringField(cause, "message"), category: categoryMessage() };
         case "ClaudeAgentSdkQueryRunnerError": {
           const error = cause as Record<string, unknown>;
+          if (error.method === "verifyAutoAllowance") {
+            return {
+              known:
+                "Claude Auto paused this turn because it could not confirm that extra usage is disabled. Check the subscription's extra usage setting, then retry.",
+              category: categoryMessage(),
+            };
+          }
           if (error.method === "verifyAutoAccount" && error.nativeOutcome !== "unknown") {
             return {
               known:

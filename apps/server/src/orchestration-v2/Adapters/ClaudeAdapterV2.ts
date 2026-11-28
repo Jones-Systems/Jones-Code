@@ -15673,10 +15673,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 );
               }
               if ((yield* Ref.get(queryContext)) !== querySession || querySession.stopping) {
-                return yield* queryRunnerError(
-                  CLAUDE_QUERY_ENDED_BEFORE_TURN_DETAIL,
-                  "verifyAutoAllowance",
-                );
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: CLAUDE_QUERY_ENDED_BEFORE_TURN_DETAIL,
+                });
               }
             });
             yield* applySessionTitle(querySession.query, nativeThreadId, turnInput.appThread.title);

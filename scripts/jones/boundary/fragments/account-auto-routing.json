@@ -8,7 +8,7 @@
     "apps/server/src/jones/mcp/launchModelSelection.ts",
     "apps/web/src/jones/accountRouting/"
   ],
-  "hookPaths": [],
+  "hookPaths": ["packages/provider-core/src/server/failure.test.ts"],
   "tombstones": [],
   "allowedImports": [
     {
