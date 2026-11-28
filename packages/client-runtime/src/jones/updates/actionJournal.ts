@@ -69,6 +69,11 @@ const terminal = new Set([
   "fenced",
   "interrupted",
 ]);
+const stopResultSettled = (receipt: JonesOperationReceipt, stopId: string | undefined) =>
+  receipt.stop !== undefined &&
+  receipt.stop.stopId === stopId &&
+  receipt.stop.result !== undefined &&
+  receipt.stop.result !== "held";
 export function canonicalJonesCommand(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return `[${value.map(canonicalJonesCommand).join(",")}]`;
@@ -500,6 +505,15 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
           ? previousHistory
           : previousHistory.flatMap((d) => {
               if (
+                d.kind === "stop" &&
+                d.receipt !== undefined &&
+                !stopResultSettled(d.receipt, d.stopId) &&
+                stopResultSettled(proof, d.stopId) &&
+                isSettledOperationReceipt(proof) &&
+                validateJonesStopReceipt(d.receipt, proof)
+              )
+                return [{ ...d, receipt: proof }];
+              if (
                 d.kind !== "operation" ||
                 d.request === undefined ||
                 d.receipt === undefined ||
@@ -627,6 +641,16 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
           throw new Error(
             "This request identity is already retained. Read its outcome; do not resend it.",
           );
+        if (
+          duty.kind === "stop" &&
+          snapshot.history.some(
+            (entry) =>
+              entry.kind === "stop" &&
+              entry.environmentId === duty.environmentId &&
+              entry.operationId === duty.operationId,
+          )
+        )
+          throw new Error("A Stop for this transfer is already recorded. Nothing will be resent.");
         if (duties.length >= 64)
           throw new Error(
             "Update request history is full. Existing unknown requests were retained.",
@@ -669,6 +693,7 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
             )
               return [d];
             const original = d.request ?? d.receipt;
+            const terminalRead = options.ledgerRead === true && isSettledOperationReceipt(receipt);
             if (
               original === undefined ||
               !(d.kind === "stop" && compiledIs2(original)
@@ -678,13 +703,12 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
                 !(d.kind === "stop"
                   ? validateJonesStopReceipt(d.receipt, receipt)
                   : validateOperationEvidence(d.receipt, receipt, options))) ||
-              (d.kind === "stop" && receipt.stop?.stopId !== d.stopId)
+              (d.kind === "stop" && receipt.stop?.stopId !== d.stopId && !terminalRead)
             )
               return [d];
             changed = true;
             const stopSettled =
-              d.kind !== "stop" ||
-              ["stopped", "too-late", "not-stoppable-phase"].includes(receipt.stop?.result ?? "");
+              d.kind !== "stop" || terminalRead || stopResultSettled(receipt, d.stopId);
             if (isSettledOperationReceipt(receipt) && stopSettled) {
               settled = true;
               return [];

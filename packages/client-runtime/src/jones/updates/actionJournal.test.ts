@@ -262,6 +262,71 @@ describe("durable client update duties", () => {
     expect(storage.values.get(JONES_ACTION_JOURNAL_KEY)).not.toContain("admission");
   });
 
+  it.each([false, true])(
+    "unblocks new work after exact terminal read with a different Stop annotation present=%s",
+    async (foreignStop) => {
+      const storage = disk();
+      const journal = createJonesActionJournal(storage);
+      await journal.reserve({
+        id: id(2),
+        environmentId,
+        kind: "stop",
+        action: "stop",
+        targetSource,
+        operationId: id(1),
+        stopId: id(2),
+        receipt: receipt(),
+      });
+      const annotation = {
+        stopId: id(3),
+        requestedAt: "2026-10-27T04:01:00Z",
+        result: "too-late",
+      } as const;
+      const completed: JonesOperationReceipt = {
+        ...receipt("completed"),
+        updatedAt: "2026-10-27T04:01:01Z",
+        staged: {
+          stagedHandle: "stage",
+          sourceSha: targetSource,
+          sourceTree: installed,
+          artifactId: 1,
+        },
+        ...(foreignStop ? { stop: annotation } : {}),
+      };
+      expect(await journal.reconcileReceipt(completed)).toBe(false);
+      expect(
+        await journal.reconcileReceipt({ ...completed, phase: "held" }, { ledgerRead: true }),
+      ).toBe(false);
+      expect(
+        await journal.reconcileReceipt({ ...completed, operationId: id(4) }, { ledgerRead: true }),
+      ).toBe(false);
+      expect(await journal.reconcileReceipt(completed, { ledgerRead: true })).toBe(true);
+      const reopened = createJonesActionJournal(storage);
+      await reopened.load();
+      expect(reopened.getSnapshot().duties).toHaveLength(0);
+      expect(reopened.getSnapshot().history[0]).toMatchObject({
+        stopId: id(2),
+        receipt: completed,
+      });
+      if (!foreignStop) {
+        const late = {
+          ...completed,
+          updatedAt: "2026-10-27T04:01:02Z",
+          stop: { ...annotation, stopId: id(2), requestedAt: completed.updatedAt },
+        };
+        await reopened.reconcileReceipt(late, { ledgerRead: true });
+        expect(reopened.getSnapshot().history[0]?.receipt?.stop).toEqual(late.stop);
+      }
+      await reopened.reserve({
+        id: id(5),
+        environmentId,
+        kind: "legacy",
+        action: "download",
+        targetSource,
+      });
+    },
+  );
+
   it.each(["running", "held", "stopped", "unsupported"] as const)(
     "corrects an older archived unsupported reply with exact %s read evidence",
     async (outcome) => {

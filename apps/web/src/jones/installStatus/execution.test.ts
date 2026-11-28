@@ -941,4 +941,45 @@ describe("web durable execution", () => {
     expect(uuid).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
   });
+
+  it("reports an ended transfer without claiming a lost Stop succeeded", async () => {
+    const disk = { ...storage(), withLock: <A>(work: () => Promise<A>) => work() };
+    const journal = createWebJonesJournal(disk);
+    const stale = createWebJonesJournal(disk);
+    await stale.load();
+    const receipt: JonesOperationReceipt = {
+      protocol: 1,
+      environmentId,
+      operationId: id(1),
+      expectedInstalledSource: "c".repeat(40),
+      action: { kind: "download-exact", targetSource },
+      phase: "running",
+      acceptedAt: "2026-10-27T04:00:00Z",
+      updatedAt: "2026-10-27T04:00:00Z",
+    };
+    const send = vi.fn(async () => {
+      throw new Error("Stop reply lost");
+    });
+    const input = { environmentId, receipt, uuid: () => id(2), send, canOperate: () => true };
+    await stopWebJonesDownload(input, journal);
+    const terminal = {
+      ...receipt,
+      phase: "completed",
+      staged: {
+        stagedHandle: "stage",
+        sourceSha: targetSource,
+        sourceTree: targetSource,
+        artifactId: 1,
+      },
+    } as const;
+    expect(await journal.reconcileReceipt(terminal, { ledgerRead: true })).toBe(true);
+    expect(pendingJonesOperationId(environmentId, journal.getSnapshot())).toBe(receipt.operationId);
+    await expect(stopWebJonesDownload({ ...input, uuid: () => id(3) }, stale)).rejects.toThrow(
+      "A Stop for this transfer is already recorded.",
+    );
+    expect(await stopWebJonesDownload(input, journal)).toContain(
+      "The transfer ended before Stop was confirmed.",
+    );
+    expect(send).toHaveBeenCalledOnce();
+  });
 });

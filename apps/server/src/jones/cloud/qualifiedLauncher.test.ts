@@ -8,6 +8,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+import { acquireServiceSelectionLock } from "../../cloud/serviceSelectionLock.ts";
 import { observeSlowReservationDurability } from "./qualifiedLauncher.testFixtures.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 import { Launcher, main, readServiceState, writeServiceState } from "../../serviceLauncher.ts";
@@ -1946,6 +1947,87 @@ const reconciliationRequest = (requestId = "22345678-1234-4234-8234-123456789abc
   operationId: previousId,
   requestId,
 });
+
+it.each(["preimage", "published", "lock-release"] as const)(
+  "reconciles admission failure with selection prefix %s",
+  async (prefix) => {
+    const operationId = "12345678-1234-4234-8234-123456789abc";
+    let preimage: Buffer | undefined;
+    let published = false;
+    await runScenario(
+      "commit",
+      async (base, failure) => {
+        const runtime = NodePath.join(base, "runtime");
+        const selection = NodePath.join(runtime, "service-state.json");
+        const selected = await readServiceState(selection);
+        const evidence = await reconcileUpdateOperation(base, operationId, selected.update);
+        if (prefix === "preimage") {
+          assert.deepEqual(await NodeFSP.readFile(selection), preimage);
+          assert.equal(evidence.state, "rejected");
+          const response = JSON.parse(
+            await NodeFSP.readFile(NodePath.join(runtime, "rejected.json"), "utf8"),
+          );
+          assert.equal(response.operationId, operationId);
+          assert.isTrue(NodeFS.existsSync(NodePath.join(runtime, "old-child-survived.json")));
+          return;
+        }
+        assert.match(
+          String(failure),
+          prefix === "lock-release"
+            ? /Synthetic selection release failure/
+            : /Service selection changed/,
+        );
+        assert.equal(selected.update?.id, operationId);
+        assert.equal(selected.update?.status, "pending");
+        assert.isFalse(NodeFS.existsSync(NodePath.join(runtime, "rejected.json")));
+        assert.isFalse(NodeFS.existsSync(NodePath.join(runtime, "observed-active-launcher.json")));
+        assert.equal(evidence.state, "pending");
+        const reservationOnly = await reconcileUpdateOperation(base, operationId, undefined);
+        assert.equal(reservationOnly.state, "blocked");
+        if (reservationOnly.state === "blocked")
+          assert.match(reservationOnly.reason ?? "", /no proven native outcome/);
+        await NodeAssert.rejects(
+          new Launcher(base, selected, { startupGateProtocol: 1 }).run(),
+          /Active child exited unexpectedly/,
+        );
+        const recovered = await readServiceState(selection);
+        assert.equal(recovered.activeVersion, baseline);
+        assert.equal(recovered.update?.status, "failed");
+        assert.equal(
+          (await readUpdateOperationSettlement(base, operationId))?.basis,
+          "launcher-recorded",
+        );
+        const restart = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(runtime, "restart-context.json"), "utf8"),
+        );
+        assert.equal(restart.childVersion, baseline);
+      },
+      undefined,
+      {
+        afterOperationReserve: async () => {},
+        recoveryIO: {
+          writeState: async (path, state) => {
+            preimage = await NodeFSP.readFile(path);
+            if (prefix === "preimage") throw new Error("Synthetic admission durability failure");
+            await writeServiceState(path, state);
+            if (prefix === "published") throw new Error("Synthetic admission durability failure");
+            published = true;
+          },
+          selectionLock: async (path) => {
+            const release = await acquireServiceSelectionLock(path);
+            return () => {
+              release();
+              if (published && prefix === "lock-release") {
+                published = false;
+                throw new Error("Synthetic selection release failure");
+              }
+            };
+          },
+        },
+      },
+    );
+  },
+);
 
 it("keeps uncertain snapshot staging held before publishing pre-trial settlement", async () => {
   await runScenario(

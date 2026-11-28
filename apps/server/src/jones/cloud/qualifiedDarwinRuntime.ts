@@ -201,6 +201,8 @@ export async function extractQualifiedDarwinRuntime(input: {
   readonly baseDir: string;
   readonly run: DarwinStageRunner;
   readonly signal?: AbortSignal;
+  readonly beforeAttach?: () => Promise<void>;
+  readonly onCleanupProved?: () => Promise<void>;
 }): Promise<void> {
   if (
     input.artifact.candidate.platform !== "darwin" ||
@@ -313,6 +315,7 @@ export async function extractQualifiedDarwinRuntime(input: {
         "busy",
         "The candidate DMG already has an attachment; it was preserved.",
       );
+    await input.beforeAttach?.();
     mountingAttempted = true;
 
     await run("/usr/bin/hdiutil", [
@@ -502,9 +505,12 @@ export async function extractQualifiedDarwinRuntime(input: {
   }
   try {
     await NodeFSP.rm(mountOwner, { recursive: true, force: true });
+    if (mountingAttempted) await input.onCleanupProved?.();
   } catch (cause) {
     if (stagingFailed)
-      throw new AggregateError([stagingFailure, cause], "DMG staging and scratch cleanup failed.");
+      throw new AggregateError([stagingFailure, cause], "DMG staging and cleanup proof failed.", {
+        cause,
+      });
     throw cause;
   }
   if (stagingFailed) throw stagingFailure;

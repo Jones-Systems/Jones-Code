@@ -13095,5 +13095,7 @@
   "08226ed443dd4cb0": "Installation · {operationId}",
   "d805857a3e243315": "Tentative de mise à jour",
   "18d6cbd59b2ef487": "La directive d’origine de l’hôte suiveur reste à confirmer.",
-  "47387fc33eca675a": "L’hôte a confirmé la libération. Une autorisation de lecture est nécessaire pour l’enregistrer."
+  "47387fc33eca675a": "L’hôte a confirmé la libération. Une autorisation de lecture est nécessaire pour l’enregistrer.",
+  "c3a73b89ed249a98": "The exact Stop result was already recorded. Nothing will be resent.",
+  "fd4c7619ea984d74": "The transfer ended before Stop was confirmed. Nothing will be resent."
 }

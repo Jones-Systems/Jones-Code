@@ -940,7 +940,7 @@ export async function verifyStagedQualifiedRuntime(
 ): Promise<StagedQualifiedRuntime> {
   options?.signal?.throwIfAborted();
   const staged = decodeStagedQualifiedRuntime(await readRegularJson(stagedPath(baseDir, handle)));
-  if (staged === undefined)
+  if (staged === undefined || staged.stagedHandle !== handle)
     return blocked("invalid-artifact", "Staged handle has no valid durable receipt.");
   const current = await currentQualifiedRuntimeBinding(baseDir, activeVersion, host, {
     ...options,

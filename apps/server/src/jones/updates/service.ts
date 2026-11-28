@@ -798,6 +798,9 @@ export const layer = Layer.effect(
       yield* Clock.currentTimeMillis,
     );
     const updater: JonesUpdater = new JonesUpdater({
+      ...(launcher.qualifiedOperations === true
+        ? { newInstallOperationId: () => NodeCrypto.randomUUID() }
+        : {}),
       stateChanged: (state) => {
         publishCapability(state);
         progressRecorder.persist(state);
@@ -957,9 +960,7 @@ export const layer = Layer.effect(
       install: async (input, reportStep, onPreparationRefused) => {
         if (qualifiedSelfUpdate.installQualified === undefined)
           throw new Error("bootstrap-required: Qualified Install is unavailable.");
-        const operationId =
-          input.operationId ??
-          (launcher.qualifiedOperations === true ? NodeCrypto.randomUUID() : undefined);
+        const operationId = input.operationId;
         const installQualified = qualifiedSelfUpdate.installQualified;
         const recoveryRefusal = () =>
           input.recovery === undefined
@@ -1220,6 +1221,14 @@ export const layer = Layer.effect(
       // Restore admission holds before any background checks or fleet pass can start.
       yield* Effect.tryPromise(() => targetOperations.reconcile()).pipe(
         Effect.catch(() => Effect.sync(() => updater.setHeldJobs(["ledger-unreadable"]))),
+      );
+    }
+    if (terminal === undefined && startupProgress?.operationId !== undefined) {
+      // Route construction can precede qualified trial commit. Command readiness follows it.
+      yield* startup.awaitCommandReady.pipe(
+        Effect.andThen(Effect.sync(() => updater.refreshStartupOutcome())),
+        Effect.ignore,
+        Effect.forkScoped,
       );
     }
     const maintainPreparation = async () => {

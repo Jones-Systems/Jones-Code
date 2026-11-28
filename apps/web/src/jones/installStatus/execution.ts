@@ -65,11 +65,15 @@ export function pendingJonesOperationId(
   return history.findLast(
     (d) =>
       d.environmentId === environmentId &&
-      d.kind === "operation" &&
-      d.request !== undefined &&
       d.receipt !== undefined &&
-      isProvisionalUnsupportedReceipt(d.receipt) &&
-      d.unsupportedReceiptVerified !== true,
+      ((d.kind === "stop" &&
+        (d.receipt.stop === undefined ||
+          (d.receipt.stop.stopId === d.stopId &&
+            (d.receipt.stop.result === undefined || d.receipt.stop.result === "held")))) ||
+        (d.kind === "operation" &&
+          d.request !== undefined &&
+          isProvisionalUnsupportedReceipt(d.receipt) &&
+          d.unsupportedReceiptVerified !== true)),
   )?.operationId;
 }
 export function reconcileJonesExecution(
@@ -415,17 +419,22 @@ export function stopWebJonesDownload(
       .duties.find((d) => d.environmentId === input.environmentId && d.kind === "stop");
     if (saved !== undefined)
       return "Stop is not confirmed. Read its exact operation; nothing will be resent.";
-    if (
-      journal
-        .getSnapshot()
-        .history.some(
-          (d) =>
-            d.kind === "stop" &&
-            d.environmentId === input.environmentId &&
-            d.operationId === input.receipt.operationId,
-        )
-    )
-      return "The exact Stop result was already recorded. Nothing will be resent.";
+    const previousStop = journal
+      .getSnapshot()
+      .history.find(
+        (d) =>
+          d.kind === "stop" &&
+          d.environmentId === input.environmentId &&
+          d.operationId === input.receipt.operationId,
+      );
+    if (previousStop !== undefined) {
+      const annotation = previousStop.receipt?.stop;
+      return annotation?.stopId === previousStop.stopId &&
+        annotation?.result !== undefined &&
+        annotation.result !== "held"
+        ? m(msg("The exact Stop result was already recorded. Nothing will be resent."))
+        : m(msg("The transfer ended before Stop was confirmed. Nothing will be resent."));
+    }
     if (
       !input.canOperate() ||
       input.receipt.environmentId !== input.environmentId ||

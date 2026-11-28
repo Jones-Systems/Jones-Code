@@ -58,6 +58,15 @@ const absent = (pid: number) => {
   }
 };
 
+async function syncDirectory(directory: string): Promise<void> {
+  const fd = await NodeFSP.open(directory, "r");
+  try {
+    await fd.sync();
+  } finally {
+    await fd.close();
+  }
+}
+
 /** Only immutable release evidence may bypass the job lock. Never cache an unresolved read. */
 export async function readTerminalRelease(baseDir: string, jobId: string): Promise<boolean> {
   if (!isPreparationJobId(jobId)) return false;
@@ -88,12 +97,23 @@ export async function readTerminalRelease(baseDir: string, jobId: string): Promi
       const raw: unknown = JSON.parse(bytes.subarray(0, length).toString("utf8"));
       if (typeof raw !== "object" || raw === null) return false;
       const r = raw as Record<string, unknown>;
+      if (
+        r.schema !== 1 ||
+        r.jobId !== jobId ||
+        !["stage", "verify", "verify-runtime", "sweep"].includes(r.kind as string) ||
+        r.state !== "released" ||
+        !identity(r.worker)
+      )
+        return false;
+      // A visible rename is only evidence after a successful parent-directory sync.
+      await syncDirectory(NodePath.dirname(file));
+      const selected = await NodeFSP.lstat(file);
       return (
-        r.schema === 1 &&
-        r.jobId === jobId &&
-        ["stage", "verify", "verify-runtime", "sweep"].includes(r.kind as string) &&
-        r.state === "released" &&
-        identity(r.worker)
+        selected.dev === stat.dev &&
+        selected.ino === stat.ino &&
+        selected.size === stat.size &&
+        selected.mtimeMs === stat.mtimeMs &&
+        selected.ctimeMs === stat.ctimeMs
       );
     } finally {
       await fd.close();
@@ -207,7 +227,8 @@ export function preparationLifecycle(baseDir: string, jobId: string) {
               ? "not-started"
               : "unknown";
           }
-          if (raw.state === "released") return identity(raw.worker) ? "released" : "unknown";
+          if (raw.state === "released")
+            return (await readTerminalRelease(baseDir, jobId)) ? "released" : "unknown";
           if (raw.state !== "spawning" && raw.state !== "started") return "unknown";
           const effects = (await readBoundedJson(effectFile, LIMIT).catch(() => undefined)) as
             | Effects
@@ -234,6 +255,8 @@ export function preparationLifecycle(baseDir: string, jobId: string) {
             (boundEffects === undefined || !["transfer", "clean"].includes(boundEffects.phase))
           )
             return "cleanup-unconfirmed";
+          // The worker may have exited after publishing its effects but before syncing the rename.
+          await syncDirectory(directory);
           // Only the parent/job-lock owner calls release after the entire captured group is absent.
           await save(launchFile, { schema: 1, jobId, kind: raw.kind, state: "released", worker });
           return "released";

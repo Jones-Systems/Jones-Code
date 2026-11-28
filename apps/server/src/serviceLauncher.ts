@@ -1310,6 +1310,7 @@ interface LauncherRecoveryIO {
   readonly settle: typeof publishUpdateOperationSettlement;
   readonly cause: typeof writeUpdateOperationCause;
   readonly writeState: typeof writeServiceState;
+  readonly selectionLock: typeof acquireServiceSelectionLock;
 }
 
 export class Launcher {
@@ -1413,6 +1414,7 @@ export class Launcher {
       settle: publishUpdateOperationSettlement,
       cause: writeUpdateOperationCause,
       writeState: writeServiceState,
+      selectionLock: acquireServiceSelectionLock,
       ...options.recoveryIO,
     };
     this.#updateOperationIO = options.updateOperationIO ?? {
@@ -1689,7 +1691,7 @@ export class Launcher {
   }
 
   async #withCurrentSelection<A>(operation: () => Promise<A>): Promise<A> {
-    const release = await acquireServiceSelectionLock(this.#statePath);
+    const release = await this.#recoveryIO.selectionLock(this.#statePath);
     try {
       const selected = await readServiceState(this.#statePath);
       // Local installs replace the selection and clear its update record. An old
@@ -2739,16 +2741,32 @@ export class Launcher {
     };
     if (stagingTiming !== undefined) this.#recordDigestTiming(pending.id, stagingTiming);
     const next: ServiceState = { ...this.#state, update: pending };
+    let writeAttempted = false;
     try {
-      await this.#selectState(next, writeServiceState, () => {
+      await this.#selectState(next, this.#recoveryIO.writeState, () => {
         if (qualified !== undefined) {
           this.#assertQualifiedChildLive(child);
           if (this.#exchangeExpired(receivedAt))
             throw new Error("request-expired: Selection lease outlasted Install admission.");
         }
+        writeAttempted = true;
       });
     } catch (cause) {
-      await reject(cause instanceof Error ? cause.message : String(cause));
+      // If only lock release failed, the in-memory state already names the published selection.
+      if (this.#state === next) throw cause;
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      if (!writeAttempted && message.operationId === undefined) {
+        // An unkeyed request refused before writing has no reservation to settle.
+        await reject(reason);
+        return;
+      }
+      // A rename may have selected this operation before the directory sync failed.
+      // Only a durable preimage permits a rejection. A changed or unreadable selection
+      // stops this launcher and leaves restart recovery to settle the reservation.
+      await this.#withCurrentSelection(async () => {
+        await syncDirectory(NodePath.dirname(this.#statePath));
+        await reject(reason);
+      });
       return;
     }
     await this.#retainDigestTimings(next.update);

@@ -211,11 +211,13 @@ export function reconcileProgressAtStartup(
   const matched =
     record.kind === "install" &&
     outcome !== undefined &&
-    (record.operationId === undefined || record.operationId === outcome.id);
+    (record.operationId === outcome.id ||
+      (record.operationId === undefined && record.stepKey === "restart"));
   const provisional =
     record.phase === "failed" &&
-    record.error?.code === "outcome-unavailable" &&
-    record.stepKey === "restart" &&
+    ((record.error?.code === "outcome-unavailable" && record.stepKey === "restart") ||
+      record.error?.code === "interrupted") &&
+    record.operationId !== undefined &&
     record.operationId === outcome?.id &&
     matched;
   if (terminal(record) && !provisional) return record;

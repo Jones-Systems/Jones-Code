@@ -44,6 +44,10 @@ import {
   type PreparationHome,
 } from "./Preparation.testkit.ts";
 
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
+}));
+
 const homes: PreparationHome[] = [];
 /** PIDs the stand-in tools recorded; a failed test must not leave them running. */
 const spawned: number[] = [];
@@ -150,6 +154,48 @@ it("locks only unresolved history among thousands of released jobs, without cach
     mode: 0o600,
   });
   expect(await supervisor.unreleasedJobs!()).toEqual([unreaped]);
+});
+
+it("keeps a visible release held until the lifecycle directory syncs", async () => {
+  const fixture = await home();
+  const directory = NodePath.join(fixture.base, "runtime", "jones-preparation", "lifecycle");
+  const jobId = "44444444-4444-4444-8444-444444444444";
+  const file = NodePath.join(directory, `${jobId}.json`);
+  const lifecycle = preparationLifecycle(fixture.base, jobId);
+  const worker = { pid: 54321, processGroup: 54321 };
+  const launch = await lifecycle.reserve("stage");
+  await launch.started(worker);
+  await lifecycle.effects(worker.pid, "clean");
+
+  let failSync = true;
+  const openFile = NodeFSP.open;
+  const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+    const handle = await openFile(...args);
+    if (args[0] === directory) {
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        const record = JSON.parse(await NodeFSP.readFile(file, "utf8")) as { state: string };
+        if (failSync && record.state === "released")
+          throw new Error("release directory sync failed");
+        await sync();
+      };
+    }
+    return handle;
+  });
+  try {
+    await expect(lifecycle.release(() => true)).resolves.toBe("unknown");
+    expect(JSON.parse(await NodeFSP.readFile(file, "utf8"))).toMatchObject({ state: "released" });
+    const supervisor = makePreparationSupervisor({
+      baseDir: fixture.base,
+      cacheRoot: fixture.cacheRoot,
+      command: { file: "unused", args: [] },
+    });
+    expect(await supervisor.unreleasedJobs!()).toEqual([jobId]);
+    failSync = false;
+    expect(await supervisor.unreleasedJobs!()).toEqual([]);
+  } finally {
+    open.mockRestore();
+  }
 });
 
 it.each(["scratch", "reserved"])(

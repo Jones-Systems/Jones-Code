@@ -13095,5 +13095,7 @@
   "08226ed443dd4cb0": "Installation · {operationId}",
   "d805857a3e243315": "Aktualisierungsversuch",
   "18d6cbd59b2ef487": "Die ursprüngliche Anweisung für den Follower ist unbestätigt.",
-  "47387fc33eca675a": "Der Host hat die Freigabe bestätigt. Zum Speichern ist eine Leseberechtigung erforderlich."
+  "47387fc33eca675a": "Der Host hat die Freigabe bestätigt. Zum Speichern ist eine Leseberechtigung erforderlich.",
+  "c3a73b89ed249a98": "The exact Stop result was already recorded. Nothing will be resent.",
+  "fd4c7619ea984d74": "The transfer ended before Stop was confirmed. Nothing will be resent."
 }

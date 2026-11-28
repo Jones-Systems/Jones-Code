@@ -161,6 +161,7 @@ async function cancellationFixture(
   readonly primary: Error;
   readonly mount: string;
   readonly calls: ReadonlyArray<DarwinStageCommand>;
+  readonly provedClean: number;
 }> {
   const baseDir = NodePath.join(root, "home");
   const destination = NodePath.join(root, "payload");
@@ -170,10 +171,15 @@ async function cancellationFixture(
   const primary = new Error("Synthetic cancellation during app copy.");
   const calls: DarwinStageCommand[] = [];
   let mount = "";
+  let provedClean = 0;
   const failure = await extractQualifiedDarwinRuntime({
     artifact: stagedArtifact(root),
     baseDir,
     destination,
+    onCleanupProved: async () => {
+      await NodeAssert.rejects(NodeFSP.lstat(NodePath.dirname(mount)), { code: "ENOENT" });
+      provedClean += 1;
+    },
     ...(omitSignal ? {} : { signal: controller.signal }),
     run: withInventory(root, async (command) => {
       calls.push(command);
@@ -198,7 +204,7 @@ async function cancellationFixture(
     () => undefined,
     (cause: unknown) => cause,
   );
-  return { failure, primary, mount, calls };
+  return { failure, primary, mount, calls, provedClean };
 }
 
 it("checks packed ASAR version/source and its headless server entry without launching Electron", async () => {
@@ -300,6 +306,7 @@ it("detaches the owned device after the job is cancelled and preserves the cance
     assert.equal(detached.length, 1);
     assert.deepEqual(detached[0]!.args, ["detach", "/dev/disk123"]);
     assert.equal(result.failure, result.primary);
+    assert.equal(result.provedClean, 1);
     await NodeAssert.rejects(NodeFSP.lstat(NodePath.dirname(result.mount)), { code: "ENOENT" });
   });
 });
@@ -331,6 +338,7 @@ it("retains the exact mount and both staging and cleanup failures when forced de
     const result = await cancellationFixture(root, async ({ args }) => {
       throw args.includes("-force") ? forced : ordinary;
     });
+    assert.equal(result.provedClean, 0);
     assert.instanceOf(result.failure, QualifiedRuntimeBlockedError);
     const blocked = result.failure as QualifiedRuntimeBlockedError;
     assert.equal(blocked.reason, "busy");
