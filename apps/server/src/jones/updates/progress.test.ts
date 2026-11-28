@@ -269,6 +269,49 @@ describe("restart reconciliation", () => {
     },
   );
 
+  it("serves and persists a late exact planless outcome without a target ledger receipt", async () => {
+    const base = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-planless-progress-"));
+    try {
+      const recorder = createProgressRecorder(base);
+      const operationId = "11111111-1111-4111-8111-111111111111";
+      const handoff = advanceProgress(
+        startProgress("install", at, { operationId }),
+        "launcher-handoff",
+        at,
+      );
+      const initial = reconcileProgressAtStartup(handoff, undefined, later)!;
+      let outcome: ReturnType<NonNullable<JonesUpdaterHost["startupOutcome"]>>;
+      const { updater } = fixture({
+        initialState: { ...fixture().updater.snapshot(), progress: initial },
+        startupOutcome: () => outcome,
+        stateChanged: recorder.persist,
+      });
+      expect(updater.snapshot().progress?.error?.code).toBe("interrupted");
+      outcome = {
+        status: "committed",
+        id: "other",
+        fromVersion: currentVersion,
+        targetVersion: candidate.version,
+      };
+      expect(updater.refreshStartupOutcome().progress).toEqual(initial);
+      outcome = { ...outcome, id: operationId };
+      expect(updater.refreshStartupOutcome().progress).toMatchObject({
+        phase: "done",
+        stepKey: "confirm-restart",
+        operationId,
+      });
+      await recorder.flushed();
+      expect(await readJonesUpdateProgress(base)).toMatchObject({
+        phase: "done",
+        stepKey: "confirm-restart",
+        operationId,
+      });
+      expect(updater.snapshot().operation).toBeUndefined();
+    } finally {
+      await NodeFSP.rm(base, { recursive: true, force: true });
+    }
+  });
+
   it("finishes a matching install from the launcher's committed outcome", () => {
     const settled = reconcileProgressAtStartup(
       restarting(),

@@ -1223,6 +1223,14 @@ export const layer = Layer.effect(
         Effect.catch(() => Effect.sync(() => updater.setHeldJobs(["ledger-unreadable"]))),
       );
     }
+    if (terminal === undefined && startupProgress?.operationId !== undefined) {
+      // Route construction can precede qualified trial commit. Command readiness follows it.
+      yield* startup.awaitCommandReady.pipe(
+        Effect.andThen(Effect.sync(() => updater.refreshStartupOutcome())),
+        Effect.ignore,
+        Effect.forkScoped,
+      );
+    }
     const maintainPreparation = async () => {
       if (targetOperations !== undefined) await targetOperations.sweep();
       else if (preparation?.sweepIfNeeded !== undefined) await preparation.sweepIfNeeded();

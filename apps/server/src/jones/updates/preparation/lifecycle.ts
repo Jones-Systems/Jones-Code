@@ -97,12 +97,23 @@ export async function readTerminalRelease(baseDir: string, jobId: string): Promi
       const raw: unknown = JSON.parse(bytes.subarray(0, length).toString("utf8"));
       if (typeof raw !== "object" || raw === null) return false;
       const r = raw as Record<string, unknown>;
+      if (
+        r.schema !== 1 ||
+        r.jobId !== jobId ||
+        !["stage", "verify", "verify-runtime", "sweep"].includes(r.kind as string) ||
+        r.state !== "released" ||
+        !identity(r.worker)
+      )
+        return false;
+      // A visible rename is only evidence after a successful parent-directory sync.
+      await syncDirectory(NodePath.dirname(file));
+      const selected = await NodeFSP.lstat(file);
       return (
-        r.schema === 1 &&
-        r.jobId === jobId &&
-        ["stage", "verify", "verify-runtime", "sweep"].includes(r.kind as string) &&
-        r.state === "released" &&
-        identity(r.worker)
+        selected.dev === stat.dev &&
+        selected.ino === stat.ino &&
+        selected.size === stat.size &&
+        selected.mtimeMs === stat.mtimeMs &&
+        selected.ctimeMs === stat.ctimeMs
       );
     } finally {
       await fd.close();
@@ -216,10 +227,8 @@ export function preparationLifecycle(baseDir: string, jobId: string) {
               ? "not-started"
               : "unknown";
           }
-          if (raw.state === "released") {
-            await syncDirectory(directory);
+          if (raw.state === "released")
             return (await readTerminalRelease(baseDir, jobId)) ? "released" : "unknown";
-          }
           if (raw.state !== "spawning" && raw.state !== "started") return "unknown";
           const effects = (await readBoundedJson(effectFile, LIMIT).catch(() => undefined)) as
             | Effects

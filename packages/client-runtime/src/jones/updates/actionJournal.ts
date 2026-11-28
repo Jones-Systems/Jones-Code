@@ -641,6 +641,16 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
           throw new Error(
             "This request identity is already retained. Read its outcome; do not resend it.",
           );
+        if (
+          duty.kind === "stop" &&
+          snapshot.history.some(
+            (entry) =>
+              entry.kind === "stop" &&
+              entry.environmentId === duty.environmentId &&
+              entry.operationId === duty.operationId,
+          )
+        )
+          throw new Error("A Stop for this transfer is already recorded. Nothing will be resent.");
         if (duties.length >= 64)
           throw new Error(
             "Update request history is full. Existing unknown requests were retained.",

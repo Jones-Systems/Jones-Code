@@ -212,12 +212,16 @@ def synthetic_capacity(active, pair):
     try: return native_capacity(active, pair)
     finally: os.statvfs = native_space
 recovery_capacity_before_restore = synthetic_capacity
-if fault in ('bundle-denied', 'bundle-second-rename-denied'):
+if fault == 'stable-digest-changed':
+    (previous_app / 'Contents/MacOS/Jones').write_text('substituted-binary')
+if fault in ('bundle-denied', 'bundle-second-rename-denied', 'rollback-first-rename-denied', 'rollback-second-rename-denied'):
     native_rename = os.rename
     def denied_rename(source, target):
         source = pathlib.Path(source)
         if (fault == 'bundle-denied' and source == previous_app) or (fault == 'bundle-second-rename-denied' and '.jones-incoming-' in source.name):
             raise PermissionError('App Management denied bundle replacement')
+        if 'candidate-launch' in events and ((fault == 'rollback-first-rename-denied' and source == previous_app) or (fault == 'rollback-second-rename-denied' and '.jones-previous-' in source.name)):
+            raise PermissionError('App Management denied bundle rollback')
         return native_rename(source, target)
     os.rename = denied_rename
 native_stop = lambda proofs: events.append('stop:' + str(len(proofs)))
@@ -274,7 +278,7 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
     if fault == 'kernel-receipt': receipt['backendProcess'] = {'pid': 654, 'startSec': 101, 'startUsec': 0, 'executable': '/synthetic/backend'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
-    if fault in ('trial-mismatch', 'restart-refused', 'relaunch-eperm', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy', 'retained-removed', 'retained-changed'): receipt['sourceSha'] = 'wrong-source'
+    if fault in ('trial-mismatch', 'restart-refused', 'relaunch-eperm', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy', 'retained-removed', 'retained-changed', 'rollback-first-rename-denied', 'rollback-second-rename-denied'): receipt['sourceSha'] = 'wrong-source'
     if fault.startswith('authority-'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
@@ -343,11 +347,22 @@ else:
     activate(tx / 'intent.json')
     journal = read(tx / 'journal.json')
     with sqlite3.connect(database) as db: state = db.execute('SELECT value FROM identity').fetchone()[0]
-    if fault in ('retained-removed', 'retained-changed'):
+    if fault in ('retained-removed', 'retained-changed', 'rollback-first-rename-denied', 'rollback-second-rename-denied'):
         assert state == 'advanced-state'
         assert (tx / 'previous-pair' / 'pair.json').exists()
+        assert 'authority-fence' not in events
         assert 'restart-previous' not in events
-        assert app_digest(previous_app) == staged['appDigest']
+        if fault == 'rollback-second-rename-denied':
+            assert not previous_app.exists()
+            incoming = previous_app.with_name(previous_app.name + '.jones-incoming-' + transaction_id)
+            assert app_digest(incoming) == staged['appDigest']
+        else:
+            assert app_digest(previous_app) == staged['appDigest']
+    if fault == 'stable-digest-changed':
+        assert state == 'previous-state'
+        assert 'restart-previous' not in events
+        assert 'candidate-launch' not in events
+        assert not (tx / 'previous-pair').exists()
     if fault in ('storage-refused', 'reserve-denied'):
         assert events == ['storage-preflight', 'identity:123', 'restart-previous']
         assert state == 'previous-state'
@@ -3155,6 +3170,9 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["bundle-second-rename-denied", "rolled-back"],
     ["retained-removed", "blocked"],
     ["retained-changed", "blocked"],
+    ["rollback-first-rename-denied", "blocked"],
+    ["rollback-second-rename-denied", "blocked"],
+    ["stable-digest-changed", "blocked"],
     ["legacy-receipt", "blocked"],
     ["gate-mismatch", "blocked"],
     ["gate-boolean", "blocked"],

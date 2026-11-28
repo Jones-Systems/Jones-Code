@@ -479,6 +479,7 @@ def prove_bundle_rollback(expected, rollback_digest, staged, incoming, previous)
 
 def restore_bundle(expected, incoming, previous):
     stable = pathlib.Path(expected['appPath'])
+    verify_rollback_signature(expected, previous)
     os.rename(stable, incoming)
     sync_parent(stable)
     os.rename(previous, stable)
@@ -1476,7 +1477,13 @@ def pre_effect_unchanged(expected, tx, journal):
     incoming = stable.with_name(stable.name + '.jones-incoming-' + tx.name)
     if previous.exists() or previous.is_symlink(): return False
     if journal.get('previousBundle', str(previous)) != str(previous) or journal.get('incomingBundle', str(incoming)) != str(incoming): return False
-    return not any(key in journal for key in ('candidateWriter', 'trialReceipt', 'recovery', 'preSwapPreparationRecovery'))
+    if any(key in journal for key in ('candidateWriter', 'trialReceipt', 'recovery', 'preSwapPreparationRecovery')): return False
+    try:
+        if expected.get('appDigest') is None: bundle_identity(expected)
+        else: verify_bundle_generation(stable, expected['appDigest'])
+    except Exception:
+        return False
+    return True
 
 def recorded_processes_exited(proofs):
     if not valid_process_proofs(proofs): return False
@@ -1860,11 +1867,11 @@ def activate(intent_file):
             if not exclusive_writers: exclusive_writers = acquire_writer_exclusion(expected)
             if rollback_digest is None: raise RuntimeError('Original bundle generation is unproved.')
             swap_back = prove_bundle_rollback(expected, rollback_digest, staged, incoming, previous)
+            if swap_back: restore_bundle(expected, incoming, previous)
+            verify_bundle_generation(pathlib.Path(expected['appPath']), rollback_digest)
             release_recovery_reserve(recovery_reserves)
             recovery_capacity_before_restore(expected, tx / 'previous-pair')
             restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state', staged)
-            if swap_back: restore_bundle(expected, incoming, previous)
-            verify_bundle_generation(pathlib.Path(expected['appPath']), rollback_digest)
             record('rolled-back', message='Update rolled back: ' + str(failure))
         except Exception as recovery_failure:
             diagnostics = {'recoveryDiagnostics': {key: value for key, value in recovery_failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(recovery_failure, KernelProcessError) else {}

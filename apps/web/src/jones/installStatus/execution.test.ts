@@ -943,7 +943,10 @@ describe("web durable execution", () => {
   });
 
   it("reports an ended transfer without claiming a lost Stop succeeded", async () => {
-    const journal = createWebJonesJournal(storage());
+    const disk = { ...storage(), withLock: <A>(work: () => Promise<A>) => work() };
+    const journal = createWebJonesJournal(disk);
+    const stale = createWebJonesJournal(disk);
+    await stale.load();
     const receipt: JonesOperationReceipt = {
       protocol: 1,
       environmentId,
@@ -970,6 +973,10 @@ describe("web durable execution", () => {
       },
     } as const;
     expect(await journal.reconcileReceipt(terminal, { ledgerRead: true })).toBe(true);
+    expect(pendingJonesOperationId(environmentId, journal.getSnapshot())).toBe(receipt.operationId);
+    await expect(stopWebJonesDownload({ ...input, uuid: () => id(3) }, stale)).rejects.toThrow(
+      "A Stop for this transfer is already recorded.",
+    );
     expect(await stopWebJonesDownload(input, journal)).toContain(
       "The transfer ended before Stop was confirmed.",
     );

@@ -586,81 +586,90 @@ describe("production web review authority", () => {
     },
   );
 
-  it("keeps one Stop through pointer/keyboard, remount, wrong proofs and a late start response", async () => {
-    await using _fixture = await fixture();
-    const { a } = hosts();
-    const { stagedHandle: _stage, ...unstaged } = state(a, true);
-    const initial = { ...unstaged, phase: "available" as const };
-    h.observations.set(a, { state: initial, freshness: "fresh" });
-    let start!: JonesOperationStartInput, finish!: (value: unknown) => void;
-    h.operation.mockImplementation(async ({ input }: { input: JonesOperationCommand }) => {
-      if (input.action === "operationStart") {
-        start = input.input;
-        return new Promise((resolve) => {
-          finish = resolve;
-        });
+  it.each([false, true])(
+    "keeps one Stop through remount and exact reads, with a delayed Stop annotation=%s",
+    async (lateStop) => {
+      await using _fixture = await fixture();
+      const { a } = hosts();
+      const { stagedHandle: _stage, ...unstaged } = state(a, true);
+      const initial = { ...unstaged, phase: "available" as const };
+      h.observations.set(a, { state: initial, freshness: "fresh" });
+      let start!: JonesOperationStartInput, finish!: (value: unknown) => void;
+      h.operation.mockImplementation(async ({ input }: { input: JonesOperationCommand }) => {
+        if (input.action === "operationStart") {
+          start = input.input;
+          return new Promise((resolve) => {
+            finish = resolve;
+          });
+        }
+        return success({ receipts: [] });
+      });
+      await draw("connections", a);
+      await click("Download");
+      const running: JonesOperationReceipt = {
+        protocol: 1,
+        ...start,
+        phase: "running",
+        acceptedAt: "2026-10-27T04:00:00Z",
+        updatedAt: "2026-10-27T04:00:00Z",
+      };
+      h.observations.set(a, { state: { ...initial, operation: running }, freshness: "fresh" });
+      await draw("connections", a);
+      h.stop.mockResolvedValue({ _tag: "Failure" });
+      await click("Stop download");
+      await click("Stop download");
+      const stopId = h.stop.mock.calls[0]![0].input.input.stopId as string;
+      await root.rerender(null);
+      await draw("connections", a);
+      await click("Stop download");
+      await userEvent.keyboard("{Enter} ");
+      expect(h.stop).toHaveBeenCalledTimes(1);
+      let answer: JonesOperationReceipt = running;
+      h.operation.mockImplementation(async () =>
+        success({ receipts: [{ operationId: running.operationId, receipt: answer }] }),
+      );
+      const callsBeforeRead = h.operation.mock.calls.length;
+      await click("Read operation status");
+      expect(h.operation.mock.calls).toHaveLength(callsBeforeRead);
+      h.canRead.add(a);
+      await click("Read operation status");
+      expect(container.textContent).toContain("Read operation status");
+      answer = {
+        ...running,
+        operationId: "88888888-1111-4111-8111-111111111111",
+        phase: "stopped",
+      };
+      await click("Read operation status");
+      expect(container.textContent).toContain("Read operation status");
+      const stoppedReceipt = { ...running, phase: "stopped" } as const;
+      const annotation = { stopId, requestedAt: running.updatedAt, result: "stopped" } as const;
+      answer = lateStop ? stoppedReceipt : { ...stoppedReceipt, stop: annotation };
+      const exact = success({ receipts: [{ operationId: running.operationId, receipt: answer }] });
+      const readReply = Promise.withResolvers<typeof exact>();
+      h.operation.mockImplementationOnce(() => readReply.promise);
+      await click("Read operation status");
+      h.canRead.delete(a);
+      await act(async () => readReply.resolve(exact));
+      expect(webJonesJournal.getSnapshot().duties.some((d) => d.id === stopId)).toBe(true);
+      h.canRead.add(a);
+      await click("Read operation status");
+      expect(webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a)).toEqual([]);
+      const stopped = () =>
+        webJonesJournal
+          .getSnapshot()
+          .history.find((d) => d.environmentId === a && d.kind === "stop")?.receipt;
+      expect(stopped()).toEqual(answer);
+      await act(async () => finish(success(running)));
+      expect(stopped()).toEqual(answer);
+      if (lateStop) {
+        expect(container.textContent).toContain("Read operation status");
+        answer = { ...stoppedReceipt, stop: { ...annotation, result: "not-stoppable-phase" } };
+        await click("Read operation status");
+        expect(stopped()).toEqual(answer);
       }
-      return success({ receipts: [] });
-    });
-    await draw("connections", a);
-    await click("Download");
-    const running: JonesOperationReceipt = {
-      protocol: 1,
-      ...start,
-      phase: "running",
-      acceptedAt: "2026-10-27T04:00:00Z",
-      updatedAt: "2026-10-27T04:00:00Z",
-    };
-    h.observations.set(a, { state: { ...initial, operation: running }, freshness: "fresh" });
-    await draw("connections", a);
-    h.stop.mockResolvedValue({ _tag: "Failure" });
-    await click("Stop download");
-    await click("Stop download");
-    const stopId = h.stop.mock.calls[0]![0].input.input.stopId as string;
-    await root.rerender(null);
-    await draw("connections", a);
-    await click("Stop download");
-    await userEvent.keyboard("{Enter} ");
-    expect(h.stop).toHaveBeenCalledTimes(1);
-    let answer: JonesOperationReceipt = { ...running, phase: "stopped" };
-    h.operation.mockImplementation(async () =>
-      success({ receipts: [{ operationId: running.operationId, receipt: answer }] }),
-    );
-    const callsBeforeRead = h.operation.mock.calls.length;
-    await click("Read operation status");
-    expect(h.operation.mock.calls).toHaveLength(callsBeforeRead);
-    h.canRead.add(a);
-    await click("Read operation status");
-    expect(container.textContent).toContain("Read operation status");
-    answer = {
-      ...answer,
-      stop: {
-        stopId: "88888888-1111-4111-8111-111111111111",
-        requestedAt: running.updatedAt,
-        result: "stopped",
-      },
-    };
-    await click("Read operation status");
-    expect(container.textContent).toContain("Read operation status");
-    answer = { ...answer, stop: { ...answer.stop!, stopId } };
-    const exact = success({ receipts: [{ operationId: running.operationId, receipt: answer }] });
-    const readReply = Promise.withResolvers<typeof exact>();
-    h.operation.mockImplementationOnce(() => readReply.promise);
-    await click("Read operation status");
-    h.canRead.delete(a);
-    await act(async () => readReply.resolve(exact));
-    expect(webJonesJournal.getSnapshot().duties.some((d) => d.id === stopId)).toBe(true);
-    h.canRead.add(a);
-    await click("Read operation status");
-    expect(webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a)).toEqual([]);
-    const stopped = () =>
-      webJonesJournal.getSnapshot().history.find((d) => d.environmentId === a && d.kind === "stop")
-        ?.receipt;
-    expect(stopped()).toMatchObject({ phase: "stopped", stop: { stopId, result: "stopped" } });
-    await act(async () => finish(success(running)));
-    expect(stopped()).toMatchObject({ phase: "stopped", stop: { stopId, result: "stopped" } });
-    expect(container.textContent).not.toContain("Read operation status");
-    expect(container.textContent).toContain("stopped");
-    expect(h.stop).toHaveBeenCalledTimes(1);
-  });
+      expect(container.textContent).not.toContain("Read operation status");
+      expect(container.textContent).toContain("stopped");
+      expect(h.stop).toHaveBeenCalledTimes(1);
+    },
+  );
 });

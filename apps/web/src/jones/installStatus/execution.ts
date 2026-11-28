@@ -65,11 +65,15 @@ export function pendingJonesOperationId(
   return history.findLast(
     (d) =>
       d.environmentId === environmentId &&
-      d.kind === "operation" &&
-      d.request !== undefined &&
       d.receipt !== undefined &&
-      isProvisionalUnsupportedReceipt(d.receipt) &&
-      d.unsupportedReceiptVerified !== true,
+      ((d.kind === "stop" &&
+        (d.receipt.stop === undefined ||
+          (d.receipt.stop.stopId === d.stopId &&
+            (d.receipt.stop.result === undefined || d.receipt.stop.result === "held")))) ||
+        (d.kind === "operation" &&
+          d.request !== undefined &&
+          isProvisionalUnsupportedReceipt(d.receipt) &&
+          d.unsupportedReceiptVerified !== true)),
   )?.operationId;
 }
 export function reconcileJonesExecution(

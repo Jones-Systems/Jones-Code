@@ -8,6 +8,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+import { acquireServiceSelectionLock } from "../../cloud/serviceSelectionLock.ts";
 import { observeSlowReservationDurability } from "./qualifiedLauncher.testFixtures.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 import { Launcher, main, readServiceState, writeServiceState } from "../../serviceLauncher.ts";
@@ -1947,11 +1948,12 @@ const reconciliationRequest = (requestId = "22345678-1234-4234-8234-123456789abc
   requestId,
 });
 
-it.each([false, true])(
-  "reconciles admission write failure with pending selection published=%s",
-  async (published) => {
+it.each(["preimage", "published", "lock-release"] as const)(
+  "reconciles admission failure with selection prefix %s",
+  async (prefix) => {
     const operationId = "12345678-1234-4234-8234-123456789abc";
     let preimage: Buffer | undefined;
+    let published = false;
     await runScenario(
       "commit",
       async (base, failure) => {
@@ -1959,7 +1961,7 @@ it.each([false, true])(
         const selection = NodePath.join(runtime, "service-state.json");
         const selected = await readServiceState(selection);
         const evidence = await reconcileUpdateOperation(base, operationId, selected.update);
-        if (!published) {
+        if (prefix === "preimage") {
           assert.deepEqual(await NodeFSP.readFile(selection), preimage);
           assert.equal(evidence.state, "rejected");
           const response = JSON.parse(
@@ -1969,7 +1971,12 @@ it.each([false, true])(
           assert.isTrue(NodeFS.existsSync(NodePath.join(runtime, "old-child-survived.json")));
           return;
         }
-        assert.match(String(failure), /Service selection changed/);
+        assert.match(
+          String(failure),
+          prefix === "lock-release"
+            ? /Synthetic selection release failure/
+            : /Service selection changed/,
+        );
         assert.equal(selected.update?.id, operationId);
         assert.equal(selected.update?.status, "pending");
         assert.isFalse(NodeFS.existsSync(NodePath.join(runtime, "rejected.json")));
@@ -2001,8 +2008,20 @@ it.each([false, true])(
         recoveryIO: {
           writeState: async (path, state) => {
             preimage = await NodeFSP.readFile(path);
-            if (published) await writeServiceState(path, state);
-            throw new Error("Synthetic admission durability failure");
+            if (prefix === "preimage") throw new Error("Synthetic admission durability failure");
+            await writeServiceState(path, state);
+            if (prefix === "published") throw new Error("Synthetic admission durability failure");
+            published = true;
+          },
+          selectionLock: async (path) => {
+            const release = await acquireServiceSelectionLock(path);
+            return () => {
+              release();
+              if (published && prefix === "lock-release") {
+                published = false;
+                throw new Error("Synthetic selection release failure");
+              }
+            };
           },
         },
       },

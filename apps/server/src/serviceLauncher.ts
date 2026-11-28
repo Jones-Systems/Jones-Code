@@ -1310,6 +1310,7 @@ interface LauncherRecoveryIO {
   readonly settle: typeof publishUpdateOperationSettlement;
   readonly cause: typeof writeUpdateOperationCause;
   readonly writeState: typeof writeServiceState;
+  readonly selectionLock: typeof acquireServiceSelectionLock;
 }
 
 export class Launcher {
@@ -1413,6 +1414,7 @@ export class Launcher {
       settle: publishUpdateOperationSettlement,
       cause: writeUpdateOperationCause,
       writeState: writeServiceState,
+      selectionLock: acquireServiceSelectionLock,
       ...options.recoveryIO,
     };
     this.#updateOperationIO = options.updateOperationIO ?? {
@@ -1689,7 +1691,7 @@ export class Launcher {
   }
 
   async #withCurrentSelection<A>(operation: () => Promise<A>): Promise<A> {
-    const release = await acquireServiceSelectionLock(this.#statePath);
+    const release = await this.#recoveryIO.selectionLock(this.#statePath);
     try {
       const selected = await readServiceState(this.#statePath);
       // Local installs replace the selection and clear its update record. An old
@@ -2750,6 +2752,8 @@ export class Launcher {
         writeAttempted = true;
       });
     } catch (cause) {
+      // If only lock release failed, the in-memory state already names the published selection.
+      if (this.#state === next) throw cause;
       const reason = cause instanceof Error ? cause.message : String(cause);
       if (!writeAttempted && message.operationId === undefined) {
         // An unkeyed request refused before writing has no reservation to settle.
