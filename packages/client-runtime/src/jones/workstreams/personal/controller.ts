@@ -40,8 +40,30 @@ import type {
 
 export const personalThreadKey = (t: PersonalThreadRef): string =>
   JSON.stringify([t.environmentId, t.id]);
+/** Only a laptop receipt or snapshot can move a close into the Closed Workstreams UI. */
+export function acceptedPersonalWorkstreamClose(state: PersonalWorkstreamsState, id: string) {
+  return state.fleet?.operations.find(
+    ({ workstreamId, kind, status }) =>
+      workstreamId === id &&
+      kind === "close" &&
+      (status === "pending" || status === "stale" || status === "applied"),
+  );
+}
+
+export function personalWorkstreamClosedLifecycle(
+  state: PersonalWorkstreamsState,
+  workstream: PersonalWorkstreamView,
+) {
+  const { lifecycle } = workstream;
+  if (lifecycle === "completed" || lifecycle === "abandoned") return lifecycle;
+  const requested = acceptedPersonalWorkstreamClose(state, workstream.id)?.requestedLifecycle;
+  return requested === "completed" || requested === "abandoned" ? requested : null;
+}
+
 export const openPersonalWorkstreams = (state: PersonalWorkstreamsState) =>
-  state.workstreams.filter((workstream) => !isClosedPersonalWorkstream(workstream.lifecycle));
+  state.workstreams.filter(
+    (workstream) => personalWorkstreamClosedLifecycle(state, workstream) === null,
+  );
 
 export function visiblePersonalWorkstreamId(
   state: PersonalWorkstreamsState,
@@ -50,7 +72,8 @@ export function visiblePersonalWorkstreamId(
   const id = state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId;
   return id &&
     state.workstreams.some(
-      (workstream) => workstream.id === id && !isClosedPersonalWorkstream(workstream.lifecycle),
+      (workstream) =>
+        workstream.id === id && personalWorkstreamClosedLifecycle(state, workstream) === null,
     )
     ? id
     : null;

@@ -13026,11 +13026,6 @@
     },
     " more in Linked items"
   ],
-  "8c1ece34d8110434": "Close requested · environment list changed",
-  "c1b12405ec210b59": "Close requested · settle or move active threads on the authority",
-  "fbe568e6c3ad3fda": "Close requested · waiting for {environments}",
-  "4eb557f7a26aa217": "Close requested",
-  "cdcbb4ff13e8074f": "A close has been requested.",
   "5722d04a8e7f2e97": "Cancel close request",
   "408e31f427958c7c": "Approve this laptop in Workstreams settings on the receiving environment",
   "a055517e31acd6fd": "This environment follows a different authority",

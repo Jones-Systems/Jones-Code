@@ -87,6 +87,9 @@ function FleetControls({
   const manageReady = authorityReady && !!manage && !busy;
   const actionReady = state.fleetAuthorityStatus === "ready" && !busy;
   const roster = fleet?.role === "authority" ? fleet : undefined;
+  const operations = roster?.operations.filter(
+    ({ status }) => status === "pending" || status === "stale" || status === "discovered",
+  );
   const candidates = [
     ...new Set([...links.map((link) => link.environmentId), ...(roster?.members ?? [])]),
   ];
@@ -286,7 +289,7 @@ function FleetControls({
             />
           );
         })}
-      {roster?.operations.map((operation) => {
+      {operations?.map((operation) => {
         const discovered = operation.status === "discovered";
         const name =
           state.workstreams.find((workstream) => workstream.id === operation.workstreamId)?.name ??
@@ -307,26 +310,28 @@ function FleetControls({
                     : gt("{name} · Sync pending", { name })
             }
             description={
-              <div className="space-y-2">
+              <span className="block space-y-2">
                 {operation.reason && (
-                  <p>{m(deliveryReasons[operation.reason] ?? operation.reason)}</p>
+                  <span className="block">
+                    {m(deliveryReasons[operation.reason] ?? operation.reason)}
+                  </span>
                 )}
                 {operation.peers
                   .filter((peer) => peer.state !== "delivered")
                   .map((peer) => (
-                    <div key={peer.environmentId}>
-                      <p>
+                    <span key={peer.environmentId} className="block">
+                      <span className="block">
                         {label(peer.environmentId)} ·{" "}
                         {m(
                           (peer.reason && deliveryReasons[peer.reason]) ||
                             msg("Waiting for confirmation"),
                         )}
-                      </p>
+                      </span>
                       {peer.state === "conflict" &&
                         peer.observed &&
                         (operation.kind === "put" || operation.kind === "delete") &&
                         resolve && (
-                          <div className="mt-1 flex flex-wrap gap-2">
+                          <span className="mt-1 flex flex-wrap gap-2">
                             {!discovered &&
                               (peer.observed?.deleted !== true ||
                                 !state.workstreams.some(
@@ -391,11 +396,11 @@ function FleetControls({
                                       })}
                               </Button>
                             )}
-                          </div>
+                          </span>
                         )}
-                    </div>
+                    </span>
                   ))}
-              </div>
+              </span>
             }
             control={
               operation.kind === "close" && cancel ? (
