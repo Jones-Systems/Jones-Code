@@ -48,6 +48,10 @@ import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as Selector from "../../accountRouting/selectAutoAccount.ts";
+import {
+  AccountLaunchIntent,
+  type AccountLaunchAdmission,
+} from "../../accountRouting/accountBinding.ts";
 import * as ProjectStore from "../../../orchestration-v2/ProjectStore.ts";
 import * as ProviderInstances from "../../../provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -113,15 +117,17 @@ it.effect("Auto launches and local delegation bind a concrete account before rep
     };
     const firstWinner = { ...representative, instanceId: winnerId };
     let currentWinner = firstWinner;
-    let expectedCwd = cwd;
+    let expectedCwd = yield* fs.realPath(cwd);
+    let beforeSelectionReturns: Effect.Effect<void> = Effect.void;
     const selected = { ...modelSelection, instanceId: winnerId };
     using select = vi.spyOn(Selector, "selectAutoAccount").mockImplementation((request) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         assert.equal(request.projectId, projectId);
         assert.equal(request.cwd, expectedCwd);
         assert.deepEqual(request.modelSelection, modelSelection);
         const selection = { ...modelSelection, instanceId: currentWinner.instanceId };
         assert.isTrue(request.candidateAllowed?.(currentWinner, selection));
+        yield* beforeSelectionReturns;
         return {
           modelSelection: selection,
           binding: { instanceId: selection.instanceId, digest: "synthetic" },
@@ -198,6 +204,7 @@ it.effect("Auto launches and local delegation bind a concrete account before rep
       }).pipe(Effect.flip);
       assert.equal(conflict.code, "request_conflict");
       assert.lengthOf(select.mock.calls, 1);
+      expectedCwd = cwd;
       const unkeyed = yield* launch(auto);
       assert.deepEqual(unkeyed.modelSelection, modelSelection);
       assert.lengthOf(select.mock.calls, 2);
@@ -248,57 +255,144 @@ it.effect("Auto launches and local delegation bind a concrete account before rep
       const alias = `${cwd}/checkout-alias`;
       yield* fs.makeDirectory(firstCheckout);
       yield* fs.makeDirectory(otherCheckout);
-      yield* fs.symlink(firstCheckout, alias);
-      expectedCwd = firstCheckout;
       const git = yield* Git.GitVcsDriver;
       const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const worktree = {
+      const registered = Effect.provideService(Git.GitVcsDriver, {
+        ...git,
+        listWorktreePaths: () => Effect.succeed([firstCheckout, otherCheckout]),
+      });
+      for (const step of ["claim", "thread"] as const) {
+        yield* fs.symlink(firstCheckout, alias);
+        expectedCwd = firstCheckout;
+        currentWinner = firstWinner;
+        const worktree = {
+          ...auto,
+          clientRequestId: `auto-worktree-alias-${step}`,
+          workspaceStrategy: { type: "existing_worktree" as const, worktreePath: alias },
+        };
+        const stop = failAfter(launches, step);
+        const interrupted = yield* launch(worktree).pipe(
+          registered,
+          Effect.provideService(ThreadLaunch.ThreadLaunchService, {
+            ...stop,
+            launch: (request) =>
+              stop
+                .launch(request)
+                .pipe(
+                  Effect.provideService(ThreadManagement.ThreadManagementService, context.threads),
+                ),
+          }),
+          Effect.exit,
+        );
+        assert.isTrue(Exit.isFailure(interrupted));
+        const state = yield* ClientLaunch.lookupForCaller(context, worktree.clientRequestId);
+        assert.isTrue(state.claimed);
+        assert.equal(state.state, step === "claim" ? "absent" : "launched");
+        assert.equal(state.initialMessage, "pending");
+        yield* fs.remove(alias);
+        yield* fs.symlink(otherCheckout, alias);
+        expectedCwd = otherCheckout;
+        currentWinner = representative;
+        const observeRetry = failAfter(launches, "claim");
+        let observed:
+          | {
+              request: ThreadLaunch.ThreadLaunchInput;
+              admission: AccountLaunchAdmission | undefined;
+            }
+          | undefined;
+        yield* launch(worktree).pipe(
+          registered,
+          Effect.provideService(ThreadLaunch.ThreadLaunchService, {
+            ...observeRetry,
+            launch: (request) =>
+              Effect.gen(function* () {
+                observed = { request, admission: yield* AccountLaunchIntent };
+                return yield* observeRetry
+                  .launch(request)
+                  .pipe(
+                    Effect.provideService(
+                      ThreadManagement.ThreadManagementService,
+                      context.threads,
+                    ),
+                  );
+              }),
+          }),
+          Effect.exit,
+        );
+        assert.deepEqual(observed?.request.workspaceStrategy, {
+          type: "existing_worktree",
+          worktreePath: firstCheckout,
+        });
+        assert.deepEqual(observed?.request.modelSelection, selected);
+        assert.deepEqual(observed?.admission?.binding, {
+          instanceId: winnerId,
+          digest: "synthetic",
+        });
+        yield* fs.remove(alias);
+      }
+      assert.lengthOf(select.mock.calls, 5);
+
+      const reachedProbe = yield* Deferred.make<void>();
+      const releaseProbe = yield* Deferred.make<void>();
+      const reachedLaunch = yield* Deferred.make<void>();
+      const releaseLaunch = yield* Deferred.make<void>();
+      const attempts: Array<{
+        request: ThreadLaunch.ThreadLaunchInput;
+        admission: AccountLaunchAdmission | undefined;
+      }> = [];
+      const interruptedLaunches = failAfter(launches, "claim");
+      const race = {
         ...auto,
-        clientRequestId: "auto-worktree-alias",
+        clientRequestId: "auto-worktree-race",
         workspaceStrategy: { type: "existing_worktree" as const, worktreePath: alias },
       };
-      const stopAfterShell = failAfter(launches, "thread");
-      const interrupted = yield* launch(worktree).pipe(
-        Effect.provideService(Git.GitVcsDriver, {
-          ...git,
-          listWorktreePaths: () => Effect.succeed([firstCheckout, otherCheckout]),
-        }),
+      const attempt = launch(race).pipe(
+        registered,
         Effect.provideService(ThreadLaunch.ThreadLaunchService, {
-          ...stopAfterShell,
+          ...interruptedLaunches,
           launch: (request) =>
-            stopAfterShell
-              .launch(request)
-              .pipe(
-                Effect.provideService(ThreadManagement.ThreadManagementService, context.threads),
-              ),
+            Effect.gen(function* () {
+              attempts.push({ request, admission: yield* AccountLaunchIntent });
+              yield* Deferred.succeed(reachedLaunch, undefined);
+              yield* Deferred.await(releaseLaunch);
+              return yield* interruptedLaunches
+                .launch(request)
+                .pipe(
+                  Effect.provideService(ThreadManagement.ThreadManagementService, context.threads),
+                );
+            }),
         }),
         Effect.exit,
       );
-      assert.isTrue(Exit.isFailure(interrupted));
-      assert.equal(
-        (yield* ClientLaunch.lookupForCaller(context, worktree.clientRequestId)).initialMessage,
-        "pending",
+      yield* fs.symlink(firstCheckout, alias);
+      expectedCwd = firstCheckout;
+      currentWinner = firstWinner;
+      beforeSelectionReturns = Deferred.succeed(reachedProbe, undefined).pipe(
+        Effect.andThen(Deferred.await(releaseProbe)),
       );
+      const first = yield* attempt.pipe(Effect.forkScoped);
+      yield* Deferred.await(reachedProbe);
       yield* fs.remove(alias);
       yield* fs.symlink(otherCheckout, alias);
-      let workspace: ThreadLaunch.ThreadLaunchWorkspaceStrategy | undefined;
-      const observeRetry = failAfter(launches, "claim");
-      yield* launch(worktree).pipe(
-        Effect.provideService(ThreadLaunch.ThreadLaunchService, {
-          ...observeRetry,
-          launch: (request) => {
-            workspace = request.workspaceStrategy;
-            return observeRetry
-              .launch(request)
-              .pipe(
-                Effect.provideService(ThreadManagement.ThreadManagementService, context.threads),
-              );
-          },
-        }),
-        Effect.exit,
-      );
-      assert.deepEqual(workspace, { type: "existing_worktree", worktreePath: firstCheckout });
-      assert.lengthOf(select.mock.calls, 4);
+      expectedCwd = otherCheckout;
+      currentWinner = representative;
+      beforeSelectionReturns = Effect.void;
+      const second = yield* attempt.pipe(Effect.forkScoped);
+      yield* Deferred.await(reachedLaunch);
+      yield* Deferred.succeed(releaseProbe, undefined);
+      yield* Deferred.succeed(releaseLaunch, undefined);
+      assert.isTrue(Exit.isFailure(yield* Fiber.join(first)));
+      assert.isTrue(Exit.isFailure(yield* Fiber.join(second)));
+      assert.lengthOf(attempts, 2);
+      for (const { request, admission } of attempts) {
+        assert.deepEqual(request.workspaceStrategy, {
+          type: "existing_worktree",
+          worktreePath: otherCheckout,
+        });
+        assert.deepEqual(request.modelSelection, modelSelection);
+        assert.equal(admission?.binding.instanceId, modelSelection.instanceId);
+      }
+      assert.lengthOf(select.mock.calls, 7);
     }).pipe(Effect.provide(OrchestrationMcp.layer.pipe(Layer.provideMerge(dependencies))));
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

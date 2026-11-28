@@ -3,6 +3,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE jones_mcp_client_launch_requests ADD COLUMN auto_admission TEXT`;
   yield* sql`CREATE TABLE jones_auto_account_bindings (
     thread_id TEXT PRIMARY KEY NOT NULL,
     provider_instance_id TEXT NOT NULL,

@@ -2099,6 +2099,9 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
         Effect.mapError(mapError(request, "create-thread", request.threadId)),
       );
       const autoIntent = yield* AutoLaunchIntent;
+      const accountIntent = yield* AccountLaunchIntent;
+      const keyedWorkspace =
+        accountIntent?.commandId === request.commandId ? accountIntent.workspace : undefined;
       let priorLaunchReceipt = yield* readReceipt(request, request.commandId);
       const autoDecision = yield* (
         eventSink.readAutoLaunch?.(request.commandId) ?? Effect.undefined
@@ -2165,11 +2168,10 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
             request.threadId,
           )("The accepted Auto launch has no matching creation receipt.");
       } else if (autoIntent !== undefined) {
-        const binding = yield* AccountLaunchIntent;
         if (
           Option.isSome(priorLaunchReceipt) ||
           autoIntent.workspace === undefined ||
-          binding?.commandId !== request.commandId ||
+          accountIntent?.commandId !== request.commandId ||
           eventSink.readAutoLaunch === undefined
         )
           return yield* mapError(
@@ -2201,6 +2203,22 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
           "read-receipt",
           recordedClaim?.id,
         )("The accepted Auto launch workspace does not match its creation.");
+      if (
+        keyedWorkspace !== undefined &&
+        ((request.workspaceStrategy.type === "root"
+          ? null
+          : request.workspaceStrategy.type === "existing_worktree"
+            ? request.workspaceStrategy.worktreePath
+            : undefined) !== keyedWorkspace.worktreePath ||
+          (recordedClaim !== undefined &&
+            (recordedClaim.worktreePath !== keyedWorkspace.worktreePath ||
+              recordedClaim.modelSelection.instanceId !== accountIntent?.binding.instanceId)))
+      )
+        return yield* mapError(
+          request,
+          "read-receipt",
+          request.threadId,
+        )("The keyed Auto launch does not match its admitted account and workspace.");
       if (
         autoDecision === undefined &&
         recordedClaim !== undefined &&
@@ -2328,10 +2346,11 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
         needsAdmission || (resumeAllocation && input.workspaceStrategy.type === "auto")
           ? yield* resolveLaunchProject(input)
           : null;
+      const admittedWorkspace = autoIntent?.workspace ?? keyedWorkspace;
       if (
-        autoIntent?.workspace !== undefined &&
+        admittedWorkspace !== undefined &&
         project !== null &&
-        project.workspaceRoot !== autoIntent.workspace.projectRoot
+        project.workspaceRoot !== admittedWorkspace.projectRoot
       )
         return yield* mapError(
           input,
@@ -2740,9 +2759,10 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
             ) {
               return yield* releasePreparation(input.commandId);
             }
-            if (autoDecision !== undefined) {
+            const fixedWorkspace = autoDecision ?? admittedWorkspace;
+            if (fixedWorkspace !== undefined) {
               const currentProject = yield* resolveLaunchProject(input);
-              if (currentProject.workspaceRoot !== autoDecision.projectRoot)
+              if (currentProject.workspaceRoot !== fixedWorkspace.projectRoot)
                 return yield* mapError(
                   input,
                   "resolve-project",

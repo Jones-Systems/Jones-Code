@@ -4,6 +4,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import mcpLaunchMigration from "../persistence/Migrations/112_JonesClientLaunchRequests.ts";
 import migration from "../persistence/Migrations/169_JonesAutoAccountBindings.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import { accountIdentityDigest } from "./accountBinding.ts";
@@ -24,6 +25,7 @@ it.effect(
         payload: { modelSelection: { instanceId, model: "synthetic-model" } },
       };
       assert.isUndefined(yield* store.read(threadId, instanceId));
+      yield* mcpLaunchMigration;
       yield* migration;
       const aborted = yield* store
         .commit({ instanceId, digest }, [creation])

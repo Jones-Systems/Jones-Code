@@ -25,6 +25,7 @@ export interface AccountBinding {
 export interface AccountLaunchAdmission {
   readonly commandId: CommandId;
   readonly binding: AccountBinding;
+  readonly workspace?: AutoLaunchWorkspace;
 }
 
 export interface AutoLaunchRequest {
@@ -106,7 +107,12 @@ export const withAccountLaunchBinding = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   commandId: CommandId,
   binding: AccountBinding | undefined,
+  workspace?: AutoLaunchWorkspace,
 ) =>
   binding === undefined
     ? effect
-    : Effect.provideService(effect, AccountLaunchIntent, { commandId, binding });
+    : Effect.provideService(effect, AccountLaunchIntent, {
+        commandId,
+        binding,
+        ...(workspace === undefined ? {} : { workspace }),
+      });

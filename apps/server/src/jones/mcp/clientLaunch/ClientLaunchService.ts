@@ -1,7 +1,10 @@
 import { claimForCaller } from "../../linkedThreads/launch.ts";
 import {
   CommandId,
+  ModelSelection,
   OrchestratorMcpFailure,
+  ProviderInteractionMode,
+  RuntimeMode,
   type LinkedThreadOriginLink,
   type ClientLaunchLookup,
 } from "@t3tools/contracts";
@@ -37,12 +40,30 @@ import { resolveLaunchDefaults } from "./launchDefaults.ts";
 interface Claim {
   readonly request_digest: string;
   readonly message_requested: number;
+  readonly auto_admission: string | null;
 }
+
+const AutoAdmission = Schema.fromJsonString(
+  Schema.Struct({
+    projectRoot: Schema.NonEmptyString,
+    physicalRoot: Schema.NonEmptyString,
+    worktreePath: Schema.NullOr(Schema.NonEmptyString),
+    modelSelection: ModelSelection,
+    accountDigest: Schema.NonEmptyString,
+    runtimeMode: RuntimeMode,
+    interactionMode: ProviderInteractionMode,
+  }),
+);
+type AutoAdmission = typeof AutoAdmission.Type;
+const encodeAutoAdmission = Schema.encodeEffect(AutoAdmission);
+const decodeAutoAdmission = Schema.decodeUnknownEffect(AutoAdmission);
+
 const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const fenceReason = "jones-client-launch:v1:fenced";
 const readClaim = Effect.fn("ClientLaunchService.readClaim")(function* (commandId: CommandId) {
   const sql = yield* SqlClient.SqlClient;
-  return (yield* sql<Claim>`SELECT request_digest, message_requested FROM jones_mcp_client_launch_requests WHERE command_id = ${commandId}`)[0];
+  return (yield* sql<Claim>`SELECT request_digest, message_requested, auto_admission
+    FROM jones_mcp_client_launch_requests WHERE command_id = ${commandId}`)[0];
 }, Effect.mapError(unavailable));
 const readReceipt = (commandId: CommandId) =>
   Receipts.CommandReceiptStoreV2.pipe(
@@ -293,6 +314,76 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
   };
   const invoke = (request: ThreadLaunch.ThreadLaunchInput) =>
     launches.launch(request).pipe(Effect.mapError(unavailable));
+  const getProject = Effect.gen(function* () {
+    const projects = yield* Project.ProjectService;
+    const project = yield* projects.getById(projectId).pipe(Effect.mapError(unavailable));
+    if (Option.isNone(project))
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "The project was not found.",
+      });
+    return project.value;
+  });
+  const requireStoredAutoAdmission = (claim: Claim) =>
+    decodeAutoAdmission(claim.auto_admission).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The original Auto launch admission is unavailable for this key.",
+          }),
+      ),
+    );
+  const unavailableWorkspace = () =>
+    new OrchestratorMcpFailure({
+      code: "orchestration_error",
+      message: "The original Auto launch workspace is unavailable.",
+    });
+  const boundWorkspace = Effect.fn("ClientLaunchService.boundWorkspace")(function* (
+    admission: AutoAdmission,
+  ) {
+    const project = yield* getProject;
+    const fs = yield* FileSystem.FileSystem;
+    const real = (path: string) => fs.realPath(path).pipe(Effect.mapError(unavailableWorkspace));
+    if (
+      project.workspaceRoot !== admission.projectRoot ||
+      (yield* real(project.workspaceRoot)) !== admission.physicalRoot
+    )
+      return yield* unavailableWorkspace();
+    if (workspaceStrategy.type === "root" && admission.worktreePath === null)
+      return workspaceStrategy;
+    if (
+      workspaceStrategy.type !== "existing_worktree" ||
+      admission.worktreePath === null ||
+      (yield* real(admission.worktreePath)) !== admission.worktreePath
+    )
+      return yield* unavailableWorkspace();
+    const git = yield* Git.GitVcsDriver;
+    const paths = yield* git
+      .listWorktreePaths(project.workspaceRoot)
+      .pipe(Effect.mapError(unavailableWorkspace));
+    const registered = yield* Effect.findFirst(paths, (path) =>
+      fs.realPath(path).pipe(
+        Effect.map((resolved) => resolved === admission.worktreePath),
+        Effect.orElseSucceed(() => false),
+      ),
+    );
+    if (Option.isNone(registered)) return yield* unavailableWorkspace();
+    return { ...workspaceStrategy, worktreePath: admission.worktreePath };
+  });
+  const launchWithAdmission = (request: ThreadLaunch.ThreadLaunchInput, admission: AutoAdmission) =>
+    withAccountLaunchBinding(
+      invoke(request),
+      ids.commandId,
+      {
+        instanceId: admission.modelSelection.instanceId,
+        digest: admission.accountDigest,
+      },
+      {
+        projectRoot: admission.projectRoot,
+        worktreePath: admission.worktreePath,
+      },
+    );
   const readOriginal = Effect.fn("ClientLaunchService.readOriginal")(function* () {
     const receipt = yield* readReceipt(ids.commandId);
     if (receipt === undefined) return yield* unavailable();
@@ -326,97 +417,116 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
       (state.initialMessage === "accepted" && state.preparation === "unscheduled")
     ) {
       const original = autoModelSelection === undefined ? undefined : yield* readOriginal();
+      const admission =
+        original === undefined || claim.auto_admission === null
+          ? undefined
+          : yield* requireStoredAutoAdmission(claim);
       let workspace = workspaceStrategy;
-      if (original !== undefined && workspaceStrategy.type === "existing_worktree") {
+      if (admission !== undefined && original !== undefined) {
+        if (admission.worktreePath !== original.worktreePath) return yield* unavailableWorkspace();
+        workspace = yield* boundWorkspace(admission);
+      } else if (original !== undefined && workspaceStrategy.type === "existing_worktree") {
         const fs = yield* FileSystem.FileSystem;
         const checkout = original.worktreePath;
         if (
           checkout === null ||
           (yield* fs.realPath(checkout).pipe(Effect.orElseSucceed(() => undefined))) !== checkout
         )
-          return yield* new OrchestratorMcpFailure({
-            code: "orchestration_error",
-            message: "The original Auto launch worktree is unavailable.",
-          });
+          return yield* unavailableWorkspace();
         workspace = { ...workspaceStrategy, worktreePath: checkout };
       }
+      const request = {
+        ...common,
+        workspaceStrategy: workspace,
+        modelSelection: original?.modelSelection ?? shell.modelSelection,
+        runtimeMode: shell.runtimeMode,
+        interactionMode: shell.interactionMode,
+      };
       yield* gate.continueWithin(
         shell,
-        invoke({
-          ...common,
-          workspaceStrategy: workspace,
-          modelSelection: original?.modelSelection ?? shell.modelSelection,
-          runtimeMode: shell.runtimeMode,
-          interactionMode: shell.interactionMode,
-        }),
+        admission === undefined ? invoke(request) : launchWithAdmission(request, admission),
       );
     }
   });
   if (replayed) {
     yield* continueAccepted();
   } else {
-    const projects = yield* Project.ProjectService;
-    const project = yield* projects
-      .getById(projectId)
-      .pipe(Effect.mapError(unavailable), Effect.map(Option.getOrUndefined));
-    if (project === undefined)
-      return yield* new OrchestratorMcpFailure({
-        code: "invalid_request",
-        message: "The project was not found.",
-      });
-    if (
-      autoModelSelection !== undefined &&
-      (workspaceStrategy.type === "worktree" || workspaceStrategy.type === "auto")
-    )
-      return yield* existingAccountRoutingWorkspaceRequired();
-    let cwd = project.workspaceRoot;
-    if (workspaceStrategy.type === "existing_worktree") {
+    const preflight = Effect.gen(function* () {
+      const project = yield* getProject;
+      if (
+        autoModelSelection !== undefined &&
+        (workspaceStrategy.type === "worktree" || workspaceStrategy.type === "auto")
+      )
+        return yield* existingAccountRoutingWorkspaceRequired();
       const fs = yield* FileSystem.FileSystem;
-      const git = yield* Git.GitVcsDriver;
-      const real = (path: string) => fs.realPath(path).pipe(Effect.orElseSucceed(() => path));
-      const paths = yield* git
-        .listWorktreePaths(project.workspaceRoot)
-        .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
-      const requested = yield* real(workspaceStrategy.worktreePath);
-      const checks = yield* Effect.forEach(paths, real);
-      const registered = paths[checks.indexOf(requested)];
-      if (registered === undefined)
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "worktreePath must be one of the project's git worktrees.",
-        });
-      cwd = autoModelSelection === undefined ? registered : requested;
-    }
-    if (workspaceStrategy.type === "worktree")
-      yield* launches.checkWorktreeBase({ projectId, workspaceStrategy }).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message: "The requested worktree base could not be resolved. No thread was created.",
-            }),
-        ),
-      );
-    const { modelSelection, runtimeMode } = yield* resolveLaunchDefaults(
-      input,
-      caller,
-      projectId,
-      modes,
-      Effect.succeed(project),
-    );
-    const routedSelection =
-      autoModelSelection === undefined
-        ? undefined
-        : yield* resolveAutoLaunchModel({
-            caller,
-            projectId,
-            modelSelection: autoModelSelection,
-            runtimeMode,
-            interactionMode: modes.interactionMode,
-            cwd,
+      const physicalRoot =
+        autoModelSelection === undefined
+          ? project.workspaceRoot
+          : yield* fs.realPath(project.workspaceRoot).pipe(Effect.mapError(unavailableWorkspace));
+      let cwd = physicalRoot;
+      if (workspaceStrategy.type === "existing_worktree") {
+        const git = yield* Git.GitVcsDriver;
+        const real = (path: string) => fs.realPath(path).pipe(Effect.orElseSucceed(() => path));
+        const paths = yield* git
+          .listWorktreePaths(project.workspaceRoot)
+          .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+        const requested = yield* real(workspaceStrategy.worktreePath);
+        const checks = yield* Effect.forEach(paths, real);
+        const registered = paths[checks.indexOf(requested)];
+        if (registered === undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "worktreePath must be one of the project's git worktrees.",
           });
+        cwd = autoModelSelection === undefined ? registered : requested;
+      }
+      if (workspaceStrategy.type === "worktree")
+        yield* launches.checkWorktreeBase({ projectId, workspaceStrategy }).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message:
+                  "The requested worktree base could not be resolved. No thread was created.",
+              }),
+          ),
+        );
+      const { modelSelection, runtimeMode } = yield* resolveLaunchDefaults(
+        input,
+        caller,
+        projectId,
+        modes,
+        Effect.succeed(project),
+      );
+      if (autoModelSelection === undefined) return { modelSelection, runtimeMode };
+      const routed = yield* resolveAutoLaunchModel({
+        caller,
+        projectId,
+        modelSelection: autoModelSelection,
+        runtimeMode,
+        interactionMode: modes.interactionMode,
+        cwd,
+      });
+      return {
+        modelSelection,
+        runtimeMode,
+        autoAdmission: {
+          projectRoot: project.workspaceRoot,
+          physicalRoot,
+          worktreePath: workspaceStrategy.type === "existing_worktree" ? cwd : null,
+          modelSelection: routed.modelSelection,
+          accountDigest: routed.binding.digest,
+          runtimeMode,
+          interactionMode: modes.interactionMode,
+        } satisfies AutoAdmission,
+      };
+    });
+    // A pending Auto key already owns a binding. Only new proposals inspect usage
+    // and resolve an alias. Concurrent proposals use the winner inside the transaction.
+    const proposal =
+      autoModelSelection !== undefined && priorClaim !== undefined ? undefined : yield* preflight;
     const sql = yield* SqlClient.SqlClient;
-    yield* sql
+    const claim = yield* sql
       .withTransaction(
         Effect.gen(function* () {
           const currentReceipt = yield* readReceipt(ids.commandId);
@@ -425,7 +535,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
               code: "launch_fenced",
               message: "This launch key has an authoritative rejection.",
             });
-          const claim = yield* readClaim(ids.commandId);
+          let claim = yield* readClaim(ids.commandId);
           if (claim !== undefined) {
             if (claim.request_digest !== digest)
               return yield* new OrchestratorMcpFailure({
@@ -438,7 +548,21 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
                 code: "request_conflict",
                 message: "The existing receipt has no matching claim.",
               });
-            yield* sql`INSERT INTO jones_mcp_client_launch_requests (command_id, thread_id, request_digest, request_version, message_requested, recorded_at) VALUES (${ids.commandId}, ${ids.threadId}, ${digest}, 1, ${input.message === undefined ? 0 : 1}, ${DateTime.formatIso(yield* DateTime.now)})`.pipe(
+            if (proposal === undefined) return yield* unavailable();
+            claim = {
+              request_digest: digest,
+              message_requested: input.message === undefined ? 0 : 1,
+              auto_admission:
+                proposal.autoAdmission === undefined
+                  ? null
+                  : yield* encodeAutoAdmission(proposal.autoAdmission).pipe(
+                      Effect.mapError(unavailable),
+                    ),
+            };
+            yield* sql`INSERT INTO jones_mcp_client_launch_requests
+              (command_id, thread_id, request_digest, request_version, message_requested, recorded_at, auto_admission)
+              VALUES (${ids.commandId}, ${ids.threadId}, ${claim.request_digest}, 1, ${claim.message_requested},
+                ${DateTime.formatIso(yield* DateTime.now)}, ${claim.auto_admission})`.pipe(
               Effect.mapError(unavailable),
             );
           }
@@ -448,6 +572,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
             ids.commandId,
             navigationExcluded,
           );
+          return claim;
         }),
       )
       .pipe(Effect.mapError((error) => (isMcpFailure(error) ? error : unavailable())));
@@ -457,23 +582,24 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
       replayed = true;
       yield* continueAccepted();
     } else {
+      const admission =
+        autoModelSelection === undefined ? undefined : yield* requireStoredAutoAdmission(claim);
+      const modelSelection = admission?.modelSelection ?? proposal?.modelSelection;
+      const runtimeMode = admission?.runtimeMode ?? proposal?.runtimeMode;
+      if (modelSelection === undefined || runtimeMode === undefined) return yield* unavailable();
+      const interactionMode = admission?.interactionMode ?? modes.interactionMode;
+      const request = {
+        ...common,
+        ...(admission === undefined ? {} : { workspaceStrategy: yield* boundWorkspace(admission) }),
+        modelSelection,
+        runtimeMode,
+        interactionMode,
+        ...(modes.linkOrigin === undefined ? {} : { linkOrigin: modes.linkOrigin }),
+      };
       const result = yield* gate
         .continueWithin(
-          modes,
-          withAccountLaunchBinding(
-            invoke({
-              ...common,
-              ...(autoModelSelection !== undefined && workspaceStrategy.type === "existing_worktree"
-                ? { workspaceStrategy: { ...workspaceStrategy, worktreePath: cwd } }
-                : {}),
-              modelSelection: routedSelection?.modelSelection ?? modelSelection,
-              runtimeMode,
-              interactionMode: modes.interactionMode,
-              ...(modes.linkOrigin === undefined ? {} : { linkOrigin: modes.linkOrigin }),
-            }),
-            ids.commandId,
-            routedSelection?.binding,
-          ),
+          admission === undefined ? modes : admission,
+          admission === undefined ? invoke(request) : launchWithAdmission(request, admission),
         )
         .pipe(
           Effect.catch((error) =>

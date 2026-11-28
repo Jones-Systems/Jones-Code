@@ -40,6 +40,7 @@ import { liveThreadShell } from "../../../mcp/McpToolAccess.testkit.ts";
 import * as Handlers from "../../../mcp/toolkits/project/handlers.ts";
 import { ProjectToolkit } from "../../../mcp/toolkits/project/tools.ts";
 import migration from "../../persistence/Migrations/112_JonesClientLaunchRequests.ts";
+import autoAccountMigration from "../../persistence/Migrations/169_JonesAutoAccountBindings.ts";
 import { clientLaunchDigest, clientLaunchIds } from "./ClientLaunchIdentity.ts";
 
 const projectId = ProjectId.make("synthetic-project");
@@ -105,9 +106,12 @@ function harness(
   const database = Layer.effectDiscard(
     Effect.gen(function* () {
       yield* migration;
+      yield* autoAccountMigration;
       if (options.accepted) {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO jones_mcp_client_launch_requests VALUES (${ids.commandId}, ${ids.threadId}, ${clientLaunchDigest(request, projectId)}, 1, 1, 'synthetic')`;
+        yield* sql`INSERT INTO jones_mcp_client_launch_requests
+          (command_id, thread_id, request_digest, request_version, message_requested, recorded_at)
+          VALUES (${ids.commandId}, ${ids.threadId}, ${clientLaunchDigest(request, projectId)}, 1, 1, 'synthetic')`;
       }
     }),
   ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
