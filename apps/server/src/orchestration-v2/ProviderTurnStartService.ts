@@ -4268,33 +4268,8 @@ export const layer: Layer.Layer<
           });
           const inlineContextLength = startInput.message.text.length - requestText.length;
           const inlineStart = delivery.context === "" ? undefined : inlineHistory;
-          const started = yield* startWithConfiguredEffort(
-            {
-              ...startInput,
-              ...(missedAttachments.length === 0
-                ? {}
-                : {
-                    message: {
-                      ...startInput.message,
-                      attachments: [...missedAttachments, ...turnInput.message.attachments],
-                    },
-                  }),
-              ...(inlineContextLength === 0 ? {} : { inlineContextLength }),
-            },
-            compact,
-          ).pipe(
-            Effect.provideService(CodexInlineHistoryStart, inlineStart),
-            Effect.tapError((error) =>
-              refusedBeforePrompt(error) ||
-              promptWasNotApplied(error, { beforeDispatchOnly: codexHistory !== undefined })
-                ? restoreUnsent(delivery.unsent)
-                : Effect.void,
-            ),
-          );
-          if (!started) return yield* restoreUnsent(delivery.unsent);
-          if (inlineStart !== undefined && !inlineStart.acknowledged) return;
           // Serialize acceptance writes against dropped-terminal restoration so neither overwrites the other.
-          yield* inlineDeliveryLock.withPermits(1)(
+          const recordDelivered = inlineDeliveryLock.withPermits(1)(
             Effect.gen(function* () {
               if (promptDroppedOnTerminal) return;
               // After provider acceptance, failed delivery bookkeeping must not stop live ingestion.
@@ -4327,6 +4302,33 @@ export const layer: Layer.Layer<
               );
             }),
           );
+          inlineStart?.deferDelivery(recordDelivered);
+          const started = yield* startWithConfiguredEffort(
+            {
+              ...startInput,
+              ...(missedAttachments.length === 0
+                ? {}
+                : {
+                    message: {
+                      ...startInput.message,
+                      attachments: [...missedAttachments, ...turnInput.message.attachments],
+                    },
+                  }),
+              ...(inlineContextLength === 0 ? {} : { inlineContextLength }),
+            },
+            compact,
+          ).pipe(
+            Effect.provideService(CodexInlineHistoryStart, inlineStart),
+            Effect.tapError((error) =>
+              refusedBeforePrompt(error) ||
+              promptWasNotApplied(error, { beforeDispatchOnly: codexHistory !== undefined })
+                ? restoreUnsent(delivery.unsent)
+                : Effect.void,
+            ),
+          );
+          if (!started) return yield* restoreUnsent(delivery.unsent);
+          if (inlineStart !== undefined && !inlineStart.acceptedOnAcknowledgement) return;
+          yield* recordDelivered;
         },
         Effect.scoped,
         Effect.mapError((cause) =>

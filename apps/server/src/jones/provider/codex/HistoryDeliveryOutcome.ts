@@ -143,11 +143,13 @@ interface LateInlineReceipt {
 }
 
 interface InlineHistoryStart {
-  readonly acknowledged: boolean;
+  readonly acceptedOnAcknowledgement: boolean;
   readonly closeUnsent: () => boolean;
   readonly canDispatch: () => boolean;
   readonly tryDispatch: () => boolean;
-  readonly markAcknowledged: () => void;
+  readonly markAcknowledged: (queued?: boolean) => void;
+  readonly deferDelivery: (record: Effect.Effect<void>) => void;
+  readonly recordQueuedDelivery: Effect.Effect<void>;
   readonly reconcileLate: (
     terminal: Deferred.Deferred<CodexStartTerminal | null>,
     binding: ProviderRuntimeBinding,
@@ -336,6 +338,8 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
       idAllocator: IdAllocatorV2["Service"],
     ): InlineHistoryStart {
       let status: "unsent" | "closed" | "dispatched" | "acknowledged" = "unsent";
+      let queued = false;
+      let recordQueuedDelivery = Effect.void;
       const ownsDelivery = Effect.fn("HistoryDeliveryOutcome.ownsLateInlineDelivery")(function* (
         receipt: LateInlineReceipt,
       ) {
@@ -401,8 +405,8 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
         },
       );
       return {
-        get acknowledged() {
-          return status === "acknowledged";
+        get acceptedOnAcknowledgement() {
+          return status === "acknowledged" && !queued;
         },
         closeUnsent() {
           if (status !== "unsent") return false;
@@ -415,9 +419,15 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
           status = "dispatched";
           return true;
         },
-        markAcknowledged() {
-          if (status === "dispatched") status = "acknowledged";
+        markAcknowledged(waitsForNativeStart = false) {
+          if (status !== "dispatched") return;
+          status = "acknowledged";
+          queued = waitsForNativeStart;
         },
+        deferDelivery: (record) => {
+          recordQueuedDelivery = record;
+        },
+        recordQueuedDelivery: Effect.suspend(() => (queued ? recordQueuedDelivery : Effect.void)),
         reconcileLate: (terminal, binding, input, isCurrent, release) =>
           Deferred.await(terminal).pipe(
             Effect.flatMap((observed) => {

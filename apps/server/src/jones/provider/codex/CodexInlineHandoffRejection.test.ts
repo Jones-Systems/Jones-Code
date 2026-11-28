@@ -262,6 +262,9 @@ describe("Codex inline handoff rejection recovery", () => {
     { code: -32601, late: false, recovery: "known local stop before prompt" },
     { code: -32600, late: false, recovery: "definitive direct injection rejection" },
     { code: null, late: false, recovery: "on-time ACK and terminal" },
+    { code: null, late: false, recovery: "queued ACK without native input" },
+    { code: null, late: false, recovery: "queued ACK followed by recorded input" },
+    { code: null, late: false, recovery: "queued ACK after native completion" },
     { code: null, late: true, recovery: "late ACK and terminal" },
     { code: null, late: true, recovery: "late terminal before ACK" },
     { code: null, late: true, recovery: "late ACK without a terminal" },
@@ -287,27 +290,33 @@ describe("Codex inline handoff rejection recovery", () => {
       const directInjectionRejection = recovery === "definitive direct injection rejection";
       const noPromptRequest = directInjectionRejection || stopBeforePrompt;
       const acceptsPrompt = code === null;
-      const terminalFirst = recovery === "late terminal before ACK";
-      const ackOnly = recovery === "late ACK without a terminal";
+      const queuedCompletedBeforeAck = recovery === "queued ACK after native completion";
+      const terminalFirst = recovery === "late terminal before ACK" || queuedCompletedBeforeAck;
+      const queuedWithoutInput = recovery === "queued ACK without native input";
+      const queuedWithInput = recovery === "queued ACK followed by recorded input";
+      const ackOnly = recovery === "late ACK without a terminal" || queuedWithoutInput;
       const wrongTerminal = recovery === "late ACK with a different terminal";
       const interruptedWithoutInput = recovery === "late ACK and interrupted prompt without input";
       const interruptedWithInput =
         recovery === "late ACK and interrupted prompt with observed input";
       const queuedCommitRace = recovery === "queued ACK during application Stop commit";
       const queuedStop = recovery === "application Stop before queued ACK" || queuedCommitRace;
+      const queued =
+        queuedStop || queuedWithoutInput || queuedWithInput || queuedCompletedBeforeAck;
       const stopWhileAwaitingAck = recovery === "application Stop while awaiting ACK" || queuedStop;
       const nativeTerminalStatus =
         interruptedWithoutInput || interruptedWithInput || stopWhileAwaitingAck
           ? "interrupted"
           : "completed";
       const restartReadback = recovery === "readback of restart after COMMIT contradiction";
-      const commitsInline = recovery === "on-time ACK and terminal";
+      const commitsInline =
+        recovery === "on-time ACK and terminal" || queuedWithInput || queuedCompletedBeforeAck;
       const lostAfterCommit = recovery === "process loss after late receipt commits";
       const recordsLateReceipt =
         restartReadback ||
         lostAfterCommit ||
         recovery === "late ACK and terminal" ||
-        terminalFirst ||
+        (terminalFirst && late) ||
         interruptedWithInput;
       const positiveCommitRace =
         restartReadback || recovery === "late acceptance contradicted before COMMIT";
@@ -492,7 +501,7 @@ describe("Codex inline handoff rejection recovery", () => {
               result: {
                 turn: {
                   ...makeCodexReplayTurn({ id: originalNativeTurnId, status: "inProgress" }),
-                  ...(queuedStop ? { startedAt: null } : {}),
+                  ...(queued ? { startedAt: null } : {}),
                 },
               },
             }
@@ -509,10 +518,29 @@ describe("Codex inline handoff rejection recovery", () => {
                 withReplayRequestId(first[5]!, 4),
                 ...(terminalFirst ? [terminal] : []),
                 reply,
-                ...(interruptedWithInput
+                ...(queuedWithoutInput
                   ? [
                       {
                         type: "emit_inbound" as const,
+                        label: "queued turn starts",
+                        frame: {
+                          method: "turn/started",
+                          params: {
+                            threadId: nativeThreadId,
+                            turn: makeCodexReplayTurn({
+                              id: originalNativeTurnId,
+                              status: "inProgress",
+                            }),
+                          },
+                        },
+                      },
+                    ]
+                  : []),
+                ...(interruptedWithInput || queuedWithInput
+                  ? [
+                      {
+                        type: "emit_inbound" as const,
+                        ...(queuedWithInput ? { label: "queued prompt recorded" } : {}),
                         frame: {
                           method: "item/started",
                           params: {
@@ -688,7 +716,9 @@ describe("Codex inline handoff rejection recovery", () => {
         beforeEmitInbound: (entry) =>
           entry.label === "first prompt response" || entry.label === "history request rejection"
             ? Deferred.succeed(sent, undefined).pipe(Effect.andThen(Deferred.await(allowRejection)))
-            : entry.label === "contradictory turn activity" || entry.label === "queued turn starts"
+            : entry.label === "contradictory turn activity" ||
+                entry.label === "queued turn starts" ||
+                entry.label === "queued prompt recorded"
               ? Deferred.await(allowActivity)
               : Effect.void,
       });
@@ -831,6 +861,7 @@ describe("Codex inline handoff rejection recovery", () => {
           if (queuedStop) {
             yield* Deferred.await(queuedAckObserved);
             yield* Fiber.join(starting);
+            assert.equal((yield* getProjection()).contextHandoffs[0]?.delivery?.status, "pending");
             yield* TestClock.adjust("2 minutes");
             assert.equal(interruptsSent, 0, "Stop must wait for the queued turn to start");
             assert.equal(unsubscribeRequests, 0, "Idle unload must preserve the pending Stop");
@@ -858,11 +889,7 @@ describe("Codex inline handoff rejection recovery", () => {
           assert.deepEqual(afterTerminal.runs, afterStop.runs);
           if (queuedCommitRace) {
             assert.equal(afterTerminal.attempts[0]?.status, "interrupted");
-            assert.isTrue(
-              afterTerminal.providerTurns.every(
-                (turn) => turn.nativeTurnRef?.nativeId === originalNativeTurnId,
-              ),
-            );
+            assert.equal(afterTerminal.contextHandoffs[0]?.delivery?.status, "pending");
           } else {
             assert.deepEqual(afterTerminal.attempts, afterStop.attempts);
             assert.deepEqual(afterTerminal.providerTurns, []);
@@ -974,6 +1001,19 @@ describe("Codex inline handoff rejection recovery", () => {
                 Effect.forkChild({ startImmediately: true }),
               )
             : undefined;
+        const projectedQueuedTurn =
+          queuedWithoutInput || queuedWithInput
+            ? yield* orchestrator.streamDomainEvents.pipe(
+                Stream.filter(
+                  (event) =>
+                    event.type === "provider-turn.updated" &&
+                    event.runId === run.id &&
+                    event.payload.nativeTurnRef?.nativeId === originalNativeTurnId,
+                ),
+                Stream.runHead,
+                Effect.forkChild({ startImmediately: true }),
+              )
+            : undefined;
         const expectedMarker = yield* currentMarker;
         const heldWriter =
           recovery === "contradiction while writer is held"
@@ -989,6 +1029,22 @@ describe("Codex inline handoff rejection recovery", () => {
         commitsUntilPark =
           lostBeforeCommit || lostAfterCommit || restartReadback ? 2 : atCommit ? 1 : 0;
         yield* Deferred.succeed(allowRejection, undefined);
+        if (queuedWithoutInput || queuedWithInput) {
+          yield* Fiber.join(starting);
+          yield* Fiber.join(projectedQueuedTurn!);
+          const afterAck = yield* getProjection();
+          assert.equal(afterAck.providerTurns.length, 1);
+          assert.equal(afterAck.providerTurns[0]?.nativeTurnRef?.nativeId, originalNativeTurnId);
+          assert.equal(afterAck.contextHandoffs[0]?.delivery?.status, "pending");
+          if (queuedWithoutInput) {
+            assert.deepEqual(yield* Ref.get(driver.state), {
+              failure: null,
+              cursor: effectiveTranscript.entries.length - 1,
+            });
+            return;
+          }
+          yield* Deferred.succeed(allowActivity, undefined);
+        }
         yield* Deferred.await(rejectionObserved);
         if (lostBeforeCommit) {
           yield* Deferred.await(writerParked);
@@ -1038,6 +1094,12 @@ describe("Codex inline handoff rejection recovery", () => {
             yield* worker.drain();
           }
           const after = yield* getProjection();
+          if (queuedCompletedBeforeAck) {
+            const runtime = yield* Deferred.await(sessionOpened);
+            assert.isFalse(
+              yield* runtime.hasPendingBackgroundWorkForThread!(after.providerThreads[0]!),
+            );
+          }
           if (late) {
             assert.deepEqual(after.runs, timedOut.runs);
             assert.deepEqual(after.attempts, timedOut.attempts);

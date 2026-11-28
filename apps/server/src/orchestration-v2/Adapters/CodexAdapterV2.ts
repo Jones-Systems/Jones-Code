@@ -1538,8 +1538,20 @@ function failureResetAt(
   );
 }
 
+interface QueuedCodexRootStop {
+  readonly producer: CodexRuntimeProducer;
+  readonly closed: Deferred.Deferred<void>;
+  authorized: boolean;
+  dispatched: boolean;
+}
+
 interface ActiveCodexTurnContext {
   promptPending?: boolean;
+  queuedRootStop?: QueuedCodexRootStop;
+  queuedInlineDelivery?: {
+    readonly producer: CodexRuntimeProducer;
+    readonly record: Effect.Effect<void>;
+  };
   hookStopReason?: string;
   appliedServiceTier?: string;
   capacityRetryAttempt?: number;
@@ -2688,15 +2700,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           makeCodexPendingStartNotifications<
             Effect.Effect<void, CodexErrors.CodexAppServerError>
           >();
-        const queuedRootStops = new Map<
-          ActiveCodexTurnContext,
-          {
-            readonly producer: CodexRuntimeProducer;
-            readonly closed: Deferred.Deferred<void>;
-            authorized: boolean;
-            dispatched: boolean;
-          }
-        >();
+        const queuedRootStops = new Map<ActiveCodexTurnContext, QueuedCodexRootStop>();
         const settleQueuedRootStop = (turn: ActiveCodexTurnContext) => {
           const stop = queuedRootStops.get(turn);
           if (stop === undefined) return;
@@ -3188,10 +3192,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const retainQueuedRootStop = Effect.fn("CodexAdapterV2.retainQueuedRootStop")(function* (
           turn: ActiveCodexTurnContext,
           ready: Deferred.Deferred<void>,
+          producer: CodexRuntimeProducer,
+          nativeThreadId: string,
           awaitAppStop: Effect.Effect<boolean>,
         ) {
-          const producer = currentProducer;
-          const nativeThreadId = yield* getNativeThreadId(turn.providerThread);
           const closed = yield* Deferred.make<void>();
           if (
             queuedRootStops.has(turn) ||
@@ -3202,6 +3206,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           )
             return;
           const stop = { producer, closed, authorized: false, dispatched: false };
+          turn.queuedRootStop = stop;
           const canEnqueue = () =>
             queuedRootStops.get(turn) === stop &&
             !stop.dispatched &&
@@ -3249,6 +3254,26 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             Effect.forkIn(producer.scope, { startImmediately: true }),
           );
         }, Effect.uninterruptible);
+        const confirmQueuedInlineDelivery = (
+          turn: ActiveCodexTurnContext,
+          producer: CodexRuntimeProducer,
+          nativeThreadId: string,
+        ) => {
+          const delivery = turn.queuedInlineDelivery;
+          if (
+            delivery === undefined ||
+            delivery.producer !== producer ||
+            turn.providerThread.nativeThreadRef?.nativeId !== nativeThreadId ||
+            !ownsNativeBinding(producer, nativeThreadId, turn.providerThread.id) ||
+            producer.unloadedThreads.has(nativeThreadId)
+          )
+            return Effect.void;
+          delete turn.queuedInlineDelivery;
+          return delivery.record.pipe(
+            Effect.forkIn(producer.scope, { startImmediately: true }),
+            Effect.asVoid,
+          );
+        };
         const hasQueuedRootStop = (producer: CodexRuntimeProducer, nativeThreadId?: string) => {
           for (const [turn, stop] of queuedRootStops) {
             if (
@@ -4344,6 +4369,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly nativeTurnId: string;
           readonly startedAt: DateTime.Utc;
           readonly waitForNativeStart?: boolean;
+          readonly prepareQueuedRoot?: (turn: ActiveCodexTurnContext) => Effect.Effect<void>;
         }) {
           const existing = (yield* Ref.get(activeTurns)).get(input.nativeTurnId);
           if (existing !== undefined) {
@@ -4411,6 +4437,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             updated.set(input.nativeTurnId, context);
             return updated;
           });
+          yield* input.prepareQueuedRoot?.(context) ?? Effect.void;
           if (continuation !== undefined && nativeThreadId != null) {
             capacityContinuations.delete(nativeThreadId);
           }
@@ -7670,6 +7697,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
             if (payload.item.type === "userMessage") {
               context.promptPending = false;
+              yield* confirmQueuedInlineDelivery(context, producer, payload.threadId);
               yield* emitSubagentUserMessage(
                 context,
                 payload.item,
@@ -7876,6 +7904,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
             if (payload.item.type === "userMessage") {
               context.promptPending = false;
+              yield* confirmQueuedInlineDelivery(context, producer, payload.threadId);
               if (yield* emitSubagentUserMessage(context, payload.item)) {
                 return;
               }
@@ -9961,7 +9990,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (context === undefined) {
               return;
             }
+            const producer = (yield* CodexProducerContext) ?? currentProducer;
             const nativeStatus = mapCodexTurnStatus(payload.turn.status);
+            if (
+              (nativeStatus === "completed" && payload.turn.startedAt != null) ||
+              payload.turn.items.some((item) => item.type === "userMessage")
+            ) {
+              yield* confirmQueuedInlineDelivery(context, producer, payload.threadId);
+            }
             const status =
               nativeStatus === "completed" &&
               (yield* Ref.get(interruptingNativeTurns)).has(payload.turn.id)
@@ -10370,7 +10406,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       generation,
                       started.turn.id,
                       params.additionalContext,
-                      promptedInline ? inlineHistory.markAcknowledged : undefined,
+                      promptedInline
+                        ? () => inlineHistory.markAcknowledged(started.turn.startedAt === null)
+                        : undefined,
                     );
                     if (
                       dispatch.nativeTurnId === started.turn.id &&
@@ -10502,12 +10540,39 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (earlyCompletion !== undefined) yield* handleNativeCompletion(earlyCompletion);
             }),
           );
+          const awaitAppStop =
+            retryOrdinal === 0 && started.turn.startedAt === null
+              ? yield* CodexQueuedStartStop
+              : undefined;
           const context = yield* registerRootTurn({
             turnInput: request.input,
             hasPrompt: retryOrdinal === 0 && params.input.length > 0,
             nativeTurnId: started.turn.id,
             startedAt: codexTimestamp(started.turn.startedAt),
             waitForNativeStart: started.turn.startedAt === null,
+            ...(retryOrdinal !== 0 || started.turn.startedAt !== null
+              ? {}
+              : {
+                  prepareQueuedRoot: Effect.fnUntraced(function* (turn: ActiveCodexTurnContext) {
+                    if (promptedInline)
+                      turn.queuedInlineDelivery = {
+                        producer,
+                        record: inlineHistory.recordQueuedDelivery,
+                      };
+                    // Install the shared Stop receipt before publishing the active turn.
+                    if (awaitAppStop !== undefined && turn.nativeStartReady !== undefined) {
+                      yield* retainQueuedRootStop(
+                        turn,
+                        turn.nativeStartReady,
+                        producer,
+                        binding.nativeThreadId,
+                        awaitAppStop,
+                      );
+                      // A terminal captured before registration already closes this send path.
+                      if (dispatch.completions.has(turn.nativeTurnId)) settleQueuedRootStop(turn);
+                    }
+                  }),
+                }),
           });
           // A replay overflow or cancellation after this ACK must still close the registered root.
           request.acknowledgedContext ??= context;
@@ -10547,13 +10612,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return yield* toProtocolError(
               "Native physical binding changed during notification replay.",
             );
-          if (retryOrdinal === 0 && context.nativeStartReady !== undefined) {
-            const awaitAppStop = yield* CodexQueuedStartStop;
-            // Stop can commit before this ACK's event is projected. Its durable
-            // receipt still belongs to this queued native turn after the caller exits.
-            if (awaitAppStop !== undefined)
-              yield* retainQueuedRootStop(context, context.nativeStartReady, awaitAppStop);
-          }
           lateStarts.release(dispatch);
           request.lateStartDispatch = undefined;
         });
@@ -12579,12 +12637,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       threadId: nativeThreadId,
                       turnId: activeTurn.nativeTurnId,
                     });
-                    const stop = queuedRootStops.get(activeTurn);
+                    // The context retains the receipt after native settlement removes live retention.
+                    const stop = activeTurn.queuedRootStop;
                     let dispatchedHere = false;
                     const stillOwnsStop = () =>
                       stop !== undefined &&
                       (!stop.authorized || !stop.dispatched) &&
-                      queuedRootStops.get(activeTurn) === stop;
+                      queuedRootStops.get(activeTurn) === stop &&
+                      ownsNativeBinding(
+                        stop.producer,
+                        nativeThreadId,
+                        activeTurn.providerThread.id,
+                      ) &&
+                      !stop.producer.unloadedThreads.has(nativeThreadId) &&
+                      Ref.getUnsafe(activeTurns).get(activeTurn.nativeTurnId) === activeTurn;
                     yield* (
                       stop === undefined
                         ? request
