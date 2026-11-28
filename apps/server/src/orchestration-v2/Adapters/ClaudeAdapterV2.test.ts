@@ -3581,12 +3581,14 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
   const openWith = (
     cli: ReturnType<typeof makeFakeClaudeCli>,
     native?: ProviderEventLoggers.EventNdjsonLogger,
+    verifyAutoAccount?: ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput["verifyAutoAccount"],
   ) =>
     Effect.gen(function* () {
       const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
       return yield* runner.open({
         threadId: ThreadId.make("thread-claude-mcp-channel"),
         providerSessionId: ProviderSessionId.make("provider-session-claude-mcp-channel"),
+        ...(verifyAutoAccount === undefined ? {} : { verifyAutoAccount }),
         options: {
           ...ClaudeAdapterV2.makeClaudeQueryOptions({
             modelSelection: CLAUDE_TEST_MODEL_SELECTION,
@@ -3609,6 +3611,27 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
       }),
       Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
+
+  it.effect("confirms retirement of a cold Auto query whose account does not match", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli();
+      const refusal = yield* openWith(cli, undefined, () => Effect.succeed(false)).pipe(
+        Effect.flip,
+      );
+      assert.equal(refusal.method, "verifyAutoAccount");
+      assert.equal(refusal.nativeOutcome, "retired");
+      assert.match(
+        makeProviderFailure({ cause: refusal }).message,
+        /verify this thread's Claude subscription/,
+      );
+      assert.lengthOf(cli.spawns, 1);
+      assert.isFalse(
+        cli.controlRequests.some(
+          (request) => Reflect.get(request, "subtype") === "mcp_set_servers",
+        ),
+      );
+    }),
+  );
 
   it.effect("commits queued delivery before interruptible protocol logging", () =>
     Effect.gen(function* () {

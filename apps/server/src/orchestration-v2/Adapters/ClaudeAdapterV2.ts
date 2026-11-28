@@ -918,7 +918,7 @@ export class ClaudeAgentSdkQueryRunnerError extends Schema.TaggedError<ClaudeAge
   {
     method: Schema.String,
     cause: Schema.Defect(),
-    nativeOutcome: Schema.optional(Schema.Literals(["not_spawned", "unknown"])),
+    nativeOutcome: Schema.optional(Schema.Literals(["not_spawned", "retired", "unknown"])),
     unappliedSourceNativeId: Schema.optional(Schema.String),
   },
 ) {
@@ -1915,6 +1915,7 @@ export const layerQueryRunner: Layer.Layer<
         hasExited: boolean;
       }> = [];
       let knownSpawnFailures = 0;
+      let rejectedQueryRetired = false;
       const awaitCapturedExits = Effect.suspend(() =>
         Effect.forEach(processExits, Deferred.await, {
           concurrency: "unbounded",
@@ -2067,6 +2068,14 @@ export const layerQueryRunner: Layer.Layer<
                       catch: (cause) => queryRunnerError(cause, "close"),
                     }).pipe(Effect.orDie),
                   ),
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      rejectedQueryRetired =
+                        capturedChildren.length > 0 &&
+                        capturedChildren.length === processExits.length &&
+                        capturedChildren.every((owner) => owner.hasExited);
+                    }),
+                  ),
                   Effect.orDie,
                 ),
               ),
@@ -2082,7 +2091,9 @@ export const layerQueryRunner: Layer.Layer<
               nativeOutcome:
                 processExits.length > 0 && processExits.length === knownSpawnFailures
                   ? "not_spawned"
-                  : "unknown",
+                  : error.method === "verifyAutoAccount" && rejectedQueryRetired
+                    ? "retired"
+                    : "unknown",
             }),
         ),
       );
@@ -15007,7 +15018,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               : adapterOptions.installationGate.execute(adapterOptions.instanceId, openQueryRuntime)
           ).pipe(
             Effect.mapError((cause) => {
-              if (!isClaudeAgentSdkQueryRunnerError(cause) || cause.nativeOutcome === "not_spawned")
+              if (
+                !isClaudeAgentSdkQueryRunnerError(cause) ||
+                cause.nativeOutcome === "not_spawned" ||
+                cause.nativeOutcome === "retired"
+              )
                 return cause;
               queryBindingUnknown = true;
               queryControlUnknown = new ProviderControlOutcomeUnknown({

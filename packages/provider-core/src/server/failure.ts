@@ -153,6 +153,17 @@ function curatedCauseMessages(cause: unknown): {
         case "ProviderAdapterThreadInUseError":
         case "ProviderCompactionUnsupportedError":
           return { known: stringField(cause, "message"), category: categoryMessage() };
+        case "ClaudeAgentSdkQueryRunnerError": {
+          const error = cause as Record<string, unknown>;
+          if (error.method === "verifyAutoAccount" && error.nativeOutcome !== "unknown") {
+            return {
+              known:
+                "T3 Code could not verify this thread's Claude subscription. Check the selected login and try again.",
+              category: categoryMessage(),
+            };
+          }
+          break;
+        }
         case "CodexAppServerRequestError": {
           // Only Codex's fixed-shape goal validation and managed-requirements
           // text is actionable and safe to show; other request error text stays hidden.
