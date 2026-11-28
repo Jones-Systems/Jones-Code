@@ -6,9 +6,12 @@ import {
 } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { DraftId } from "./draftId";
 import {
+  forgetSavedAutoLaunch,
   normalizePendingAutoLaunch,
   PendingAutoLaunch,
+  saveAutoLaunch,
   type AutoLaunchRecoveryRecord,
+  type CapturedAutoLaunch,
 } from "./jones/accountRouting/autoLaunchRecovery";
 import {
   composerFileAttachmentMimeType,
@@ -240,14 +243,15 @@ function serializeComposerDraftState(value: StorageValue<ComposerPersistState>):
   return text;
 }
 
+function writeComposerDraftState(name: string, text: string) {
+  composerDraftBaseStorage.setItem(name, text);
+  if (composerDraftPendingWrite?.text === text) composerDraftLastWrite = composerDraftPendingWrite;
+}
+
 const composerDebouncedStorage = createDeferredStorage<StorageValue<ComposerPersistState>>(
   {
     getItem: (name) => composerDraftBaseStorage.getItem(name),
-    setItem: (name, text) => {
-      composerDraftBaseStorage.setItem(name, text);
-      if (composerDraftPendingWrite?.text === text)
-        composerDraftLastWrite = composerDraftPendingWrite;
-    },
+    setItem: writeComposerDraftState,
     removeItem: (name) => {
       composerDraftBaseStorage.removeItem(name);
       composerDraftLoadedState = null;
@@ -987,6 +991,19 @@ function composerDraftContent({
   ...content
 }: ComposerThreadDraftState) {
   return content;
+}
+
+function clearedComposerDrafts(
+  state: Pick<ComposerDraftStoreState, "draftsByThreadKey">,
+  threadKey: string,
+) {
+  const current = state.draftsByThreadKey[threadKey];
+  if (!current) return state.draftsByThreadKey;
+  const nextDraft = { ...current, ...composerDraftContent(createEmptyThreadDraft()) };
+  const drafts = { ...state.draftsByThreadKey };
+  if (shouldRemoveDraft(nextDraft)) delete drafts[threadKey];
+  else drafts[threadKey] = nextDraft;
+  return drafts;
 }
 
 export function composerFileDedupKey(
@@ -2467,6 +2484,94 @@ function migratePersistedComposerDraftStoreState(
   };
 }
 
+function serializeComposerThreadDraft(draft: ComposerThreadDraftState) {
+  const hasModelData =
+    Object.keys(draft.modelSelectionByProvider).length > 0 || draft.activeProvider !== null;
+  if (
+    draft.prompt.length === 0 &&
+    draft.persistedAttachments.length === 0 &&
+    draft.files.length === 0 &&
+    draft.terminalContexts.length === 0 &&
+    draft.previewAnnotations.length === 0 &&
+    draft.reviewComments.length === 0 &&
+    draft.threadContexts.length === 0 &&
+    draft.environmentContexts.length === 0 &&
+    draft.replyTo === null &&
+    !hasModelData &&
+    draft.runtimeMode === null &&
+    draft.interactionMode === null
+  ) {
+    return undefined;
+  }
+  const persistedDraft: DeepMutable<PersistedComposerThreadDraftState> = {
+    prompt: draft.prompt,
+    attachments: draft.persistedAttachments,
+    ...(draft.files.length > 0
+      ? {
+          files: draft.files.map((file) => ({
+            id: file.id,
+            name: file.name,
+            mimeType: file.mimeType,
+            sizeBytes: file.sizeBytes,
+            ...(file.source ? { source: file.source } : {}),
+            ...(file.uploadedAttachmentId && file.uploadEnvironmentId
+              ? {
+                  attachmentId: file.uploadedAttachmentId,
+                  environmentId: file.uploadEnvironmentId,
+                }
+              : {}),
+          })),
+        }
+      : {}),
+    ...(draft.terminalContexts.length > 0
+      ? {
+          terminalContexts: draft.terminalContexts.map((context) => ({
+            id: context.id,
+            threadId: context.threadId,
+            createdAt: context.createdAt,
+            terminalId: context.terminalId,
+            terminalLabel: context.terminalLabel,
+            lineStart: context.lineStart,
+            lineEnd: context.lineEnd,
+            text: context.text,
+          })),
+        }
+      : {}),
+    ...(draft.previewAnnotations.length > 0
+      ? {
+          previewAnnotations: draft.previewAnnotations.map(
+            (annotation) => ({ ...annotation }) as DeepMutable<PreviewAnnotationPayload>,
+          ),
+        }
+      : {}),
+    ...(draft.reviewComments.length > 0
+      ? {
+          reviewComments: draft.reviewComments.map((comment) => ({ ...comment })),
+        }
+      : {}),
+    ...(draft.threadContexts.length > 0
+      ? { threadContexts: draft.threadContexts.map((record) => ({ ...record })) }
+      : {}),
+    ...(draft.environmentContexts.length > 0
+      ? { environmentContexts: draft.environmentContexts.map((record) => ({ ...record })) }
+      : {}),
+    ...(draft.replyTo
+      ? { replyTo: { ...draft.replyTo } as DeepMutable<ResponseContextRecord> }
+      : {}),
+    ...(hasModelData
+      ? {
+          modelSelectionByProvider: compactModelSelectionByProvider(draft.modelSelectionByProvider),
+          activeProvider: draft.activeProvider,
+          ...(draft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
+          ...(draft.accountRouting ? { accountRouting: draft.accountRouting } : {}),
+        }
+      : {}),
+    ...(draft.runtimeMode ? { runtimeMode: draft.runtimeMode } : {}),
+    ...(draft.interactionMode ? { interactionMode: draft.interactionMode } : {}),
+  };
+  return persistedDraft;
+}
+
 export function partializeComposerDraftStoreState(
   state: ComposerDraftStoreState,
 ): PersistedComposerDraftStoreState {
@@ -2494,93 +2599,8 @@ export function partializeComposerDraftStoreState(
     if (state.draftThreadsByThreadKey[threadKey] !== undefined && !keptSessionKeys.has(threadKey)) {
       continue;
     }
-    const hasModelData =
-      Object.keys(draft.modelSelectionByProvider).length > 0 || draft.activeProvider !== null;
-    if (
-      draft.prompt.length === 0 &&
-      draft.persistedAttachments.length === 0 &&
-      draft.files.length === 0 &&
-      draft.terminalContexts.length === 0 &&
-      draft.previewAnnotations.length === 0 &&
-      draft.reviewComments.length === 0 &&
-      draft.threadContexts.length === 0 &&
-      draft.environmentContexts.length === 0 &&
-      draft.replyTo === null &&
-      !hasModelData &&
-      draft.runtimeMode === null &&
-      draft.interactionMode === null
-    ) {
-      continue;
-    }
-    const persistedDraft: DeepMutable<PersistedComposerThreadDraftState> = {
-      prompt: draft.prompt,
-      attachments: draft.persistedAttachments,
-      ...(draft.files.length > 0
-        ? {
-            files: draft.files.map((file) => ({
-              id: file.id,
-              name: file.name,
-              mimeType: file.mimeType,
-              sizeBytes: file.sizeBytes,
-              ...(file.source ? { source: file.source } : {}),
-              ...(file.uploadedAttachmentId && file.uploadEnvironmentId
-                ? {
-                    attachmentId: file.uploadedAttachmentId,
-                    environmentId: file.uploadEnvironmentId,
-                  }
-                : {}),
-            })),
-          }
-        : {}),
-      ...(draft.terminalContexts.length > 0
-        ? {
-            terminalContexts: draft.terminalContexts.map((context) => ({
-              id: context.id,
-              threadId: context.threadId,
-              createdAt: context.createdAt,
-              terminalId: context.terminalId,
-              terminalLabel: context.terminalLabel,
-              lineStart: context.lineStart,
-              lineEnd: context.lineEnd,
-              text: context.text,
-            })),
-          }
-        : {}),
-      ...(draft.previewAnnotations.length > 0
-        ? {
-            previewAnnotations: draft.previewAnnotations.map(
-              (annotation) => ({ ...annotation }) as DeepMutable<PreviewAnnotationPayload>,
-            ),
-          }
-        : {}),
-      ...(draft.reviewComments.length > 0
-        ? {
-            reviewComments: draft.reviewComments.map((comment) => ({ ...comment })),
-          }
-        : {}),
-      ...(draft.threadContexts.length > 0
-        ? { threadContexts: draft.threadContexts.map((record) => ({ ...record })) }
-        : {}),
-      ...(draft.environmentContexts.length > 0
-        ? { environmentContexts: draft.environmentContexts.map((record) => ({ ...record })) }
-        : {}),
-      ...(draft.replyTo
-        ? { replyTo: { ...draft.replyTo } as DeepMutable<ResponseContextRecord> }
-        : {}),
-      ...(hasModelData
-        ? {
-            modelSelectionByProvider: compactModelSelectionByProvider(
-              draft.modelSelectionByProvider,
-            ),
-            activeProvider: draft.activeProvider,
-            ...(draft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
-            ...(draft.accountRouting ? { accountRouting: draft.accountRouting } : {}),
-          }
-        : {}),
-      ...(draft.runtimeMode ? { runtimeMode: draft.runtimeMode } : {}),
-      ...(draft.interactionMode ? { interactionMode: draft.interactionMode } : {}),
-    };
-    persistedDraftsByThreadKey[threadKey] = persistedDraft;
+    const persistedDraft = serializeComposerThreadDraft(draft);
+    if (persistedDraft) persistedDraftsByThreadKey[threadKey] = persistedDraft;
   }
   const persistedDraftThreadsByThreadKey: DeepMutable<
     PersistedComposerDraftStoreState["draftThreadsByThreadKey"]
@@ -4561,21 +4581,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             return;
           }
           set((state) => {
-            const current = state.draftsByThreadKey[threadKey];
-            if (!current) {
-              return state;
-            }
-            const nextDraft: ComposerThreadDraftState = {
-              ...current,
-              ...composerDraftContent(createEmptyThreadDraft()),
-            };
-            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
-            if (shouldRemoveDraft(nextDraft)) {
-              delete nextDraftsByThreadKey[threadKey];
-            } else {
-              nextDraftsByThreadKey[threadKey] = nextDraft;
-            }
-            return { draftsByThreadKey: nextDraftsByThreadKey };
+            const draftsByThreadKey = clearedComposerDrafts(state, threadKey);
+            return draftsByThreadKey === state.draftsByThreadKey ? state : { draftsByThreadKey };
           });
         },
         clearComposerPromptAndImages: (threadRef) => {
@@ -4707,11 +4714,15 @@ export function hasUnresolvedAutoDraftLaunch(draftId: DraftId): boolean {
 
 export async function reserveAutoDraftLaunch(
   draftId: DraftId,
-  record: AutoLaunchRecoveryRecord,
-  clearSubmitted: () => void,
-): Promise<void> {
-  const reserve = () => {
-    const session = composerDraftStore.getState().getDraftSession(draftId);
+  captured: CapturedAutoLaunch,
+  checkSubmittedDraft: () => void,
+): Promise<{ draft: ComposerThreadDraftState | null }> {
+  const { record } = captured;
+  const cannotSave = () =>
+    new Error("Could not save Auto launch recovery. The message was not sent.");
+  const reserve = async () => {
+    const before = composerDraftStore.getState();
+    const session = before.getDraftSession(draftId);
     if (
       !session ||
       session.environmentId !== record.environmentId ||
@@ -4720,59 +4731,115 @@ export async function reserveAutoDraftLaunch(
       hasUnresolvedAutoDraftLaunch(draftId)
     )
       throw new Error("This draft already has an unresolved Auto launch or has moved.");
-    if (typeof localStorage === "undefined")
-      throw new Error("Saved Auto launch recovery is unavailable in this window.");
+    if (typeof localStorage === "undefined") throw cannotSave();
+    checkSubmittedDraft();
 
-    composerDraftStore.setState((state) => ({
-      draftThreadsByThreadKey: {
-        ...state.draftThreadsByThreadKey,
-        [draftId]: {
-          ...session,
-          promotedTo: scopeThreadRef(record.environmentId, record.threadId),
-          pendingAutoLaunch: record,
-        },
-      },
-    }));
+    const draft = before.getComposerDraft(draftId);
     try {
-      clearSubmitted();
-      // Persist the reserved draft and cleared composer together, before the RPC can issue.
-      composerDebouncedStorage.flush();
-      const saved = readStoredComposerDraftState()?.draftThreadsByThreadKey?.[draftId];
-      if (!Equal.equals(saved?.pendingAutoLaunch, record))
-        throw new Error("Saved Auto launch could not be verified.");
+      await saveAutoLaunch(draftId, captured, {
+        editableDraft: draft ? JSON.stringify(serializeComposerThreadDraft(draft)) : undefined,
+        draftText: draft?.prompt,
+      });
     } catch {
-      settleAutoDraftLaunch(draftId, record, false);
-      throw new Error("Could not save Auto launch recovery. The message was not sent.");
+      throw cannotSave();
+    }
+
+    let markerWritten = false;
+    try {
+      const state = composerDraftStore.getState();
+      if (state.getDraftSession(draftId) !== session || hasUnresolvedAutoDraftLaunch(draftId))
+        throw new Error("This draft already has an unresolved Auto launch or has moved.");
+      checkSubmittedDraft();
+      const patch = {
+        draftsByThreadKey: clearedComposerDrafts(state, draftId),
+        draftThreadsByThreadKey: {
+          ...state.draftThreadsByThreadKey,
+          [draftId]: {
+            ...session,
+            promotedTo: scopeThreadRef(record.environmentId, record.threadId),
+            pendingAutoLaunch: record,
+          },
+        },
+      };
+      // Write the marker and cleared composer together after IndexedDB commits, before
+      // publishing either in memory. A failed storage write leaves the editor untouched.
+      const text = serializeComposerDraftState({
+        state: { capturedState: { ...state, ...patch } },
+        version: COMPOSER_DRAFT_STORAGE_VERSION,
+      });
+      if (
+        !Equal.equals(
+          composerDraftPendingWrite?.merged.draftThreadsByThreadKey[draftId]?.pendingAutoLaunch,
+          record,
+        )
+      )
+        throw cannotSave();
+      try {
+        writeComposerDraftState(COMPOSER_DRAFT_STORAGE_KEY, text);
+        markerWritten = true;
+        const saved = readStoredComposerDraftState()?.draftThreadsByThreadKey?.[draftId];
+        if (!Equal.equals(saved?.pendingAutoLaunch, record)) throw cannotSave();
+      } catch {
+        throw cannotSave();
+      }
+      composerDraftStore.setState(patch);
+      return { draft: patch.draftsByThreadKey[draftId] ?? null };
+    } finally {
+      if (!markerWritten) forgetSavedAutoLaunch(draftId, record);
     }
   };
 
   // Tabs for the same origin can edit the same draft. Serialize their storage check and write.
   const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
-  if (locks) await locks.request(`jones:auto-launch:${draftId}`, reserve);
-  else reserve();
+  return locks ? locks.request(`jones:auto-launch:${draftId}`, reserve) : reserve();
 }
+
+const decodeEditableAutoDraft = Schema.decodeUnknownSync(PersistedComposerThreadDraftState);
 
 export function settleAutoDraftLaunch(
   draftId: DraftId,
   record: AutoLaunchRecoveryRecord,
   creationAccepted: boolean,
+  rejectedDraft?: {
+    readonly editableDraft?: string | undefined;
+    readonly draftText?: string | undefined;
+  },
 ): void {
-  const session = composerDraftStore.getState().getDraftSession(draftId);
-  if (
-    !session?.pendingAutoLaunch ||
-    session.pendingAutoLaunch === "unavailable" ||
-    session.pendingAutoLaunch.commandId !== record.commandId
-  )
-    return;
+  const state = composerDraftStore.getState();
+  const session = state.getDraftSession(draftId);
+  if (!session || !Equal.equals(session.pendingAutoLaunch, record)) return;
   const { pendingAutoLaunch: _pending, ...rest } = session;
-  composerDraftStore.setState((state) => ({
+  const draft = state.getComposerDraft(draftId);
+  let restored: ComposerThreadDraftState | undefined;
+  if (rejectedDraft && !composerDraftHasUserContent(draft)) {
+    const { editableDraft, draftText } = rejectedDraft;
+    if (editableDraft !== undefined) {
+      try {
+        const snapshot = toHydratedThreadDraft(decodeEditableAutoDraft(JSON.parse(editableDraft)));
+        restored = { ...(draft ?? createEmptyThreadDraft()), ...composerDraftContent(snapshot) };
+      } catch {
+        // A damaged editable snapshot must not undo authoritative delivery evidence.
+      }
+    }
+    if (!restored && draftText)
+      restored = { ...(draft ?? createEmptyThreadDraft()), prompt: draftText };
+  }
+  composerDraftStore.setState({
+    ...(restored ? { draftsByThreadKey: { ...state.draftsByThreadKey, [draftId]: restored } } : {}),
     draftThreadsByThreadKey: {
       ...state.draftThreadsByThreadKey,
       [draftId]: { ...rest, promotedTo: creationAccepted ? (session.promotedTo ?? null) : null },
     },
-  }));
+  });
   try {
     composerDebouncedStorage.flush();
+    if (
+      !Equal.equals(
+        readStoredComposerDraftState()?.draftThreadsByThreadKey?.[draftId]?.pendingAutoLaunch,
+        record,
+      )
+    )
+      forgetSavedAutoLaunch(draftId, record);
   } catch {
     // A stale saved record can still be reconciled using its original command.
   }

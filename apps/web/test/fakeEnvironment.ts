@@ -26,6 +26,7 @@ import {
   type ModelSelection,
   type OrchestrationProjectShell,
   type OrchestrationV2Command,
+  type OrchestrationV2ThreadLaunchError,
   type OrchestrationV2ThreadLaunchInput,
   type OrchestrationV2ThreadLaunchResult,
   type OrchestrationV2ProjectedTurnItem,
@@ -474,11 +475,12 @@ const subscribeServerConfig = () =>
     },
   );
 
+type FakeSendError = OrchestrationDispatchCommandError | OrchestrationV2ThreadLaunchError;
 let sendHandler:
   | ((
       method: string,
       payload: OrchestrationV2Command | OrchestrationV2ThreadLaunchInput,
-    ) => Effect.Effect<unknown, OrchestrationDispatchCommandError>)
+    ) => Effect.Effect<unknown, FakeSendError>)
   | null = null;
 
 const handlers: Record<string, (input: never) => unknown> = {
@@ -489,10 +491,7 @@ const handlers: Record<string, (input: never) => unknown> = {
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
     // A deferred send fails with its scenario's error; a held command with the V2 rejection.
     Effect.suspend(
-      (): Effect.Effect<
-        unknown,
-        OrchestrationDispatchCommandError | OrchestrationV2DispatchCommandError
-      > => {
+      (): Effect.Effect<unknown, FakeSendError | OrchestrationV2DispatchCommandError> => {
         dispatched.push(command);
         const isSend = command.type === "message.dispatch";
         if (isSend && sendHandler)
@@ -820,7 +819,7 @@ export interface DeferredFakeSend {
   readonly commit: (modelSelection?: ModelSelection) => Promise<void>;
   readonly acknowledge: () => void;
   readonly loseAcknowledgement: () => void;
-  readonly reject: () => void;
+  readonly reject: (error?: OrchestrationV2ThreadLaunchError) => void;
 }
 
 // Test-only controls, held by the fixture instead of a production global or endpoint.
@@ -832,7 +831,7 @@ export function deferFakeSends(): {
   const requests: DeferredFakeSend[] = [];
   const previous = sendHandler;
   sendHandler = (method, payload) =>
-    Effect.callback<unknown, OrchestrationDispatchCommandError>((resume) => {
+    Effect.callback<unknown, FakeSendError>((resume) => {
       let committed: FakeThread | undefined;
       const commit = async (modelSelection?: ModelSelection) => {
         if (committed) return;
@@ -926,12 +925,13 @@ export function deferFakeSends(): {
               }),
             ),
           ),
-        reject: () =>
+        reject: (error) =>
           resume(
             Effect.fail(
-              new OrchestrationDispatchCommandError({
-                message: "Synthetic rejection; no committed evidence",
-              }),
+              error ??
+                new OrchestrationDispatchCommandError({
+                  message: "Synthetic rejection; no committed evidence",
+                }),
             ),
           ),
       });

@@ -1311,6 +1311,12 @@ export function useComposerSend(input: ComposerSendInput) {
     composerRecoveryGenerationRef.current.set(routeThreadKey, sendGeneration);
     const isCurrentComposerSend = () =>
       composerRecoveryGenerationRef.current.get(routeThreadKey) === sendGeneration;
+    const resetSubmittedAttachmentRefs = () => {
+      composerImagesRef.current = [];
+      composerFilesRef.current = [];
+      composerTerminalContextsRef.current = [];
+      composerEnvironmentContextsRef.current = [];
+    };
     const clearSendingComposer = () => {
       const cleared = clearSubmittedComposer({
         routeThreadKey,
@@ -1321,12 +1327,7 @@ export function useComposerSend(input: ComposerSendInput) {
         isCurrentSend: isCurrentComposerSend,
         resetCursor: () => composerRef.current?.resetCursorState(),
       });
-      if (cleared && currentRouteThreadKeyRef.current === routeThreadKey) {
-        composerImagesRef.current = [];
-        composerFilesRef.current = [];
-        composerTerminalContextsRef.current = [];
-        composerEnvironmentContextsRef.current = [];
-      }
+      if (cleared && isCurrentRouteThread()) resetSubmittedAttachmentRefs();
       return cleared;
     };
     const attachmentCapabilitiesBeforeUpload = readLiveAttachmentCapabilities();
@@ -1734,8 +1735,8 @@ export function useComposerSend(input: ComposerSendInput) {
     const sentDraftThreadRef = isLocalDraftThread
       ? scopeThreadRef(environmentId, threadIdForSend)
       : null;
-    // Keep new-thread flows from reusing this draft while attachments and worktree setup settle.
-    if (sentDraftThreadRef) markPromotedDraftThreadByRef(sentDraftThreadRef);
+    // Auto drafts stay visible until their prepared launch is durably reserved.
+    if (sentDraftThreadRef && !accountRouting) markPromotedDraftThreadByRef(sentDraftThreadRef);
     let clearedComposer = accountRouting ? null : clearSendingComposer();
     let savedAutoLaunch: AutoLaunchRecoveryRecord | undefined;
     let backgroundDraftOpened = false;
@@ -1775,13 +1776,12 @@ export function useComposerSend(input: ComposerSendInput) {
       const creationAccepted =
         entry.deliveryEvidence?.kind === "launch" &&
         entry.deliveryEvidence.creation.status === "accepted";
-      if (draftId && savedAutoLaunch)
-        settleAutoDraftLaunch(draftId, savedAutoLaunch, creationAccepted);
       if (
         !creationAccepted &&
         isLocalDraftThread &&
         draftId &&
         draftThread &&
+        (!accountRouting || savedAutoLaunch) &&
         isCurrentComposerSend()
       ) {
         restoreFailedDraftThread(draftId, draftThread, threadIdForSend);
@@ -1791,6 +1791,8 @@ export function useComposerSend(input: ComposerSendInput) {
         !backgroundDraftOpened && currentRouteThreadKeyRef.current === routeThreadKey;
       const recoverInForeground = draftInForeground && isCurrentComposerSend();
       const restored = composerRecovery.rejected();
+      if (draftId && savedAutoLaunch)
+        settleAutoDraftLaunch(draftId, savedAutoLaunch, creationAccepted);
       if (
         !restored &&
         recoverInForeground &&
@@ -2007,7 +2009,33 @@ export function useComposerSend(input: ComposerSendInput) {
             draftId === null ? null : useComposerDraftStore.getState().getDraftSession(draftId),
           )
         : null;
-      if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
+      const openBackgroundDraft = async () => {
+        if (!backgroundThreadRef) return;
+        try {
+          backgroundDraftOpened = Boolean(
+            await handleNewThread(
+              scopeProjectRef(activeProject.environmentId, activeProject.id),
+              resolveBackgroundDraftWorkspaceOptions({
+                envMode: sendEnvMode,
+                branch: activeThreadBranch,
+                startFromOrigin,
+              }),
+            ),
+          );
+        } catch (error) {
+          clearBackgroundDraftSubmissionByRef(backgroundThreadRef);
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: m(msg("Could not open a fresh composer")),
+              description: thrownErrorMessage(error, m) ?? undefined,
+            }),
+          );
+        }
+      };
+      let autoBackgroundDraftOpening: Promise<void> | undefined;
+      if (backgroundThreadRef && !accountRouting)
+        beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
       pendingSends.whenAccepted(environmentId, threadIdForSend, messageIdForSend, () => {
         turnStartSucceeded = true;
         if (draftId && savedAutoLaunch) settleAutoDraftLaunch(draftId, savedAutoLaunch, true);
@@ -2043,16 +2071,50 @@ export function useComposerSend(input: ComposerSendInput) {
         ...(accountRouting && draftId
           ? {
               beforeDispatch: async (prepared) => {
-                const record = captureAutoLaunch(
+                const captured = captureAutoLaunch(
                   prepared,
-                  { environmentId, threadId: threadIdForSend, projectId: activeProject.id },
+                  {
+                    environmentId,
+                    threadId: threadIdForSend,
+                    projectId: activeProject.id,
+                    messageId: messageIdForSend,
+                  },
                   messageCreatedAt,
                   outgoingMessageContext === undefined ? sendSnapshot.draftText : undefined,
                 );
-                await reserveAutoDraftLaunch(draftId, record, () => {
-                  clearedComposer = clearSendingComposer();
+                clearedComposer = await reserveAutoDraftLaunch(draftId, captured, () => {
+                  if (!serverSupportsAccountAutoRouting())
+                    throw new Error(accountRoutingUnavailable());
+                  const drafts = useComposerDraftStore.getState();
+                  const current = drafts.getDraftSession(draftId);
+                  if (
+                    !isCurrentComposerSend() ||
+                    !current ||
+                    !draftThread ||
+                    current.envMode !== draftThread.envMode ||
+                    current.branch !== draftThread.branch ||
+                    current.worktreePath !== draftThread.worktreePath ||
+                    drafts.getComposerDraft(draftId)?.accountRouting?.mode !== "auto" ||
+                    draftChangedDuringPreparation()
+                  )
+                    throw new Error(
+                      m(
+                        msg(
+                          "Draft changed while preparing this message. Review it and send again.",
+                        ),
+                      ),
+                    );
                 });
-                savedAutoLaunch = record;
+                savedAutoLaunch = captured.record;
+                if (isCurrentRouteThread()) {
+                  promptRef.current = "";
+                  resetSubmittedAttachmentRefs();
+                  composerRef.current?.resetCursorState();
+                  if (backgroundThreadRef) {
+                    beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
+                    autoBackgroundDraftOpening = openBackgroundDraft();
+                  }
+                }
               },
             }
           : {}),
@@ -2115,30 +2177,9 @@ export function useComposerSend(input: ComposerSendInput) {
         }
         return result;
       });
-      if (backgroundThreadRef) {
-        try {
-          backgroundDraftOpened = Boolean(
-            await handleNewThread(
-              scopeProjectRef(activeProject.environmentId, activeProject.id),
-              resolveBackgroundDraftWorkspaceOptions({
-                envMode: sendEnvMode,
-                branch: activeThreadBranch,
-                startFromOrigin,
-              }),
-            ),
-          );
-        } catch (error) {
-          clearBackgroundDraftSubmissionByRef(backgroundThreadRef);
-          toastManager.add(
-            stackedThreadToast({
-              type: "warning",
-              title: m(msg("Could not open a fresh composer")),
-              description: thrownErrorMessage(error, m) ?? undefined,
-            }),
-          );
-        }
-      }
+      if (backgroundThreadRef && !accountRouting) await openBackgroundDraft();
       const startResult = await startPromise;
+      if (autoBackgroundDraftOpening) await autoBackgroundDraftOpening;
       if (startResult._tag === "Failure") {
         failure = startResult;
       } else {
@@ -2182,6 +2223,7 @@ export function useComposerSend(input: ComposerSendInput) {
         isLocalDraftThread &&
         draftId &&
         draftThread &&
+        (!accountRouting || savedAutoLaunch) &&
         isCurrentComposerSend()
       ) {
         restoreFailedDraftThread(

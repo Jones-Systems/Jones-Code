@@ -2,10 +2,18 @@
 import "~/index.css";
 import "~/components/ChatView";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { ORCHESTRATION_V2_WS_METHODS, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationV2ThreadLaunchError,
+  ProviderInstanceId,
+  ThreadId,
+  WS_METHODS,
+} from "@t3tools/contracts";
+import { initialMessageCommandId } from "@t3tools/contracts/jones/deliveryEvidence";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { createMemoryHistory } from "@tanstack/react-router";
 import type * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { AppRoot } from "../../AppRoot";
@@ -26,6 +34,7 @@ import {
   CODEX_PROVIDER,
   ENVIRONMENT_ID,
   PROJECT_ID,
+  answerRpc,
   deferFakeSends,
   installFakeEnvironment,
   refreshFakeShell,
@@ -280,7 +289,9 @@ it("opts a fresh draft into account routing, keeps edits, and displays the serve
   await expect.element(claudeAuto).not.toBeInTheDocument();
 });
 
-it("opens an uncertain background Auto launch from Drafts after renderer reload and retries the original request", async () => {
+const recoveryOutcomes = ["accepted", "refused", "storage failure"] as const;
+
+it.each(recoveryOutcomes)("recovers a background Auto launch with %s", async (outcome) => {
   const initialDrafts = useComposerDraftStore.getState();
   const initialStorage = localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
   using _cleanup = {
@@ -309,7 +320,11 @@ it("opens an uncertain background Auto launch from Drafts after renderer reload 
     ...config,
     environment: {
       ...config.environment,
-      capabilities: { ...config.environment.capabilities, accountAutoRouting: true },
+      capabilities: {
+        ...config.environment.capabilities,
+        accountAutoRouting: true,
+        inlineMessageContext: true,
+      },
     },
   }));
   await refreshFakeShell();
@@ -324,6 +339,16 @@ it("opens an uncertain background Auto launch from Drafts after renderer reload 
   const threadRef = scopeThreadRef(ENVIRONMENT_ID, threadId);
   const prompt = "Resume this background Auto launch";
   const nextPrompt = "Independent next draft";
+  const terminalContext = {
+    id: "auto-reload-terminal",
+    threadId,
+    createdAt: "2026-03-17T19:12:28.000Z",
+    terminalId: "synthetic-terminal",
+    terminalLabel: "Synthetic terminal",
+    lineStart: 4,
+    lineEnd: 4,
+    text: "Rich context must survive the dropped reply.",
+  };
   const editor = page.getByTestId("composer-editor");
   const recoveryRow = page.getByRole("button", { name: /Auto launch pending/ });
   const retry = page.getByRole("button", { name: "Retry sending this message" });
@@ -361,12 +386,139 @@ it("opens an uncertain background Auto launch from Drafts after renderer reload 
   await act(() => router.navigate({ to: "/draft/$draftId", params: { draftId } }));
   await editor.click();
   await userEvent.type(editor, prompt);
+  if (outcome !== "accepted") {
+    await act(() => initialDrafts.setTerminalContexts(draftId, [terminalContext]));
+  }
+  using _verifyUpload =
+    outcome === "refused"
+      ? answerRpc(WS_METHODS.assetsCreateUrl, () =>
+          Effect.succeed({ relativeUrl: "/upload", expiresAt: 0 }),
+        )
+      : undefined;
+  if (outcome === "refused") {
+    using _uploadUrl = answerRpc(WS_METHODS.attachmentsCreateUploadUrl, () =>
+      Effect.succeed({ attachmentId: "auto-reload-upload", relativeUrl: "/upload", expiresAt: 0 }),
+    );
+    const status = vi.spyOn(XMLHttpRequest.prototype, "status", "get").mockReturnValue(200);
+    const upload = vi.spyOn(XMLHttpRequest.prototype, "send").mockImplementation(function (
+      this: XMLHttpRequest,
+    ) {
+      queueMicrotask(() => this.dispatchEvent(new ProgressEvent("load")));
+    });
+    try {
+      const png = Uint8Array.from(
+        atob(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+        ),
+        (byte) => byte.charCodeAt(0),
+      );
+      const clipboardData = new DataTransfer();
+      clipboardData.items.add(new File([png], "auto-reload.png", { type: "image/png" }));
+      editor
+        .element()
+        .dispatchEvent(
+          new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+        );
+      await expect
+        .element(page.getByRole("button", { name: "Preview auto-reload.png" }))
+        .toBeEnabled();
+      await vi.waitFor(() => expect(upload).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() =>
+        expect(
+          useComposerDraftStore.getState().getComposerDraft(draftId)?.persistedAttachments,
+        ).toMatchObject([{ name: "auto-reload.png" }]),
+      );
+    } finally {
+      upload.mockRestore();
+      status.mockRestore();
+    }
+  }
+
   const mod = isMacPlatform(navigator.platform) ? "Meta" : "Control";
+  if (outcome === "storage failure") {
+    const add = IDBObjectStore.prototype.add;
+    let beforeCommit: { promotedTo: unknown; pending: unknown; requests: number } | undefined;
+    const abortWrite = vi.spyOn(IDBObjectStore.prototype, "add").mockImplementation(function (
+      this: IDBObjectStore,
+      value: unknown,
+      key?: IDBValidKey,
+    ) {
+      const request = add.call(this, value, key);
+      if (this.transaction.db.name === "jones:auto-launch-recovery") {
+        request.addEventListener("success", () => {
+          const session = useComposerDraftStore.getState().getDraftSession(draftId);
+          beforeCommit = {
+            promotedTo: session?.promotedTo,
+            pending: session?.pendingAutoLaunch,
+            requests: delivery.requests.length,
+          };
+          window.dispatchEvent(new Event("beforeunload"));
+          this.transaction.abort();
+        });
+      }
+      return request;
+    });
+    try {
+      await userEvent.keyboard(`{${mod}>}{Enter}{/${mod}}`);
+      await expect
+        .element(page.getByText("Could not save Auto launch recovery. The message was not sent."))
+        .toBeVisible();
+      expect(beforeCommit).toEqual({ promotedTo: null, pending: undefined, requests: 0 });
+      expect(delivery.requests).toHaveLength(0);
+      expect(router.state.location.pathname).toBe(`/draft/${draftId}`);
+      await useComposerDraftStore.persist.rehydrate();
+      expect(useComposerDraftStore.getState().getDraftSession(draftId)).toMatchObject({
+        promotedTo: null,
+      });
+      expect(useComposerDraftStore.getState().getComposerDraft(draftId)).toMatchObject({
+        prompt: expect.stringContaining(prompt),
+        terminalContexts: [terminalContext],
+      });
+      await expect.element(recoveryRow).not.toBeInTheDocument();
+    } finally {
+      abortWrite.mockRestore();
+    }
+    return;
+  }
+
   await userEvent.keyboard(`{${mod}>}{Enter}{/${mod}}`);
   await vi.waitFor(() => expect(delivery.requests).toHaveLength(1));
   const first = delivery.requests[0]!;
   expect(first.method).toBe(ORCHESTRATION_V2_WS_METHODS.launchThread);
   expect(first.payload).toMatchObject({ accountRouting: { mode: "auto" }, threadId });
+  let refusal: OrchestrationV2ThreadLaunchError | undefined;
+  if (outcome === "refused") {
+    expect(first.payload).toMatchObject({
+      initialMessage: {
+        attachments: [expect.objectContaining({ type: "image", id: "auto-reload-upload" })],
+        context: {
+          records: expect.arrayContaining([
+            expect.objectContaining({ kind: "terminal", text: terminalContext.text }),
+          ]),
+        },
+      },
+    });
+    if (!("initialMessage" in first.payload)) throw new Error("Expected a launch request");
+    const { commandId, projectId, initialMessage } = first.payload;
+    const messageId = initialMessage?.messageId;
+    if (!messageId) throw new Error("Expected the original message ID");
+    refusal = new OrchestrationV2ThreadLaunchError({
+      commandId,
+      projectId,
+      message: "Original Auto launch refusal",
+      deliveryEvidence: {
+        kind: "launch",
+        commandId,
+        projectId,
+        creation: { status: "rejected" },
+        initialMessage: {
+          status: "rejected",
+          commandId: initialMessageCommandId(commandId),
+          messageId,
+        },
+      },
+    });
+  }
   expect(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY)).toContain(first.payload.commandId);
   await vi.waitFor(() => {
     expect(router.state.location.pathname).toMatch(/^\/draft\//);
@@ -402,15 +554,30 @@ it("opens an uncertain background Auto launch from Drafts after renderer reload 
   const retried = delivery.requests[1]!;
   expect(retried.method).toBe(first.method);
   expect(retried.payload).toEqual(first.payload);
-  const acceptedModel = { instanceId: secondCodex, model: "gpt-5.5" };
-  await act(async () => {
-    await retried.commit(acceptedModel);
-    retried.acknowledge();
-  });
-  await vi.waitFor(() => {
-    expect(readThreadShell(threadRef)?.modelSelection).toEqual(acceptedModel);
-    expect(useComposerDraftStore.getState().getDraftSession(draftId)).toBeNull();
-  });
+  if (refusal) {
+    await act(() => retried.reject(refusal));
+    await vi.waitFor(() => {
+      expect(useComposerDraftStore.getState().getComposerDraft(draftId)).toMatchObject({
+        prompt: expect.stringContaining(prompt),
+        terminalContexts: [terminalContext],
+        images: [expect.objectContaining({ name: "auto-reload.png" })],
+      });
+      expect(useComposerDraftStore.getState().getDraftSession(draftId)?.pendingAutoLaunch).toBe(
+        undefined,
+      );
+    });
+    expect(readThreadShell(threadRef)).toBeNull();
+  } else {
+    const acceptedModel = { instanceId: secondCodex, model: "gpt-5.5" };
+    await act(async () => {
+      await retried.commit(acceptedModel);
+      retried.acknowledge();
+    });
+    await vi.waitFor(() => {
+      expect(readThreadShell(threadRef)?.modelSelection).toEqual(acceptedModel);
+      expect(useComposerDraftStore.getState().getDraftSession(draftId)).toBeNull();
+    });
+  }
   await expect.element(recoveryRow).not.toBeInTheDocument();
   expect(useComposerDraftStore.getState().getComposerDraft(nextDraftId)?.prompt).toBe(nextPrompt);
   expect(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY)).not.toContain(first.payload.commandId);
