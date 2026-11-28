@@ -7,10 +7,8 @@ import { msg } from "gt-react-native";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { m } from "../../i18n/messages";
-import {
-  archiveCloudComposerDrafts,
-  beginCloudOutboxArchive,
-} from "../../state/use-composer-drafts";
+import { archiveAndClearCloudOutbox } from "../../state/thread-outbox-removal";
+import { beginCloudOutboxArchive } from "../../state/use-composer-drafts";
 
 export class CloudDraftArchiveError extends Schema.TaggedError<CloudDraftArchiveError>()(
   "CloudDraftArchiveError",
@@ -50,7 +48,7 @@ export const removeCloudEnvironments = createRuntimeCommand(connectionAtomRuntim
         Effect.tryPromise({
           // Resolve draft owners against every environment, including retained direct routes.
           try: () =>
-            archiveCloudComposerDrafts(
+            archiveAndClearCloudOutbox(
               accountId,
               environmentIds,
               [...entries.values()].map((entry) => entry.target.environmentId),

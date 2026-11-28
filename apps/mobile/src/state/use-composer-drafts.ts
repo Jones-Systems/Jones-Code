@@ -87,6 +87,12 @@ import {
 } from "./thread-outbox-model";
 import { flushThreadOutbox, threadOutboxManager } from "./thread-outbox";
 import { composerDraftEnvironmentId } from "../lib/composerAttachmentUploadQueue";
+import {
+  cloudOutboxArchiveFencesAtom,
+  type ArchivedOutboxRow,
+} from "../jones/accountRouting/cloudOutboxFence";
+
+export { cloudOutboxArchiveFencesAtom } from "../jones/accountRouting/cloudOutboxFence";
 
 const COMPOSER_DRAFTS_SCHEMA_VERSION = 1;
 const COMPOSER_DRAFTS_DIRECTORY = "composer-drafts";
@@ -1262,15 +1268,6 @@ export async function getComposerCloudAccountId(): Promise<string | null> {
   await waitForComposerDraftsLoaded();
   return appAtomRegistry.get(composerCloudDraftsAtom).accountId;
 }
-
-interface ArchivedOutboxRow {
-  readonly message: QueuedThreadMessage;
-  readonly revision: number;
-}
-
-export const cloudOutboxArchiveFencesAtom = Atom.make<
-  ReadonlyMap<EnvironmentId, ReadonlyArray<ArchivedOutboxRow>>
->(new Map()).pipe(Atom.keepAlive);
 
 /** Hold delivery from before the archive snapshot until relay removal and its cleanup finish. */
 export function beginCloudOutboxArchive(environmentIds: ReadonlySet<EnvironmentId>): () => void {

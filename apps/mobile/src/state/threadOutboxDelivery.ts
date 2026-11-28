@@ -43,6 +43,7 @@ import * as Dialog from "../components/ui/Dialog";
 import { m } from "../i18n/messages";
 import {
   automaticAccountHoldReason,
+  automaticAccountWorkspaceError,
   preparedUsesAutomaticAccounts,
 } from "../jones/accountRouting/outbox";
 import { canUseAutomaticAccounts } from "../jones/accountRouting/selection";
@@ -1351,6 +1352,14 @@ export function createThreadOutboxDelivery(): {
     const hasAccess = () =>
       readEnvironmentScope(queuedMessage.environmentId, AuthOrchestrationOperateScope);
     if (!hasAccess()) return;
+    if (queuedMessage.accountRouting !== undefined) {
+      const workspaceError = automaticAccountWorkspaceError({
+        mode: creation.workspaceMode,
+        pullRequestReference: creation.pullRequestReference,
+      });
+      if (workspaceError !== undefined)
+        return yield* restoreQueuedMessage(queuedMessage, workspaceError);
+    }
     const modelSelection = queuedMessage.modelSelection;
     if (modelSelection === undefined) {
       return yield* retryDelivery;

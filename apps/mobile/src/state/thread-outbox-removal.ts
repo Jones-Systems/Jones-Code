@@ -5,10 +5,12 @@ import { appAtomRegistry } from "./atom-registry";
 import { threadOutboxManager } from "./thread-outbox";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 import {
+  archiveCloudComposerDrafts,
   clearComposerDraft,
   cloudOutboxArchiveFencesAtom,
   composerDraftsAtom,
   flushComposerDrafts,
+  getComposerCloudAccountId,
   scheduleUnusedComposerAttachmentCleanup,
   waitForComposerDraftsLoaded,
 } from "./use-composer-drafts";
@@ -88,4 +90,26 @@ export async function clearThreadOutboxEnvironment(environmentId: EnvironmentId)
   // Use the actual removed set, including persisted messages missed by an earlier failed hydration.
   const removed = await threadOutboxManager.clearEnvironment(environmentId);
   await cleanUpRemovedMessages(removed);
+}
+
+/** Finish the owner handoff while the outgoing connection still cannot enqueue or dispatch. */
+export async function archiveAndClearCloudOutbox(
+  accountId: string | null,
+  environmentIds: ReadonlySet<EnvironmentId>,
+  knownEnvironmentIds: ReadonlyArray<EnvironmentId>,
+): Promise<void> {
+  const hasLiveRows = () =>
+    Object.values(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).some(
+      (messages) => messages.some((message) => environmentIds.has(message.environmentId)),
+    );
+  do {
+    await archiveCloudComposerDrafts(accountId, environmentIds, knownEnvironmentIds);
+    if (!hasLiveRows()) return;
+    if (accountId === null && (await getComposerCloudAccountId()) === null)
+      throw new Error("The queued messages have no cloud archive owner.");
+    for (const environmentId of environmentIds) {
+      await clearThreadOutboxEnvironment(environmentId);
+    }
+    // Preserve any newer upload or delivery receipt in the same private archive.
+  } while (hasLiveRows());
 }

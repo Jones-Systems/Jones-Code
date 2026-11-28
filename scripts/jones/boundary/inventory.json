@@ -12,6 +12,7 @@
     "apps/mobile/src/features/threads/thread-settings-sheet-state.ts": "hook",
     "apps/mobile/src/state/threads.ts": "hook",
     "apps/mobile/src/features/cloud/cloud-drafts.ts": "hook",
+    "apps/mobile/src/features/home/usePendingTaskListActions.ts": "hook",
     "apps/mobile/src/state/pending-new-tasks-model.test.ts": "jones-tests-in-upstream",
     "apps/mobile/src/state/pending-new-tasks-model.ts": "hook",
     "apps/mobile/src/state/thread-outbox-removal.ts": "hook",

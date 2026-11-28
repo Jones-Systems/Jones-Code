@@ -12,6 +12,14 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/mobile/src/features/home/usePendingTaskListActions.ts",
+      "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
+      "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
+    },
+    {
       "from": "apps/mobile/src/features/threads/ThreadSettingsSheet.tsx",
       "to": "apps/mobile/src/jones/accountRouting/selection.ts"
     },
@@ -24,7 +32,19 @@
       "to": "apps/mobile/src/jones/accountRouting/selection.ts"
     },
     {
+      "from": "apps/mobile/src/features/threads/thread-list-v2-items.tsx",
+      "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
+    },
+    {
       "from": "apps/mobile/src/state/thread-outbox-model.ts",
+      "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/thread-outbox.ts",
+      "to": "apps/mobile/src/jones/accountRouting/cloudOutboxFence.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts",
       "to": "apps/mobile/src/jones/accountRouting/outbox.ts"
     },
     {
@@ -46,6 +66,10 @@
     {
       "from": "apps/mobile/src/state/use-composer-drafts.test.ts",
       "to": "packages/client-runtime/src/jones/preparedThreadTurn.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-composer-drafts.ts",
+      "to": "apps/mobile/src/jones/accountRouting/cloudOutboxFence.ts"
     },
     {
       "from": "apps/server/src/mcp/OrchestratorMcpService.ts",

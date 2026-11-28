@@ -21,6 +21,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { automaticAccountWorkspaceError } from "../../jones/accountRouting/outbox";
 import {
   CommonActions,
   StackActions,
@@ -674,6 +675,17 @@ export function NewTaskDraftScreen(props: {
       (workspaceMode === "worktree" && flow.isGitRepo && !selectedBranchName)
     ) {
       return null;
+    }
+    if (draft.automaticAccountModel !== undefined) {
+      const workspaceError = automaticAccountWorkspaceError({
+        mode: workspaceMode,
+        pullRequestReference: workspaceSelection.pullRequestReference,
+        scratch: flow.isScratchDraft,
+      });
+      if (workspaceError !== undefined) {
+        Dialog.alert(gt("Choose an account"), workspaceError);
+        return null;
+      }
     }
     if (
       environmentConnected &&

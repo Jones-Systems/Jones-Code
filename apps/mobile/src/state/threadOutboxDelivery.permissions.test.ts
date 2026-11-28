@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { automaticLaunchNeedsReconciliation } from "../jones/accountRouting/outbox";
 import {
   decodeQueuedThreadMessage,
   threadOutboxRetryDelayMs,
@@ -256,6 +257,7 @@ import { dispatchingQueuedMessageIdsAtom, editingQueuedMessageIdsAtom } from "./
 const sendingMessageIds = () => Object.keys(appAtomRegistry.get(dispatchingQueuedMessageIdsAtom));
 import { threadComposerErrorsAtom } from "./thread-composer-error";
 import { createThreadOutboxDelivery } from "./threadOutboxDelivery";
+import { pendingThreadCreationOutcomesAtom } from "./pending-thread-creation";
 import { cloudOutboxArchiveFencesAtom } from "./use-composer-drafts";
 import { workspaceConnections } from "./workspace";
 
@@ -315,6 +317,7 @@ beforeEach(() => {
   state.config.shellThreadFamilies = false;
   delete state.config.environment.capabilities.accountAutoRouting;
   appAtomRegistry.set(threadComposerErrorsAtom, {});
+  appAtomRegistry.set(pendingThreadCreationOutcomesAtom, {});
   state.modelUnavailable.mockReset().mockReturnValue(false);
   state.familyMount.mockReset().mockReturnValue(() => {});
   appAtomRegistry.set(state.threadShells, [state.thread]);
@@ -484,7 +487,39 @@ describe("automatic account launches", () => {
     expect(state.prepareTurn).not.toHaveBeenCalled();
     expect(state.start).not.toHaveBeenCalled();
     expect(savedMessage(queued.messageId)).toEqual(queued);
+    expect(automaticLaunchNeedsReconciliation(savedMessage(queued.messageId))).toBe(false);
   });
+
+  it.each([undefined, "https://github.com/example/project/pull/7"])(
+    "returns an unissued Auto workspace request before attachments or checkout (PR %s)",
+    async (pullRequestReference) => {
+      setOperateGrant("secondary", true);
+      state.config.environment.capabilities.accountAutoRouting = true;
+      const task = automaticTask();
+      const queued = {
+        ...task,
+        creation: {
+          ...task.creation!,
+          workspaceMode: "worktree",
+          branch: "feature",
+          ...(pullRequestReference === undefined ? {} : { pullRequestReference }),
+        },
+      } satisfies QueuedThreadMessage;
+      await state.manager.enqueue(queued);
+      await runDrain();
+      expect(state.prepare).not.toHaveBeenCalled();
+      expect(state.checkout).not.toHaveBeenCalled();
+      expect(state.prepareTurn).not.toHaveBeenCalled();
+      expect(state.start).not.toHaveBeenCalled();
+      expect(remaining()).toEqual([]);
+      expect(
+        appAtomRegistry.get(pendingThreadCreationOutcomesAtom)["secondary:auto-thread"],
+      ).toMatchObject({
+        kind: "failed",
+        reason: expect.stringContaining("needs an existing project folder or worktree"),
+      });
+    },
+  );
 
   it("fences Auto issuance when cloud sign-out starts during launch preparation", async () => {
     setOperateGrant("secondary", true);
@@ -549,6 +584,7 @@ describe("automatic account launches", () => {
       });
       expect(state.start).not.toHaveBeenCalled();
       if (sequence === undefined) {
+        expect(automaticLaunchNeedsReconciliation(savedMessage(queued.messageId))).toBe(true);
         expect(savedMessage(queued.messageId)).toMatchObject({
           accountRouting: { mode: "auto" },
           issuance: { state: "issued" },

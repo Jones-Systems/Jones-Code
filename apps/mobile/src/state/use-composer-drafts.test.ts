@@ -234,8 +234,8 @@ import {
   pickQuestionAttachments,
   resolveQuestionImagePreparations,
 } from "./question-attachment-preparation";
-import { threadOutboxManager } from "./thread-outbox";
-import { clearThreadOutboxEnvironment } from "./thread-outbox-removal";
+import { enqueueThreadOutboxMessage, threadOutboxManager } from "./thread-outbox";
+import { archiveAndClearCloudOutbox, clearThreadOutboxEnvironment } from "./thread-outbox-removal";
 import {
   decodeQueuedThreadMessage,
   QueuedThreadMessageSchema,
@@ -1948,6 +1948,39 @@ describe("mobile composer drafts", () => {
     ).flat();
     expect(restored).toHaveLength(2);
     expect(restored).toEqual(expect.arrayContaining([issued, other]));
+  });
+
+  it("archives a newer row before signing out and keeps it private to the original account", async () => {
+    const issued = archivedAutoLaunch();
+    const unissued = { ...issued, issuance: { state: "unissued" } } satisfies QueuedThreadMessage;
+    await threadOutboxManager.enqueue(unissued);
+    const environments = new Set([issued.environmentId]);
+    const release = beginCloudOutboxArchive(environments);
+    const revision = threadOutboxManager.revisionOf(issued.messageId);
+    const updated = Promise.withResolvers<boolean>();
+    composerDraftFileMocks.setOnWrite(() => {
+      composerDraftFileMocks.setOnWrite(null);
+      void threadOutboxManager.update(issued, revision).then(updated.resolve, updated.reject);
+    });
+    try {
+      await expect(enqueueThreadOutboxMessage(unissued)).rejects.toThrow();
+      await archiveAndClearCloudOutbox("owner", environments, [...environments]);
+      await expect(updated.promise).resolves.toBe(true);
+      expect(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).toEqual({});
+      expect(composerDraftFileMocks.getQueuedMessage(issued.messageId)).toBeUndefined();
+      expect(JSON.parse(composerDraftFileMocks.getAutoArchive()!)).toMatchObject({
+        accounts: { owner: [{ issuance: { state: "issued" } }] },
+      });
+    } finally {
+      release();
+    }
+
+    await restoreCloudComposerDrafts("other");
+    expect(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).toEqual({});
+    await restoreCloudComposerDrafts("owner");
+    expect(
+      Object.values(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).flat(),
+    ).toEqual([issued]);
   });
 
   it.each(["manual", "auto", "untouched"] as const)(
