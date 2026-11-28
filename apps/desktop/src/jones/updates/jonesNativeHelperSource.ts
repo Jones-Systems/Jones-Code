@@ -465,10 +465,20 @@ def verify_bundle_generation(app, expected_digest):
     if app.is_symlink() or not app.is_dir() or app_digest(app) != expected_digest:
         raise RuntimeError('Native bundle digest changed; paired rollback held.')
 
+def installed_bundle_digest(expected, captured_digest=None):
+    stable = pathlib.Path(expected['appPath'])
+    known_digest = captured_digest if captured_digest is not None else expected.get('appDigest')
+    if known_digest is None:
+        bundle_identity(expected)
+        return app_digest(stable)
+    verify_bundle_generation(stable, known_digest)
+    return known_digest
+
 def prove_bundle_rollback(expected, rollback_digest, staged, incoming, previous):
     stable = pathlib.Path(expected['appPath'])
     if not previous.exists() and not previous.is_symlink():
         verify_bundle_generation(stable, rollback_digest)
+        verify_rollback_signature(expected, stable)
         return False
     if incoming.exists() or incoming.is_symlink():
         raise RuntimeError('Occupied trial bundle path; rollback held.')
@@ -1465,7 +1475,7 @@ def selection_command(operation, active, handle, selection_path, expected_digest
 
 PRE_EFFECT_PHASES = ('intent', 'preparing', 'quiescent')
 
-def pre_effect_unchanged(expected, tx, journal):
+def pre_effect_unchanged(expected, tx, journal, captured_digest=None):
     if journal.get('phase') not in PRE_EFFECT_PHASES or not same_binding(read(manifest_path), expected): return False
     pair = tx / 'previous-pair'
     if pair.is_symlink() or (pair / 'pair.json').exists() or (pair / 'pair.json').is_symlink(): return False
@@ -1479,8 +1489,7 @@ def pre_effect_unchanged(expected, tx, journal):
     if journal.get('previousBundle', str(previous)) != str(previous) or journal.get('incomingBundle', str(incoming)) != str(incoming): return False
     if any(key in journal for key in ('candidateWriter', 'trialReceipt', 'recovery', 'preSwapPreparationRecovery')): return False
     try:
-        if expected.get('appDigest') is None: bundle_identity(expected)
-        else: verify_bundle_generation(stable, expected['appDigest'])
+        installed_bundle_digest(expected, captured_digest)
     except Exception:
         return False
     return True
@@ -1732,13 +1741,9 @@ def activate(intent_file):
         record('preparing', recoveryReserves=list(recovery_reserves))
         preparation_step = 'bundle'
         incoming, previous = prepare_bundle(expected, staged, intent['transactionId'])
-        stable = pathlib.Path(expected['appPath'])
-        rollback_digest = expected.get('appDigest')
-        if rollback_digest is None:
-            bundle_identity(expected)
-            rollback_digest = app_digest(stable)
-        else:
-            verify_bundle_generation(stable, rollback_digest)
+        preparation_step = 'installed-bundle'
+        rollback_digest = installed_bundle_digest(expected)
+        preparation_step = 'bundle'
         record('preparing', incomingBundle=str(incoming), previousBundle=str(previous))
         preserve_restart_tunnel(expected, intent['transactionId'])
         preparation_step = 'stop-processes'
@@ -1832,7 +1837,8 @@ def activate(intent_file):
             return
         if journal['phase'] in PRE_EFFECT_PHASES:
             try:
-                unchanged = pre_effect_unchanged(expected, tx, journal)
+                unchanged = preparation_step != 'installed-bundle' and pre_effect_unchanged(expected, tx, journal, rollback_digest)
+                if unchanged: verify_rollback_signature(expected, pathlib.Path(expected['appPath']))
             except Exception:
                 unchanged = False
             if unchanged:

@@ -89,15 +89,31 @@ with sqlite3.connect(database) as db:
 (home / 'settings.json').write_text('{"fixture":"previous-settings"}')
 (profile / 'opaque').write_text('same-host-profile')
 previous_app, candidate_app = root / 'previous.app', root / 'candidate.app'
+signing_fault = fault == 'installed-signing-refused'
 for app in (previous_app, candidate_app):
     (app / 'Contents' / 'Resources').mkdir(parents=True)
     (app / 'Contents' / 'MacOS').mkdir()
     (app / 'Contents' / 'Resources' / 'app.asar').write_text('synthetic-asar')
     (app / 'Contents' / 'MacOS' / 'Jones').write_text('previous-executable' if app == previous_app else 'candidate-executable')
+    if signing_fault or fault == 'bootstrap-digest-unreadable':
+        (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({
+            'CFBundleIdentifier': PRODUCTION_BUNDLE_ID,
+            'CFBundleExecutable': 'Jones',
+            'CFBundleShortVersionString': 'same-preview-version',
+        }))
+if fault == 'bootstrap-digest-unreadable':
+    metadata = json.dumps({'version': 'same-preview-version',
+        'jonesSource': {'repository': 'Jones-Systems/Jones-Code', 'sha': 'a' * 40, 'tree': 'b' * 40}}).encode()
+    header = json.dumps({'files': {'package.json': {'offset': '0', 'size': len(metadata)}}}).encode()
+    (previous_app / 'Contents/Resources/app.asar').write_bytes(
+        struct.pack('<IIII', 4, len(header) + 8, len(header) + 4, len(header)) + header + metadata)
 expected = {'protocol': 1, 'owner': 'desktop', 'generation': 'previous', 'transactionId': 'bootstrap',
     'home': str(root), 'databasePath': str(database), 'profile': str(profile), 'environmentId': 'same-environment',
     'appPath': str(previous_app), 'executablePath': str(previous_app / 'Contents/MacOS/Jones'),
     'version': 'same-preview-version', 'sourceSha': 'a' * 40, 'sourceTree': 'b' * 40, 'appDigest': app_digest(previous_app)}
+if signing_fault or fault == 'bootstrap-digest-unreadable':
+    expected['bundleIdentifier'] = PRODUCTION_BUNDLE_ID
+if fault == 'bootstrap-digest-unreadable': expected.pop('appDigest')
 manifest_path = root / 'runtime' / 'jones-active-install.json'
 seed_record(manifest_path, expected, True)
 transaction_id = 'e' * 64
@@ -112,6 +128,7 @@ staged = {'handle': 'f' * 64, 'receiptPath': str(root / 'mac-app-receipt.json'),
     'version': expected['version'], 'sourceSha': candidate['source'], 'sourceTree': candidate['tree'],
     'appDigest': app_digest(candidate_app), 'asarDigest': digest(candidate_app / 'Contents/Resources/app.asar'),
     'executableDigest': digest(candidate_app / 'Contents/MacOS/Jones'), 'startupGateProtocol': 1}
+if 'bundleIdentifier' in expected: staged['bundleIdentifier'] = expected['bundleIdentifier']
 if fault == 'candidate-gate-missing': staged.pop('startupGateProtocol')
 if fault == 'candidate-gate-wrong': staged['startupGateProtocol'] = 2
 if fault == 'candidate-gate-boolean': staged['startupGateProtocol'] = True
@@ -214,6 +231,25 @@ def synthetic_capacity(active, pair):
 recovery_capacity_before_restore = synthetic_capacity
 if fault == 'stable-digest-changed':
     (previous_app / 'Contents/MacOS/Jones').write_text('substituted-binary')
+if fault == 'bootstrap-digest-unreadable':
+    bundle_identity(expected)
+    native_digest = digest
+    def unreadable_executable(path):
+        if pathlib.Path(path) == previous_app / 'Contents/MacOS/Jones':
+            events.append('installed-digest-refused')
+            raise OSError('Synthetic installed executable read failure')
+        return native_digest(path)
+    digest = unreadable_executable
+if signing_fault:
+    from types import SimpleNamespace
+    native_run = subprocess.run
+    def signing_run(argv, **kwargs):
+        if argv[0] not in ('/usr/bin/codesign', '/usr/bin/xcrun', '/usr/sbin/spctl'):
+            return native_run(argv, **kwargs)
+        refusal = argv[0] == '/usr/bin/codesign' and argv[-1] == str(previous_app)
+        if refusal: events.append('installed-signature-refused')
+        return SimpleNamespace(returncode=int(refusal), stdout='', stderr='')
+    subprocess.run = signing_run
 if fault in ('bundle-denied', 'bundle-second-rename-denied', 'rollback-first-rename-denied', 'rollback-second-rename-denied'):
     native_rename = os.rename
     def denied_rename(source, target):
@@ -358,11 +394,16 @@ else:
             assert app_digest(incoming) == staged['appDigest']
         else:
             assert app_digest(previous_app) == staged['appDigest']
-    if fault == 'stable-digest-changed':
+    if fault in ('stable-digest-changed', 'bootstrap-digest-unreadable', 'installed-signing-refused'):
         assert state == 'previous-state'
+        assert (home / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
         assert 'restart-previous' not in events
         assert 'candidate-launch' not in events
-        assert not (tx / 'previous-pair').exists()
+        assert 'authority-fence' not in events
+        assert (tx / 'recovery-reserve.bin').exists()
+        assert (tx / 'previous-pair/pair.json').exists() == signing_fault
+        if fault == 'bootstrap-digest-unreadable': assert 'installed-digest-refused' in events
+        if signing_fault: assert 'installed-signature-refused' in events
     if fault in ('storage-refused', 'reserve-denied'):
         assert events == ['storage-preflight', 'identity:123', 'restart-previous']
         assert state == 'previous-state'
@@ -3173,6 +3214,8 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["rollback-first-rename-denied", "blocked"],
     ["rollback-second-rename-denied", "blocked"],
     ["stable-digest-changed", "blocked"],
+    ["bootstrap-digest-unreadable", "blocked"],
+    ["installed-signing-refused", "blocked"],
     ["legacy-receipt", "blocked"],
     ["gate-mismatch", "blocked"],
     ["gate-boolean", "blocked"],
@@ -3251,7 +3294,11 @@ assert 'restart-previous' not in events
 `
             : "";
         const script = NodePath.join(f.directory, "activation-scenario.py");
-        await NodeFSP.writeFile(script, `${nativeFunctions}\n${activationScenario}\n${heldLaunch}`);
+        const functions =
+          fault === "installed-signing-refused"
+            ? productionNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]
+            : nativeFunctions;
+        await NodeFSP.writeFile(script, `${functions}\n${activationScenario}\n${heldLaunch}`);
         const result = JSON.parse(
           NodeChildProcess.execFileSync(
             "python3",
