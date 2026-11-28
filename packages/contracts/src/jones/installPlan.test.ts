@@ -1,7 +1,9 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
+import { EnvironmentId } from "../baseSchemas.ts";
 import type { DesktopBridge } from "../ipc.ts";
 import {
+  confirmsInstallPlanCancellation,
   JonesInstallPlan,
   JonesInstallPlanCliRequest,
   JonesInstallPlanDevice,
@@ -741,4 +743,32 @@ it("negotiates recovery history and exact displayed revisions on wire version on
     action: { type: "read", planId },
   } as const;
   expect(decodeCli(request)).toEqual(request);
+});
+
+it("confirms a cancellation only for the recorded revision", () => {
+  const action = {
+    type: "cancel-plan",
+    planId,
+    environmentId: EnvironmentId.make(laptop.environmentId),
+    expectedRevision: 1,
+    confirmed: true,
+  } as const;
+  const closed = { ...plan, cancelled: true, dismissedAt: at, revision: 8 } as const;
+  const decodeResult = Schema.decodeUnknownSync(JonesInstallPlanResult);
+  const response = (last: unknown) =>
+    decodeResult({
+      state: {
+        ...state,
+        current: null,
+        last,
+        laptop: { ...state.laptop, environmentId: laptop.environmentId },
+      },
+    });
+  expect(confirmsInstallPlanCancellation(response(closed), action)).toBe(false);
+  expect(
+    confirmsInstallPlanCancellation(response({ ...closed, cancelledFromRevision: 2 }), action),
+  ).toBe(false);
+  expect(
+    confirmsInstallPlanCancellation(response({ ...closed, cancelledFromRevision: 1 }), action),
+  ).toBe(true);
 });

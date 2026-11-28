@@ -6,7 +6,12 @@ import { it as effectIt } from "@effect/vitest";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, type DesktopUpdateState } from "@t3tools/contracts";
 import type { FleetPlanDirectiveFenceEvidence } from "@t3tools/contracts/jones/fleet-updates";
-import { JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES } from "@t3tools/contracts/jones/installPlan";
+import {
+  JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES,
+  JONES_INSTALL_PLAN_HISTORY_LIMIT,
+  JONES_INSTALL_PLAN_COMMAND_LIMIT,
+  JonesInstallPlanResult,
+} from "@t3tools/contracts/jones/installPlan";
 import type {
   JonesInstallPlanCliRequest,
   JonesInstallPlanLaptopEvidence,
@@ -22,6 +27,7 @@ import type {
   JonesOperationReceipt,
 } from "@t3tools/contracts/jones/jonesOperations";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import type { JonesDesktopUpdateController } from "../updates/JonesDesktopUpdates.ts";
 import { dispatchInstallPlanCli } from "./cliControl.ts";
 import { createInstallPlanCoordinator } from "./coordinator.ts";
@@ -43,6 +49,7 @@ const selection = { environmentId: remote, label: "Host", route: "operations" } 
 const timestamp = "2026-10-27T00:00:00.000Z";
 const id = (n: number) => `${String(n).padStart(8, "0")}-1111-4111-8111-111111111111`;
 const persistentRoots = new Set<string>();
+const encodePlanResult = Schema.encodeSync(JonesInstallPlanResult);
 function fixture(persistentStore?: InstallPlanStore) {
   let clock = Date.parse(timestamp),
     sequence = 0;
@@ -2539,6 +2546,272 @@ describe("Laptop install recovery", () => {
   });
 });
 describe("native client command reservations", () => {
+  const claimedDownload = (plan: { planId: string; revision: number }, commandId: string) =>
+    ({
+      ...downloadRequest(plan.planId),
+      explicit: true,
+      expectedRevision: plan.revision,
+      command: {
+        commandId,
+        environmentId: remote,
+        targetSource: source,
+        action: "download-exact",
+        planId: plan.planId,
+        expectedRevision: plan.revision,
+      },
+    }) as const;
+
+  it("encodes the full set of publication holds for evicted legacy commands", async () => {
+    const f = fixture();
+    const original = (
+      await f.coordinator.request({
+        type: "start",
+        origin: "connections",
+        target,
+        select: [selection],
+        expectedRunningGeneration: transaction,
+      })
+    ).state.current!;
+    await f.coordinator.request(claimedDownload(original, id(601)));
+    const entry = f.snapshot().document.commands![0]!;
+    const environments = Array.from({ length: JONES_INSTALL_PLAN_COMMAND_LIMIT }, (_, index) =>
+      EnvironmentId.make(`legacy-host-${index}`),
+    );
+    const commands = environments.map((environmentId, index) => {
+      const planId = id(1000 + index);
+      return {
+        ...entry,
+        receipt: {
+          ...entry.receipt,
+          planId,
+          command: { ...entry.receipt.command, planId, environmentId, commandId: id(3000 + index) },
+          operationId: id(5000 + index),
+          outcome: "terminal" as const,
+          code: "unsupported" as const,
+        },
+      };
+    });
+    const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-publication-holds-"));
+    persistentRoots.add(home);
+    const store = createInstallPlanStore({ home, profile: undefined });
+    await store.transact(async () => ({
+      document: { schema: 2, documentRevision: 1, current: null, last: null, older: [], commands },
+      dispositions: f.snapshot().dispositions,
+      result: undefined,
+    }));
+    const coordinator = createInstallPlanCoordinator({ ...f.options, store });
+    const result = await coordinator.request({ type: "publication", acceptHostOnlyHolds: 1 });
+    expect(encodePlanResult(result).publication).toMatchObject({
+      kind: "committed",
+      heldEnvironments: environments,
+    });
+    expect(result.state.orphanedCommands).toHaveLength(environments.length);
+  });
+
+  it("recovers an evicted legacy V2 unsupported claim only from exact terminal evidence", async () => {
+    const f = fixture();
+    const peer = { ...selection, environmentId: EnvironmentId.make("peer"), label: "Peer" };
+    const start = {
+      type: "start",
+      origin: "connections",
+      target,
+      select: [selection],
+      expectedRunningGeneration: transaction,
+    } as const;
+    const original = (await f.coordinator.request(start)).state.current!;
+    const claim = claimedDownload(original, id(601));
+    const issued = await f.coordinator.request(claim);
+    const entry = f.snapshot().document.commands![0]!;
+    const laptopEntry = {
+      body: "e".repeat(64),
+      receipt: {
+        ...entry.receipt,
+        command: {
+          ...entry.receipt.command,
+          commandId: id(611),
+          environmentId: laptop,
+          action: "download",
+        },
+        bodyHash: "e".repeat(64),
+        operationId: id(612),
+        requestType: "laptop",
+        outcome: "terminal",
+        code: "unsupported",
+      },
+    } as const;
+    const last = { ...original, planId: id(602), devices: [], dismissedAt: timestamp };
+    const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-orphan-v2-"));
+    persistentRoots.add(home);
+    const open = () => createInstallPlanStore({ home, profile: undefined });
+    await open().transact(async () => ({
+      document: {
+        schema: 2,
+        documentRevision: 9,
+        current: null,
+        last,
+        older: [],
+        commands: [
+          {
+            ...entry,
+            receipt: { ...entry.receipt, outcome: "terminal", code: "unsupported" },
+          },
+          laptopEntry,
+        ],
+      },
+      dispositions: f.snapshot().dispositions,
+      result: undefined,
+    }));
+    const coordinator = createInstallPlanCoordinator({ ...f.options, store: open() });
+    const query = { type: "read", commandId: claim.command.commandId } as const;
+    const discovered = await coordinator.request(query);
+    expect(discovered.command).toEqual(issued.command);
+    expect(discovered.state.orphanedCommands).toEqual([issued.command]);
+    expect(discovered.state.last).toEqual(last);
+    const publication = await coordinator.request({ type: "publication", acceptHostOnlyHolds: 1 });
+    expect(publication.publication).toMatchObject({
+      kind: "committed",
+      heldEnvironments: [remote],
+    });
+    expect((await coordinator.request({ type: "publication" })).publication).toMatchObject({
+      kind: "withheld",
+      code: "plan-managed",
+    });
+    const pendingReplay = await coordinator.request(claim);
+    expect(pendingReplay.command).toEqual(issued.command);
+    expect(pendingReplay.grant).toBeUndefined();
+    expect((await coordinator.request({ ...claim, claimant: "other-window" })).refused?.code).toBe(
+      "invalid-evidence",
+    );
+
+    const terminal = f.receipt(issued.grant!, "completed");
+    const settle = (receipt: JonesOperationReceipt | null, bodyHash = entry.body) =>
+      coordinator.request({
+        type: "reconcile-orphan",
+        commandId: claim.command.commandId,
+        bodyHash,
+        receipt,
+      } as JonesInstallPlanRequest);
+    for (const evidence of [
+      null,
+      f.receipt(issued.grant!, "running"),
+      { ...terminal, environmentId: peer.environmentId },
+      { ...terminal, operationId: id(603) },
+    ]) {
+      expect((await settle(evidence)).refused?.code).toBe("invalid-evidence");
+    }
+    expect((await settle(terminal, "f".repeat(64))).refused?.code).toBe("invalid-evidence");
+    expect((await coordinator.request(query)).state.orphanedCommands).toEqual([issued.command]);
+    expect((await coordinator.request(start)).refused?.code).toBe("outstanding-operation");
+    const disjoint = await coordinator.request({ ...start, select: [selection, peer] });
+    expect(disjoint.refused).toBeUndefined();
+    const current = disjoint.state.current!;
+    expect(current.devices.map(({ environmentId }) => environmentId)).toEqual([peer.environmentId]);
+    expect(
+      (
+        await coordinator.request({
+          ...downloadRequest(current.planId),
+          environmentId: peer.environmentId,
+        })
+      ).grant?.environmentId,
+    ).toBe(peer.environmentId);
+
+    const settled = await settle(terminal);
+    expect(settled.command).toEqual({ ...issued.command, outcome: "terminal" });
+    expect(settled.grant).toBeUndefined();
+    expect(settled.state.orphanedCommands).toBeUndefined();
+    const restarted = createInstallPlanCoordinator({ ...f.options, store: open() });
+    const replay = await restarted.request(claim);
+    expect(replay.command).toEqual(settled.command);
+    expect(replay.grant).toBeUndefined();
+    expect(replay.state.orphanedCommands).toBeUndefined();
+    const released = await restarted.request({ type: "publication", acceptHostOnlyHolds: 1 });
+    expect(released.publication).toMatchObject({
+      kind: "committed",
+      heldEnvironments: [peer.environmentId],
+    });
+    const edit = await restarted.request({
+      type: "edit",
+      planId: current.planId,
+      expectedRevision: replay.state.current!.revision,
+      select: [selection],
+      deselect: [],
+    });
+    expect(edit.applied).toMatchObject([{ environmentId: remote, result: "added" }]);
+    await open().transact(async (snapshot) => {
+      expect(snapshot.document.schema).toBe(2);
+      expect(snapshot.document.commands).toEqual([
+        { ...entry, receipt: settled.command, orphanReceipt: terminal },
+        laptopEntry,
+      ]);
+      return { ...snapshot, result: undefined };
+    });
+  });
+
+  it("saves the R3 verified unsupported receipt before evicting its plan", async () => {
+    const f = fixture();
+    const original = await f.start();
+    const claim = { ...claimedDownload(original, id(604)), boundAdmission: 1 } as const;
+    const issued = await f.coordinator.request(claim);
+    const { acceptedAt: _acceptedAt, ...scope } = f.receipt(issued.grant!);
+    const unsupported = { ...scope, phase: "refused", code: "unsupported" } as const;
+    const confirmed = await f.coordinator.request(
+      reportRequest(original.planId, unsupported, true),
+    );
+    expect(confirmed.refused).toBeUndefined();
+    expect(confirmed.state.current?.devices[0]?.operations[0]?.unsupportedReceiptVerified).toBe(
+      true,
+    );
+    const document = f.snapshot().document;
+    const entry = document.commands![0]!;
+    expect(entry.orphanReceipt).toEqual(unsupported);
+    const closed = { ...document.current!, dismissedAt: timestamp };
+    const otherPlans = Array.from({ length: JONES_INSTALL_PLAN_HISTORY_LIMIT - 1 }, (_, index) => ({
+      ...closed,
+      planId: id(605 + index),
+      devices: [],
+    }));
+    const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-orphan-verified-"));
+    persistentRoots.add(home);
+    const open = () => createInstallPlanStore({ home, profile: undefined });
+    // An R3 archive can have verified operation evidence without the command's copy.
+    await open().transact(async () => ({
+      document: {
+        schema: 3,
+        documentRevision: 9,
+        current: null,
+        last: otherPlans[0]!,
+        older: [...otherPlans.slice(1), closed],
+        commands: [{ body: entry.body, receipt: entry.receipt }],
+      },
+      dispositions: f.snapshot().dispositions,
+      result: undefined,
+    }));
+    const coordinator = createInstallPlanCoordinator({ ...f.options, store: open() });
+    const started = await coordinator.request({
+      type: "start",
+      origin: "settings",
+      target,
+      select: [selection],
+    });
+    expect(started.refused).toBeUndefined();
+    expect(started.state.current?.devices[0]?.environmentId).toBe(remote);
+    expect(started.state.orphanedCommands).toBeUndefined();
+    expect(
+      (await coordinator.request({ type: "read-history", planId: original.planId })).refused?.code,
+    ).toBe("plan-mismatch");
+
+    const restarted = createInstallPlanCoordinator({ ...f.options, store: open() });
+    const replay = await restarted.request(claim);
+    expect(replay.command).toEqual({ ...issued.command, outcome: "terminal", code: "unsupported" });
+    expect(replay.grant).toBeUndefined();
+    expect(replay.state.orphanedCommands).toBeUndefined();
+    await open().transact(async (snapshot) => {
+      expect(snapshot.document.schema).toBe(3);
+      expect(snapshot.document.commands).toEqual([entry]);
+      return { ...snapshot, result: undefined };
+    });
+  });
+
   it("recovers an orphaned V1 claim from the terminal host receipt and retains its original replay body", async () => {
     const f = fixture();
     const original = await f.start();

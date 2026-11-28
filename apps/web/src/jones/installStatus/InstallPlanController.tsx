@@ -8,12 +8,18 @@ import { useEnvironments } from "../../state/environments";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentSession, readEnvironmentScopeAccess } from "../../state/session";
 import { jonesUpdates } from "../updates/jonesUpdates";
-import { installStatusStore, type InstallStatusStore, type InstallStatusDevice } from "./panelUi";
+import {
+  installStatusStore,
+  isOlderNativeState,
+  type InstallStatusStore,
+  type InstallStatusDevice,
+} from "./panelUi";
 import {
   bindInstallPlanServices,
   currentPlanHostAuthority,
   installPlanServices,
   requestInstallPlan,
+  requireWritablePlan,
   type InstallPlanServices,
 } from "./services";
 import { claimantId, openInstallStatus } from "./entrypoints";
@@ -45,6 +51,19 @@ export function startInstallPlanController(
       const firstRead = store.get().native === null;
       const result = await requestInstallPlan(request, binding);
       if (!cancelled && firstRead && store.get().native?.current != null) openInstallStatus();
+      if (
+        request.type === "read" &&
+        result.refused === undefined &&
+        result.state.readOnly === undefined
+      ) {
+        const accepted = store.get().native;
+        const read =
+          accepted !== null && isOlderNativeState(accepted, result.state)
+            ? { state: accepted }
+            : result;
+        requireWritablePlan(binding, read);
+        return read;
+      }
       return result;
     },
     observe: async (id) => {

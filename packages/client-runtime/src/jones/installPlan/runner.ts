@@ -33,6 +33,7 @@ import {
   isProvisionalUnsupportedReceipt,
   matchPlanEnrollment,
   nextRunnerStep,
+  operationOutstanding,
   sameDirectiveBinding,
   sameOperationBinding,
   supportsOperationReceiptReads,
@@ -211,6 +212,7 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
       const canMutate = (
         current: ReturnType<typeof authority>,
         input: JonesOperationStartInput | undefined,
+        directiveInput = directive,
       ) => {
         if (
           driver.cancelled() ||
@@ -220,13 +222,15 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
           (input?.admission !== undefined && !canTargetBound(current))
         )
           return false;
+        if (directiveInput !== undefined)
+          return canReplayDirective(directiveInput, current.fleetStatus);
         if (step.kind === "claim-directive")
           return (
             current.fleetStatus?.planDirectiveProtocol === 1 &&
-            (current.fleetStatus.follower?.planDirective?.directiveId ?? null) ===
+            current.fleetStatus.follower !== undefined &&
+            (current.fleetStatus.follower.planDirective?.directiveId ?? null) ===
               step.expectedDirectiveId
           );
-        if (directive !== undefined) return canReplayDirective(directive, current.fleetStatus);
         return (
           recovery === "fence" ||
           (matchesForwardRoute(
@@ -319,8 +323,9 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         request.kind === "operation-start" || request.kind === "operation-fence"
           ? request.input
           : undefined;
+      const grantedDirective = request.kind === "plan-directive" ? request.input : undefined;
       const latest = authority();
-      if (!canMutate(latest, grantedInput)) {
+      if (!canMutate(latest, grantedInput, grantedDirective)) {
         if (
           grantedInput !== undefined &&
           (!routeAllows(latest) ||
@@ -330,7 +335,8 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         continue;
       }
       const stillEligible = () =>
-        Date.parse(grant.leaseUntil) > driver.now() && canMutate(authority(), grantedInput);
+        Date.parse(grant.leaseUntil) > driver.now() &&
+        canMutate(authority(), grantedInput, grantedDirective);
       const beforeSend: JonesOperationBeforeSend = async () => {
         if (!stillEligible()) return false;
         const native = await driver.desktop({ type: "read" });
@@ -403,7 +409,12 @@ function matchesActiveReservation(
   driver: Pick<InstallPlanDriver, "claimant" | "now">,
 ): boolean {
   const request = grant.request;
-  if (request.kind !== "operation-start" && request.kind !== "operation-fence") return false;
+  if (
+    request.kind !== "operation-start" &&
+    request.kind !== "operation-fence" &&
+    request.kind !== "plan-directive"
+  )
+    return false;
   const plan = native.state.current;
   if (
     native.refused !== undefined ||
@@ -428,15 +439,16 @@ function matchesActiveReservation(
   const operation = deviceActiveOperations(device).find(
     (op) => op.operationId === grant.operationId,
   );
-  const original = operation && exactOperationRequest(plan.planId, device.environmentId, operation);
-  if (
-    operation === undefined ||
-    original === undefined ||
-    operation.step !== (request.input.action.kind === "install" ? "install" : "download") ||
-    operation.receipt !== undefined ||
-    !sameOperationBinding(original, request.input)
-  )
-    return false;
+  if (operation === undefined || operation.receipt !== undefined) return false;
+  if (request.kind !== "plan-directive") {
+    const original = exactOperationRequest(plan.planId, device.environmentId, operation);
+    if (
+      original === undefined ||
+      operation.step !== (request.input.action.kind === "install" ? "install" : "download") ||
+      !sameOperationBinding(original, request.input)
+    )
+      return false;
+  }
   const fence = request.kind === "operation-fence";
   const lease = fence ? operation.fence?.lease : operation.lease;
   if (lease?.claimant !== driver.claimant || lease.leaseUntil !== grant.leaseUntil) return false;
@@ -444,14 +456,28 @@ function matchesActiveReservation(
     const originalExpiry = Date.parse(operation.lease.leaseUntil);
     return Number.isFinite(originalExpiry) && originalExpiry <= driver.now();
   }
+  const { gate, gateClosed, gatePause } = plan.laptop;
+  if (
+    native.state.laptop.activationBlocked ||
+    gate === undefined ||
+    gateClosed !== undefined ||
+    gatePause === true ||
+    device.ended !== undefined ||
+    device.verifiedElsewhere !== undefined ||
+    operation.fence !== undefined
+  )
+    return false;
+  if (request.kind !== "plan-directive") return true;
   return (
-    !native.state.laptop.activationBlocked &&
-    plan.laptop.gate !== undefined &&
-    plan.laptop.gateClosed === undefined &&
-    plan.laptop.gatePause !== true &&
-    device.ended === undefined &&
-    device.verifiedElsewhere === undefined &&
-    operation.fence === undefined
+    native.state.laptop.reopenToCheckInstall !== true &&
+    gate.activeSource === plan.target.sourceSha &&
+    gate.activeTree === plan.target.sourceTree &&
+    device.route === "follower-operations" &&
+    request.input.enrollmentId === device.enrollmentId &&
+    operation.step === "directive" &&
+    operation.request.kind === "plan-directive" &&
+    operationOutstanding(operation) &&
+    sameDirectiveBinding(operation.request.input, request.input)
   );
 }
 
@@ -516,6 +542,7 @@ async function dispatchGrant(
       const status = await driver.host(grant.environmentId, {
         action: "planDirective",
         input: request.input,
+        beforeSend,
       });
       if (validateDirectiveEvidence(request.input, status))
         await driver.desktop({
@@ -526,7 +553,7 @@ async function dispatchGrant(
           evidence: { kind: "directive", status },
         });
     } catch {
-      // A refusal or lost reply cannot settle every captured send of this ID.
+      // A veto, refusal, or lost reply cannot settle every captured send of this ID.
     }
     return false;
   }

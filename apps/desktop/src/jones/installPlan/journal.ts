@@ -7,9 +7,13 @@ import {
   type JonesInstallPlanHostOperation,
   type JonesInstallPlanState,
 } from "@t3tools/contracts/jones/installPlan";
-import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
+import type {
+  JonesOperationReceipt,
+  JonesOperationStartInput,
+} from "@t3tools/contracts/jones/jonesOperations";
 import {
   deviceHasRecoveryDuty,
+  isProvisionalUnsupportedReceipt,
   isSettledOperationReceipt,
   operationOutstanding,
   orphanReceiptCheck,
@@ -69,7 +73,7 @@ function reservedForPlan(document: PlanDocument, planId: string) {
   );
 }
 
-/** V1 could rotate Last out before a reserved client command reached a terminal outcome. */
+/** Expose reservations that outlived their plan through V1 rotation or legacy eviction. */
 export function orphanedPlanCommands(document: PlanDocument) {
   const retained = new Set(retainedPlans(document).map((plan) => plan.planId));
   return (document.commands ?? []).filter(
@@ -79,9 +83,10 @@ export function orphanedPlanCommands(document: PlanDocument) {
   );
 }
 
-export function matchesOrphanReceipt(
+function matchesTerminalClaimReceipt(
   commandReceipt: JonesInstallPlanCommandReceipt,
   receipt: JonesOperationReceipt,
+  input?: JonesOperationStartInput,
 ): boolean {
   const check = orphanReceiptCheck(commandReceipt);
   if (check === undefined) return false;
@@ -97,9 +102,9 @@ export function matchesOrphanReceipt(
       command.targetSource &&
     (action.kind === "install" ? action.stagedHandle : undefined) === command.stagedHandle &&
     isSettledOperationReceipt(receipt) &&
-    // This dedicated recovery path carries the positive ledger read of a lost V1 request.
+    // An evicted claim identifies a ledger read through its saved command metadata.
     validateOperationEvidence(
-      {
+      input ?? {
         operationId,
         environmentId: command.environmentId,
         correlation,
@@ -108,9 +113,53 @@ export function matchesOrphanReceipt(
       },
       receipt,
       { ledgerRead: true },
-    ) &&
-    bytes(receipt) <= RECEIPT_DETAILS_BYTES
+    )
   );
+}
+
+export function matchesOrphanReceipt(
+  commandReceipt: JonesInstallPlanCommandReceipt,
+  receipt: JonesOperationReceipt,
+): boolean {
+  return (
+    matchesTerminalClaimReceipt(commandReceipt, receipt) && bytes(receipt) <= RECEIPT_DETAILS_BYTES
+  );
+}
+
+export function unpersistedVerifiedUnsupportedReceipt(
+  plan: JonesInstallPlan,
+  entry: NonNullable<PlanDocument["commands"]>[number],
+): JonesOperationReceipt | undefined {
+  const { receipt: claim, body, orphanReceipt } = entry;
+  const { command, planId, operationId, outcome, code, bodyHash } = claim;
+  if (
+    orphanReceipt !== undefined ||
+    claim.requestType !== "claim" ||
+    (outcome !== "reserved" && (outcome !== "terminal" || code !== "unsupported")) ||
+    planId !== plan.planId ||
+    command.targetSource !== plan.target.sourceSha ||
+    (bodyHash !== undefined && bodyHash !== body)
+  )
+    return undefined;
+
+  const device = plan.devices.find(({ environmentId }) => environmentId === command.environmentId);
+  const operation = device?.operations.find((entry) => entry.operationId === operationId);
+  if (
+    operation?.request.kind !== "operation-start" ||
+    operation.unsupportedReceiptVerified !== true ||
+    operation.step !== (command.action === "install" ? "install" : "download") ||
+    operation.review?.stagedHandle !== command.stagedHandle
+  )
+    return undefined;
+  const { input } = operation.request;
+  const { receipt } = operation;
+  return receipt !== undefined &&
+    isProvisionalUnsupportedReceipt(receipt) &&
+    (input.admission?.kind !== "follower" ||
+      input.admission.targetTree === plan.target.sourceTree) &&
+    matchesTerminalClaimReceipt({ ...claim, bodyHash: body, outcome: "reserved" }, receipt, input)
+    ? receipt
+    : undefined;
 }
 
 export function recoveryHistory(
@@ -160,7 +209,11 @@ function protectedPlan(document: PlanDocument, plan: JonesInstallPlan): boolean 
   return (
     planHasLaptopRecoveryDuty(plan) ||
     plan.devices.some(deviceHasRecoveryDuty) ||
-    reservedForPlan(document, plan.planId).length > 0
+    document.commands?.some(
+      (entry) =>
+        (entry.receipt.planId === plan.planId && entry.receipt.outcome === "reserved") ||
+        unpersistedVerifiedUnsupportedReceipt(plan, entry) !== undefined,
+    ) === true
   );
 }
 

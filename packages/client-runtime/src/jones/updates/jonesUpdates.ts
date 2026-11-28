@@ -91,7 +91,11 @@ export type JonesOperationCommand =
       input: JonesOperationFenceInput;
       beforeSend?: JonesOperationBeforeSend;
     }
-  | { action: "operationRead"; input: JonesOperationReadInput }
+  | {
+      action: "operationRead";
+      input: JonesOperationReadInput;
+      beforeSend?: JonesOperationBeforeSend;
+    }
   | { action: "abandonStage"; input: JonesAbandonStageInput }
   | { action: "recoverCleanup"; input: JonesRecoverCleanupInput }
   | { action: "recoveryPreflight"; input: JonesRecoveryPreflightInput };

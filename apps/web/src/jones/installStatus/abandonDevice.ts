@@ -1,8 +1,6 @@
+import { msg } from "gt-react";
 import type { EnvironmentId } from "@t3tools/contracts";
-import type {
-  FleetHostStatus,
-  FleetPlanDirectiveInput,
-} from "@t3tools/contracts/jones/fleet-updates";
+import type { FleetHostStatus, FleetPlanDirective } from "@t3tools/contracts/jones/fleet-updates";
 import type {
   JonesInstallPlan,
   JonesInstallPlanDevice,
@@ -12,17 +10,22 @@ import {
   deviceStagedReceipt,
   matchesPlanTarget,
   operationOutstanding,
+  sameDirectiveBinding,
   validateReceipt,
 } from "@t3tools/client-runtime/jones/install-plan";
+import { m } from "../../i18n/messages";
 import {
+  authorizedUpdateStatus,
   currentAuthorizedUpdateStatus,
+  currentPlanHostAuthority,
+  exactFleetEnrollment,
   exactOperationRequest,
   exactPlan,
   hasCurrentPlanEnrollment,
+  hasOperationReadScope,
   installPlanServices,
   nativePlanIssue,
   readTargetPlan,
-  readWritableTarget,
   requestInstallPlan,
   requireWritablePlan,
   type PlanTarget,
@@ -41,7 +44,14 @@ function retainedAttempt(device: JonesInstallPlanDevice) {
     lastOperationId: operations.at(-1)?.operationId,
     stageOperationId: staged?.operationId,
     stagedHandle: staged?.staged?.stagedHandle,
-    directive: directive?.request.kind === "plan-directive" ? directive.request.input : undefined,
+    directive:
+      directive?.request.kind === "plan-directive" && directive.directive?.kind === "applied"
+        ? {
+            operationId: directive.operationId,
+            input: directive.request.input,
+            applied: directive.directive.directive,
+          }
+        : undefined,
   };
 }
 
@@ -68,18 +78,13 @@ export function deviceAbandonTarget(
   };
 }
 
-function sameDirective(
-  left: FleetPlanDirectiveInput | undefined,
-  right: FleetPlanDirectiveInput | undefined,
-) {
+function sameAppliedDirective(left: FleetPlanDirective | undefined, right: FleetPlanDirective) {
   return (
-    left?.environmentId === right?.environmentId &&
-    left?.enrollmentId === right?.enrollmentId &&
-    left?.directiveId === right?.directiveId &&
-    left?.expectedDirectiveId === right?.expectedDirectiveId &&
-    left?.repository === right?.repository &&
-    left?.targetSource === right?.targetSource &&
-    left?.targetTree === right?.targetTree
+    left?.directiveId === right.directiveId &&
+    left.targetSource === right.targetSource &&
+    left.targetTree === right.targetTree &&
+    left.mode === right.mode &&
+    left.issuedAt === right.issuedAt
   );
 }
 
@@ -87,29 +92,51 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
   if (binding === undefined) throw new Error("Install status is not connected.");
   const { services } = binding;
   const { environmentId, planId, archived, attempt } = target;
-  const readExact = async (resume: boolean, expectDisplayedRevision: boolean) => {
-    const { state, plan } = await readWritableTarget(
-      binding,
-      expectDisplayedRevision ? target : { planId, archived: archived === true },
-    );
+  const readExact = async (phase: "review" | "dispatch" | "finish") => {
+    const reviewing = phase === "review";
+    let readArchive = archived === true;
+    let { result, plan } = await readTargetPlan(binding, target);
+    // The accepted native state can already show closure while the IPC reply is older.
+    const accepted = binding.store.get().native;
+    if (
+      phase === "finish" &&
+      !readArchive &&
+      nativePlanIssue(result) === undefined &&
+      accepted?.view.recoveryHistory === 1 &&
+      accepted.current?.planId !== planId
+    ) {
+      requireWritablePlan(binding);
+      readArchive = true;
+      ({ result, plan } = await readTargetPlan(binding, { planId, archived: true }));
+    }
+    requireWritablePlan(binding, result);
+    if (plan === null || (reviewing && plan.revision !== target.expectedRevision))
+      throw new Error("This update plan or attempt changed. Refresh Install status.");
     const device = plan.devices.find((item) => item.environmentId === environmentId);
     const latest = device === undefined ? undefined : retainedAttempt(device);
     if (
-      (archived ? state.view.recoveryHistory !== 1 : state.view.deviceRecovery !== 1) ||
+      (readArchive
+        ? result.state.view.recoveryHistory !== 1
+        : result.state.view.deviceRecovery !== 1) ||
       device?.membership !== "selected" ||
-      (device.abandoning === true) !== resume ||
+      (device.abandoning === true) !== (reviewing ? target.resume : true) ||
       latest?.addedAt !== attempt.addedAt ||
       latest.route !== attempt.route ||
       latest.enrollmentId !== attempt.enrollmentId ||
       latest.lastOperationId !== attempt.lastOperationId ||
       latest.stageOperationId !== attempt.stageOperationId ||
       latest.stagedHandle !== attempt.stagedHandle ||
-      !sameDirective(latest.directive, attempt.directive)
+      (attempt.directive === undefined
+        ? latest.directive !== undefined
+        : latest.directive === undefined ||
+          latest.directive.operationId !== attempt.directive.operationId ||
+          !sameDirectiveBinding(latest.directive.input, attempt.directive.input) ||
+          !sameAppliedDirective(latest.directive.applied, attempt.directive.applied))
     )
       throw new Error("The reviewed attempt or staged selection changed. Refresh Install status.");
-    return { plan, device };
+    return { plan, device, archived: readArchive };
   };
-  const first = await readExact(target.resume, true);
+  const first = await readExact("review");
   if (
     !(await services.confirm(
       target.resume
@@ -120,7 +147,7 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
     return;
 
   const observed = await services.observe(environmentId);
-  const { plan, device } = await readExact(target.resume, true);
+  const { plan, device } = await readExact("review");
   const operations = deviceActiveOperations(device);
   if (operations.some(operationOutstanding))
     throw new Error("Check the outstanding operation before abandoning this device.");
@@ -130,7 +157,23 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
   );
   const original =
     creator === undefined ? undefined : exactOperationRequest(planId, environmentId, creator);
-  const directive = attempt.directive;
+  const directive = attempt.directive?.input;
+  const applied = attempt.directive?.applied;
+  if (
+    (directive === undefined && operations.some((item) => item.directive?.kind === "applied")) ||
+    (directive !== undefined &&
+      (device.route !== "follower-operations" ||
+        directive.directiveId !== attempt.directive?.operationId ||
+        directive.environmentId !== environmentId ||
+        directive.enrollmentId !== device.enrollmentId ||
+        directive.repository !== plan.target.repository ||
+        directive.targetSource !== plan.target.sourceSha ||
+        directive.targetTree !== plan.target.sourceTree ||
+        applied?.directiveId !== directive.directiveId ||
+        applied.targetSource !== directive.targetSource ||
+        applied.targetTree !== directive.targetTree))
+  )
+    throw new Error(m(msg("The original follower directive is unconfirmed.")));
   const authorizedStatus = () => {
     const status = currentAuthorizedUpdateStatus(services, environmentId);
     if (
@@ -174,21 +217,30 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
   )
     throw new Error("This host cannot prove ownership or retire the staged selection.");
   const fleet = observed.fleetStatus;
+  const sameEnrollment = (status: FleetHostStatus | null | undefined) => {
+    const enrollment = exactFleetEnrollment(environmentId, status);
+    return enrollment?.enabled === true && enrollment.enrollmentId === directive?.enrollmentId;
+  };
   const releaseMatches = (status: FleetHostStatus | null | undefined) =>
     directive !== undefined &&
-    status?.environmentId === environmentId &&
-    status.enrollment?.enabled === true &&
-    status.enrollment.environmentId === environmentId &&
-    status.enrollment.enrollmentId === directive.enrollmentId &&
-    status.releasedDirectiveId === directive.directiveId &&
+    sameEnrollment(status) &&
+    status?.releasedDirectiveId === directive.directiveId &&
     status.follower?.planDirective?.directiveId !== directive.directiveId;
+  const canRelease = (status: FleetHostStatus | null | undefined) => {
+    if (directive === undefined || applied === undefined || status?.releasePlanDirective !== 1)
+      return false;
+    const current = status.follower?.planDirective;
+    return (
+      sameEnrollment(status) &&
+      ((status.releasableDirectiveId === directive.directiveId &&
+        sameAppliedDirective(current, applied)) ||
+        (target.resume &&
+          status.follower?.protocol === 1 &&
+          (current?.directiveId ?? null) === directive.expectedDirectiveId))
+    );
+  };
   // The exact release can have committed before its reply reached this plan.
-  if (
-    directive !== undefined &&
-    !releaseMatches(fleet) &&
-    (fleet?.releasePlanDirective !== 1 ||
-      (!target.resume && fleet.releasableDirectiveId !== directive.directiveId))
-  )
+  if (directive !== undefined && !releaseMatches(fleet) && !canRelease(fleet))
     throw new Error("This host cannot restore the original follower directive.");
 
   if (!target.resume) {
@@ -211,7 +263,7 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
   }
 
   if (retireStage && staged.staged !== undefined && original !== undefined) {
-    await readExact(true, false);
+    await readExact("dispatch");
     const live = authorizedStatus();
     if (
       live.capability.abandonStage !== 1 ||
@@ -256,37 +308,63 @@ export async function abandonDevice(target: AbandonTarget, binding = installPlan
   if (directive !== undefined) {
     if (fleet != null && releaseMatches(fleet)) directiveRelease = fleet;
     else {
-      await readExact(true, false);
-      authorizedStatus();
       directiveRelease = await services.host(environmentId, {
         action: "releaseDirective",
         input: directive,
+        beforeSend: async () => {
+          const fresh = await services.observe(environmentId);
+          const { device: reserved } = await readExact("dispatch");
+          const authority = currentPlanHostAuthority(binding, reserved);
+          const currentFleet = services
+            .devices()
+            .find((item) => item.environmentId === environmentId)?.fleetStatus;
+          return (
+            !deviceActiveOperations(reserved).some(operationOutstanding) &&
+            authorizedUpdateStatus(fresh, environmentId)?.capability.operations === 1 &&
+            authority.canRecoverOperation &&
+            authority.enrollment === "match" &&
+            canRelease(fresh.fleetStatus) &&
+            canRelease(authority.fleetStatus) &&
+            canRelease(currentFleet)
+          );
+        },
       });
       if (!releaseMatches(directiveRelease))
         throw new Error("The original follower directive release is unconfirmed.");
     }
   }
-  const latest = await readExact(true, false);
-  authorizedStatus();
-  const finished = await requestInstallPlan(
-    {
-      type: "abandon-device",
-      phase: "finish",
-      planId,
-      environmentId,
-      expectedRevision: latest.plan.revision,
-      ...(directiveRelease === undefined ? {} : { directiveRelease }),
-      ...(runningTarget === undefined ? {} : { runningTarget }),
-      ...(stageReplacement === undefined || runningTarget !== undefined
-        ? {}
-        : { stageReplacement }),
-    },
-    binding,
-  );
+  const finish = async () => {
+    const latest = await readExact("finish");
+    if (directiveRelease === undefined) authorizedStatus();
+    else if (!hasOperationReadScope(services, environmentId))
+      throw new Error(
+        m(msg("The host confirmed release. Read permission is required to save it.")),
+      );
+    const result = await requestInstallPlan(
+      {
+        type: "abandon-device",
+        phase: "finish",
+        planId,
+        environmentId,
+        expectedRevision: latest.plan.revision,
+        ...(directiveRelease === undefined ? {} : { directiveRelease }),
+        ...(runningTarget === undefined ? {} : { runningTarget }),
+        ...(stageReplacement === undefined || runningTarget !== undefined
+          ? {}
+          : { stageReplacement }),
+      },
+      binding,
+    );
+    return { finished: result, savedInArchive: latest.archived };
+  };
+  let { finished, savedInArchive } = await finish();
+  // A revision refusal proves the save did not happen; only repeat the native save.
+  if (directiveRelease !== undefined && finished.refused?.code === "stale-revision")
+    ({ finished, savedInArchive } = await finish());
   const issue = nativePlanIssue(finished);
   if (issue !== undefined) throw new Error(issue);
-  const verified = archived
-    ? (await readTargetPlan(binding, target)).plan
+  const verified = savedInArchive
+    ? (await readTargetPlan(binding, { planId, archived: true })).plan
     : exactPlan(finished, planId, false);
   const outcome = verified?.devices.find((item) => item.environmentId === environmentId);
   if (

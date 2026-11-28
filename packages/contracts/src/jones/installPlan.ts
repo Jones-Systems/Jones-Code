@@ -26,6 +26,7 @@ const Bounded = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 const Revision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 export const JONES_INSTALL_PLAN_HISTORY_LIMIT = 8; // Total retained plans, counting current when present.
+export const JONES_INSTALL_PLAN_COMMAND_LIMIT = 1024;
 export const JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export const JonesInstallPlanOrigin = Schema.Literals([
@@ -412,7 +413,9 @@ export const JonesInstallPlanState = Schema.Struct({
     ),
   ),
   orphanedCommands: Schema.optionalKey(
-    Schema.Array(JonesInstallPlanCommandReceipt).check(Schema.isMaxLength(1024)),
+    Schema.Array(JonesInstallPlanCommandReceipt).check(
+      Schema.isMaxLength(JONES_INSTALL_PLAN_COMMAND_LIMIT),
+    ),
   ),
   laptop: JonesInstallPlanLaptopEvidence,
   view: Schema.Struct({
@@ -606,8 +609,13 @@ export const JonesInstallPlanRefusal = Schema.Literals([
 ]);
 export type JonesInstallPlanRefusal = typeof JonesInstallPlanRefusal.Type;
 
+// Recovery documents can hold one current plan alongside Last and the older slots.
 const PublicationHolds = Schema.optionalKey(
-  Schema.Array(EnvironmentId).check(Schema.isMaxLength(JONES_INSTALL_PLAN_HISTORY_LIMIT * 16)),
+  Schema.Array(EnvironmentId).check(
+    Schema.isMaxLength(
+      JONES_INSTALL_PLAN_COMMAND_LIMIT + (JONES_INSTALL_PLAN_HISTORY_LIMIT + 1) * 16,
+    ),
+  ),
 );
 
 export const JonesInstallPlanResult = Schema.Struct({
@@ -700,9 +708,7 @@ export function confirmsInstallPlanCancellation(
     result.state.laptop.environmentId === action.environmentId &&
     plan?.laptop.environmentId === action.environmentId &&
     plan.cancelled === true &&
-    (plan.cancelledFromRevision === undefined
-      ? action.expectedRevision < plan.revision
-      : action.expectedRevision === plan.cancelledFromRevision)
+    action.expectedRevision === plan.cancelledFromRevision
   );
 }
 

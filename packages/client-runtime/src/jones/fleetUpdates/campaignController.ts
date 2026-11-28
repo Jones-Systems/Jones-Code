@@ -499,8 +499,8 @@ async function publishCommittedSource(
   environmentId?: EnvironmentId,
 ) {
   const followers = new Set<EnvironmentId>();
-  const held = new Set<EnvironmentId>();
   const publication = await readPublication(driver);
+  const held = new Set(publication.heldEnvironments);
   if (driver.cancelled()) return { state, followers, held };
   const committed = publicationSource(publication);
   const hosts = await Promise.all(
@@ -516,6 +516,7 @@ async function publishCommittedSource(
   if (driver.cancelled()) return { state: current, followers, held };
   const latestPublication = await readPublication(driver);
   if (driver.cancelled()) return { state: current, followers, held };
+  for (const environmentId of latestPublication.heldEnvironments ?? []) held.add(environmentId);
   const latestSource = publicationSource(latestPublication);
   const sourceChanged =
     committed?.sha !== latestSource?.sha || committed?.tree !== latestSource?.tree;
@@ -527,7 +528,7 @@ async function publishCommittedSource(
     if (
       !stillEnrolled ||
       sourceChanged ||
-      publicationHeld(latestPublication, host.enrollment.environmentId) ||
+      held.has(host.enrollment.environmentId) ||
       host.outcome === "unknown" ||
       host.outcome === "plan-held" ||
       host.outcome === "directive-held"

@@ -6,7 +6,8 @@ import {
   type StatusPollerOptions,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { getDocumentActivity, subscribeDocumentActivity } from "../../lib/documentActivity";
-import { refreshDeviceEvidence } from "./actions";
+import { refreshArchivedDeviceEvidence, refreshDeviceEvidence } from "./actions";
+import { targetForDesktop } from "./entrypoints";
 import { installStatusStore, selectedHistoryPlan, type InstallStatusStore } from "./panelUi";
 import {
   installPlanServices,
@@ -33,7 +34,7 @@ function subscribeWindowOnline(listener: () => void) {
 
 /**
  * Keeps install status current without a click. A tick only reads: it restarts a waiting status
- * stream, reads fleet status and the latest plan operation, and reports validated evidence. It
+ * stream, reads fleet status and exact plan operations, and reports validated evidence. It
  * never checks packages, claims, starts, stops, fences, directs, refreshes outcomes or makes threads.
  */
 export function startInstallStatusPoller(
@@ -52,26 +53,51 @@ export function startInstallStatusPoller(
       const activity = getDocumentActivity();
       return activity.visible && activity.focused;
     });
-  const archiveDevice = (id: string) => {
+  const openArchiveId = () => {
     const snapshot = store.get();
-    if (!snapshot.open || !snapshot.showLast || snapshot.native?.view.recoveryHistory !== 1)
+    if (
+      !snapshot.open ||
+      snapshot.native?.view.recoveryHistory !== 1 ||
+      (!snapshot.showLast &&
+        (snapshot.native.current !== null || targetForDesktop(snapshot.desktop) !== undefined))
+    )
       return undefined;
-    return selectedHistoryPlan(snapshot)?.devices.find((device) => device.environmentId === id);
+    return snapshot.historyPlanId ?? snapshot.native.last?.planId;
   };
-  const planDevice = (id: string) =>
-    store.get().native?.current?.devices.find((d) => d.environmentId === id) ?? archiveDevice(id);
-  const isActive = (id: string) =>
-    deviceStatusActive(
-      store.get().devices.find((d) => d.environmentId === id)?.observation,
-      planDevice(id),
+  const pendingArchiveDevice = (id: string, planId: string) => {
+    const snapshot = store.get();
+    const history = selectedHistoryPlan(snapshot);
+    const device =
+      history?.planId === planId
+        ? history.devices.find((item) => item.environmentId === id)
+        : undefined;
+    return (
+      (device !== undefined && deviceHasRecoveryDuty(device)) ||
+      snapshot.native?.recoveryHistory
+        ?.find((entry) => entry.planId === planId)
+        ?.pendingDevices.some((item) => item.environmentId === id) === true
     );
-  const tick = async (id: string) => {
+  };
+  const isActive = (id: string) => {
+    const snapshot = store.get();
+    const planId = openArchiveId();
+    return (
+      deviceStatusActive(
+        snapshot.devices.find((d) => d.environmentId === id)?.observation,
+        snapshot.native?.current?.devices.find((d) => d.environmentId === id),
+      ) ||
+      (planId !== undefined && pendingArchiveDevice(id, planId))
+    );
+  };
+  const tick = async (id: string, signal: AbortSignal) => {
+    const stillCurrent = () => current() && !signal.aborted;
+    if (!stillCurrent()) return;
     const environmentId = id as EnvironmentId;
     const before = services.devices().find((d) => d.environmentId === environmentId);
     if (before !== undefined && before.observation.freshness !== "fresh")
       services.kick?.(environmentId);
     const observed = await services.observe(environmentId);
-    if (!current()) return;
+    if (!stillCurrent()) return;
     store.update({
       devices: store.get().devices.map((d) => (d.environmentId === environmentId ? observed : d)),
     });
@@ -79,20 +105,30 @@ export function startInstallStatusPoller(
     if (observed.observation.freshness !== "fresh")
       throw new Error("Status for this device is not fresh.");
     const read = await requestInstallPlan({ type: "read" }, binding);
-    if (!current() || nativePlanIssue(read) !== undefined) return;
-    const { state } = read;
-    if (state.current !== null)
-      await refreshDeviceEvidence(binding, environmentId, state.current, observed, {
+    if (!stillCurrent() || nativePlanIssue(read) !== undefined) return;
+    const planId = openArchiveId();
+    if (planId !== undefined && pendingArchiveDevice(id, planId)) {
+      const selection = store.historySelection();
+      const stillShowing = () =>
+        stillCurrent() && store.historySelection() === selection && openArchiveId() === planId;
+      const history = await readTargetPlan(binding, { planId, archived: true });
+      if (stillShowing() && history.plan !== null && nativePlanIssue(history.result) === undefined)
+        await refreshArchivedDeviceEvidence(
+          binding,
+          environmentId,
+          history.plan,
+          observed,
+          stillShowing,
+        );
+    }
+    const plan = read.state.current;
+    if (plan === null) return;
+    const stillPollingPlan = () =>
+      stillCurrent() && store.get().native?.current?.planId === plan.planId;
+    if (stillPollingPlan())
+      await refreshDeviceEvidence(binding, environmentId, plan, observed, {
         refreshInstallOutcome: false,
-      });
-    const device = archiveDevice(id);
-    const planId = store.get().historyPlanId;
-    if (device === undefined || planId === null || !deviceHasRecoveryDuty(device)) return;
-    const history = await readTargetPlan(binding, { planId, archived: true });
-    if (current() && history.plan !== null && nativePlanIssue(history.result) === undefined)
-      await refreshDeviceEvidence(binding, environmentId, history.plan, observed, {
-        refreshInstallOutcome: false,
-        archived: true,
+        stillCurrent: stillPollingPlan,
       });
   };
   const poller = createStatusPoller({

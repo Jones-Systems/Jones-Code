@@ -14,6 +14,7 @@ import { connectionRoutes, routeEntry } from "../../connection/routes.ts";
 import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
+import type { JonesOperationBeforeSend } from "../updates/jonesUpdates.ts";
 import { JonesUpdateBindingError } from "./updateBridge.ts";
 
 export type FleetHostRequest =
@@ -23,9 +24,21 @@ export type FleetHostRequest =
   | { readonly action: "retire"; readonly input: FleetRetireInput }
   | { readonly action: "activate"; readonly input: FleetActivateInput }
   | { readonly action: "leader"; readonly input: FleetLeaderInput }
-  | { readonly action: "releaseDirective"; readonly input: FleetReleasePlanDirectiveInput }
-  | { readonly action: "fenceDirective"; readonly input: FleetPlanDirectiveInput }
-  | { readonly action: "planDirective"; readonly input: FleetPlanDirectiveInput };
+  | {
+      readonly action: "releaseDirective";
+      readonly input: FleetReleasePlanDirectiveInput;
+      readonly beforeSend?: JonesOperationBeforeSend;
+    }
+  | {
+      readonly action: "fenceDirective";
+      readonly input: FleetPlanDirectiveInput;
+      readonly beforeSend?: JonesOperationBeforeSend;
+    }
+  | {
+      readonly action: "planDirective";
+      readonly input: FleetPlanDirectiveInput;
+      readonly beforeSend?: JonesOperationBeforeSend;
+    };
 
 /** Uses the narrow authenticated update transport even when orchestration is incompatible. */
 export const requestFleetHost = Effect.fn("clientRuntime.fleetUpdates.requestFleetHost")(function* (
@@ -49,6 +62,7 @@ export const requestFleetHost = Effect.fn("clientRuntime.fleetUpdates.requestFle
   }
   const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
   const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
+  const beforeSend = "beforeSend" in input ? input.beforeSend : undefined;
   return yield* executeAuthenticatedEnvironmentHttpRequest({
     prepared,
     signer,
@@ -67,30 +81,40 @@ export const requestFleetHost = Effect.fn("clientRuntime.fleetUpdates.requestFle
           })
         : urls[input.action](),
     timeoutMs: input.action === "stage" ? 20 * 60_000 : 35_000,
-    request: ({ client, headers }) => {
+    request: Effect.fn("clientRuntime.fleetUpdates.sendAuthorizedRequest")(function* ({
+      client,
+      headers,
+    }) {
+      if (beforeSend !== undefined) {
+        const permit = yield* Effect.tryPromise(async () => beforeSend()).pipe(
+          Effect.orElseSucceed(() => false),
+        );
+        if (permit !== true)
+          return yield* Effect.fail("Fleet directive dispatch failed its local check.");
+      }
       switch (input.action) {
         case "status":
-          return client.status({
+          return yield* client.status({
             headers,
             query: input.operationId === undefined ? {} : { operationId: input.operationId },
           });
         case "enroll":
-          return client.enroll({ headers, payload: input.input });
+          return yield* client.enroll({ headers, payload: input.input });
         case "stage":
-          return client.stage({ headers, payload: input.input });
+          return yield* client.stage({ headers, payload: input.input });
         case "retire":
-          return client.retire({ headers, payload: input.input });
+          return yield* client.retire({ headers, payload: input.input });
         case "activate":
-          return client.activate({ headers, payload: input.input });
+          return yield* client.activate({ headers, payload: input.input });
         case "leader":
-          return client.leader({ headers, payload: input.input });
+          return yield* client.leader({ headers, payload: input.input });
         case "releaseDirective":
-          return client.releaseDirective({ headers, payload: input.input });
+          return yield* client.releaseDirective({ headers, payload: input.input });
         case "fenceDirective":
-          return client.fenceDirective({ headers, payload: input.input });
+          return yield* client.fenceDirective({ headers, payload: input.input });
         case "planDirective":
-          return client.planDirective({ headers, payload: input.input });
+          return yield* client.planDirective({ headers, payload: input.input });
       }
-    },
+    }),
   });
 });

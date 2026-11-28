@@ -304,16 +304,21 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     }
     return enrollment;
   });
+  const requireQualifiedDirectiveHost = Effect.fn("FleetUpdates.requireQualifiedDirectiveHost")(
+    function* (input: FleetPlanDirectiveInput) {
+      if (
+        !options.serviceMode ||
+        !updates.fleetOperationsSupported ||
+        input.repository !== "Jones-Systems/Jones-Code"
+      )
+        return yield* fail("binding", "Only a qualified service host manages plan directives.");
+    },
+  );
   const requireDirectiveAuthority = Effect.fn("FleetUpdates.requireDirectiveAuthority")(function* (
     input: FleetPlanDirectiveInput,
   ) {
     const enrollment = yield* requireEnrollment(input);
-    if (
-      !options.serviceMode ||
-      !updates.fleetOperationsSupported ||
-      input.repository !== "Jones-Systems/Jones-Code"
-    )
-      return yield* fail("binding", "Only a qualified service host manages plan directives.");
+    yield* requireQualifiedDirectiveHost(input);
     return enrollment;
   });
   const editDirective = <A>(
@@ -443,6 +448,7 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
             planDirectiveProtocol: 1 as const,
             releasePlanDirective: 1 as const,
             fencePlanDirective: 1 as const,
+            fenceHistoricalPlanDirective: 1 as const,
           }
         : {}),
       ...(releasableDirectiveId === undefined ? {} : { releasableDirectiveId }),
@@ -843,12 +849,16 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
   const fenceDirective = Effect.fn("FleetUpdates.fenceDirective")(function* (
     input: FleetPlanDirectiveInput,
   ) {
-    yield* requireDirectiveAuthority(input);
+    if (input.environmentId !== environmentId)
+      return yield* fail("binding", "The connected environment changed.");
+    yield* requireQualifiedDirectiveHost(input);
     const bindingHash = directiveBindingHash(input);
     const proof = { protocol: 1 as const, input };
-    const directiveFence = yield* editDirective<FleetPlanDirectiveFenceEvidence>(
-      input,
-      (record) => {
+    const directiveFence = yield* storage(() =>
+      store.transactDirective<FleetPlanDirectiveFenceEvidence>((record, enrollment) => {
+        // A replacement or disabled enrollment can still identify this host's journal.
+        if (enrollment?.environmentId !== environmentId)
+          throw fail("not-enrolled", "Fleet enrollment for the connected environment is required.");
         const fenced = record?.fencedDirectives ?? [];
         const existing = fenceFor(record, input.directiveId);
         if (existing !== undefined && existing.bindingHash !== bindingHash)
@@ -903,7 +913,7 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
           },
           result: { ...proof, outcome: "fenced" },
         };
-      },
+      }),
     );
     return { ...(yield* status()), directiveFence };
   });

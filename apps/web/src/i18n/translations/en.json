@@ -13096,5 +13096,13 @@
   "49829788d8614e93": "Retire {count} worktrees on {machine}?",
   "a1a73f4937a67b5c": "Jones Code rechecks each checkout before removing it. Branches and recovery references are kept.\n\nThis authorizes disposal of the listed checkouts and their exact selections, including additions within the listed roots.",
   "65b5658a44e3a780": "No local content selected.",
-  "da46c14b50a74119": "Retire all"
+  "da46c14b50a74119": "Retire all",
+  "6e83882a36f7baf4": "The host and Laptop must support fencing this original setup request.",
+  "c70d8d749a8df05f": "Recovery pending",
+  "bb3f9bd07ac134b3": "Setup · {operationId}",
+  "07a31401a631c29b": "Download · {operationId}",
+  "08226ed443dd4cb0": "Install · {operationId}",
+  "d805857a3e243315": "Update attempt",
+  "18d6cbd59b2ef487": "The original follower directive is unconfirmed.",
+  "47387fc33eca675a": "The host confirmed release. Read permission is required to save it."
 }

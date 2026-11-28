@@ -13094,5 +13094,13 @@
   "49829788d8614e93": "Ta bort {count} arbetsträd på {machine}?",
   "a1a73f4937a67b5c": "Jones Code kontrollerar varje arbetskopia på nytt innan den tas bort. Grenar och återställningsreferenser behålls.\n\nDu godkänner att de listade arbetskopiorna och de exakt angivna sökvägarna tas bort, inklusive tillägg i de angivna katalogerna.",
   "65b5658a44e3a780": "Inget lokalt innehåll valt.",
-  "da46c14b50a74119": "Ta bort alla"
+  "da46c14b50a74119": "Ta bort alla",
+  "6e83882a36f7baf4": "Värden och den bärbara datorn måste kunna spärra den ursprungliga konfigurationsbegäran.",
+  "c70d8d749a8df05f": "Återställning väntar",
+  "bb3f9bd07ac134b3": "Konfiguration · {operationId}",
+  "07a31401a631c29b": "Nedladdning · {operationId}",
+  "08226ed443dd4cb0": "Installation · {operationId}",
+  "d805857a3e243315": "Uppdateringsförsök",
+  "18d6cbd59b2ef487": "Det ursprungliga direktivet för den följande värden är inte bekräftat.",
+  "47387fc33eca675a": "Värden bekräftade att direktivet släpptes. Läsbehörighet krävs för att spara bekräftelsen."
 }

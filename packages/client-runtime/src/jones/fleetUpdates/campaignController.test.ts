@@ -383,6 +383,66 @@ it("retires an occupied old stage before driving a newer campaign, including aft
   expect(f.operation()?.input.targetSource).toBe("c".repeat(40));
 });
 
+it("holds stage retirement even after the desktop enrollment is disabled", async () => {
+  const f = fixture();
+  const state = f.state();
+  const campaign = state.campaigns[0]!;
+  f.setState({
+    ...state,
+    enrollments: [{ ...enrollment, enabled: false }],
+    campaigns: [
+      {
+        ...campaign,
+        phase: "rolled-back",
+        members: [
+          { ...campaign.members[0]!, phase: "retiring", expectedInstalledSource: installed },
+        ],
+      },
+    ],
+  });
+  f.setOperation({
+    input: {
+      operationId,
+      enrollmentId: enrollment.enrollmentId,
+      environmentId,
+      expectedInstalledSource: installed,
+      targetSource: source,
+    },
+    phase: "staged",
+    currentVersion: "old",
+    stagedHandle: "old-stage",
+    continueRunningThreads: false,
+  });
+  const original = f.driver.host.getMockImplementation()!;
+  f.driver.host.mockImplementation(async (id, request) => {
+    if (request.action === "retire") f.setOperation({ ...f.operation()!, phase: "superseded" });
+    return original(id, request);
+  });
+  let held = true;
+  const driver: FleetCampaignDriver = {
+    ...f.driver,
+    publication: async () => ({
+      kind: "withheld",
+      code: "plan-managed",
+      message: "Install recovery is pending.",
+      heldEnvironments: held ? [environmentId] : [],
+    }),
+  };
+
+  await advanceFleetCampaigns(driver);
+  expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(["status"]);
+  expect(f.state().campaigns[0]?.members[0]?.phase).toBe("retiring");
+
+  held = false;
+  f.driver.host.mockClear();
+  await advanceFleetCampaigns(driver);
+  expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual([
+    "status",
+    "retire",
+  ]);
+  expect(f.state().campaigns[0]?.members[0]?.phase).toBe("superseded");
+});
+
 it("keeps uncertain native acceptance occupying its host while observing it", async () => {
   const f = fixture(true);
   const old = f.state().campaigns[0]!;

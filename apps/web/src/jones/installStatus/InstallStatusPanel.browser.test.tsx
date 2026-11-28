@@ -2,6 +2,11 @@ import { applyThemePalette } from "../../themePalette";
 import { describe, expect } from "vite-plus/test";
 import { it } from "vite-plus/test";
 import type { DesktopUpdateState } from "@t3tools/contracts";
+import type {
+  JonesInstallPlan,
+  JonesInstallPlanHostOperation,
+  JonesInstallPlanResult,
+} from "@t3tools/contracts/jones/installPlan";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import { act, render, type Screen } from "../../../test/render";
 import "../../index.css";
@@ -433,6 +438,281 @@ describe("Install status receipt fixture", () => {
     expect(
       screen.container.querySelector("[data-install-status]")?.getAttribute("data-plan-id"),
     ).toBe(newer.planId);
+  });
+
+  it("selects exact outstanding recovery attempts while a newer plan is current", async () => {
+    await using world = await setup({ recoveryHistory: true });
+    const { screen, fixture, controller, services, calls } = world;
+    await act(() => fixture.showcaseRecoveryHistory());
+    controller.close();
+    const baseline = fixture.snapshot();
+    const base = baseline.current!;
+    const mini = base.devices.find((device) => device.label === "Mini")!;
+    const cleanup = mini.operations[0]!;
+    const cleanupReceipt = cleanup.receipt!;
+    const environmentId = mini.environmentId;
+    const leaseUntil = new Date(services.now() + 60_000).toISOString();
+    const stopId = "35000000-0000-4000-8000-000000000001";
+    const transferId = "35000000-0000-4000-8000-000000000002";
+    const installId = "35000000-0000-4000-8000-000000000003";
+    const transfer: JonesInstallPlanHostOperation = {
+      ...cleanup,
+      operationId: transferId,
+      request: {
+        kind: "operation-start",
+        input: {
+          environmentId,
+          operationId: transferId,
+          action: cleanupReceipt.action,
+          expectedInstalledSource: cleanupReceipt.expectedInstalledSource,
+          correlation: { planId: base.planId, deviceKey: environmentId },
+        },
+      },
+    };
+    if (transfer.request.kind !== "operation-start") throw new Error("Expected a transfer.");
+    const transferReceipt: JonesOperationReceipt = {
+      ...transfer.request.input,
+      protocol: 1,
+      phase: "running",
+      acceptedAt: base.createdAt,
+      updatedAt: base.createdAt,
+    };
+    const installInput = {
+      ...transfer.request.input,
+      operationId: installId,
+      action: {
+        kind: "install" as const,
+        stagedHandle: "earlier-stage",
+        targetSource: base.target.sourceSha,
+        currentVersion: baseline.laptop.activeVersion ?? "0.1.0-fixture.1",
+      },
+    };
+    const installReceipt: JonesOperationReceipt = {
+      ...transferReceipt,
+      ...installInput,
+      code: "launcher-unconfirmed",
+    };
+    let archived: JonesInstallPlan = {
+      ...base,
+      revision: 7,
+      dismissedAt: base.createdAt,
+      devices: [
+        {
+          ...mini,
+          operations: [
+            {
+              ...cleanup,
+              step: "install",
+              operationId: installId,
+              request: { kind: "operation-start", input: installInput },
+              receipt: installReceipt,
+            },
+            cleanup,
+            { ...transfer, receipt: transferReceipt },
+          ],
+        },
+      ],
+    };
+    let newer = { ...base, planId: stopId, devices: [], revision: 1 };
+    const state = () => ({
+      ...baseline,
+      current: newer,
+      last: archived,
+      documentRevision: 100 + newer.revision + archived.revision,
+      recoveryHistory: [
+        {
+          planId: archived.planId,
+          revision: archived.revision,
+          targetVersion: archived.target.version,
+          closedAt: archived.createdAt,
+          pendingLaptop: false,
+          pendingDevices: [{ environmentId, label: "Mini" }],
+        },
+      ],
+    });
+    const replaceOperation = (
+      operationId: string,
+      update: (item: JonesInstallPlanHostOperation) => JonesInstallPlanHostOperation,
+    ) => {
+      const member = archived.devices[0]!;
+      archived = {
+        ...archived,
+        revision: archived.revision + 1,
+        devices: [
+          {
+            ...member,
+            operations: member.operations.map((item) =>
+              item.operationId === operationId ? update(item) : item,
+            ),
+          },
+        ],
+      };
+    };
+    const unbind = bindInstallPlanServices(
+      {
+        ...services,
+        bridge: {
+          ...world.bridge,
+          installPlan: async (request): Promise<JonesInstallPlanResult> => {
+            if (request.type === "read-history") {
+              expect(request.planId).toBe(archived.planId);
+              return { state: state(), historyPlan: archived };
+            }
+            if (request.type === "claim") {
+              expect(request).toMatchObject({
+                type: "claim",
+                step: "stop",
+                planId: archived.planId,
+                environmentId,
+                operationId: transferId,
+                expectedRevision: 7,
+              });
+              replaceOperation(transferId, (item) => ({
+                ...item,
+                stop: {
+                  stopId,
+                  lease: { claimant: request.claimant, reservedAt: base.createdAt, leaseUntil },
+                },
+              }));
+              return {
+                state: state(),
+                grant: {
+                  planId: archived.planId,
+                  environmentId,
+                  operationId: transferId,
+                  step: "stop",
+                  leaseUntil,
+                  request: {
+                    kind: "operation-stop",
+                    input: { environmentId, operationId: transferId, stopId },
+                  },
+                },
+              };
+            }
+            if (request.type === "report" && request.evidence.kind === "receipt") {
+              expect(request.planId).toBe(archived.planId);
+              const { receipt } = request.evidence;
+              replaceOperation(request.operationId, (item) => ({ ...item, receipt }));
+            }
+            return { state: state() };
+          },
+        },
+        stop: async (id, command) => {
+          expect(await command.beforeSend?.()).toBe(true);
+          calls.push({ action: "multi-attempt-stop", input: { id, ...command.input } });
+          return { ...transferReceipt, phase: "stopped" };
+        },
+        operation: async (id, command) => {
+          calls.push({ action: command.action, input: { id, ...command.input } });
+          if (command.action === "operationRead") {
+            const operationId = command.input.operationIds[0]!;
+            return {
+              receipts: [
+                {
+                  operationId,
+                  receipt: operationId === installId ? installReceipt : cleanupReceipt,
+                },
+              ],
+              ...(command.input.inspectCleanup === cleanup.operationId
+                ? {
+                    cleanupInspection: {
+                      operationId,
+                      status: "eligible",
+                      recoveryToken: fixtureRecoveryToken,
+                    },
+                  }
+                : {}),
+            };
+          }
+          if (command.action === "recoverCleanup")
+            return {
+              recoveredCleanup: {
+                ...cleanupReceipt,
+                phase: "interrupted",
+                code: "cleanup-recovered",
+              },
+            };
+          throw new Error(`Unexpected command ${command.action}`);
+        },
+      },
+      fixture.store,
+    );
+    try {
+      await act(() => {
+        fixture.store.update({
+          native: state(),
+          devices: services.devices(),
+          desktop: world.desktop(),
+        });
+        fixture.store.open(true, archived.planId);
+      });
+      await click(screen, "Mini update details");
+      const chooser = screen.getByRole("combobox", { name: "Update attempt" });
+      const operationId = screen.getByRole("textbox", { name: "Operation ID" });
+      await expect.element(chooser).toHaveValue(cleanup.operationId);
+      await expect.element(operationId).toHaveValue(cleanup.operationId);
+      await expect.element(button(screen, "Inspect cleanup")).toBeEnabled();
+      await act(() => {
+        const select = chooser.element() as HTMLSelectElement;
+        select.focus();
+        select.value = transferId;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await act(() => {
+        newer = { ...newer, revision: newer.revision + 1 };
+        fixture.store.update({ native: state() });
+      });
+      await expect.element(chooser).toHaveFocus();
+      await expect.element(chooser).toHaveValue(transferId);
+      await expect.element(operationId).toHaveValue(transferId);
+      await expect.element(button(screen, "Inspect cleanup")).not.toBeInTheDocument();
+      expect(screen.container.textContent).not.toContain("launcher-unconfirmed");
+      await click(screen, "Stop download on Mini");
+      await expect.element(chooser).toHaveValue(cleanup.operationId);
+      await click(screen, "Inspect cleanup");
+      await click(screen, "Recover cleanup");
+      await expect.element(chooser).not.toBeInTheDocument();
+      await expect.element(operationId).toHaveValue(installId);
+      await click(screen, "Check update outcome");
+      expect(calls).toContainEqual({
+        action: "multi-attempt-stop",
+        input: { id: environmentId, environmentId, operationId: transferId, stopId },
+      });
+      expect(calls).toContainEqual({
+        action: "operationRead",
+        input: {
+          id: environmentId,
+          environmentId,
+          operationIds: [cleanup.operationId],
+          inspectCleanup: cleanup.operationId,
+        },
+      });
+      expect(calls).toContainEqual({
+        action: "recoverCleanup",
+        input: {
+          id: environmentId,
+          environmentId,
+          operationId: cleanup.operationId,
+          jobId: cleanupReceipt.jobId,
+          recoveryToken: fixtureRecoveryToken,
+          confirmed: true,
+        },
+      });
+      await expect
+        .poll(() => calls)
+        .toContainEqual({
+          action: "operationRead",
+          input: {
+            id: environmentId,
+            environmentId,
+            operationIds: [installId],
+            refreshInstallOutcome: installId,
+          },
+        });
+      expect(fixture.store.get().native?.current).toEqual(newer);
+    } finally {
+      unbind();
+    }
   });
 
   it("sends Laptop Stop for the displayed plan and download", async () => {

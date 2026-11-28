@@ -104,17 +104,29 @@ export const dispatchInstallPlanCli = Effect.fn("DesktopUpdates.dispatchInstallP
       "The running desktop does not match the requested environment ID.",
     );
   if (!environmentMatches(read)) return mismatch();
-  const exact = yield* readExact(read, action.planId);
-  if (!environmentMatches(exact)) return mismatch();
-  if (confirmsInstallPlanCancellation(exact, action)) return boundedReply(request, exact);
-  if (findInstallPlanResultPlan(exact, action.planId)?.cancelled === true)
+  const closedReply = (result: JonesInstallPlanResult) => {
+    const plan = findInstallPlanResultPlan(result, action.planId);
+    if (plan?.cancelled !== true) return undefined;
+    if (confirmsInstallPlanCancellation(result, action)) {
+      const { refused: _priorRefusal, ...confirmed } = result;
+      return boundedReply(request, confirmed);
+    }
     return boundedReply(request, {
-      ...exact,
+      ...result,
       refused: {
         code: "stale-revision",
-        message: "That revision did not cancel this plan.",
+        message:
+          result.state.readOnly?.message ??
+          (plan.cancelledFromRevision === undefined
+            ? "This plan is closed, but the desktop has no record of which revision cancelled it."
+            : "That revision did not cancel this plan."),
       },
     });
+  };
+  const exact = yield* readExact(read, action.planId);
+  if (!environmentMatches(exact)) return mismatch();
+  const closed = closedReply(exact);
+  if (closed !== undefined) return closed;
 
   const result = yield* installPlan({
     type: "cancel-plan",
@@ -127,7 +139,8 @@ export const dispatchInstallPlanCli = Effect.fn("DesktopUpdates.dispatchInstallP
     // Another window can close and move the exact plan after the first read.
     const replay = yield* readExact(result, action.planId);
     if (!environmentMatches(replay)) return mismatch();
-    if (confirmsInstallPlanCancellation(replay, action)) return boundedReply(request, replay);
+    const closedAfterRead = closedReply(replay);
+    if (closedAfterRead !== undefined) return closedAfterRead;
   }
   return boundedReply(request, result);
 });

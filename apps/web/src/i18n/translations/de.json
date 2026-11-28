@@ -13087,5 +13087,13 @@
   "49829788d8614e93": "{count} Arbeitsbäume auf {machine} entfernen?",
   "a1a73f4937a67b5c": "Jones Code prüft jedes Checkout vor dem Entfernen erneut. Branches und Wiederherstellungsreferenzen bleiben erhalten.\n\nDu erlaubst damit das Entfernen der aufgeführten Checkouts und der genau angegebenen Pfade einschließlich neuer Inhalte innerhalb dieser Pfade.",
   "65b5658a44e3a780": "Keine lokalen Inhalte ausgewählt.",
-  "da46c14b50a74119": "Alle entfernen"
+  "da46c14b50a74119": "Alle entfernen",
+  "6e83882a36f7baf4": "Der Host und der Laptop müssen das Sperren dieser ursprünglichen Einrichtungsanfrage unterstützen.",
+  "c70d8d749a8df05f": "Wiederherstellung ausstehend",
+  "bb3f9bd07ac134b3": "Einrichtung · {operationId}",
+  "07a31401a631c29b": "Download · {operationId}",
+  "08226ed443dd4cb0": "Installation · {operationId}",
+  "d805857a3e243315": "Aktualisierungsversuch",
+  "18d6cbd59b2ef487": "Die ursprüngliche Anweisung für den Follower ist unbestätigt.",
+  "47387fc33eca675a": "Der Host hat die Freigabe bestätigt. Zum Speichern ist eine Leseberechtigung erforderlich."
 }
