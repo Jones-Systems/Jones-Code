@@ -272,7 +272,7 @@ describe("laptop-authoritative personal Workstreams", () => {
     }
   });
 
-  it("keeps an accepted close visible and gates actions until an authoritative final snapshot", async () => {
+  it("moves an accepted close out of active groups and keeps its threads discoverable", async () => {
     const base = definition();
     const closed = definition({ lifecycle: "completed", lifecycleRevision: 1, rev: 2 });
     const receipt = deferred<PersonalWorkstreamOperationResult>();
@@ -297,6 +297,7 @@ describe("laptop-authoritative personal Workstreams", () => {
       });
       const closing = h.controller.setLifecycle(base.id, "completed");
       expect(h.read().pendingCloseWorkstreamIds?.has(base.id)).toBe(true);
+      expect(groupPersonalThreads(h.read(), [thread]).groups[0]?.threads).toEqual([thread]);
       const close = operation(requests[0]!, { kind: "close", requestedLifecycle: "completed" });
       receipt.resolve({ operation: close, workstream: base, sequence: 1 });
       expect(await closing).toEqual({ ok: true, value: base });
@@ -304,7 +305,13 @@ describe("laptop-authoritative personal Workstreams", () => {
         ...fleetFrame("a", [closed], 1),
         assignments: [{ threadId: thread.id, workstreamId: base.id, revision: 1, updatedAt: null }],
       });
-      expect(groupPersonalThreads(h.read(), [thread]).groups[0]?.threads).toEqual([thread]);
+      expect(h.read().workstreams[0]?.lifecycle).toBe("active");
+      const grouping = groupPersonalThreads(h.read(), [thread]);
+      expect(grouping.groups).toEqual([]);
+      expect(grouping.ungrouped).toEqual([thread]);
+      expect(h.read().assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId).toBe(
+        base.id,
+      );
       expect(h.read().fleet?.operations).toEqual([close]);
       expect(await h.controller.rename(base.id, "Wait for close")).toMatchObject({
         failure: { reason: "changed_elsewhere", environmentId: laptop },

@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
-import { isClosedPersonalWorkstream } from "@t3tools/contracts/jones/workstreamsPersonal";
 import {
   openPersonalWorkstreams,
   personalThreadKey,
+  personalWorkstreamClosedLifecycle,
   type PersonalThreadRef,
   type PersonalWorkstreamsController,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
@@ -30,7 +30,8 @@ export function WorkstreamPicker({
   const key = personalThreadKey(thread);
   const savedWorkstreamId = state.assignmentsByThreadKey.get(key)?.workstreamId;
   const historicalWorkstream = state.workstreams.find(
-    (item) => item.id === savedWorkstreamId && isClosedPersonalWorkstream(item.lifecycle),
+    (item) =>
+      item.id === savedWorkstreamId && personalWorkstreamClosedLifecycle(state, item) !== null,
   );
   const automaticWorkstream = state.autoAssignedThreadKeys?.has(key)
     ? state.workstreams.find(

@@ -1,6 +1,7 @@
 import { LayersIcon } from "lucide-react";
 import { useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { openPersonalWorkstreams } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { ComposerContextLabel } from "../../components/ComposerContextLabel";
 import { ComposerControl } from "../../components/chat/ComposerControl";
 import {
@@ -33,7 +34,9 @@ export function NewThreadWorkstreamPicker({
   const [menuOpenedAt, setMenuOpenedAt] = useState(Date.now);
   const environment = state.environments.find((entry) => entry.environmentId === environmentId);
   const canAssign = environment?.confirmed === true && environment.status === "ready";
-  const options = canAssign ? availableComposerWorkstreams(state.workstreams, menuOpenedAt) : [];
+  const options = canAssign
+    ? availableComposerWorkstreams(openPersonalWorkstreams(state), menuOpenedAt)
+    : [];
   if (!canAssign && value === null) return null;
 
   const selected = state.workstreams.find(({ id }) => id === value);

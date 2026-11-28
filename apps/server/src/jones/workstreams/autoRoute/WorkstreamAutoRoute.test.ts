@@ -297,6 +297,36 @@ it.effect(
     ),
 );
 
+it.effect("cannot route a prompt to a group whose offline close the laptop accepted", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      const s = yield* seed(f);
+      const target = yield* f.thread("target", "Release updates");
+      const [group] = yield* s.readDefinitions(["updates"]);
+      yield* s.designateFleet([
+        { environmentId: EnvironmentId.make("offline-peer"), linkGeneration: "fixture-link" },
+      ]);
+      const close = yield* s.requestOperation({
+        requestId: "close-updates",
+        workstreamId: "updates",
+        expected: group!,
+        action: { kind: "edit", patch: { lifecycle: "completed" } },
+      });
+      assert.strictEqual(close.operation.status, "pending");
+      assert.strictEqual(close.workstream?.lifecycle, "active");
+
+      const router = yield* route;
+      f.model.next = () => Effect.succeed(reply(2, { basis: "name" }));
+      const result = yield* router.process(observation(target));
+      assert.deepStrictEqual(result.type === "decided" && result.outcome, {
+        state: "failed",
+        code: "workstream_unavailable",
+      });
+      assert.strictEqual((yield* s.readThread(target)).assignment.workstreamId, null);
+    }),
+  ),
+);
+
 it.effect("a concurrent human assignment wins the compare-and-swap", () =>
   run((f) =>
     Effect.gen(function* () {

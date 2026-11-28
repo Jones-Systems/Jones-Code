@@ -5,7 +5,7 @@ import type {
   VoiceReviewDraft,
   VoiceReviewRecentList,
 } from "@t3tools/contracts";
-import { isClosedPersonalWorkstream } from "@t3tools/contracts/jones/workstreamsPersonal";
+import { personalWorkstreamClosedLifecycle } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { useEffect, useEffectEvent, useId, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -499,7 +499,9 @@ function PendingPromptDetail({
   );
   const workstreams =
     scopedCatalog?.filter(
-      ({ id, lifecycle }) => approvedIds.has(id) && !isClosedPersonalWorkstream(lifecycle),
+      (workstream) =>
+        approvedIds.has(workstream.id) &&
+        personalWorkstreamClosedLifecycle(personal, workstream) === null,
     ) ?? [];
   const availableWorkstreamIds = new Set(workstreams.map(({ id }) => id));
   const workstreamId = view?.workstreamId ?? null;
