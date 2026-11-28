@@ -253,6 +253,8 @@ describe("Codex inline handoff rejection recovery", () => {
 
   it.effect.each([
     { code: -32602, late: true, recovery: "no inline pending marker" },
+    { code: -32602, late: true, recovery: "rejection with injected history and side chat" },
+    { code: null, late: true, recovery: "terminal with injected history and side chat" },
     { code: -32600, late: false, recovery: "no inline pending marker" },
     { code: -32602, late: true, recovery: "pending without observed contradiction" },
     { code: -32600, late: false, recovery: "pending without observed contradiction" },
@@ -290,6 +292,7 @@ describe("Codex inline handoff rejection recovery", () => {
     Effect.gen(function* () {
       const scenario = `inline-handoff-refusal-${code}-${recovery}`;
       const canContinue = recovery === "no inline pending marker";
+      const mixedHandoffs = recovery.endsWith("with injected history and side chat");
       const stopBeforePrompt = recovery === "known local stop before prompt";
       const directInjectionRejection = recovery === "definitive direct injection rejection";
       const noPromptRequest = directInjectionRejection || stopBeforePrompt;
@@ -340,10 +343,11 @@ describe("Codex inline handoff rejection recovery", () => {
       const atCommit = recovery === "contradiction before outer commit" || positiveCommitRace;
       const lostBeforeCommit = recovery === "process loss before late acceptance commits";
       const reopenDatabase =
-        atCommit ||
-        commitsInline ||
-        (acceptsPrompt && late) ||
-        recovery === "pending without observed contradiction";
+        !mixedHandoffs &&
+        (atCommit ||
+          commitsInline ||
+          (acceptsPrompt && late) ||
+          recovery === "pending without observed contradiction");
       const contradicts = recovery.startsWith("contradiction") || positiveCommitRace;
       const fileSystem = yield* FileSystem.FileSystem;
       const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "jones-codex-history-" });
@@ -356,6 +360,8 @@ describe("Codex inline handoff rejection recovery", () => {
       const nativeThreadId = "inline-handoff-conversation";
       const threadId = ThreadId.make(scenario);
       const handoffId = ContextHandoffId.make("late-inline-handoff");
+      const sideChatHandoffId = ContextHandoffId.make("separate-side-chat-handoff");
+      const siblingNativeThreadId = "surviving-sibling";
       const coverage = "History from a prior conversation.";
       const history = selectHistory({
         messages: [],
@@ -371,13 +377,23 @@ describe("Codex inline handoff rejection recovery", () => {
           sentPrompt: canContinue
             ? text
             : withInlineContext(
-                sideChatOnly ? coverage : renderHistory(history.messages, history.context),
+                sideChatOnly || mixedHandoffs
+                  ? coverage
+                  : renderHistory(history.messages, history.context),
                 text,
               ),
         });
       const originalRequestId = sideChatOnly ? 3 : 4;
       const originalNativeTurnId = "original-native-turn";
       const first = preambleFor("Original request", originalNativeTurnId);
+      const siblingPrompt = "Authorized sibling request";
+      const siblingTurnId = "sibling-turn";
+      const sibling = codexReplayPreamble({
+        nativeThreadId: siblingNativeThreadId,
+        nativeTurnId: siblingTurnId,
+        prompt: siblingPrompt,
+        cwd,
+      });
       const followUp = codexReplayPreamble({
         nativeThreadId,
         nativeTurnId: "follow-up-turn",
@@ -455,17 +471,18 @@ describe("Codex inline handoff rejection recovery", () => {
         {
           type: "emit_inbound",
           ...(noPromptRequest ? { label: "history request rejection" } : {}),
-          frame: canContinue
-            ? { id, result: {} }
-            : {
-                id,
-                error: {
-                  code: directInjectionRejection ? -32600 : -32601,
-                  message: directInjectionRejection
-                    ? "Rejected native history items"
-                    : "Native injection unavailable",
+          frame:
+            canContinue || mixedHandoffs
+              ? { id, result: {} }
+              : {
+                  id,
+                  error: {
+                    code: directInjectionRejection ? -32600 : -32601,
+                    message: directInjectionRejection
+                      ? "Rejected native history items"
+                      : "Native injection unavailable",
+                  },
                 },
-              },
         },
       ];
       const resumeNative = (id: number): CodexReplay.CodexAppServerReplayEntry[] => [
@@ -649,6 +666,16 @@ describe("Codex inline handoff rejection recovery", () => {
                 producerCompletion(nativeThreadId, "follow-up-turn"),
               ]
             : []),
+          ...(mixedHandoffs
+            ? [
+                withReplayRequestId(sibling[3]!, 5),
+                withReplayRequestId(sibling[4]!, 5),
+                withReplayRequestId(sibling[5]!, 6),
+                withReplayRequestId(sibling[6]!, 6),
+                ...sibling.slice(7),
+                producerCompletion(siblingNativeThreadId, siblingTurnId),
+              ]
+            : []),
         ],
       });
       const sent = yield* Deferred.make<void>();
@@ -774,7 +801,7 @@ describe("Codex inline handoff rejection recovery", () => {
         const thread = (yield* getProjection()).thread;
         yield* sink.write({
           events: [
-            ...(sideChatOnly
+            ...(sideChatOnly || mixedHandoffs
               ? [
                   {
                     id: EventId.make("mark-side-chat"),
@@ -819,6 +846,33 @@ describe("Codex inline handoff rejection recovery", () => {
                   : {}),
               },
             },
+            ...(mixedHandoffs
+              ? [
+                  {
+                    id: EventId.make("separate-side-chat-handoff"),
+                    type: "context-handoff.updated" as const,
+                    threadId,
+                    runId: run.id,
+                    occurredAt: now,
+                    payload: {
+                      id: sideChatHandoffId,
+                      threadId,
+                      targetRunId: run.id,
+                      fromProviderThreadIds: [],
+                      toProviderThreadId: run.providerThreadId,
+                      coveredRunOrdinals: { from: 1, to: 1 },
+                      strategy: "manual_context" as const,
+                      status: "ready" as const,
+                      summaryMessageId: null,
+                      summaryText: coverage,
+                      createdByProviderInstanceId: null,
+                      createdAt: now,
+                      updatedAt: now,
+                      transferId: ContextTransferId.make("side-chat-transfer"),
+                    },
+                  },
+                ]
+              : []),
           ],
         });
         const starting = yield* worker.drain().pipe(Effect.forkChild({ startImmediately: true }));
@@ -828,7 +882,11 @@ describe("Codex inline handoff rejection recovery", () => {
             Effect.andThen(Effect.die("The first start stopped before it sent the prompt.")),
           ),
         );
-        const deliveryStatus = sideChatOnly ? undefined : canContinue ? "injected" : "pending";
+        const deliveryStatus = sideChatOnly
+          ? undefined
+          : canContinue || mixedHandoffs
+            ? "injected"
+            : "pending";
         assert.equal((yield* getProjection()).contextHandoffs[0]?.delivery?.status, deliveryStatus);
         if (directInjectionRejection) {
           yield* Deferred.succeed(allowRejection, undefined);
@@ -1176,6 +1234,49 @@ describe("Codex inline handoff rejection recovery", () => {
             attempts: after.attempts,
             providerTurns: after.providerTurns,
           };
+        }
+        if (mixedHandoffs) {
+          const after = yield* getProjection();
+          assert.deepEqual(after.attempts, timedOut.attempts);
+          assert.deepEqual(after.providerTurns, timedOut.providerTurns);
+          assert.equal(
+            after.contextHandoffs.find((handoff) => handoff.id === handoffId)?.delivery?.status,
+            "injected",
+          );
+          assert.isUndefined(
+            after.contextHandoffs.find((handoff) => handoff.id === sideChatHandoffId)?.delivery,
+          );
+          const siblingId = ThreadId.make(`${scenario}-sibling`);
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create-${siblingId}`),
+            threadId: siblingId,
+            projectId: ProjectId.make(scenario),
+            title: threadTitle,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* send(orchestrator, siblingId, "sibling-prompt", siblingPrompt);
+          yield* worker.drain();
+          const siblingProjection = yield* orchestrator.getThreadProjection(siblingId);
+          assert.equal(
+            siblingProjection.providerThreads[0]?.nativeThreadRef?.nativeId,
+            siblingNativeThreadId,
+          );
+          assert.equal(
+            siblingProjection.providerThreads[0]?.runtimeIdentity?.runtimeGeneration,
+            after.providerThreads[0]?.runtimeIdentity?.runtimeGeneration,
+          );
+          assert.deepEqual(yield* Ref.get(driver.state), {
+            failure: null,
+            cursor: effectiveTranscript.entries.length,
+          });
+          return;
         }
         if (!canContinue) {
           const after = yield* getProjection();

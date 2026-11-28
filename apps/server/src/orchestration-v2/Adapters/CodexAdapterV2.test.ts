@@ -15821,11 +15821,13 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
     "detach",
     "detach after queued ACK",
     "detach registered root",
+    "detach before queued root observes Stop",
   ] as const)(
     "releases a pending start Stop only after the captured native thread closes (%s)",
     (disposition) =>
       Effect.gen(function* () {
-        const registered = disposition === "detach registered root";
+        const delayStopObservation = disposition === "detach before queued root observes Stop";
+        const registered = disposition === "detach registered root" || delayStopObservation;
         const queued = disposition === "detach after queued ACK" || registered;
         const nativeThreadId = "retired-pending-start";
         const siblingNativeId = "surviving-conversation";
@@ -15844,6 +15846,8 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         const allowClosure = yield* Deferred.make<void>();
         const allowQueuedReply = yield* Deferred.make<void>();
         const afterClosure = yield* Deferred.make<void>();
+        const stopObserverEntered = yield* Deferred.make<void>();
+        const allowStopObservation = yield* Deferred.make<void>();
         const reply = {
           type: "emit_inbound" as const,
           label: queued ? "queued original ACK" : "late original ACK",
@@ -15959,7 +15963,15 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           )
           .pipe(
             Effect.provideService(CodexPendingStartStop, Effect.succeed(true)),
-            Effect.provideService(CodexQueuedStartStop, Effect.succeed(true)),
+            Effect.provideService(
+              CodexQueuedStartStop,
+              delayStopObservation
+                ? Deferred.succeed(stopObserverEntered, undefined).pipe(
+                    Effect.andThen(Deferred.await(allowStopObservation)),
+                    Effect.as(true),
+                  )
+                : Effect.succeed(true),
+            ),
             Effect.forkChild,
           );
         yield* Deferred.await(originalSent);
@@ -15967,6 +15979,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         assert.isTrue(yield* harness.hasPendingBackgroundWork);
         yield* Deferred.succeed(allowQueuedReply, undefined);
         if (registered) yield* Fiber.join(start);
+        if (delayStopObservation) yield* Deferred.await(stopObserverEntered);
         yield* TestClock.adjust(0);
         const release = yield* (
           disposition === "transfer"

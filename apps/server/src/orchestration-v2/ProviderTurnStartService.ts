@@ -4173,7 +4173,6 @@ export const layer: Layer.Layer<
             session.driver === "codex"
               ? makeCodexHistoryDeliveryPersistence(writeHandoff, eventSink.withProviderBatch)
               : undefined;
-          const inlineHistory = codexHistory?.trackInlineStart(eventSink.write, idAllocator);
           const prepareDelivery = deliverWithHandoffRecovery(
             {
               handoffs: [...effectiveHandoffs, ...retryHandoff.handoffs],
@@ -4209,12 +4208,20 @@ export const layer: Layer.Layer<
               ),
               Effect.uninterruptible,
             );
-          const delivery = yield* Effect.uninterruptibleMask((restore) =>
+          const { delivery, inlineHistory } = yield* Effect.uninterruptibleMask((restore) =>
             restore(prepareDelivery).pipe(
-              Effect.tap((prepared) =>
+              Effect.map((delivery) => ({
+                delivery,
+                inlineHistory: codexHistory?.trackInlineStart(
+                  eventSink.write,
+                  idAllocator,
+                  delivery.inlineHandoffs,
+                ),
+              })),
+              Effect.tap(({ delivery, inlineHistory }) =>
                 Effect.addFinalizer(() =>
-                  prepared.context !== "" && inlineHistory?.closeUnsent() === true
-                    ? restoreUnsent(prepared.unsent)
+                  delivery.context !== "" && inlineHistory?.closeUnsent() === true
+                    ? restoreUnsent(delivery.unsent)
                     : Effect.void,
                 ),
               ),

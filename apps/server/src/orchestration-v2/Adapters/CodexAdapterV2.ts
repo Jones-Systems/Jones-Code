@@ -1541,6 +1541,7 @@ function failureResetAt(
 interface QueuedCodexRootStop {
   readonly producer: CodexRuntimeProducer;
   readonly closed: Deferred.Deferred<void>;
+  readonly wasStopped: Effect.Effect<boolean>;
   authorized: boolean;
   dispatched: boolean;
 }
@@ -3196,6 +3197,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           producer: CodexRuntimeProducer,
           nativeThreadId: string,
           awaitAppStop: Effect.Effect<boolean>,
+          wasStopped: Effect.Effect<boolean>,
         ) {
           const closed = yield* Deferred.make<void>();
           if (
@@ -3206,7 +3208,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             producer.unloadedThreads.has(nativeThreadId)
           )
             return;
-          const stop = { producer, closed, authorized: false, dispatched: false };
+          const stop = { producer, closed, wasStopped, authorized: false, dispatched: false };
           turn.queuedRootStop = stop;
           const canEnqueue = () =>
             queuedRootStops.get(turn) === stop &&
@@ -3345,31 +3347,36 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
           }
         };
-        const forgetClosedQueuedRoot = (turn: ActiveCodexTurnContext, stop: QueuedCodexRootStop) =>
-          turnTerminalizationPermit.withPermits(1)(
-            Effect.gen(function* () {
-              if (
-                !stop.authorized ||
-                turn.nativeStartReady === undefined ||
-                Deferred.isDoneUnsafe(turn.nativeStartReady)
-              )
-                return;
-              // Closure ends the stopped root's live ownership without proving input delivery.
-              const removed = yield* Ref.modify(activeTurns, (active) => {
-                if (active.get(turn.nativeTurnId) !== turn) return [false, active];
-                const remaining = new Map(active);
-                remaining.delete(turn.nativeTurnId);
-                return [true, remaining];
-              });
-              if (!removed) return;
-              delete turn.queuedInlineDelivery;
-              const request = capacityByTurn.get(turn.nativeTurnId);
-              if (request?.acknowledgedContext === turn) releaseCapacityRequest(request);
-              const waiter = (yield* Ref.get(turnWaiters)).get(turn.nativeTurnId);
-              if (waiter !== undefined) yield* Deferred.succeed(waiter, undefined);
-              yield* Deferred.succeed(turn.nativeStartReady, undefined);
-            }),
-          );
+        const forgetClosedQueuedRoot = Effect.fn("CodexAdapterV2.forgetClosedQueuedRoot")(
+          function* (turn: ActiveCodexTurnContext, stop: QueuedCodexRootStop) {
+            // Closure can reach the reader before the observer sees a committed Stop.
+            if (!stop.authorized && !(yield* stop.wasStopped)) return;
+            yield* turnTerminalizationPermit.withPermits(1)(
+              Effect.gen(function* () {
+                if (
+                  queuedRootStops.get(turn) !== stop ||
+                  turn.nativeStartReady === undefined ||
+                  Deferred.isDoneUnsafe(turn.nativeStartReady)
+                )
+                  return;
+                // Closure ends the stopped root's live ownership without proving input delivery.
+                const removed = yield* Ref.modify(activeTurns, (active) => {
+                  if (active.get(turn.nativeTurnId) !== turn) return [false, active];
+                  const remaining = new Map(active);
+                  remaining.delete(turn.nativeTurnId);
+                  return [true, remaining];
+                });
+                if (!removed) return;
+                delete turn.queuedInlineDelivery;
+                const request = capacityByTurn.get(turn.nativeTurnId);
+                if (request?.acknowledgedContext === turn) releaseCapacityRequest(request);
+                const waiter = (yield* Ref.get(turnWaiters)).get(turn.nativeTurnId);
+                if (waiter !== undefined) yield* Deferred.succeed(waiter, undefined);
+                yield* Deferred.succeed(turn.nativeStartReady, undefined);
+              }),
+            );
+          },
+        );
         // Upstream's capacity continuation, sent through the start owner that
         // started the failed turn: same binding and settings, without the prompt.
         const makeCapacityContinuationRequest = (
@@ -10590,13 +10597,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         record: inlineHistory.recordQueuedDelivery,
                       };
                     // Install the shared Stop receipt before publishing the active turn.
-                    if (awaitAppStop !== undefined && turn.nativeStartReady !== undefined) {
+                    if (
+                      awaitAppStop !== undefined &&
+                      stoppedByApp !== undefined &&
+                      turn.nativeStartReady !== undefined
+                    ) {
                       yield* retainQueuedRootStop(
                         turn,
                         turn.nativeStartReady,
                         producer,
                         binding.nativeThreadId,
                         awaitAppStop,
+                        stoppedByApp,
                       );
                       // A terminal captured before registration already closes this send path.
                       if (dispatch.completions.has(turn.nativeTurnId)) settleQueuedRootStop(turn);

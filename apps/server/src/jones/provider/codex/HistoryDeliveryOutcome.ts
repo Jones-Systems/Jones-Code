@@ -337,17 +337,20 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
     trackInlineStart(
       sink: EventSinkV2Shape["write"],
       idAllocator: IdAllocatorV2["Service"],
+      handoffs: ReadonlyArray<OrchestrationV2ContextHandoff>,
     ): InlineHistoryStart {
+      const inlineHandoffIds = new Set(handoffs.map((handoff) => handoff.id));
       let status: "unsent" | "closed" | "dispatched" | "acknowledged" = "unsent";
       let queued = false;
       let recordQueuedDelivery = Effect.void;
       const ownsDelivery = Effect.fn("HistoryDeliveryOutcome.ownsLateInlineDelivery")(function* (
         receipt: LateInlineReceipt,
       ) {
-        if (!receipt.isCurrent() || pending.size === 0) return false;
+        if (!receipt.isCurrent() || inlineHandoffIds.size === 0) return false;
         if (!(yield* ownsLateInlineTurn(receipt))) return false;
         const { binding, runId } = receipt;
-        for (const marker of pending.values()) {
+        for (const id of inlineHandoffIds) {
+          const marker = pending.get(id);
           if (marker === undefined) return false;
           const { event } = marker;
           if (
@@ -409,9 +412,7 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
         get acceptedOnAcknowledgement() {
           return status === "acknowledged" && !queued;
         },
-        get hasPendingHandoffs() {
-          return pending.size > 0;
-        },
+        hasPendingHandoffs: inlineHandoffIds.size > 0,
         closeUnsent() {
           if (status !== "unsent") return false;
           status = "closed";
