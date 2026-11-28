@@ -144,6 +144,7 @@ interface LateInlineReceipt {
 
 interface InlineHistoryStart {
   readonly acceptedOnAcknowledgement: boolean;
+  readonly hasPendingHandoffs: boolean;
   readonly closeUnsent: () => boolean;
   readonly canDispatch: () => boolean;
   readonly tryDispatch: () => boolean;
@@ -407,6 +408,9 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
       return {
         get acceptedOnAcknowledgement() {
           return status === "acknowledged" && !queued;
+        },
+        get hasPendingHandoffs() {
+          return pending.size > 0;
         },
         closeUnsent() {
           if (status !== "unsent") return false;

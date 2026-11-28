@@ -2734,6 +2734,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                             stop.producer === producer &&
                             turn.providerThread.nativeThreadRef?.nativeId === nativeId
                           ) {
+                            yield* forgetClosedQueuedRoot(turn, stop);
                             settleQueuedRootStop(turn);
                           }
                         }
@@ -3344,6 +3345,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
           }
         };
+        const forgetClosedQueuedRoot = (turn: ActiveCodexTurnContext, stop: QueuedCodexRootStop) =>
+          turnTerminalizationPermit.withPermits(1)(
+            Effect.gen(function* () {
+              if (
+                !stop.authorized ||
+                turn.nativeStartReady === undefined ||
+                Deferred.isDoneUnsafe(turn.nativeStartReady)
+              )
+                return;
+              // Closure ends the stopped root's live ownership without proving input delivery.
+              const removed = yield* Ref.modify(activeTurns, (active) => {
+                if (active.get(turn.nativeTurnId) !== turn) return [false, active];
+                const remaining = new Map(active);
+                remaining.delete(turn.nativeTurnId);
+                return [true, remaining];
+              });
+              if (!removed) return;
+              delete turn.queuedInlineDelivery;
+              const request = capacityByTurn.get(turn.nativeTurnId);
+              if (request?.acknowledgedContext === turn) releaseCapacityRequest(request);
+              const waiter = (yield* Ref.get(turnWaiters)).get(turn.nativeTurnId);
+              if (waiter !== undefined) yield* Deferred.succeed(waiter, undefined);
+              yield* Deferred.succeed(turn.nativeStartReady, undefined);
+            }),
+          );
         // Upstream's capacity continuation, sent through the start owner that
         // started the failed turn: same binding and settings, without the prompt.
         const makeCapacityContinuationRequest = (
@@ -3420,7 +3446,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               lateStarts.complete(binding, completion.turn.id, () => ({
                 nativeTurnId: completion.turn.id,
                 status,
-                startedAt: codexTimestamp(completion.turn.startedAt),
+                startedAt:
+                  completion.turn.startedAt === null
+                    ? null
+                    : codexTimestamp(completion.turn.startedAt),
                 completedAt: codexTimestamp(completion.turn.completedAt),
                 ...(completion.turn.items.some((item) => item.type === "userMessage")
                   ? { inputObserved: true }
@@ -10200,9 +10229,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             inlineHistory !== undefined &&
             (request.input.inlineContextLength ?? 0) > 0 &&
             params.input.some((item) => item.type === "text");
-          const terminalReceipt = promptedInline
-            ? yield* Deferred.make<CodexStartTerminal | null>()
-            : undefined;
+          const terminalReceipt =
+            promptedInline && inlineHistory.hasPendingHandoffs
+              ? yield* Deferred.make<CodexStartTerminal | null>()
+              : undefined;
           const startOrTerminal = yield* Deferred.make<void>();
           const startCancelled = yield* Deferred.make<void>();
           if (continuity !== undefined && !(yield* continuity.checkContinuation))
@@ -10359,9 +10389,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             // A wire rejection can be contradicted while SQLite commits. Keep the
             // existing pending event and live hold until there is independent proof.
-            if (inlineHistory !== undefined)
+            if (inlineHistory?.hasPendingHandoffs)
               return yield* toProtocolError("Codex inline history delivery remains uncertain.");
-            // Without inline history this only releases the live dispatch. Later
+            // With no pending history marker this only releases the live dispatch. Later
             // activity can constrain later dispatches without undoing a stored write.
             if (!proof.release()) return yield* unverifiedRejection();
             request.startDispatched = false;

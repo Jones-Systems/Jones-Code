@@ -38,7 +38,7 @@ interface NativeBinding {
 export interface CodexStartTerminal {
   readonly nativeTurnId: string;
   readonly status: "completed" | "failed" | "interrupted";
-  readonly startedAt: DateTime.Utc;
+  readonly startedAt: DateTime.Utc | null;
   readonly completedAt: DateTime.Utc;
   readonly inputObserved?: true;
 }
@@ -126,7 +126,8 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>(
     )
       return undefined;
     const terminal = dispatch.completions.get(dispatch.nativeTurnId!);
-    return terminal?.status === "interrupted" &&
+    return terminal !== undefined &&
+      (terminal.status === "interrupted" || terminal.startedAt === null) &&
       terminal.inputObserved !== true &&
       dispatch.observedInputTurnId !== terminal.nativeTurnId
       ? undefined

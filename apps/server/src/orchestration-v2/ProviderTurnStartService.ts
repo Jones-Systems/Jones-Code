@@ -4267,7 +4267,8 @@ export const layer: Layer.Layer<
             userText: requestText,
           });
           const inlineContextLength = startInput.message.text.length - requestText.length;
-          const inlineStart = delivery.context === "" ? undefined : inlineHistory;
+          const inlineStart =
+            delivery.context === "" && sideChatContext === "" ? undefined : inlineHistory;
           // Serialize acceptance writes against dropped-terminal restoration so neither overwrites the other.
           const recordDelivered = inlineDeliveryLock.withPermits(1)(
             Effect.gen(function* () {

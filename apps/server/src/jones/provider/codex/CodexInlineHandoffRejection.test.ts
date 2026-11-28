@@ -4,6 +4,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   ContextHandoffId,
+  ContextTransferId,
   EventId,
   MessageId,
   ProjectId,
@@ -263,11 +264,14 @@ describe("Codex inline handoff rejection recovery", () => {
     { code: -32600, late: false, recovery: "definitive direct injection rejection" },
     { code: null, late: false, recovery: "on-time ACK and terminal" },
     { code: null, late: false, recovery: "queued ACK without native input" },
+    { code: null, late: false, recovery: "queued ACK with side-chat context and no native input" },
+    { code: null, late: false, recovery: "queued ACK with side-chat context and recorded input" },
     { code: null, late: false, recovery: "queued ACK followed by recorded input" },
     { code: null, late: false, recovery: "queued ACK after native completion" },
     { code: null, late: true, recovery: "late ACK and terminal" },
     { code: null, late: true, recovery: "late terminal before ACK" },
     { code: null, late: true, recovery: "late ACK without a terminal" },
+    { code: null, late: true, recovery: "late queued ACK followed by failure before native start" },
     { code: null, late: true, recovery: "late ACK and interrupted prompt without input" },
     { code: null, late: true, recovery: "late ACK and interrupted prompt with observed input" },
     { code: null, late: false, recovery: "application Stop while awaiting ACK" },
@@ -292,8 +296,15 @@ describe("Codex inline handoff rejection recovery", () => {
       const acceptsPrompt = code === null;
       const queuedCompletedBeforeAck = recovery === "queued ACK after native completion";
       const terminalFirst = recovery === "late terminal before ACK" || queuedCompletedBeforeAck;
-      const queuedWithoutInput = recovery === "queued ACK without native input";
-      const queuedWithInput = recovery === "queued ACK followed by recorded input";
+      const sideChatOnly = recovery.includes("with side-chat context");
+      const queuedWithoutInput =
+        recovery === "queued ACK without native input" ||
+        recovery === "queued ACK with side-chat context and no native input";
+      const failedBeforeStart =
+        recovery === "late queued ACK followed by failure before native start";
+      const queuedWithInput =
+        recovery === "queued ACK followed by recorded input" ||
+        recovery === "queued ACK with side-chat context and recorded input";
       const ackOnly = recovery === "late ACK without a terminal" || queuedWithoutInput;
       const wrongTerminal = recovery === "late ACK with a different terminal";
       const interruptedWithoutInput = recovery === "late ACK and interrupted prompt without input";
@@ -302,12 +313,18 @@ describe("Codex inline handoff rejection recovery", () => {
       const queuedCommitRace = recovery === "queued ACK during application Stop commit";
       const queuedStop = recovery === "application Stop before queued ACK" || queuedCommitRace;
       const queued =
-        queuedStop || queuedWithoutInput || queuedWithInput || queuedCompletedBeforeAck;
+        queuedStop ||
+        queuedWithoutInput ||
+        queuedWithInput ||
+        queuedCompletedBeforeAck ||
+        failedBeforeStart;
       const stopWhileAwaitingAck = recovery === "application Stop while awaiting ACK" || queuedStop;
       const nativeTerminalStatus =
         interruptedWithoutInput || interruptedWithInput || stopWhileAwaitingAck
           ? "interrupted"
-          : "completed";
+          : failedBeforeStart
+            ? "failed"
+            : "completed";
       const restartReadback = recovery === "readback of restart after COMMIT contradiction";
       const commitsInline =
         recovery === "on-time ACK and terminal" || queuedWithInput || queuedCompletedBeforeAck;
@@ -353,8 +370,12 @@ describe("Codex inline handoff rejection recovery", () => {
           cwd,
           sentPrompt: canContinue
             ? text
-            : withInlineContext(renderHistory(history.messages, history.context), text),
+            : withInlineContext(
+                sideChatOnly ? coverage : renderHistory(history.messages, history.context),
+                text,
+              ),
         });
+      const originalRequestId = sideChatOnly ? 3 : 4;
       const originalNativeTurnId = "original-native-turn";
       const first = preambleFor("Original request", originalNativeTurnId);
       const followUp = codexReplayPreamble({
@@ -485,10 +506,13 @@ describe("Codex inline handoff rejection recovery", () => {
           method: "turn/completed",
           params: {
             threadId: nativeThreadId,
-            turn: makeCodexReplayTurn({
-              id: wrongTerminal ? "different-native-turn" : originalNativeTurnId,
-              status: nativeTerminalStatus,
-            }),
+            turn: {
+              ...makeCodexReplayTurn({
+                id: wrongTerminal ? "different-native-turn" : originalNativeTurnId,
+                status: nativeTerminalStatus,
+              }),
+              ...(failedBeforeStart ? { startedAt: null } : {}),
+            },
           },
         },
       };
@@ -497,7 +521,7 @@ describe("Codex inline handoff rejection recovery", () => {
         label: terminalFirst ? "original ACK" : "first prompt response",
         frame: acceptsPrompt
           ? {
-              id: 4,
+              id: originalRequestId,
               result: {
                 turn: {
                   ...makeCodexReplayTurn({ id: originalNativeTurnId, status: "inProgress" }),
@@ -511,11 +535,11 @@ describe("Codex inline handoff rejection recovery", () => {
         scenario,
         entries: [
           ...first.slice(0, 5),
-          ...inject(3),
+          ...(sideChatOnly ? [] : inject(3)),
           ...(noPromptRequest
             ? []
             : [
-                withReplayRequestId(first[5]!, 4),
+                withReplayRequestId(first[5]!, originalRequestId),
                 ...(terminalFirst ? [terminal] : []),
                 reply,
                 ...(queuedWithoutInput
@@ -747,8 +771,20 @@ describe("Codex inline handoff rejection recovery", () => {
         if (run?.providerThreadId == null)
           return yield* Effect.die("The start has no provider thread.");
         const now = yield* DateTime.now;
+        const thread = (yield* getProjection()).thread;
         yield* sink.write({
           events: [
+            ...(sideChatOnly
+              ? [
+                  {
+                    id: EventId.make("mark-side-chat"),
+                    type: "thread.metadata-updated" as const,
+                    threadId,
+                    occurredAt: now,
+                    payload: { ...thread, lineage: { ...thread.lineage, sideChat: true } },
+                  },
+                ]
+              : []),
             {
               id: EventId.make("initial-inline-handoff"),
               type: "context-handoff.updated",
@@ -762,14 +798,16 @@ describe("Codex inline handoff rejection recovery", () => {
                 fromProviderThreadIds: [],
                 toProviderThreadId: run.providerThreadId,
                 coveredRunOrdinals: { from: 1, to: 1 },
-                strategy: "full_thread_summary",
+                strategy: sideChatOnly ? "manual_context" : "full_thread_summary",
                 status: "ready",
                 summaryMessageId: null,
-                summaryText: "",
+                summaryText: sideChatOnly ? coverage : "",
                 createdByProviderInstanceId: null,
                 createdAt: now,
                 updatedAt: now,
-                history: { messages: [], coverage, omittedItems: 0 },
+                ...(sideChatOnly
+                  ? { transferId: ContextTransferId.make("side-chat-transfer") }
+                  : { history: { messages: [], coverage, omittedItems: 0 } }),
                 ...(contradicts
                   ? {
                       delivery: {
@@ -790,7 +828,7 @@ describe("Codex inline handoff rejection recovery", () => {
             Effect.andThen(Effect.die("The first start stopped before it sent the prompt.")),
           ),
         );
-        const deliveryStatus = canContinue ? "injected" : "pending";
+        const deliveryStatus = sideChatOnly ? undefined : canContinue ? "injected" : "pending";
         assert.equal((yield* getProjection()).contextHandoffs[0]?.delivery?.status, deliveryStatus);
         if (directInjectionRejection) {
           yield* Deferred.succeed(allowRejection, undefined);
@@ -1035,7 +1073,7 @@ describe("Codex inline handoff rejection recovery", () => {
           const afterAck = yield* getProjection();
           assert.equal(afterAck.providerTurns.length, 1);
           assert.equal(afterAck.providerTurns[0]?.nativeTurnRef?.nativeId, originalNativeTurnId);
-          assert.equal(afterAck.contextHandoffs[0]?.delivery?.status, "pending");
+          assert.equal(afterAck.contextHandoffs[0]?.delivery?.status, deliveryStatus);
           if (queuedWithoutInput) {
             assert.deepEqual(yield* Ref.get(driver.state), {
               failure: null,

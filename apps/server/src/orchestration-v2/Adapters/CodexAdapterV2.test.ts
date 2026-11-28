@@ -128,7 +128,10 @@ import type {
 import { deliverWithHandoffRecovery } from "../../jones/provider/codex/ContextHandoffRecovery.ts";
 import { CONTINUITY_RELOAD_CUE } from "../../jones/goals/continuity/capsule.ts";
 import { CODEX_STARTUP_BUDGET_MS } from "../../jones/provider/codex/CodexStartup.ts";
-import { CodexPendingStartStop } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
+import {
+  CodexPendingStartStop,
+  CodexQueuedStartStop,
+} from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 import {
   STOP_CHILD_BUDGET_MS,
   STOP_RECOVERY_BUDGET_MS,
@@ -15813,11 +15816,17 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
       ),
   );
 
-  it.effect.each(["transfer", "detach", "detach after queued ACK"] as const)(
+  it.effect.each([
+    "transfer",
+    "detach",
+    "detach after queued ACK",
+    "detach registered root",
+  ] as const)(
     "releases a pending start Stop only after the captured native thread closes (%s)",
     (disposition) =>
       Effect.gen(function* () {
-        const queued = disposition === "detach after queued ACK";
+        const registered = disposition === "detach registered root";
+        const queued = disposition === "detach after queued ACK" || registered;
         const nativeThreadId = "retired-pending-start";
         const siblingNativeId = "surviving-conversation";
         const original = codexReplayPreamble({
@@ -15950,12 +15959,14 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           )
           .pipe(
             Effect.provideService(CodexPendingStartStop, Effect.succeed(true)),
+            Effect.provideService(CodexQueuedStartStop, Effect.succeed(true)),
             Effect.forkChild,
           );
         yield* Deferred.await(originalSent);
-        yield* Fiber.interrupt(start);
+        if (!registered) yield* Fiber.interrupt(start);
         assert.isTrue(yield* harness.hasPendingBackgroundWork);
         yield* Deferred.succeed(allowQueuedReply, undefined);
+        if (registered) yield* Fiber.join(start);
         yield* TestClock.adjust(0);
         const release = yield* (
           disposition === "transfer"
@@ -15972,11 +15983,22 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           yield* harness.hasPendingBackgroundWork,
           "The unsubscribe ACK leaves the hold",
         );
+        if (registered)
+          assert.equal(
+            (yield* harness.runtime.readThreadActivity!(harness.providerThread)).status,
+            "busy",
+          );
         yield* Deferred.succeed(allowClosure, undefined);
         yield* Deferred.await(afterClosure);
         yield* Fiber.join(release);
         yield* TestClock.adjust(0);
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
+        if (registered)
+          assert.equal(
+            (yield* harness.runtime.readThreadActivity!(harness.providerThread)).status,
+            "unknown",
+            "Verified closure releases the live root without adding native delivery evidence",
+          );
 
         const resumed = yield* harness.runtime.resumeThread({ providerThread: survivor });
         assert.equal(
