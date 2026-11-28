@@ -434,6 +434,7 @@ describe("Codex inline handoff rejection recovery", () => {
       const queuedAckObserved = yield* Deferred.make<void>();
       const allowActivity = yield* Deferred.make<void>();
       let interruptsSent = 0;
+      let unsubscribeRequests = 0;
       const writerParked = yield* Deferred.make<void>();
       const allowWriter = yield* Deferred.make<void>();
       const possibleRestoreFinished = yield* Deferred.make<void>();
@@ -628,14 +629,31 @@ describe("Codex inline handoff rejection recovery", () => {
           yield* Deferred.succeed(allowRejection, undefined);
           if (queuedStop) {
             yield* Deferred.await(queuedAckObserved);
-            yield* TestClock.adjust("2 seconds");
+            yield* Fiber.join(starting);
+            yield* TestClock.adjust("2 minutes");
             assert.equal(interruptsSent, 0, "Stop must wait for the queued turn to start");
+            assert.equal(unsubscribeRequests, 0, "Idle unload must preserve the pending Stop");
+            const runtime = yield* Deferred.await(sessionOpened);
+            const providerThread = afterStop.providerThreads.find(
+              (candidate) => candidate.nativeThreadRef?.nativeId === nativeThreadId,
+            )!;
+            assert.isTrue(yield* runtime.hasPendingBackgroundWorkForThread!(providerThread));
+            assert.isTrue(yield* runtime.hasPendingBackgroundWork!);
             yield* Deferred.succeed(allowActivity, undefined);
           }
           yield* Deferred.await(rejectionObserved);
           yield* Fiber.join(starting);
           assert.equal(interruptsSent, 1);
+          if (queuedStop) yield* TestClock.adjust(0);
           const afterTerminal = yield* getProjection();
+          if (queuedStop) {
+            const runtime = yield* Deferred.await(sessionOpened);
+            assert.isFalse(
+              yield* runtime.hasPendingBackgroundWorkForThread!(afterTerminal.providerThreads[0]!),
+              "A native terminal releases Stop's idle retention",
+            );
+            assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
+          }
           assert.deepEqual(afterTerminal.runs, afterStop.runs);
           assert.deepEqual(afterTerminal.attempts, afterStop.attempts);
           assert.deepEqual(afterTerminal.providerTurns, []);
@@ -929,8 +947,10 @@ describe("Codex inline handoff rejection recovery", () => {
               onSessionOpened: (runtime) =>
                 Deferred.doneUnsafe(sessionOpened, Effect.succeed(runtime)),
               observeOutgoingFrame: (frame) => {
-                if (Predicate.hasProperty(frame, "method") && frame.method === "turn/interrupt")
-                  interruptsSent++;
+                if (Predicate.hasProperty(frame, "method")) {
+                  if (frame.method === "turn/interrupt") interruptsSent++;
+                  if (frame.method === "thread/unsubscribe") unsubscribeRequests++;
+                }
               },
               observeFrame: (frame) => {
                 if (queuedStop && Predicate.hasProperty(frame, "id") && frame.id === 4)

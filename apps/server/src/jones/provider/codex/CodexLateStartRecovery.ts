@@ -60,6 +60,7 @@ export interface CodexStartDispatch extends NativeBinding {
   observedTurnId?: string;
   observedInputTurnId?: string;
   conflictingTurnActivity?: true;
+  retainForStop?: true;
   unknown: boolean;
   overflow: boolean;
 }
@@ -232,10 +233,23 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>(
       const released = releasedStart(binding);
       if (released !== undefined) releasedStarts.delete(binding.nativeThreadId);
     },
-    markUnknown(dispatch: CodexStartDispatch) {
+    markUnknown(dispatch: CodexStartDispatch, options?: { readonly retainForStop: true }) {
       if (!dispatches.has(dispatch)) return;
+      if (options?.retainForStop) dispatch.retainForStop = true;
       dispatch.unknown = true;
       releaseSettled(dispatch);
+    },
+    hasPendingStop(runtimeGeneration: string, nativeThreadId?: string) {
+      for (const dispatch of dispatches) {
+        if (
+          dispatch.retainForStop &&
+          dispatch.runtimeGeneration === runtimeGeneration &&
+          (nativeThreadId === undefined || dispatch.nativeThreadId === nativeThreadId) &&
+          (dispatch.nativeTurnId === undefined || !dispatch.completions.has(dispatch.nativeTurnId))
+        )
+          return true;
+      }
+      return false;
     },
     observeFrame(runtimeGeneration: string, frame: unknown) {
       if (!observing() || !Predicate.isObject(frame)) return;

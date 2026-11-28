@@ -10118,10 +10118,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               dispatch.onStartOrTerminal = () => Deferred.doneUnsafe(startOrTerminal, Effect.void);
               let stopScheduled = false;
               let stopEnqueued = false;
-              request.forwardPendingStartStop = Effect.suspend(() => {
+              request.forwardPendingStartStop = Effect.gen(function* () {
+                // The app worker can become idle before the original ACK names a turn.
+                if (
+                  currentGeneration() === undefined ||
+                  !(yield* stoppedByApp) ||
+                  currentGeneration() === undefined
+                )
+                  return false;
+                lateStarts.markUnknown(dispatch, { retainForStop: true });
                 const turnId = dispatch.nativeTurnId;
-                if (turnId === undefined || currentGeneration() === undefined)
-                  return Effect.succeed(false);
+                if (turnId === undefined) return true;
                 const canEnqueue = () =>
                   !stopEnqueued &&
                   !dispatch.overflow &&
@@ -10130,50 +10137,45 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   !dispatch.completions.has(turnId) &&
                   currentGeneration() !== undefined &&
                   replyTurnOwner(turnId) === undefined;
-                // Stop may end the application attempt before it knows the native turn ID.
-                return Effect.gen(function* () {
-                  if (!(yield* stoppedByApp)) return false;
-                  lateStarts.markUnknown(dispatch);
-                  if (!stopScheduled && canEnqueue()) {
-                    stopScheduled = true;
-                    // A queued ACK names the original turn but Codex cannot
-                    // interrupt it until it starts. The producer owns the wait.
-                    yield* Effect.gen(function* () {
-                      yield* Deferred.await(startOrTerminal);
-                      if (!canEnqueue()) return;
-                      yield* withRequestAdmission(
-                        producer.client.request("turn/interrupt", {
-                          threadId: binding.nativeThreadId,
-                          turnId,
-                        }),
-                        {
-                          canEnqueue,
-                          onEnqueued: () => {
-                            stopEnqueued = true;
-                          },
+                if (!stopScheduled && canEnqueue()) {
+                  stopScheduled = true;
+                  // A queued ACK names the original turn but Codex cannot
+                  // interrupt it until it starts. The producer owns the wait.
+                  yield* Effect.gen(function* () {
+                    yield* Deferred.await(startOrTerminal);
+                    if (!canEnqueue()) return;
+                    yield* withRequestAdmission(
+                      producer.client.request("turn/interrupt", {
+                        threadId: binding.nativeThreadId,
+                        turnId,
+                      }),
+                      {
+                        canEnqueue,
+                        onEnqueued: () => {
+                          stopEnqueued = true;
                         },
-                      ).pipe(
-                        Effect.timeoutOption(STOP_REQUEST_BUDGET_MS),
-                        Effect.tap((result) =>
-                          Option.isNone(result)
-                            ? Effect.logWarning("Codex did not acknowledge Stop for a late start.")
-                            : Effect.void,
-                        ),
-                        Effect.catch(() =>
-                          stopEnqueued
-                            ? Effect.logWarning(
-                                "Codex could not interrupt an acknowledged late start.",
-                              )
-                            : Effect.void,
-                        ),
-                      );
-                    }).pipe(
-                      Effect.interruptible,
-                      Effect.forkIn(producer.scope, { startImmediately: true }),
+                      },
+                    ).pipe(
+                      Effect.timeoutOption(STOP_REQUEST_BUDGET_MS),
+                      Effect.tap((result) =>
+                        Option.isNone(result)
+                          ? Effect.logWarning("Codex did not acknowledge Stop for a late start.")
+                          : Effect.void,
+                      ),
+                      Effect.catch(() =>
+                        stopEnqueued
+                          ? Effect.logWarning(
+                              "Codex could not interrupt an acknowledged late start.",
+                            )
+                          : Effect.void,
+                      ),
                     );
-                  }
-                  return true;
-                });
+                  }).pipe(
+                    Effect.interruptible,
+                    Effect.forkIn(producer.scope, { startImmediately: true }),
+                  );
+                }
+                return true;
               });
             }
             if (
@@ -11200,6 +11202,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           backgroundTasksEndWithProcess: true,
           // Idle release can beat delayed subagent resumes: Codex reports them completed between turns with no resume-expected signal.
           hasPendingBackgroundWork: Effect.gen(function* () {
+            if (currentProducer.active && lateStarts.hasPendingStop(currentProducer.generation))
+              return true;
             if (Array.from(capacityByThread.values()).some(capacityWorkPending)) return true;
             for (const items of (yield* Ref.get(runningCommandItemsByTurn)).values()) {
               if (items.size > 0) {
@@ -11337,7 +11341,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           // Untraced: the run's event stream calls this once per provider event.
           hasPendingBackgroundWorkForThread: Effect.fnUntraced(function* (providerThread) {
-            const request = capacityByThread.get(providerThread.nativeThreadRef?.nativeId ?? "");
+            const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+            const producer = currentProducer;
+            if (
+              nativeThreadId != null &&
+              ownsNativeBinding(producer, nativeThreadId, providerThread.id) &&
+              lateStarts.hasPendingStop(producer.generation, nativeThreadId)
+            )
+              return true;
+            const request = capacityByThread.get(nativeThreadId ?? "");
             if (
               request !== undefined &&
               request.input.providerThread.id === providerThread.id &&

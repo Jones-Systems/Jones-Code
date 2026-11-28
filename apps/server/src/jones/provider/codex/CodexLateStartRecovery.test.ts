@@ -57,6 +57,24 @@ describe("Codex late start admission recovery", () => {
     expect(ledger.blocked).toBe(false);
   });
 
+  it("retains a stopped start only on its original binding until the matching terminal", () => {
+    const ledger = makeCodexLateStartRecovery();
+    const dispatch = ledger.begin(binding, [], () => {});
+    ledger.markUnknown(dispatch, { retainForStop: true });
+    expect(ledger.hasPendingStop(binding.runtimeGeneration)).toBe(true);
+    expect(ledger.hasPendingStop(binding.runtimeGeneration, binding.nativeThreadId)).toBe(true);
+    expect(ledger.hasPendingStop(binding.runtimeGeneration, "sibling")).toBe(false);
+    expect(ledger.hasPendingStop("replacement-generation", binding.nativeThreadId)).toBe(false);
+
+    ledger.acknowledge(dispatch, binding.runtimeGeneration, "turn-1");
+    ledger.recordNativeStart(binding, "turn-1");
+    ledger.complete(binding, "different-turn");
+    expect(ledger.hasPendingStop(binding.runtimeGeneration, binding.nativeThreadId)).toBe(true);
+    ledger.complete(binding, "turn-1");
+    expect(ledger.hasPendingStop(binding.runtimeGeneration)).toBe(false);
+    expect(ledger.blocked).toBe(true);
+  });
+
   it("fails closed on early evidence overflow without growing its buffer", () => {
     const ledger = makeCodexLateStartRecovery();
     const dispatch = ledger.begin(binding, []);
