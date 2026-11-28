@@ -187,9 +187,7 @@ const sameBinding = (left: ProviderRuntimeBinding, right: ProviderRuntimeBinding
   left.runtimeGeneration === right.runtimeGeneration &&
   left.nativeThreadId === right.nativeThreadId;
 
-export function makeCodexThreadRetirements<Producer extends object>(
-  onThreadClosed?: (binding: ProviderRuntimeBinding) => void,
-) {
+export function makeCodexThreadRetirements<Producer extends object>() {
   const producers = new WeakMap<Producer, Map<string, ThreadRetirement>>();
   const find = (producer: Producer, nativeThreadId: string) =>
     producers.get(producer)?.get(nativeThreadId);
@@ -254,7 +252,6 @@ export function makeCodexThreadRetirements<Producer extends object>(
                 Effect.catch(() => Effect.never),
               ),
         );
-        if (evidence === "thread_closed") onThreadClosed?.(input.binding);
         yield* Deferred.succeed(done, { binding: input.binding, evidence });
       }).pipe(Effect.forkDetach({ startImmediately: true }));
       return request;

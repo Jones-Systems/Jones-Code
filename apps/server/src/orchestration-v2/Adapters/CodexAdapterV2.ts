@@ -2479,9 +2479,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           makeCodexLateStartRecovery<NonNullable<CodexTurnStartParams["additionalContext"]>>(
             handoffCompaction,
           );
-        const threadRetirements = makeCodexThreadRetirements<CodexRuntimeProducer>(
-          lateStarts.retireThread,
-        );
+        const threadRetirements = makeCodexThreadRetirements<CodexRuntimeProducer>();
         const admissionTarget = (
           threadId: string | null,
           nativeThreadId: string | null,
@@ -2703,9 +2701,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     const nativeId = Reflect.get(payload, "threadId");
                     if (typeof nativeId === "string") {
                       producer.unloadedThreads.add(nativeId);
-                      yield* threadRetirements.observeClosed(producer, nativeId);
                       const closing = producer.threadClosings.get(nativeId);
                       producer.threadClosings.delete(nativeId);
+                      // Both detach and transfer require this exact closure, before waking a waiter.
+                      if (closing !== undefined || threadRetirements.owns(producer, nativeId)) {
+                        lateStarts.retireThread({
+                          runtimeGeneration: producer.generation,
+                          nativeThreadId: nativeId,
+                        });
+                      }
+                      yield* threadRetirements.observeClosed(producer, nativeId);
                       if (closing !== undefined) yield* Deferred.succeed(closing, undefined);
                     }
                   }
@@ -10118,16 +10123,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             pendingStartNotifications.begin(dispatch);
             if (stoppedByApp !== undefined) {
               dispatch.onStartOrTerminal = () => Deferred.doneUnsafe(startOrTerminal, Effect.void);
+              const ownsStop = () =>
+                lateStarts.ownsDispatch(dispatch) && currentGeneration() !== undefined;
               let stopScheduled = false;
               let stopEnqueued = false;
               request.forwardPendingStartStop = Effect.gen(function* () {
                 // The app worker can become idle before the original ACK names a turn.
-                if (
-                  currentGeneration() === undefined ||
-                  !(yield* stoppedByApp) ||
-                  currentGeneration() === undefined
-                )
-                  return false;
+                if (!ownsStop() || !(yield* stoppedByApp) || !ownsStop()) return false;
                 lateStarts.markUnknown(dispatch, { retainForStop: true });
                 const turnId = dispatch.nativeTurnId;
                 if (turnId === undefined) return true;
@@ -10137,7 +10139,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   !dispatch.conflictingTurnActivity &&
                   (dispatch.observedTurnId === undefined || dispatch.observedTurnId === turnId) &&
                   !dispatch.completions.has(turnId) &&
-                  currentGeneration() !== undefined &&
+                  ownsStop() &&
                   replyTurnOwner(turnId) === undefined;
                 if (!stopScheduled && canEnqueue()) {
                   stopScheduled = true;

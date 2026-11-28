@@ -15813,122 +15813,196 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
       ),
   );
 
-  it.effect("releases a pending start Stop only after the captured native thread closes", () =>
-    Effect.gen(function* () {
-      const nativeThreadId = "retired-pending-start";
-      const siblingNativeId = "surviving-conversation";
-      const original = codexReplayPreamble({
-        nativeThreadId,
-        nativeTurnId: "retired-turn",
-        prompt: "Original request",
-      });
-      const sibling = codexReplayPreamble({
-        nativeThreadId: siblingNativeId,
-        nativeTurnId: "surviving-turn",
-        prompt: "New request",
-      });
-      const originalSent = yield* Deferred.make<void>();
-      const closureReady = yield* Deferred.make<void>();
-      const allowClosure = yield* Deferred.make<void>();
-      const transcript = makeCodexReplayTranscript({
-        scenario: "retirement-pending-stop",
-        entries: [
-          ...original.slice(0, 5),
-          ...sibling.slice(3, 5).map((entry) => withReplayRequestId(entry, 3)),
-          withReplayRequestId(original[5]!, 4),
-          {
-            type: "emit_inbound",
-            label: "original request enqueued",
-            frame: {
-              method: "thread/status/changed",
-              params: { threadId: siblingNativeId, status: { type: "idle" } },
+  it.effect.each(["transfer", "detach", "detach after queued ACK"] as const)(
+    "releases a pending start Stop only after the captured native thread closes (%s)",
+    (disposition) =>
+      Effect.gen(function* () {
+        const queued = disposition === "detach after queued ACK";
+        const nativeThreadId = "retired-pending-start";
+        const siblingNativeId = "surviving-conversation";
+        const original = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "retired-turn",
+          prompt: "Original request",
+        });
+        const sibling = codexReplayPreamble({
+          nativeThreadId: siblingNativeId,
+          nativeTurnId: "surviving-turn",
+          prompt: "New request",
+        });
+        const originalSent = yield* Deferred.make<void>();
+        const closureReady = yield* Deferred.make<void>();
+        const allowClosure = yield* Deferred.make<void>();
+        const allowQueuedReply = yield* Deferred.make<void>();
+        const afterClosure = yield* Deferred.make<void>();
+        const reply = {
+          type: "emit_inbound" as const,
+          label: queued ? "queued original ACK" : "late original ACK",
+          frame: {
+            id: 4,
+            result: {
+              turn: {
+                ...makeCodexReplayTurn({ id: "retired-turn", status: "inProgress" }),
+                ...(queued ? { startedAt: null } : {}),
+              },
             },
           },
-          {
-            type: "expect_outbound",
-            frame: { id: 5, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
+        };
+        const transcript = makeCodexReplayTranscript({
+          scenario: `closure-pending-stop-${disposition}`,
+          entries: [
+            ...original.slice(0, 5),
+            ...sibling.slice(3, 5).map((entry) => withReplayRequestId(entry, 3)),
+            withReplayRequestId(original[5]!, 4),
+            {
+              type: "emit_inbound",
+              label: "original request enqueued",
+              frame: {
+                method: "thread/status/changed",
+                params: { threadId: siblingNativeId, status: { type: "idle" } },
+              },
+            },
+            ...(queued ? [reply] : []),
+            {
+              type: "expect_outbound",
+              frame: { id: 5, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
+            },
+            { type: "emit_inbound", frame: { id: 5, result: { status: "notSubscribed" } } },
+            {
+              type: "emit_inbound",
+              frame: { method: "thread/closed", params: { threadId: "unrelated-thread" } },
+            },
+            {
+              type: "emit_inbound",
+              label: "captured closure",
+              frame: { method: "thread/closed", params: { threadId: nativeThreadId } },
+            },
+            ...(queued ? [] : [reply]),
+            {
+              type: "emit_inbound",
+              label: "after closure",
+              frame: {
+                method: "thread/status/changed",
+                params: { threadId: siblingNativeId, status: { type: "idle" } },
+              },
+            },
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 6,
+                method: "thread/resume",
+                params: {
+                  threadId: siblingNativeId,
+                  excludeTurns: true,
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                id: 6,
+                result: {
+                  thread: { id: siblingNativeId, updatedAt: 1782622450 },
+                  model: CODEX_TEST_MODEL_SELECTION.model,
+                  modelProvider: "openai",
+                  serviceTier: null,
+                },
+              },
+            },
+            ...sibling.slice(5).map((entry) => withReplayRequestId(entry, 7)),
+            producerCompletion(siblingNativeId, "surviving-turn"),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
+          beforeEmitInbound: (entry) => {
+            if (entry.label === "original request enqueued")
+              return Deferred.succeed(originalSent, undefined).pipe(Effect.asVoid);
+            if (entry.label === "captured closure")
+              return Deferred.succeed(closureReady, undefined).pipe(
+                Effect.andThen(Deferred.await(allowClosure)),
+              );
+            if (entry.label === "queued original ACK") return Deferred.await(allowQueuedReply);
+            if (entry.label === "after closure")
+              return Deferred.succeed(afterClosure, undefined).pipe(Effect.asVoid);
+            return Effect.void;
           },
-          { type: "emit_inbound", frame: { id: 5, result: { status: "notSubscribed" } } },
-          {
-            type: "emit_inbound",
-            frame: { method: "thread/closed", params: { threadId: "unrelated-thread" } },
-          },
-          {
-            type: "emit_inbound",
-            label: "captured closure",
-            frame: { method: "thread/closed", params: { threadId: nativeThreadId } },
-          },
-          withReplayRequestId(original[6]!, 4),
-          ...sibling.slice(5).map((entry) => withReplayRequestId(entry, 6)),
-          producerCompletion(siblingNativeId, "surviving-turn"),
-        ],
-      });
-      const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
-        beforeEmitInbound: (entry) => {
-          if (entry.label === "original request enqueued")
-            return Deferred.succeed(originalSent, undefined).pipe(Effect.asVoid);
-          if (entry.label === "captured closure")
-            return Deferred.succeed(closureReady, undefined).pipe(
-              Effect.andThen(Deferred.await(allowClosure)),
-            );
-          return Effect.void;
-        },
-      });
-      const siblingThreadId = ThreadId.make("surviving-app-thread");
-      const survivor = yield* harness.runtime.ensureThread({
-        threadId: siblingThreadId,
-        modelSelection: CODEX_TEST_MODEL_SELECTION,
-        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
-      });
-      assert.equal(
-        survivor.runtimeIdentity?.runtimeGeneration,
-        harness.providerThread.runtimeIdentity?.runtimeGeneration,
-      );
-      const start = yield* harness.runtime
-        .startTurn(
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("retired-attempt"),
-            text: "Original request",
-          }),
-        )
-        .pipe(Effect.provideService(CodexPendingStartStop, Effect.succeed(true)), Effect.forkChild);
-      yield* Deferred.await(originalSent);
-      yield* Fiber.interrupt(start);
-      assert.isTrue(yield* harness.hasPendingBackgroundWork);
-      const retirement = yield* harness.runtime.retireThreadForTransfer!({
-        providerThread: harness.providerThread,
-        allowProducerRetirement: false,
-      }).pipe(Effect.forkChild);
-      yield* Deferred.await(closureReady);
-      assert.isUndefined(retirement.pollUnsafe(), "The ACK cannot release the retired writer");
-      assert.isTrue(yield* harness.hasPendingBackgroundWork);
-      yield* Deferred.succeed(allowClosure, undefined);
-      assert.equal((yield* Fiber.join(retirement)).evidence, "thread_closed");
-      assert.isFalse(yield* harness.hasPendingBackgroundWork);
-
-      yield* harness.runtime.startTurn(
-        makeCodexTestTurnInput({
+        });
+        const siblingThreadId = ThreadId.make("surviving-app-thread");
+        const survivor = yield* harness.runtime.ensureThread({
           threadId: siblingThreadId,
-          providerThread: survivor,
-          now: yield* DateTime.now,
-          attemptId: RunAttemptId.make("surviving-attempt"),
-          text: "New request",
-        }),
-      );
-      yield* harness.firstTerminal;
-      assert.deepEqual(
-        harness.terminalEvents().map((event) => event.providerThreadId),
-        [survivor.id],
-      );
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, layerNodeServicesWithCrypto),
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        });
+        assert.equal(
+          survivor.runtimeIdentity?.runtimeGeneration,
+          harness.providerThread.runtimeIdentity?.runtimeGeneration,
+        );
+        const start = yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("retired-attempt"),
+              text: "Original request",
+            }),
+          )
+          .pipe(
+            Effect.provideService(CodexPendingStartStop, Effect.succeed(true)),
+            Effect.forkChild,
+          );
+        yield* Deferred.await(originalSent);
+        yield* Fiber.interrupt(start);
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        yield* Deferred.succeed(allowQueuedReply, undefined);
+        yield* TestClock.adjust(0);
+        const release = yield* (
+          disposition === "transfer"
+            ? harness.runtime.retireThreadForTransfer!({
+                providerThread: harness.providerThread,
+                allowProducerRetirement: false,
+              }).pipe(Effect.map((receipt) => assert.equal(receipt.evidence, "thread_closed")))
+            : harness.runtime.unloadThread!({ providerThread: harness.providerThread })
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(closureReady);
+        if (disposition === "transfer") assert.isUndefined(release.pollUnsafe());
+        else yield* Fiber.join(release);
+        assert.isTrue(
+          yield* harness.hasPendingBackgroundWork,
+          "The unsubscribe ACK leaves the hold",
+        );
+        yield* Deferred.succeed(allowClosure, undefined);
+        yield* Deferred.await(afterClosure);
+        yield* Fiber.join(release);
+        yield* TestClock.adjust(0);
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+
+        const resumed = yield* harness.runtime.resumeThread({ providerThread: survivor });
+        assert.equal(
+          resumed.runtimeIdentity?.runtimeGeneration,
+          survivor.runtimeIdentity?.runtimeGeneration,
+        );
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: siblingThreadId,
+            providerThread: resumed,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("surviving-attempt"),
+            text: "New request",
+          }),
+        );
+        yield* harness.firstTerminal;
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.providerThreadId),
+          [survivor.id],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, layerNodeServicesWithCrypto),
+        ),
       ),
-    ),
   );
 
   it.effect.each([false, true])(

@@ -104,6 +104,8 @@ describe("Codex late start admission recovery", () => {
     ledger.retireThread(binding);
     expect(stopWakes).toBe(1);
     expect(retirements).toBe(1);
+    expect(ledger.ownsDispatch(dispatch)).toBe(false);
+    expect(ledger.ownsDispatch(other)).toBe(true);
     expect(ledger.hasPendingStop(binding.runtimeGeneration, binding.nativeThreadId)).toBe(false);
     expect(ledger.hasPendingStop(sibling.runtimeGeneration, sibling.nativeThreadId)).toBe(true);
     expect(ledger.blocked).toBe(true);

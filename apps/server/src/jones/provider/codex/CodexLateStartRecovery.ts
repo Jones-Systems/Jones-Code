@@ -234,6 +234,9 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>(
       const released = releasedStart(binding);
       if (released !== undefined) releasedStarts.delete(binding.nativeThreadId);
     },
+    ownsDispatch(dispatch: CodexStartDispatch) {
+      return dispatches.has(dispatch);
+    },
     markUnknown(dispatch: CodexStartDispatch, options?: { readonly retainForStop: true }) {
       if (!dispatches.has(dispatch)) return;
       if (options?.retainForStop) dispatch.retainForStop = true;
