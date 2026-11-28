@@ -99,6 +99,7 @@ describe("Codex inline handoff rejection recovery", () => {
     { code: null, late: true, recovery: "late ACK and interrupted prompt without input" },
     { code: null, late: true, recovery: "late ACK and interrupted prompt with observed input" },
     { code: null, late: false, recovery: "application Stop while awaiting ACK" },
+    { code: null, late: false, recovery: "application Stop before queued ACK" },
     { code: null, late: true, recovery: "late ACK with a different terminal" },
     { code: null, late: true, recovery: "late acceptance after newer identical marker" },
     { code: null, late: true, recovery: "late acceptance after binding replacement" },
@@ -122,7 +123,8 @@ describe("Codex inline handoff rejection recovery", () => {
       const interruptedWithoutInput = recovery === "late ACK and interrupted prompt without input";
       const interruptedWithInput =
         recovery === "late ACK and interrupted prompt with observed input";
-      const stopWhileAwaitingAck = recovery === "application Stop while awaiting ACK";
+      const queuedStop = recovery === "application Stop before queued ACK";
+      const stopWhileAwaitingAck = recovery === "application Stop while awaiting ACK" || queuedStop;
       const nativeTerminalStatus =
         interruptedWithoutInput || interruptedWithInput || stopWhileAwaitingAck
           ? "interrupted"
@@ -317,7 +319,10 @@ describe("Codex inline handoff rejection recovery", () => {
           ? {
               id: 4,
               result: {
-                turn: makeCodexReplayTurn({ id: originalNativeTurnId, status: "inProgress" }),
+                turn: {
+                  ...makeCodexReplayTurn({ id: originalNativeTurnId, status: "inProgress" }),
+                  ...(queuedStop ? { startedAt: null } : {}),
+                },
               },
             }
           : { id: 4, error: { code, message: "Rejected original prompt" } },
@@ -355,6 +360,24 @@ describe("Codex inline handoff rejection recovery", () => {
                   : []),
                 ...(stopWhileAwaitingAck
                   ? [
+                      ...(queuedStop
+                        ? [
+                            {
+                              type: "emit_inbound" as const,
+                              label: "queued turn starts",
+                              frame: {
+                                method: "turn/started",
+                                params: {
+                                  threadId: nativeThreadId,
+                                  turn: makeCodexReplayTurn({
+                                    id: originalNativeTurnId,
+                                    status: "inProgress",
+                                  }),
+                                },
+                              },
+                            },
+                          ]
+                        : []),
                       {
                         type: "expect_outbound" as const,
                         frame: {
@@ -408,7 +431,9 @@ describe("Codex inline handoff rejection recovery", () => {
       const sent = yield* Deferred.make<void>();
       const allowRejection = yield* Deferred.make<void>();
       const rejectionObserved = yield* Deferred.make<void>();
+      const queuedAckObserved = yield* Deferred.make<void>();
       const allowActivity = yield* Deferred.make<void>();
+      let interruptsSent = 0;
       const writerParked = yield* Deferred.make<void>();
       const allowWriter = yield* Deferred.make<void>();
       const possibleRestoreFinished = yield* Deferred.make<void>();
@@ -470,7 +495,7 @@ describe("Codex inline handoff rejection recovery", () => {
         beforeEmitInbound: (entry) =>
           entry.label === "first prompt response" || entry.label === "history request rejection"
             ? Deferred.succeed(sent, undefined).pipe(Effect.andThen(Deferred.await(allowRejection)))
-            : entry.label === "contradictory turn activity"
+            : entry.label === "contradictory turn activity" || entry.label === "queued turn starts"
               ? Deferred.await(allowActivity)
               : Effect.void,
       });
@@ -601,8 +626,15 @@ describe("Codex inline handoff rejection recovery", () => {
           const afterStop = yield* getProjection();
           assert.equal(afterStop.runs[0]?.status, "interrupted");
           yield* Deferred.succeed(allowRejection, undefined);
+          if (queuedStop) {
+            yield* Deferred.await(queuedAckObserved);
+            yield* TestClock.adjust("2 seconds");
+            assert.equal(interruptsSent, 0, "Stop must wait for the queued turn to start");
+            yield* Deferred.succeed(allowActivity, undefined);
+          }
           yield* Deferred.await(rejectionObserved);
           yield* Fiber.join(starting);
+          assert.equal(interruptsSent, 1);
           const afterTerminal = yield* getProjection();
           assert.deepEqual(afterTerminal.runs, afterStop.runs);
           assert.deepEqual(afterTerminal.attempts, afterStop.attempts);
@@ -896,7 +928,13 @@ describe("Codex inline handoff rejection recovery", () => {
               driver,
               onSessionOpened: (runtime) =>
                 Deferred.doneUnsafe(sessionOpened, Effect.succeed(runtime)),
+              observeOutgoingFrame: (frame) => {
+                if (Predicate.hasProperty(frame, "method") && frame.method === "turn/interrupt")
+                  interruptsSent++;
+              },
               observeFrame: (frame) => {
+                if (queuedStop && Predicate.hasProperty(frame, "id") && frame.id === 4)
+                  Deferred.doneUnsafe(queuedAckObserved, Effect.void);
                 if (
                   Predicate.hasProperty(frame, "error") &&
                   Predicate.isObject(frame.error) &&

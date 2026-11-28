@@ -3244,6 +3244,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           replay: Effect.Effect<void, CodexErrors.CodexAppServerError>,
         ): Effect.fn.Return<void, CodexErrors.CodexAppServerError> {
           lateStarts.observeTurnActivity(producer.generation, payload, method);
+          if (producer.active && producer === currentProducer && method === "turn/started") {
+            const started = payload as CodexSchema.V2TurnStartedNotification;
+            lateStarts.recordNativeStart(
+              { runtimeGeneration: producer.generation, nativeThreadId: started.threadId },
+              started.turn.id,
+            );
+          }
           if (
             producer.active &&
             producer === currentProducer &&
@@ -10047,6 +10054,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const terminalReceipt = promptedInline
             ? yield* Deferred.make<CodexStartTerminal>()
             : undefined;
+          const startOrTerminal = yield* Deferred.make<void>();
           const startCancelled = yield* Deferred.make<void>();
           if (continuity !== undefined && !(yield* continuity.checkContinuation))
             return yield* new GoalContinuityError({ reason: "recovery_required" });
@@ -10107,6 +10115,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             request.lateStartDispatch = dispatch;
             pendingStartNotifications.begin(dispatch);
             if (stoppedByApp !== undefined) {
+              dispatch.onStartOrTerminal = () => Deferred.doneUnsafe(startOrTerminal, Effect.void);
+              let stopScheduled = false;
               let stopEnqueued = false;
               request.forwardPendingStartStop = Effect.suspend(() => {
                 const turnId = dispatch.nativeTurnId;
@@ -10124,32 +10134,40 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 return Effect.gen(function* () {
                   if (!(yield* stoppedByApp)) return false;
                   lateStarts.markUnknown(dispatch);
-                  if (canEnqueue()) {
-                    yield* withRequestAdmission(
-                      producer.client.request("turn/interrupt", {
-                        threadId: binding.nativeThreadId,
-                        turnId,
-                      }),
-                      {
-                        canEnqueue,
-                        onEnqueued: () => {
-                          stopEnqueued = true;
+                  if (!stopScheduled && canEnqueue()) {
+                    stopScheduled = true;
+                    // A queued ACK names the original turn but Codex cannot
+                    // interrupt it until it starts. The producer owns the wait.
+                    yield* Effect.gen(function* () {
+                      yield* Deferred.await(startOrTerminal);
+                      if (!canEnqueue()) return;
+                      yield* withRequestAdmission(
+                        producer.client.request("turn/interrupt", {
+                          threadId: binding.nativeThreadId,
+                          turnId,
+                        }),
+                        {
+                          canEnqueue,
+                          onEnqueued: () => {
+                            stopEnqueued = true;
+                          },
                         },
-                      },
-                    ).pipe(
-                      Effect.timeoutOption(STOP_REQUEST_BUDGET_MS),
-                      Effect.tap((result) =>
-                        Option.isNone(result)
-                          ? Effect.logWarning("Codex did not acknowledge Stop for a late start.")
-                          : Effect.void,
-                      ),
-                      Effect.catch(() =>
-                        stopEnqueued
-                          ? Effect.logWarning(
-                              "Codex could not interrupt an acknowledged late start.",
-                            )
-                          : Effect.void,
-                      ),
+                      ).pipe(
+                        Effect.timeoutOption(STOP_REQUEST_BUDGET_MS),
+                        Effect.tap((result) =>
+                          Option.isNone(result)
+                            ? Effect.logWarning("Codex did not acknowledge Stop for a late start.")
+                            : Effect.void,
+                        ),
+                        Effect.catch(() =>
+                          stopEnqueued
+                            ? Effect.logWarning(
+                                "Codex could not interrupt an acknowledged late start.",
+                              )
+                            : Effect.void,
+                        ),
+                      );
+                    }).pipe(
                       Effect.interruptible,
                       Effect.forkIn(producer.scope, { startImmediately: true }),
                     );
@@ -10236,6 +10254,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       params.additionalContext,
                       promptedInline ? inlineHistory.markAcknowledged : undefined,
                     );
+                    if (
+                      dispatch.nativeTurnId === started.turn.id &&
+                      (started.turn.startedAt !== null ||
+                        dispatch.startedTurnIds.has(started.turn.id) ||
+                        dispatch.completions.has(started.turn.id))
+                    )
+                      dispatch.onStartOrTerminal?.();
                     // The ordinary ACK must bind before subsequent native frames can
                     // complete the turn or close the producer. The cancelled caller
                     // checks Stop in finishUnknownCapacityStart when it already has

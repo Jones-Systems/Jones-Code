@@ -117,6 +117,7 @@ export function makeCodexReplayClientFactory(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
   readonly observeFrame?: (frame: unknown) => void;
+  readonly observeOutgoingFrame?: (frame: unknown) => void;
 }): CodexAdapterV2.CodexAppServerClientFactoryShape {
   const replayLayer = (options: CodexClient.CodexAppServerClientOptions) =>
     input.driver === undefined
@@ -136,10 +137,19 @@ export function makeCodexReplayClientFactory(input: {
         yield* Effect.addFinalizer(() => Deferred.succeed(processExited, undefined));
         const context = yield* Layer.build(
           replayLayer({
-            ...codexStartReplyObservationOptions((frame) => {
-              openInput.observeDecodedReply?.(frame);
-              input.observeFrame?.(frame);
-            }),
+            ...codexStartReplyObservationOptions(
+              (frame) => {
+                openInput.observeDecodedReply?.(frame);
+                input.observeFrame?.(frame);
+              },
+              input.observeOutgoingFrame === undefined
+                ? undefined
+                : (event) =>
+                    Effect.sync(() => {
+                      if (event.direction === "outgoing" && event.stage === "decoded")
+                        input.observeOutgoingFrame?.(event.payload);
+                    }),
+            ),
             ...(openInput.onTermination === undefined
               ? {}
               : { onTermination: openInput.onTermination }),

@@ -51,8 +51,10 @@ export const CodexPendingStartStop = Context.Reference<Effect.Effect<boolean>>(
 export interface CodexStartDispatch extends NativeBinding {
   readonly ordinal: number;
   readonly excludedTurnIds: ReadonlySet<string>;
+  readonly startedTurnIds: Set<string>;
   readonly completions: Map<string, CodexStartTerminal | undefined>;
   readonly onLateTerminal?: (terminal: CodexStartTerminal) => void;
+  onStartOrTerminal?: () => void;
   nativeTurnId: string | undefined;
   turnActivityObserved: boolean;
   observedTurnId?: string;
@@ -212,6 +214,7 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>(
         ...binding,
         ordinal: ++nextOrdinal,
         excludedTurnIds: knownTurns,
+        startedTurnIds: new Set(),
         completions: new Map(),
         ...(onLateTerminal === undefined ? {} : { onLateTerminal }),
         nativeTurnId: undefined,
@@ -364,6 +367,20 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>(
           acceptedContexts.set(nativeThreadId, { ordinal, context: update(accepted?.context) });
       };
     },
+    recordNativeStart(binding: NativeBinding, nativeTurnId: string) {
+      for (const dispatch of dispatches) {
+        if (
+          !matchesNativeBinding(dispatch, binding) ||
+          dispatch.excludedTurnIds.has(nativeTurnId) ||
+          (dispatch.nativeTurnId !== undefined && dispatch.nativeTurnId !== nativeTurnId) ||
+          dispatch.startedTurnIds.has(nativeTurnId)
+        )
+          continue;
+        if (dispatch.startedTurnIds.size >= 32) dispatch.overflow = true;
+        else dispatch.startedTurnIds.add(nativeTurnId);
+        if (dispatch.nativeTurnId === nativeTurnId) dispatch.onStartOrTerminal?.();
+      }
+    },
     complete(
       binding: NativeBinding,
       nativeTurnId: string,
@@ -383,6 +400,7 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>(
             nativeTurnId,
             dispatch.onLateTerminal !== undefined ? readTerminal?.() : undefined,
           );
+        if (dispatch.nativeTurnId === nativeTurnId) dispatch.onStartOrTerminal?.();
         releaseSettled(dispatch);
       }
     },
