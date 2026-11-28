@@ -55,6 +55,7 @@ export interface CodexStartDispatch extends NativeBinding {
   readonly completions: Map<string, CodexStartTerminal | undefined>;
   readonly onLateTerminal?: (terminal: CodexStartTerminal) => void;
   onStartOrTerminal?: () => void;
+  onRetired?: () => void;
   nativeTurnId: string | undefined;
   turnActivityObserved: boolean;
   observedTurnId?: string;
@@ -250,6 +251,16 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>(
           return true;
       }
       return false;
+    },
+    retireThread(binding: NativeBinding) {
+      // Verified native closure ends live custody without proving prompt delivery.
+      for (const dispatch of dispatches) {
+        if (!matchesNativeBinding(dispatch, binding)) continue;
+        dispatches.delete(dispatch);
+        dispatch.onStartOrTerminal?.();
+        dispatch.onRetired?.();
+      }
+      if (releasedStart(binding) !== undefined) releasedStarts.delete(binding.nativeThreadId);
     },
     observeFrame(runtimeGeneration: string, frame: unknown) {
       if (!observing() || !Predicate.isObject(frame)) return;

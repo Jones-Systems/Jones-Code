@@ -2463,7 +2463,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
           );
         const producers = new Map<string, CodexRuntimeProducer>();
-        const threadRetirements = makeCodexThreadRetirements<CodexRuntimeProducer>();
         let exclusiveStop: { generation: string; publish: Effect.Effect<void> } | undefined;
         const finishExclusiveStop = (generation: string) =>
           Effect.uninterruptible(
@@ -2480,6 +2479,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           makeCodexLateStartRecovery<NonNullable<CodexTurnStartParams["additionalContext"]>>(
             handoffCompaction,
           );
+        const threadRetirements = makeCodexThreadRetirements<CodexRuntimeProducer>(
+          lateStarts.retireThread,
+        );
         const admissionTarget = (
           threadId: string | null,
           nativeThreadId: string | null,
@@ -10052,7 +10054,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             (request.input.inlineContextLength ?? 0) > 0 &&
             params.input.some((item) => item.type === "text");
           const terminalReceipt = promptedInline
-            ? yield* Deferred.make<CodexStartTerminal>()
+            ? yield* Deferred.make<CodexStartTerminal | null>()
             : undefined;
           const startOrTerminal = yield* Deferred.make<void>();
           const startCancelled = yield* Deferred.make<void>();
@@ -10184,6 +10186,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               terminalReceipt === undefined
             )
               return;
+            dispatch.onRetired = () => Deferred.doneUnsafe(terminalReceipt, Effect.succeed(null));
             request.reconcileLateInline = inlineHistory
               .reconcileLate(
                 terminalReceipt,

@@ -128,6 +128,7 @@ import type {
 import { deliverWithHandoffRecovery } from "../../jones/provider/codex/ContextHandoffRecovery.ts";
 import { CONTINUITY_RELOAD_CUE } from "../../jones/goals/continuity/capsule.ts";
 import { CODEX_STARTUP_BUDGET_MS } from "../../jones/provider/codex/CodexStartup.ts";
+import { CodexPendingStartStop } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 import {
   STOP_CHILD_BUDGET_MS,
   STOP_RECOVERY_BUDGET_MS,
@@ -15810,6 +15811,124 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, layerNodeServicesWithCrypto),
         ),
       ),
+  );
+
+  it.effect("releases a pending start Stop only after the captured native thread closes", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "retired-pending-start";
+      const siblingNativeId = "surviving-conversation";
+      const original = codexReplayPreamble({
+        nativeThreadId,
+        nativeTurnId: "retired-turn",
+        prompt: "Original request",
+      });
+      const sibling = codexReplayPreamble({
+        nativeThreadId: siblingNativeId,
+        nativeTurnId: "surviving-turn",
+        prompt: "New request",
+      });
+      const originalSent = yield* Deferred.make<void>();
+      const closureReady = yield* Deferred.make<void>();
+      const allowClosure = yield* Deferred.make<void>();
+      const transcript = makeCodexReplayTranscript({
+        scenario: "retirement-pending-stop",
+        entries: [
+          ...original.slice(0, 5),
+          ...sibling.slice(3, 5).map((entry) => withReplayRequestId(entry, 3)),
+          withReplayRequestId(original[5]!, 4),
+          {
+            type: "emit_inbound",
+            label: "original request enqueued",
+            frame: {
+              method: "thread/status/changed",
+              params: { threadId: siblingNativeId, status: { type: "idle" } },
+            },
+          },
+          {
+            type: "expect_outbound",
+            frame: { id: 5, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
+          },
+          { type: "emit_inbound", frame: { id: 5, result: { status: "notSubscribed" } } },
+          {
+            type: "emit_inbound",
+            frame: { method: "thread/closed", params: { threadId: "unrelated-thread" } },
+          },
+          {
+            type: "emit_inbound",
+            label: "captured closure",
+            frame: { method: "thread/closed", params: { threadId: nativeThreadId } },
+          },
+          withReplayRequestId(original[6]!, 4),
+          ...sibling.slice(5).map((entry) => withReplayRequestId(entry, 6)),
+          producerCompletion(siblingNativeId, "surviving-turn"),
+        ],
+      });
+      const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
+        beforeEmitInbound: (entry) => {
+          if (entry.label === "original request enqueued")
+            return Deferred.succeed(originalSent, undefined).pipe(Effect.asVoid);
+          if (entry.label === "captured closure")
+            return Deferred.succeed(closureReady, undefined).pipe(
+              Effect.andThen(Deferred.await(allowClosure)),
+            );
+          return Effect.void;
+        },
+      });
+      const siblingThreadId = ThreadId.make("surviving-app-thread");
+      const survivor = yield* harness.runtime.ensureThread({
+        threadId: siblingThreadId,
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+      });
+      assert.equal(
+        survivor.runtimeIdentity?.runtimeGeneration,
+        harness.providerThread.runtimeIdentity?.runtimeGeneration,
+      );
+      const start = yield* harness.runtime
+        .startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("retired-attempt"),
+            text: "Original request",
+          }),
+        )
+        .pipe(Effect.provideService(CodexPendingStartStop, Effect.succeed(true)), Effect.forkChild);
+      yield* Deferred.await(originalSent);
+      yield* Fiber.interrupt(start);
+      assert.isTrue(yield* harness.hasPendingBackgroundWork);
+      const retirement = yield* harness.runtime.retireThreadForTransfer!({
+        providerThread: harness.providerThread,
+        allowProducerRetirement: false,
+      }).pipe(Effect.forkChild);
+      yield* Deferred.await(closureReady);
+      assert.isUndefined(retirement.pollUnsafe(), "The ACK cannot release the retired writer");
+      assert.isTrue(yield* harness.hasPendingBackgroundWork);
+      yield* Deferred.succeed(allowClosure, undefined);
+      assert.equal((yield* Fiber.join(retirement)).evidence, "thread_closed");
+      assert.isFalse(yield* harness.hasPendingBackgroundWork);
+
+      yield* harness.runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId: siblingThreadId,
+          providerThread: survivor,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("surviving-attempt"),
+          text: "New request",
+        }),
+      );
+      yield* harness.firstTerminal;
+      assert.deepEqual(
+        harness.terminalEvents().map((event) => event.providerThreadId),
+        [survivor.id],
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, layerNodeServicesWithCrypto),
+      ),
+    ),
   );
 
   it.effect.each([false, true])(

@@ -109,7 +109,7 @@ interface InlineHistoryStart {
   readonly tryDispatch: () => boolean;
   readonly markAcknowledged: () => void;
   readonly reconcileLate: (
-    terminal: Deferred.Deferred<CodexStartTerminal>,
+    terminal: Deferred.Deferred<CodexStartTerminal | null>,
     binding: ProviderRuntimeBinding,
     input: ProviderAdapterV2TurnInput,
     isCurrent: (terminal: CodexStartTerminal) => boolean,
@@ -380,8 +380,9 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
         },
         reconcileLate: (terminal, binding, input, isCurrent, release) =>
           Deferred.await(terminal).pipe(
-            Effect.flatMap((observed) =>
-              recordLateReceipt({
+            Effect.flatMap((observed) => {
+              if (observed === null) return Effect.void;
+              return recordLateReceipt({
                 binding,
                 runId: input.runId,
                 runOrdinal: input.runOrdinal,
@@ -411,8 +412,8 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
                     if (committed) release(observed);
                   }),
                 ),
-              ),
-            ),
+              );
+            }),
             Effect.catchCause(() =>
               Effect.logWarning("Failed to reconcile late Codex inline history", {
                 runId: input.runId,

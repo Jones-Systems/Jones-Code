@@ -86,6 +86,34 @@ describe("Codex late start admission recovery", () => {
     expect(ledger.blocked).toBe(true);
   });
 
+  it("ends only the closed binding's live recovery and ignores its subsequent reply", () => {
+    const ledger = makeCodexLateStartRecovery();
+    const sibling = { ...binding, nativeThreadId: "conversation-2" };
+    const dispatch = ledger.begin(binding, []);
+    const other = ledger.begin(sibling, []);
+    let stopWakes = 0;
+    let retirements = 0;
+    dispatch.onStartOrTerminal = () => stopWakes++;
+    dispatch.onRetired = () => retirements++;
+    ledger.markUnknown(dispatch, { retainForStop: true });
+    ledger.markUnknown(other, { retainForStop: true });
+
+    ledger.retireThread({ ...binding, runtimeGeneration: "other-generation" });
+    expect(ledger.hasPendingStop(binding.runtimeGeneration, binding.nativeThreadId)).toBe(true);
+    ledger.retireThread(binding);
+    ledger.retireThread(binding);
+    expect(stopWakes).toBe(1);
+    expect(retirements).toBe(1);
+    expect(ledger.hasPendingStop(binding.runtimeGeneration, binding.nativeThreadId)).toBe(false);
+    expect(ledger.hasPendingStop(sibling.runtimeGeneration, sibling.nativeThreadId)).toBe(true);
+    expect(ledger.blocked).toBe(true);
+    ledger.acknowledge(dispatch, binding.runtimeGeneration, "retired-turn");
+    expect(dispatch.nativeTurnId).toBeUndefined();
+    ledger.acknowledge(other, sibling.runtimeGeneration, "sibling-turn");
+    ledger.complete(sibling, "sibling-turn");
+    expect(ledger.blocked).toBe(false);
+  });
+
   it("does not count duplicate evidence against the early buffer", () => {
     const ledger = makeCodexLateStartRecovery();
     const dispatch = ledger.begin(binding, []);
