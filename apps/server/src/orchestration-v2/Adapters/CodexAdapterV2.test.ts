@@ -6,6 +6,10 @@ import {
   CODEX_START_ACK_TIMEOUT_MS,
   codexStartReplyObservationOptions,
 } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
+import {
+  CodexInlineHistoryStart,
+  makeCodexHistoryDeliveryPersistence,
+} from "../../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import { CurrentStartedTurnContinuation } from "../../jones/provider/StartAdmission.ts";
 import { buildAppIdentityInstructions } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import { historyResponseItems, selectHistory } from "@t3tools/provider-core/server/handoffBudget";
@@ -23235,9 +23239,14 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
     ),
   );
 
-  it.effect.each([false, true])(
-    "releases producer-owned queued Stop after a child failure (interrupt acknowledged: %s)",
-    (acknowledged) =>
+  it.effect.each([
+    { acknowledged: false, inputEvidence: "terminal" },
+    { acknowledged: true, inputEvidence: "terminal" },
+    { acknowledged: true, inputEvidence: "item" },
+    { acknowledged: true, inputEvidence: "none" },
+  ] as const)(
+    "settles queued Stop after child failure (acknowledged: $acknowledged, input: $inputEvidence)",
+    ({ acknowledged, inputEvidence }) =>
       Effect.gen(function* () {
         const allowProducerStop = yield* Deferred.make<void>();
         const rootReplyObserved = yield* Deferred.make<void>();
@@ -23246,8 +23255,17 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         const allowTerminal = yield* Deferred.make<void>();
         const terminalReceived = yield* Deferred.make<void>();
         const entries = interruptSubagentCommandTranscript.entries;
+        const sendsFollowUp = inputEvidence !== "none";
+        const userItem = { type: "userMessage", id: "original-input", content: [] };
+        const followUpTurn = "after-queued-stop";
+        const followUpPrompt = "Send another prompt after the stopped one.";
+        const followUp = codexReplayPreamble({
+          nativeThreadId: INTERRUPT_NATIVE_THREAD,
+          nativeTurnId: followUpTurn,
+          prompt: followUpPrompt,
+        });
         const transcript = makeCodexReplayTranscript({
-          scenario: `queued-stop-child-failure-${acknowledged}`,
+          scenario: `queued-stop-child-failure-${acknowledged}-${inputEvidence}`,
           entries: [
             ...entries.slice(0, 6),
             {
@@ -23280,6 +23298,23 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
               label: "child interrupt failed",
               frame: { id: 4, error: { code: -32_000, message: "child interrupt request failed" } },
             },
+            ...(inputEvidence === "item"
+              ? [
+                  {
+                    type: "emit_inbound" as const,
+                    label: "root native input",
+                    frame: {
+                      method: "item/completed",
+                      params: {
+                        threadId: INTERRUPT_NATIVE_THREAD,
+                        turnId: INTERRUPT_NATIVE_TURN,
+                        completedAtMs: 1782622445000,
+                        item: userItem,
+                      },
+                    },
+                  },
+                ]
+              : []),
             {
               type: "emit_inbound",
               label: "root native terminal",
@@ -23287,9 +23322,33 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
                 method: "turn/completed",
                 params: {
                   threadId: INTERRUPT_NATIVE_THREAD,
-                  turn: makeCodexReplayTurn({ id: INTERRUPT_NATIVE_TURN, status: "interrupted" }),
+                  turn: {
+                    ...makeCodexReplayTurn({ id: INTERRUPT_NATIVE_TURN, status: "interrupted" }),
+                    ...(inputEvidence === "terminal"
+                      ? { itemsView: "full", items: [userItem] }
+                      : {}),
+                  },
                 },
               },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                id: "after-terminal",
+                method: "mcpServer/elicitation/request",
+                params: {
+                  threadId: INTERRUPT_NATIVE_THREAD,
+                  serverName: "synthetic-mcp",
+                  message: "Wait for the terminal reader.",
+                  mode: "url",
+                  elicitationId: "after-terminal",
+                  url: "https://example.com/fixture",
+                },
+              },
+            },
+            {
+              type: "expect_outbound",
+              frame: { id: "after-terminal", result: { action: "cancel" } },
             },
             {
               type: "emit_inbound",
@@ -23299,6 +23358,13 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
                 params: { threadId: INTERRUPT_NATIVE_THREAD, status: { type: "idle" } },
               },
             },
+            ...(sendsFollowUp
+              ? [
+                  ...followUp.slice(5, 7).map((entry) => withReplayRequestId(entry, 6)),
+                  followUp[7]!,
+                  producerCompletion(INTERRUPT_NATIVE_THREAD, followUpTurn),
+                ]
+              : []),
           ],
         });
         const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
@@ -23314,6 +23380,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
                 return Deferred.succeed(childFailureReady, undefined).pipe(
                   Effect.andThen(Deferred.await(allowChildFailure)),
                 );
+              case "root native input":
               case "root native terminal":
                 return Deferred.await(allowTerminal);
               case "after root native terminal":
@@ -23323,17 +23390,30 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             }
           },
         });
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const inline = makeCodexHistoryDeliveryPersistence(
+          () => Effect.succeed([]),
+          (effect) => effect,
+        ).trackInlineStart(() => Effect.succeed([]), idAllocator, []);
+        let deliveries = 0;
+        inline.deferDelivery(
+          Effect.sync(() => {
+            deliveries++;
+          }),
+        );
         yield* harness.runtime
-          .startTurn(
-            makeCodexTestTurnInput({
+          .startTurn({
+            ...makeCodexTestTurnInput({
               threadId: harness.threadId,
               providerThread: harness.providerThread,
               now: yield* DateTime.now,
               attemptId: RunAttemptId.make("queued-stop-child-failure"),
               text: INTERRUPT_PROMPT,
             }),
-          )
+            inlineContextLength: 5,
+          })
           .pipe(
+            Effect.provideService(CodexInlineHistoryStart, inline),
             Effect.provideService(CodexQueuedStartStop, () => ({
               wasStopped: Effect.succeed(true),
               awaitStop: Deferred.await(allowProducerStop).pipe(Effect.as(true)),
@@ -23348,7 +23428,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             ),
           "running child turn",
         );
-        const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+        const providerTurnId = idAllocator.derive.providerTurn({
           driver: CodexAdapterV2.CODEX_DRIVER_KIND,
           nativeTurnId: INTERRUPT_NATIVE_TURN,
         });
@@ -23362,6 +23442,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         assert.equal((yield* Fiber.join(stopping))._tag, "Failure");
         yield* TestClock.adjust(0);
         assert.lengthOf(harness.terminalEvents(), acknowledged ? 1 : 0);
+        assert.equal(deliveries, 0, "Neither the queued ACK nor Stop cleanup proves input");
         assert.isTrue(
           yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
         );
@@ -23375,6 +23456,19 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
         assert.isFalse(
           yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
         );
+        assert.equal(deliveries, inputEvidence === "none" ? 0 : 1);
+        if (!sendsFollowUp) return;
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("after-queued-stop"),
+            text: followUpPrompt,
+          }),
+        );
+        yield* harness.until(() => harness.terminalEvents().length === 2, "follow-up terminal");
+        assert.equal(harness.terminalEvents()[1]?.status, "completed");
       }).pipe(
         Effect.scoped,
         Effect.provide(

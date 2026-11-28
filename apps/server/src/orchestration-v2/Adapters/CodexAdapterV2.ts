@@ -596,6 +596,13 @@ function mapCodexTurnStatus(
   }
 }
 
+function completionProvesQueuedInput(turn: CodexSchema.V2TurnCompletedNotification["turn"]) {
+  return (
+    (turn.status === "completed" && turn.startedAt != null) ||
+    turn.items.some((item) => item.type === "userMessage")
+  );
+}
+
 function providerTurnStatusToTerminal(
   status: OrchestrationV2ProviderTurn["status"],
 ): Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn.terminal" }>["status"] {
@@ -1543,7 +1550,7 @@ interface QueuedCodexRootStop {
   readonly closed: Deferred.Deferred<void>;
   readonly wasStopped: Effect.Effect<boolean>;
   authorized: boolean;
-  delivery: "pending" | "dispatched" | "acknowledged";
+  delivery: "pending" | "requesting" | "dispatched" | "acknowledged";
 }
 
 interface ActiveCodexTurnContext {
@@ -2708,6 +2715,28 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           queuedRootStops.delete(turn);
           Deferred.doneUnsafe(stop.closed, Effect.void);
         };
+        const findQueuedRootStopTurn = (
+          producer: CodexRuntimeProducer,
+          nativeThreadId: string,
+          nativeTurnId: string,
+        ) => {
+          const context = Ref.getUnsafe(activeTurns).get(nativeTurnId);
+          if (
+            context?.providerThread.nativeThreadRef?.nativeId === nativeThreadId &&
+            queuedRootStops.get(context)?.producer === producer
+          )
+            return context;
+          // Local lineage cleanup may remove the root before native input or its terminal arrives.
+          for (const [turn, stop] of queuedRootStops) {
+            if (
+              stop.producer === producer &&
+              turn.nativeTurnId === nativeTurnId &&
+              turn.providerThread.nativeThreadRef?.nativeId === nativeThreadId
+            )
+              return turn;
+          }
+          return undefined;
+        };
         const handleServerNotification: CodexRuntimeProducer["client"]["handleServerNotification"] =
           (method, handler) => {
             const install = (producer: CodexRuntimeProducer) =>
@@ -3191,6 +3220,52 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           !Deferred.isDoneUnsafe(producer.termination) &&
           producer.bindings.get(nativeThreadId)?.id === providerThreadId &&
           !threadRetirements.owns(producer, nativeThreadId);
+        const sendQueuedRootStop = (
+          turn: ActiveCodexTurnContext,
+          stop: QueuedCodexRootStop,
+          nativeThreadId: string,
+        ) =>
+          Effect.uninterruptibleMask((restore) =>
+            Effect.gen(function* () {
+              const producer = stop.producer;
+              const ownsStop = () =>
+                queuedRootStops.get(turn) === stop &&
+                ownsNativeBinding(producer, nativeThreadId, turn.providerThread.id) &&
+                !producer.unloadedThreads.has(nativeThreadId) &&
+                Ref.getUnsafe(activeTurns).get(turn.nativeTurnId) === turn;
+              if (stop.delivery !== "pending" || !ownsStop()) return;
+              // Both callers compete before allocating an RPC ID. Transport admission still
+              // rechecks the exact binding at enqueue.
+              stop.delivery = "requesting";
+              const params = { threadId: nativeThreadId, turnId: turn.nativeTurnId };
+              yield* restore(
+                requestAdmission("turn/interrupt", params, producer).pipe(
+                  Effect.andThen(
+                    withRequestAdmission(producer.client.request("turn/interrupt", params), {
+                      canEnqueue: ownsStop,
+                      onEnqueued: () => {
+                        stop.delivery = "dispatched";
+                      },
+                    }),
+                  ),
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      stop.delivery = "acknowledged";
+                    }),
+                  ),
+                ),
+              ).pipe(
+                Effect.catch((cause) =>
+                  stop.delivery === "requesting" && !ownsStop() ? Effect.void : Effect.fail(cause),
+                ),
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    if (stop.delivery === "requesting") stop.delivery = "pending";
+                  }),
+                ),
+              );
+            }),
+          );
         const retainQueuedRootStop = Effect.fn("CodexAdapterV2.retainQueuedRootStop")(function* (
           turn: ActiveCodexTurnContext,
           ready: Deferred.Deferred<void>,
@@ -3216,12 +3291,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             delivery: "pending",
           };
           turn.queuedRootStop = stop;
-          const canEnqueue = () =>
-            queuedRootStops.get(turn) === stop &&
-            stop.delivery === "pending" &&
-            ownsNativeBinding(producer, nativeThreadId, turn.providerThread.id) &&
-            !producer.unloadedThreads.has(nativeThreadId) &&
-            Ref.getUnsafe(activeTurns).get(turn.nativeTurnId) === turn;
           queuedRootStops.set(turn, stop);
           yield* Effect.gen(function* () {
             yield* Effect.raceFirst(
@@ -3229,25 +3298,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 if (!(yield* awaitAppStop)) return;
                 stop.authorized = true;
                 yield* Deferred.await(ready);
-                if (!canEnqueue()) return;
-                yield* requestAdmission("turn/interrupt", { threadId: nativeThreadId }, producer);
-                yield* withRequestAdmission(
-                  producer.client.request("turn/interrupt", {
-                    threadId: nativeThreadId,
-                    turnId: turn.nativeTurnId,
-                  }),
-                  {
-                    canEnqueue,
-                    onEnqueued: () => {
-                      stop.delivery = "dispatched";
-                    },
-                  },
-                ).pipe(
-                  Effect.tap(() =>
-                    Effect.sync(() => {
-                      stop.delivery = "acknowledged";
-                    }),
-                  ),
+                yield* sendQueuedRootStop(turn, stop, nativeThreadId).pipe(
                   Effect.timeout(STOP_REQUEST_BUDGET_MS),
                 );
               }),
@@ -3436,11 +3487,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const notification = payload as
               | CodexSchema.V2ItemStartedNotification
               | CodexSchema.V2ItemCompletedNotification;
-            if (notification.item.type === "userMessage")
+            if (notification.item.type === "userMessage") {
               lateStarts.observeUserInput(
                 { runtimeGeneration: producer.generation, nativeThreadId: notification.threadId },
                 notification.turnId,
               );
+              const stoppedTurn = findQueuedRootStopTurn(
+                producer,
+                notification.threadId,
+                notification.turnId,
+              );
+              if (stoppedTurn !== undefined)
+                yield* confirmQueuedInlineDelivery(stoppedTurn, producer, notification.threadId);
+            }
           }
           if (method === "turn/completed") {
             // The client has decoded this method's payload. Reconciliation facts
@@ -3457,25 +3516,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               !handoffCompaction.ownsTurn(binding, completion.turn.id) &&
               (status === "completed" || status === "failed" || status === "interrupted")
             ) {
-              const context = Ref.getUnsafe(activeTurns).get(completion.turn.id);
-              if (
-                context?.providerThread.nativeThreadRef?.nativeId === completion.threadId &&
-                queuedRootStops.get(context)?.producer === producer
-              ) {
-                settleQueuedRootStop(context);
-              } else {
-                // Local lineage cleanup may remove the active context before the native terminal.
-                for (const [turn, stop] of queuedRootStops) {
-                  if (
-                    stop.producer === producer &&
-                    turn.nativeTurnId === completion.turn.id &&
-                    turn.providerThread.nativeThreadRef?.nativeId === completion.threadId
-                  ) {
-                    settleQueuedRootStop(turn);
-                    break;
-                  }
-                }
-              }
+              const stoppedTurn = findQueuedRootStopTurn(
+                producer,
+                completion.threadId,
+                completion.turn.id,
+              );
               lateStarts.complete(binding, completion.turn.id, () => ({
                 nativeTurnId: completion.turn.id,
                 status,
@@ -3488,6 +3533,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ? { inputObserved: true }
                   : {}),
               }));
+              if (stoppedTurn !== undefined) {
+                settleQueuedRootStop(stoppedTurn);
+                if (completionProvesQueuedInput(completion.turn))
+                  yield* confirmQueuedInlineDelivery(stoppedTurn, producer, completion.threadId);
+              }
             }
           }
           const captured = pendingStartNotifications.capture(
@@ -10054,10 +10104,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
             const producer = (yield* CodexProducerContext) ?? currentProducer;
             const nativeStatus = mapCodexTurnStatus(payload.turn.status);
-            if (
-              (nativeStatus === "completed" && payload.turn.startedAt != null) ||
-              payload.turn.items.some((item) => item.type === "userMessage")
-            ) {
+            if (completionProvesQueuedInput(payload.turn)) {
               yield* confirmQueuedInlineDelivery(context, producer, payload.threadId);
             }
             const status =
@@ -12698,45 +12745,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   }
                   if ((yield* Ref.get(activeTurns)).get(activeTurn.nativeTurnId) === activeTurn) {
                     const nativeThreadId = yield* getNativeThreadId(activeTurn.providerThread);
-                    const request = client.request("turn/interrupt", {
-                      threadId: nativeThreadId,
-                      turnId: activeTurn.nativeTurnId,
-                    });
                     // The context retains the receipt after native settlement removes live retention.
                     const stop = activeTurn.queuedRootStop;
-                    let dispatchedHere = false;
-                    const stillOwnsStop = () =>
-                      stop !== undefined &&
-                      stop.delivery === "pending" &&
-                      queuedRootStops.get(activeTurn) === stop &&
-                      ownsNativeBinding(
-                        stop.producer,
-                        nativeThreadId,
-                        activeTurn.providerThread.id,
-                      ) &&
-                      !stop.producer.unloadedThreads.has(nativeThreadId) &&
-                      Ref.getUnsafe(activeTurns).get(activeTurn.nativeTurnId) === activeTurn;
                     yield* (
                       stop === undefined
-                        ? request
-                        : withRequestAdmission(request, {
-                            canEnqueue: stillOwnsStop,
-                            onEnqueued: () => {
-                              dispatchedHere = true;
-                              stop.delivery = "dispatched";
-                            },
-                          }).pipe(
-                            Effect.tap(() =>
-                              Effect.sync(() => {
-                                stop.delivery = "acknowledged";
-                              }),
-                            ),
-                            Effect.catch((cause) =>
-                              !dispatchedHere && !stillOwnsStop()
-                                ? Effect.void
-                                : Effect.fail(cause),
-                            ),
-                          )
+                        ? client.request("turn/interrupt", {
+                            threadId: nativeThreadId,
+                            turnId: activeTurn.nativeTurnId,
+                          })
+                        : sendQueuedRootStop(activeTurn, stop, nativeThreadId)
                     ).pipe(
                       Effect.timeoutOrElse({
                         duration: STOP_REQUEST_BUDGET_MS,
