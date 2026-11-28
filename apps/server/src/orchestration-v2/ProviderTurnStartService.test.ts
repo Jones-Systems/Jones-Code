@@ -4,6 +4,7 @@ import { RuntimeUseError } from "../jones/cleanup/RuntimeUseProtocol.ts";
 import * as StartRefusals from "../jones/startRefusal/Store.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as StartAdmission from "../jones/provider/StartAdmission.ts";
+import { CodexPendingStartStop } from "../jones/provider/codex/CodexLateStartRecovery.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -4976,6 +4977,69 @@ effectIt.effect.each([true, false])(
       expect(harness.startTurn).not.toHaveBeenCalled();
       expect(harness.startRootRun).not.toHaveBeenCalled();
     }),
+);
+
+effectIt.effect("makes late Codex Resume observe Stop on the original attempt", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "",
+      manualContinuation: true,
+      sideChat: { contextRun: "delivered", acceptedResume: true },
+      resumeDisposition: "native_resume",
+    });
+    const observations: boolean[] = [];
+    harness.resumeTurn.mockImplementation(() =>
+      Effect.gen(function* () {
+        const stopped = yield* CodexPendingStartStop;
+        observations.push(yield* stopped);
+
+        const projection = harness.projection();
+        const run = projection.runs.at(-1)!;
+        const now = yield* DateTime.now;
+        const interrupted = { ...run, status: "interrupted" as const, completedAt: now };
+        const stoppedProjection = {
+          ...projection,
+          runs: [...projection.runs.slice(0, -1), interrupted],
+          turnItems: [
+            ...projection.turnItems,
+            {
+              id: TurnItemId.make("resume-stop-request"),
+              type: "run_interrupt_request" as const,
+              threadId: run.threadId,
+              runId: run.id,
+              nodeId: run.rootNodeId,
+              providerThreadId: run.providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: projection.turnItems.length + 1,
+              status: "completed" as const,
+              title: "Interrupt requested",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              message: "Stopped by user",
+            },
+          ],
+        };
+        harness.setProjection(stoppedProjection);
+        observations.push(yield* stopped);
+
+        harness.setProjection({
+          ...stoppedProjection,
+          runs: [
+            ...projection.runs.slice(0, -1),
+            { ...interrupted, activeAttemptId: RunAttemptId.make("replacement-resume-attempt") },
+          ],
+        });
+        observations.push(yield* stopped);
+      }),
+    );
+    yield* harness.start;
+    expect(observations).toEqual([false, true, false]);
+    expect(harness.resumeTurn).toHaveBeenCalledTimes(1);
+    expect(harness.startTurn).not.toHaveBeenCalled();
+  }),
 );
 
 effectIt.effect(

@@ -10236,7 +10236,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       params.additionalContext,
                       promptedInline ? inlineHistory.markAcknowledged : undefined,
                     );
-                    if (yield* request.forwardPendingStartStop ?? Effect.succeed(false)) {
+                    // The ordinary ACK must bind before subsequent native frames can
+                    // complete the turn or close the producer. The cancelled caller
+                    // checks Stop in finishUnknownCapacityStart when it already has
+                    // an ACK. Check here if the caller has already relinquished it.
+                    if (
+                      dispatch.unknown &&
+                      (yield* request.forwardPendingStartStop ?? Effect.succeed(false))
+                    ) {
                       return { kind: "stopped" as const };
                     }
                   }

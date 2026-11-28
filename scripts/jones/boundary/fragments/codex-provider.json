@@ -39,6 +39,10 @@
       "to": "apps/server/src/jones/provider/codex/CodexLateStartRecovery.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexLateStartRecovery.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/jones/provider/codex/CodexBackgroundCompletion.ts"
     },

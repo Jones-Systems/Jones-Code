@@ -3994,6 +3994,11 @@ export const layer: Layer.Layer<
             : Effect.void,
         ),
       );
+      const withNativeStartContext = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provideService(RequiredNativeSession, requiredNativeSession),
+          Effect.provideService(CodexPendingStartStop, runControls.wasStopped),
+        );
       const startWithConfiguredEffort = Effect.fn(
         "ProviderTurnStartService.startWithConfiguredEffort",
       )(
@@ -4061,11 +4066,8 @@ export const layer: Layer.Layer<
             if (!(yield* isCurrentAttemptInStatus("running"))) return false;
             yield* revalidateDispatch;
             // The adapter confirms the captured continuation session at its native boundary.
-            yield* (
-              compact ? session.compactThread!(dispatchInput) : session.startTurn(dispatchInput)
-            ).pipe(
-              Effect.provideService(RequiredNativeSession, requiredNativeSession),
-              Effect.provideService(CodexPendingStartStop, runControls.wasStopped),
+            yield* withNativeStartContext(
+              compact ? session.compactThread!(dispatchInput) : session.startTurn(dispatchInput),
             );
             return true;
           }),
@@ -4092,9 +4094,7 @@ export const layer: Layer.Layer<
           ? {}
           : {
               resumeTurn: (value: ProviderAdapter.ProviderAdapterV2ResumeTurnInput) =>
-                session.resumeTurn!(value).pipe(
-                  Effect.provideService(RequiredNativeSession, requiredNativeSession),
-                ),
+                withNativeStartContext(session.resumeTurn!(value)),
             }),
         ...(session.compactThread === undefined
           ? {}
