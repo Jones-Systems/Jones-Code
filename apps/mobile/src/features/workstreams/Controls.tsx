@@ -3,7 +3,9 @@ import { useGT } from "gt-react-native";
 import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { isClosedPersonalWorkstream } from "@t3tools/contracts/jones/workstreamsPersonal";
 import {
+  acceptedPersonalWorkstreamClose,
   openPersonalWorkstreams,
+  personalWorkstreamClosedLifecycle,
   personalThreadKey,
   type PersonalWorkstreamHistory,
   type PersonalThreadRef,
@@ -30,21 +32,19 @@ export function MobileWorkstreamControls(props: {
   const [busy, setBusy] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
   const group = props.state.workstreams.find((entry) => entry.id === props.selection?.groupKey);
-  const closeRequest = props.state.fleet?.operations.find(
-    (operation) =>
-      operation.workstreamId === group?.id &&
-      operation.kind === "close" &&
-      (operation.status === "pending" || operation.status === "stale"),
-  );
+  const request = group ? acceptedPersonalWorkstreamClose(props.state, group.id) : undefined;
+  const closeRequest = request?.status === "applied" ? undefined : request;
   const waitingOn = closeRequest?.peers
     .filter((peer) => peer.state !== "delivered")
     .map((peer) => props.environmentNames.get(peer.environmentId) ?? peer.environmentId);
   const thread = props.selection?.thread;
   const openWorkstreams = openPersonalWorkstreams(props.state);
-  const closedWorkstreams = props.state.workstreams.filter((entry) =>
-    isClosedPersonalWorkstream(entry.lifecycle),
-  );
-  const closedId = group && isClosedPersonalWorkstream(group.lifecycle) ? group.id : null;
+  const closedWorkstreams = props.state.workstreams.flatMap((workstream) => {
+    const lifecycle = personalWorkstreamClosedLifecycle(props.state, workstream);
+    return lifecycle ? [{ workstream, lifecycle }] : [];
+  });
+  const closedLifecycle = group ? personalWorkstreamClosedLifecycle(props.state, group) : null;
+  const closedId = closedLifecycle && group ? group.id : null;
   const [history, setHistory] = useState<PersonalWorkstreamHistory | null>(null);
   const controller = props.controller;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read history for the mounted group and discard late results on close.
@@ -148,7 +148,7 @@ export function MobileWorkstreamControls(props: {
         )}
         {group && closedId ? (
           <>
-            <Text>{group.lifecycle === "completed" ? "Completed" : "Abandoned"}</Text>
+            <Text>{closedLifecycle === "completed" ? "Completed" : "Abandoned"}</Text>
             <Text accessibilityRole="header">Assigned threads</Text>
             {!history && <Text>Loading threads…</Text>}
             {history && !history.complete && (
@@ -168,11 +168,12 @@ export function MobileWorkstreamControls(props: {
                 <Text>{member.settled ? "Settled" : "Unsettled"}</Text>
               </View>
             ))}
-            {button(
-              "Reopen Workstream",
-              () => void run(() => props.controller.setLifecycle(group.id, "active")),
-              !writable,
-            )}
+            {isClosedPersonalWorkstream(group.lifecycle) &&
+              button(
+                "Reopen Workstream",
+                () => void run(() => props.controller.setLifecycle(group.id, "active")),
+                !writable,
+              )}
             {button("All Workstreams", () => props.onSelect({}))}
           </>
         ) : group ? (
@@ -274,10 +275,10 @@ export function MobileWorkstreamControls(props: {
             {!thread && closedWorkstreams.length > 0 && (
               <View>
                 <Text accessibilityRole="header">Closed Workstreams</Text>
-                {closedWorkstreams.map((entry) => (
-                  <View key={entry.id}>
-                    {button(entry.name, () => props.onSelect({ groupKey: entry.id }))}
-                    <Text>{entry.lifecycle === "completed" ? "Completed" : "Abandoned"}</Text>
+                {closedWorkstreams.map(({ workstream, lifecycle }) => (
+                  <View key={workstream.id}>
+                    {button(workstream.name, () => props.onSelect({ groupKey: workstream.id }))}
+                    <Text>{lifecycle === "completed" ? "Completed" : "Abandoned"}</Text>
                   </View>
                 ))}
               </View>

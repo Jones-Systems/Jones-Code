@@ -2,9 +2,10 @@ import {
   isClosedPersonalWorkstream,
   isPersonalWorkstreamSnoozed,
 } from "@t3tools/contracts/jones/workstreamsPersonal";
-import type {
-  PersonalThreadRef,
-  PersonalWorkstreamView,
+import {
+  openPersonalWorkstreams,
+  type PersonalThreadRef,
+  type PersonalWorkstreamView,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { personalWorkstreamsController } from "../../state/workstreamsPersonal";
@@ -41,8 +42,8 @@ export async function assignNewThreadWorkstream(
   };
 
   try {
-    const { workstreams } = appAtomRegistry.get(personalWorkstreamsController.state);
-    const available = availableComposerWorkstreams(workstreams, Date.now());
+    const state = appAtomRegistry.get(personalWorkstreamsController.state);
+    const available = availableComposerWorkstreams(openPersonalWorkstreams(state), Date.now());
     if (!available.some(({ id }) => id === workstreamId)) {
       showFailure("The selected Workstream is no longer available for new threads.");
       return;

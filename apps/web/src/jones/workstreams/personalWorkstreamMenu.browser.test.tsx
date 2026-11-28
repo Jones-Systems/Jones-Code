@@ -643,7 +643,7 @@ describe("Workstream options and header ordering", () => {
       .toBeVisible();
   });
 
-  it("keeps a Workstream visible during an offline close and allows cancellation", async () => {
+  it("moves accepted offline closes to Closed Workstreams and can reopen them", async () => {
     using setup = fixture();
     const mini = EnvironmentId.make("Mini");
     const laptop = EnvironmentId.make("Laptop");
@@ -682,19 +682,30 @@ describe("Workstream options and header ordering", () => {
     setup.controller.cancelOperation = cancel;
     setup.registry.set(setup.state, {
       ...setup.initial,
-      fleet: { ...fleet, operations: [operation] },
+      fleet: { ...fleet, operations: [] },
+      pendingCloseWorkstreamIds: new Set([operation.workstreamId]),
     });
     await using _screen = await render(setup.ui);
-    const request = page.getByText("Close requested · waiting for Mini", { exact: true });
-    await expect.element(request).toBeVisible();
-    await expect.element(page.getByText("Members of menu-Alpha", { exact: true })).toBeVisible();
-    await options();
-    await expect
-      .element(page.getByRole("menuitem", { name: "Rename", exact: true }))
-      .toBeDisabled();
-    await page.getByRole("menuitem", { name: "Cancel close request", exact: true }).click();
+    const members = page.getByText("Members of menu-Alpha", { exact: true });
+    const closed = page.getByText("Closed Workstreams", { exact: true });
+    await expect.element(members).toBeVisible();
+    await expect.element(closed).not.toBeInTheDocument();
+    await act(() =>
+      setup.registry.set(setup.state, {
+        ...setup.initial,
+        fleet: { ...fleet, operations: [operation] },
+        pendingCloseWorkstreamIds: new Set([operation.workstreamId]),
+      }),
+    );
+    await expect.element(members).not.toBeInTheDocument();
+    await expect.element(page.getByText(/waiting for Mini/i)).not.toBeInTheDocument();
+    await closed.click();
+    await page.getByRole("button", { name: "Alpha Completed", exact: true }).click();
+    await expect.element(page.getByRole("dialog")).toHaveAccessibleName("Alpha");
+    await page.getByRole("button", { name: "Reopen Workstream", exact: true }).click();
     expect(cancel).toHaveBeenCalledWith("closing-alpha");
-    await expect.element(request).not.toBeInTheDocument();
+    await expect.element(members).toBeVisible();
+    await expect.element(closed).not.toBeInTheDocument();
   });
 
   it("focuses Cancel and cancels deletion through Cancel, Escape and the backdrop", async () => {
