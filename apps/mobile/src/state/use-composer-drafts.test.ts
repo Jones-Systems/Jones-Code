@@ -1,4 +1,15 @@
-import { PrimaryConnectionTarget } from "@t3tools/client-runtime/connection";
+import {
+  BearerConnectionProfile,
+  BearerConnectionTarget,
+  connectionRoutes,
+  entryWithRoutes,
+  EnvironmentRegistry,
+  PrimaryConnectionTarget,
+  RELAY_ROUTE_ID,
+  RelayConnectionTarget,
+  routesAfterRemoving,
+  type ConnectionCatalogEntry,
+} from "@t3tools/client-runtime/connection";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { createEnvironmentThreadShellAtoms } from "@t3tools/client-runtime/state/threads";
@@ -15,6 +26,7 @@ import {
 } from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import {
@@ -58,7 +70,7 @@ const composerDraftFileMocks = vi.hoisted(() => {
   const writes: string[] = [];
   const readImage = vi.fn(async () => "YWJj");
 
-  return {
+  const storage = {
     readImage,
     blockRead() {
       readBarrier = new Promise<void>((resolve) => {
@@ -109,10 +121,18 @@ const composerDraftFileMocks = vi.hoisted(() => {
       writes.length = 0;
     },
     Directory: class {
+      constructor(
+        _parent: unknown,
+        readonly name?: string,
+      ) {}
+
       create() {}
 
-      list() {
-        return [];
+      list(): { readonly name: string }[] {
+        if (this.name !== "thread-outbox") return [];
+        return [...documents.keys()]
+          .filter((name) => name !== MAIN_FILE && name !== AUTO_ARCHIVE_FILE)
+          .map((name) => new storage.File(this, name));
       }
     },
     File: class {
@@ -171,6 +191,7 @@ const composerDraftFileMocks = vi.hoisted(() => {
       }
     },
   };
+  return storage;
 });
 
 const composerAttachmentCleanupMocks = vi.hoisted(() => ({
@@ -180,6 +201,8 @@ const composerAttachmentCleanupMocks = vi.hoisted(() => ({
 
 const pickMedia = vi.hoisted(() => vi.fn());
 vi.mock("expo-image-picker", () => ({ launchImageLibraryAsync: pickMedia }));
+
+vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: {} }));
 
 const incomingShareStorageMocks = vi.hoisted(() => ({
   load: vi.fn<typeof import("../features/sharing/incoming-share-storage").loadIncomingShareDrafts>(
@@ -204,6 +227,7 @@ vi.mock("./assets", () => ({ assetEnvironment: {} }));
 vi.mock("./attachments", () => ({ attachmentEnvironment: {} }));
 vi.mock("./session", () => ({ environmentSession: {} }));
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+  createRuntimeCommand: () => ({}),
   createEnvironmentRpcCommand: () => Symbol("rpc-command"),
   executeAtomQuery: () => {
     throw new Error("Unexpected network query in the inline read test");
@@ -223,6 +247,8 @@ vi.mock("../features/sharing/incoming-share-storage", () => ({
 }));
 
 import type { DraftComposerAttachment } from "../lib/composerImages";
+import { preserveCloudDraftsAndRemoveEnvironments } from "../features/cloud/cloud-drafts";
+import { scopedThreadKey } from "../lib/scopedEntities";
 import {
   collectComposerContextReferences,
   formatComposerContextReference,
@@ -235,7 +261,10 @@ import {
   resolveQuestionImagePreparations,
 } from "./question-attachment-preparation";
 import { enqueueThreadOutboxMessage, threadOutboxManager } from "./thread-outbox";
+import { createThreadOutboxManager } from "./thread-outbox-manager";
+import { expoThreadOutboxStorage } from "./thread-outbox-storage";
 import { archiveAndClearCloudOutbox, clearThreadOutboxEnvironment } from "./thread-outbox-removal";
+import { withLaunchingThreads } from "./pending-thread-creation";
 import {
   decodeQueuedThreadMessage,
   QueuedThreadMessageSchema,
@@ -1982,6 +2011,180 @@ describe("mobile composer drafts", () => {
       Object.values(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).flat(),
     ).toEqual([issued]);
   });
+
+  it.effect.each(["disconnected", "relay", "direct"] as const)(
+    "preserves ownership after a disconnected restore and a second sign-out with a %s route",
+    (route) =>
+      Effect.gen(function* () {
+        const auto = archivedAutoLaunch();
+        const model = auto.modelSelection!;
+        const explicit: QueuedThreadMessage = {
+          environmentId: auto.environmentId,
+          threadId: ThreadId.make("restored-explicit-thread"),
+          messageId: MessageId.make("restored-explicit-message"),
+          commandId: CommandId.make("restored-explicit-command"),
+          text: "Explicitly selected model",
+          modelSelection: model,
+          modelSelectionExplicit: true,
+          attachments: [],
+          createdAt: auto.createdAt,
+        };
+        const draftOnlyEnvironment = EnvironmentId.make("archived-draft-only-environment");
+        const draftKey = scopedThreadKey(draftOnlyEnvironment, ThreadId.make("private-draft"));
+        const pendingKey = `pending-task:${auto.messageId}`;
+        const draft = { ...DRAFT, text: "Private account A draft", automaticAccountModel: model };
+        const relay = (environmentId: EnvironmentId): ConnectionCatalogEntry => ({
+          target: new RelayConnectionTarget({ environmentId, label: "Synthetic environment" }),
+          profile: Option.none(),
+          enabled: true,
+        });
+        const entries = yield* SubscriptionRef.make<
+          ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
+        >(
+          new Map([
+            [auto.environmentId, relay(auto.environmentId)],
+            [draftOnlyEnvironment, relay(draftOnlyEnvironment)],
+          ]),
+        );
+        const registryFixture = {
+          entries,
+          removeRelayEnvironments: () =>
+            SubscriptionRef.update(
+              entries,
+              (current) =>
+                new Map(
+                  [...current].flatMap(([id, entry]) => {
+                    const remaining = routesAfterRemoving(connectionRoutes(entry), RELAY_ROUTE_ID);
+                    return remaining.length === 0
+                      ? []
+                      : [[id, entryWithRoutes(entry, remaining)] as const];
+                  }),
+                ),
+            ),
+        } satisfies Pick<
+          EnvironmentRegistry.EnvironmentRegistry["Service"],
+          "entries" | "removeRelayEnvironments"
+        >;
+        const registry = EnvironmentRegistry.EnvironmentRegistry.of(
+          registryFixture as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"],
+        );
+        const signOut = (accountId: string) =>
+          preserveCloudDraftsAndRemoveEnvironments(accountId).pipe(
+            Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, registry),
+          );
+        const queuedAtom = threadOutboxManager.queuedMessagesByThreadKeyAtom;
+        const liveMessages = () => Object.values(appAtomRegistry.get(queuedAtom)).flat();
+        const launchingThreads = () =>
+          withLaunchingThreads({
+            threads: [],
+            launches: liveMessages(),
+            hiddenThreadKeys: new Set(),
+          });
+
+        yield* Effect.promise(() => restoreCloudComposerDrafts("account-a"));
+        appAtomRegistry.set(composerDraftsAtom, { [draftKey]: draft, [pendingKey]: draft });
+        yield* Effect.promise(() => threadOutboxManager.enqueue(auto));
+        yield* Effect.promise(() => threadOutboxManager.enqueue(explicit));
+        yield* signOut("account-a");
+        expect(yield* SubscriptionRef.get(entries)).toEqual(new Map());
+        expect(liveMessages()).toEqual([]);
+
+        yield* Effect.promise(() => restoreCloudComposerDrafts("account-a"));
+        expect(liveMessages()).toEqual(expect.arrayContaining([auto, explicit]));
+        expect(launchingThreads()).toEqual([
+          expect.objectContaining({ title: auto.text, modelSelection: model }),
+        ]);
+        expect(getComposerDraftSnapshot(draftKey)).toEqual(draft);
+        expect(appAtomRegistry.get(composerCloudDraftsAtom).signedOut).toEqual({});
+
+        const rehydratedOutbox = createThreadOutboxManager({
+          registry: appAtomRegistry,
+          storage: expoThreadOutboxStorage,
+        });
+        appAtomRegistry.set(queuedAtom, {});
+        appAtomRegistry.set(composerDraftsAtom, {});
+        appAtomRegistry.set(composerCloudDraftsAtom, { accountId: null, signedOut: {} });
+        resetComposerDraftsLoadState();
+        expect(yield* Effect.promise(() => rehydratedOutbox.load())).toBe(true);
+        appAtomRegistry.set(
+          queuedAtom,
+          appAtomRegistry.get(rehydratedOutbox.queuedMessagesByThreadKeyAtom),
+        );
+        yield* Effect.promise(() => waitForComposerDraftsLoaded());
+        expect(liveMessages()).toEqual(expect.arrayContaining([auto, explicit]));
+        expect(getComposerDraftSnapshot(pendingKey)).toEqual(draft);
+
+        const updatedExplicit = { ...explicit, text: "Edited after restore" };
+        expect(yield* Effect.promise(() => threadOutboxManager.update(updatedExplicit))).toBe(true);
+        if (route === "disconnected") {
+          composerDraftFileMocks.setArchiveWriteError(new Error("Synthetic archive write failure"));
+          expect(yield* Effect.flip(signOut("account-a"))).toMatchObject({
+            _tag: "CloudDraftArchiveError",
+          });
+          yield* Effect.promise(() =>
+            expect(restoreCloudComposerDrafts("account-b")).rejects.toThrow(),
+          );
+          expect(liveMessages()).toEqual(expect.arrayContaining([auto, updatedExplicit]));
+          composerDraftFileMocks.setArchiveWriteError(null);
+        } else {
+          const relayEntry = relay(auto.environmentId);
+          const direct = {
+            connectionId: "explicit-direct",
+            environmentId: auto.environmentId,
+            label: "Paired direct route",
+          };
+          const entry =
+            route === "relay"
+              ? relayEntry
+              : {
+                  ...relayEntry,
+                  alternateRoutes: [
+                    {
+                      target: new BearerConnectionTarget(direct),
+                      profile: Option.some(
+                        new BearerConnectionProfile({
+                          ...direct,
+                          httpBaseUrl: "http://192.0.2.1/",
+                          wsBaseUrl: "ws://192.0.2.1/",
+                        }),
+                      ),
+                    },
+                  ],
+                };
+          yield* SubscriptionRef.set(entries, new Map([[auto.environmentId, entry]]));
+        }
+        yield* signOut("account-a");
+        yield* Effect.promise(() => restoreCloudComposerDrafts("account-b"));
+        expect(getComposerDraftSnapshot(draftKey).automaticAccountModel).toBeUndefined();
+        if (route === "direct") {
+          expect(liveMessages()).toEqual(expect.arrayContaining([auto, updatedExplicit]));
+          expect(getComposerDraftSnapshot(pendingKey)).toEqual(draft);
+        } else {
+          yield* SubscriptionRef.set(
+            entries,
+            new Map([[auto.environmentId, relay(auto.environmentId)]]),
+          );
+          expect(liveMessages()).toEqual([]);
+          expect(launchingThreads()).toEqual([]);
+          expect(getComposerDraftSnapshot(pendingKey).text).toBe("");
+          for (const message of [auto, updatedExplicit]) {
+            const mutate = vi.fn(() => message);
+            expect(
+              yield* Effect.promise(() => threadOutboxManager.modify(message.messageId, mutate)),
+            ).toBe(false);
+            expect(mutate).not.toHaveBeenCalled();
+            expect(composerDraftFileMocks.getQueuedMessage(message.messageId)).toBeUndefined();
+          }
+        }
+
+        yield* signOut("account-b");
+        yield* Effect.promise(() => restoreCloudComposerDrafts("account-a"));
+        expect(liveMessages()).toHaveLength(2);
+        expect(liveMessages()).toEqual(expect.arrayContaining([auto, updatedExplicit]));
+        expect(getComposerDraftSnapshot(draftKey)).toEqual(draft);
+        expect(getComposerDraftSnapshot(pendingKey)).toEqual(draft);
+      }),
+  );
 
   it.each(["manual", "auto", "untouched"] as const)(
     "restores a coherent model selection with a %s live draft",
