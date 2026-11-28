@@ -15963,15 +15963,15 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
           )
           .pipe(
             Effect.provideService(CodexPendingStartStop, Effect.succeed(true)),
-            Effect.provideService(
-              CodexQueuedStartStop,
-              delayStopObservation
+            Effect.provideService(CodexQueuedStartStop, () => ({
+              wasStopped: Effect.succeed(true),
+              awaitStop: delayStopObservation
                 ? Deferred.succeed(stopObserverEntered, undefined).pipe(
                     Effect.andThen(Deferred.await(allowStopObservation)),
                     Effect.as(true),
                   )
                 : Effect.succeed(true),
-            ),
+            })),
             Effect.forkChild,
           );
         yield* Deferred.await(originalSent);

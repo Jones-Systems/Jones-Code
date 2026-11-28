@@ -1,3 +1,4 @@
+import type { ProviderTurnId } from "@t3tools/contracts";
 import type { CodexAppServerClientOptions } from "effect-codex-app-server/client";
 import type * as CodexErrors from "effect-codex-app-server/errors";
 import * as Context from "effect/Context";
@@ -48,10 +49,13 @@ export const CodexPendingStartStop = Context.Reference<Effect.Effect<boolean>>(
   { defaultValue: () => Effect.succeed(false) },
 );
 
-export const CodexQueuedStartStop = Context.Reference<Effect.Effect<boolean> | undefined>(
-  "jones/CodexQueuedStartStop",
-  { defaultValue: () => undefined },
-);
+export const CodexQueuedStartStop = Context.Reference<
+  | ((providerTurnId: ProviderTurnId) => {
+      readonly wasStopped: Effect.Effect<boolean>;
+      readonly awaitStop: Effect.Effect<boolean>;
+    })
+  | undefined
+>("jones/CodexQueuedStartStop", { defaultValue: () => undefined });
 
 export interface CodexStartDispatch extends NativeBinding {
   readonly ordinal: number;

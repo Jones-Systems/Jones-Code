@@ -45,6 +45,7 @@ import {
 } from "../../../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
 import { withInlineContext } from "../../../orchestration-v2/ContextHandoffDelivery.ts";
 import * as EffectWorker from "../../../orchestration-v2/EffectWorker.ts";
+import * as EffectOutbox from "../../../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../../../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProviderReplayHarness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -279,6 +280,7 @@ describe("Codex inline handoff rejection recovery", () => {
     { code: null, late: false, recovery: "application Stop while awaiting ACK" },
     { code: null, late: false, recovery: "application Stop before queued ACK" },
     { code: null, late: false, recovery: "queued ACK during application Stop commit" },
+    { code: null, late: false, recovery: "application Stop after queued ACK" },
     { code: null, late: true, recovery: "late ACK with a different terminal" },
     { code: null, late: true, recovery: "late acceptance after newer identical marker" },
     { code: null, late: true, recovery: "late acceptance after binding replacement" },
@@ -315,15 +317,17 @@ describe("Codex inline handoff rejection recovery", () => {
         recovery === "late ACK and interrupted prompt with observed input";
       const queuedCommitRace = recovery === "queued ACK during application Stop commit";
       const queuedStop = recovery === "application Stop before queued ACK" || queuedCommitRace;
+      const boundQueuedStop = recovery === "application Stop after queued ACK";
       const queued =
         queuedStop ||
+        boundQueuedStop ||
         queuedWithoutInput ||
         queuedWithInput ||
         queuedCompletedBeforeAck ||
         failedBeforeStart;
       const stopWhileAwaitingAck = recovery === "application Stop while awaiting ACK" || queuedStop;
       const nativeTerminalStatus =
-        interruptedWithoutInput || interruptedWithInput || stopWhileAwaitingAck
+        interruptedWithoutInput || interruptedWithInput || stopWhileAwaitingAck || boundQueuedStop
           ? "interrupted"
           : failedBeforeStart
             ? "failed"
@@ -598,9 +602,9 @@ describe("Codex inline handoff rejection recovery", () => {
                       },
                     ]
                   : []),
-                ...(stopWhileAwaitingAck
+                ...(stopWhileAwaitingAck || boundQueuedStop
                   ? [
-                      ...(queuedStop
+                      ...(queuedStop || boundQueuedStop
                         ? [
                             {
                               type: "emit_inbound" as const,
@@ -682,6 +686,7 @@ describe("Codex inline handoff rejection recovery", () => {
       const allowRejection = yield* Deferred.make<void>();
       const rejectionObserved = yield* Deferred.make<void>();
       const queuedAckObserved = yield* Deferred.make<void>();
+      const queuedStartObserved = yield* Deferred.make<void>();
       const allowActivity = yield* Deferred.make<void>();
       let interruptsSent = 0;
       let unsubscribeRequests = 0;
@@ -991,6 +996,82 @@ describe("Codex inline handoff rejection recovery", () => {
             assert.deepEqual(afterTerminal.providerTurns, []);
             assert.equal(afterTerminal.contextHandoffs[0]?.delivery?.status, "pending");
           }
+          assert.deepEqual(yield* Ref.get(driver.state), {
+            failure: null,
+            cursor: effectiveTranscript.entries.length,
+          });
+          return;
+        }
+        if (boundQueuedStop) {
+          const published = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "provider-turn.updated" &&
+                event.runId === run.id &&
+                event.payload.nativeTurnRef?.nativeId === originalNativeTurnId,
+            ),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Deferred.succeed(allowRejection, undefined);
+          yield* Fiber.join(starting);
+          yield* Fiber.join(published);
+          const beforeStop = yield* getProjection();
+          const [turn] = beforeStop.providerTurns;
+          assert.equal(beforeStop.runs[0]?.status, "running");
+          assert.equal(turn?.nativeTurnRef?.nativeId, originalNativeTurnId);
+          const commandId = CommandId.make("stop-after-native-ack");
+          yield* orchestrator.dispatch({
+            type: "run.interrupt",
+            commandId,
+            threadId,
+            runId: run.id,
+            holdQueue: true,
+          });
+          const stopped = yield* getProjection();
+          assert.equal(
+            stopped.turnItems.find((item) => item.type === "run_interrupt_request")?.providerTurnId,
+            turn!.id,
+          );
+          assert.equal(stopped.runs[0]?.status, "running");
+          // Drain each bounded attempt with the native turn still queued.
+          for (let retry = 0; retry < 5; retry++) {
+            const draining = yield* worker
+              .drain()
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* TestClock.adjust("30 seconds");
+            yield* Fiber.join(draining);
+            yield* TestClock.adjust("2 seconds");
+          }
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          const effect = (yield* outbox.listByThreadId(threadId)).find(
+            (row) => row.commandId === commandId && row.request.type === "provider-turn.interrupt",
+          );
+          assert.include(["failed", "succeeded"], effect?.status);
+          assert.equal(interruptsSent, 0);
+
+          const interrupted = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "run.updated" &&
+                event.runId === run.id &&
+                event.payload.status === "interrupted",
+            ),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Deferred.succeed(allowActivity, undefined);
+          yield* Deferred.await(queuedStartObserved);
+          yield* TestClock.adjust(0);
+          assert.equal(interruptsSent, 1, "The original queued turn must still receive Stop");
+          yield* Fiber.join(interrupted);
+          yield* TestClock.adjust(0);
+          const after = yield* getProjection();
+          assert.equal(after.runs[0]?.status, "interrupted");
+          assert.equal(after.runs[0]?.activeAttemptId, beforeStop.runs[0]?.activeAttemptId);
+          assert.equal(after.providerTurns[0]?.status, "interrupted");
+          const runtime = yield* Deferred.await(sessionOpened);
+          assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
           assert.deepEqual(yield* Ref.get(driver.state), {
             failure: null,
             cursor: effectiveTranscript.entries.length,
@@ -1370,6 +1451,12 @@ describe("Codex inline handoff rejection recovery", () => {
                 }
               },
               observeFrame: (frame) => {
+                if (
+                  boundQueuedStop &&
+                  Predicate.hasProperty(frame, "method") &&
+                  frame.method === "turn/started"
+                )
+                  Deferred.doneUnsafe(queuedStartObserved, Effect.void);
                 if (queuedStop && Predicate.hasProperty(frame, "id") && frame.id === 4)
                   Deferred.doneUnsafe(queuedAckObserved, Effect.void);
                 if (

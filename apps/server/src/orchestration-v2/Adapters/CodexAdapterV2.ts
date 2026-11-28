@@ -10577,7 +10577,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (earlyCompletion !== undefined) yield* handleNativeCompletion(earlyCompletion);
             }),
           );
-          const awaitAppStop =
+          const queuedStartStop =
             retryOrdinal === 0 && started.turn.startedAt === null
               ? yield* CodexQueuedStartStop
               : undefined;
@@ -10597,18 +10597,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         record: inlineHistory.recordQueuedDelivery,
                       };
                     // Install the shared Stop receipt before publishing the active turn.
-                    if (
-                      awaitAppStop !== undefined &&
-                      stoppedByApp !== undefined &&
-                      turn.nativeStartReady !== undefined
-                    ) {
+                    if (queuedStartStop !== undefined && turn.nativeStartReady !== undefined) {
+                      const stop = queuedStartStop(turn.providerTurnId);
                       yield* retainQueuedRootStop(
                         turn,
                         turn.nativeStartReady,
                         producer,
                         binding.nativeThreadId,
-                        awaitAppStop,
-                        stoppedByApp,
+                        stop.awaitStop,
+                        stop.wasStopped,
                       );
                       // A terminal captured before registration already closes this send path.
                       if (dispatch.completions.has(turn.nativeTurnId)) settleQueuedRootStop(turn);
@@ -12684,7 +12681,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     let dispatchedHere = false;
                     const stillOwnsStop = () =>
                       stop !== undefined &&
-                      (!stop.authorized || !stop.dispatched) &&
+                      !stop.dispatched &&
                       queuedRootStops.get(activeTurn) === stop &&
                       ownsNativeBinding(
                         stop.producer,

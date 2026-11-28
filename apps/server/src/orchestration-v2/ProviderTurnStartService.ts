@@ -85,6 +85,7 @@ import {
   parseGoalCommand,
   RunId,
   RunAttemptId,
+  type ProviderTurnId,
   NodeId,
   RuntimeRequestId,
   ThreadId,
@@ -589,38 +590,54 @@ export const layer: Layer.Layer<
             ),
             Effect.catchCause(() => Effect.undefined),
           );
-      const wasStopped = Effect.gen(function* () {
-        const run = yield* projectionStore.getRun(input.threadId, input.runId);
-        if (run?.activeAttemptId !== input.attemptId || run.status !== "interrupted") return false;
-        const request = yield* loadRunInterruptRequest();
-        return (
-          request !== undefined &&
-          request.nodeId === run.rootNodeId &&
-          request.providerThreadId === input.providerThreadId &&
-          request.providerTurnId === null
-        );
-      }).pipe(Effect.orElseSucceed(() => false));
+      const readStop = Effect.fnUntraced(
+        function* (providerTurnId: ProviderTurnId | null) {
+          const run = yield* projectionStore.getRun(input.threadId, input.runId);
+          if (run?.activeAttemptId !== input.attemptId) return false;
+          if (run.status !== "running" && run.status !== "interrupted") return false;
+          const request = yield* loadRunInterruptRequest();
+          if (
+            request === undefined ||
+            request.nodeId !== run.rootNodeId ||
+            request.providerThreadId !== input.providerThreadId
+          )
+            return false;
+          return request.providerTurnId === null
+            ? run.status === "interrupted"
+            : request.providerTurnId === providerTurnId;
+        },
+        Effect.orElseSucceed(() => false),
+      );
       return {
         isCurrentAttemptInStatus,
-        wasStopped,
-        awaitQueuedStartStop: Effect.gen(function* () {
-          const afterSequence = yield* eventSink.latestSequence({ threadId: input.threadId });
-          if (yield* wasStopped) return true;
-          // Catch up from before the durable read so a concurrent Stop cannot be missed.
-          const stop = yield* eventSink
-            .stream({ threadId: input.threadId, eventType: "run.updated", afterSequence })
-            .pipe(
-              Stream.filter(
-                ({ event }) =>
-                  event.type === "run.updated" &&
-                  event.payload.id === input.runId &&
-                  event.payload.activeAttemptId === input.attemptId &&
-                  event.payload.status === "interrupted",
-              ),
-              Stream.runHead,
-            );
-          return Option.isSome(stop) && (yield* wasStopped);
-        }).pipe(Effect.orElseSucceed(() => false)),
+        wasStopped: readStop(null),
+        queuedStartStop: (providerTurnId: ProviderTurnId) => {
+          const wasStopped = readStop(providerTurnId);
+          return {
+            wasStopped,
+            awaitStop: Effect.gen(function* () {
+              const afterSequence = yield* eventSink.latestSequence({ threadId: input.threadId });
+              if (yield* wasStopped) return true;
+              // A turn-bound Stop records intent without changing the run status.
+              const stop = yield* eventSink
+                .stream({ threadId: input.threadId, eventType: "turn-item.updated", afterSequence })
+                .pipe(
+                  Stream.filter(
+                    ({ event }) =>
+                      event.type === "turn-item.updated" &&
+                      event.payload.type === "run_interrupt_request" &&
+                      event.payload.runId === input.runId &&
+                      event.payload.providerThreadId === input.providerThreadId &&
+                      (event.payload.providerTurnId === null ||
+                        event.payload.providerTurnId === providerTurnId),
+                  ),
+                  Stream.filterEffect(() => wasStopped),
+                  Stream.runHead,
+                );
+              return Option.isSome(stop);
+            }).pipe(Effect.orElseSucceed(() => false)),
+          };
+        },
         loadInheritedBackgroundTurnItems: () =>
           projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
             Effect.map((current) =>
@@ -4038,7 +4055,7 @@ export const layer: Layer.Layer<
         effect.pipe(
           Effect.provideService(RequiredNativeSession, requiredNativeSession),
           Effect.provideService(CodexPendingStartStop, runControls.wasStopped),
-          Effect.provideService(CodexQueuedStartStop, runControls.awaitQueuedStartStop),
+          Effect.provideService(CodexQueuedStartStop, runControls.queuedStartStop),
         );
       const startWithConfiguredEffort = Effect.fn(
         "ProviderTurnStartService.startWithConfiguredEffort",
