@@ -199,8 +199,18 @@ const runPlan = Effect.fn("InstallRecovery.runPlan")(function* (
       detail: "The desktop did not return the requested plan ID.",
     });
   if (action.type === "cancel-plan" && !confirmsInstallPlanCancellation(response.result, action)) {
+    const plan = findInstallPlanResultPlan(response.result, action.planId);
+    const observedClosed =
+      plan?.cancelled === true &&
+      plan.laptop.environmentId === action.environmentId &&
+      response.result.state.laptop.environmentId === action.environmentId;
+    if (observedClosed) yield* print(flags.json, output);
     return yield* new InstallRecoveryError({
-      detail: "Cancellation is unconfirmed. Read plan status again.",
+      detail: !observedClosed
+        ? "Cancellation is unconfirmed. Read plan status again."
+        : plan.cancelledFromRevision === undefined
+          ? "This plan is closed, but the desktop has no record of which revision cancelled it."
+          : "Cancellation from the requested revision is unconfirmed. Read plan status again.",
     });
   }
   yield* print(flags.json, output);

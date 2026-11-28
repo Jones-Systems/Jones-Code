@@ -63,6 +63,7 @@ import {
   receiptDetailsFit,
   recoveryHistory,
   replaceRetainedPlan,
+  unpersistedVerifiedUnsupportedReceipt,
 } from "./journal.ts";
 
 export interface LaptopInstallBinding {
@@ -258,6 +259,7 @@ function appliedFollowerAdmission(
 
 function refreshCommands(document: PlanDocument): PlanDocument {
   if (document.commands === undefined) return document;
+  const plans = retainedPlans(document);
   let changed = false;
   const commands = document.commands.map((entry) => {
     const receipt =
@@ -265,13 +267,28 @@ function refreshCommands(document: PlanDocument): PlanDocument {
         ? { ...entry.receipt, bodyHash: entry.body }
         : entry.receipt;
     if (receipt !== entry.receipt) changed = true;
+    const normalized = receipt === entry.receipt ? entry : { ...entry, receipt };
     const wasUnsupported = receipt.outcome === "terminal" && receipt.code === "unsupported";
-    if (receipt.outcome !== "reserved" && !wasUnsupported)
-      return receipt === entry.receipt ? entry : { ...entry, receipt };
-    const plan = retainedPlans(document).find((p) => p.planId === receipt.planId);
+    if (entry.orphanReceipt !== undefined || (receipt.outcome !== "reserved" && !wasUnsupported))
+      return normalized;
+    const plan = plans.find((p) => p.planId === receipt.planId);
+    if (plan === undefined) {
+      if (!wasUnsupported || receipt.requestType !== "claim") return normalized;
+      changed = true;
+      const { code: _unsupported, ...binding } = receipt;
+      return { ...entry, receipt: { ...binding, outcome: "reserved" as const } };
+    }
     const { environmentId, action, targetSource, stagedHandle } = receipt.command;
-    if (plan === undefined || plan.target.sourceSha !== targetSource)
-      return receipt === entry.receipt ? entry : { ...entry, receipt };
+    if (plan.target.sourceSha !== targetSource) return normalized;
+    const orphanReceipt = unpersistedVerifiedUnsupportedReceipt(plan, normalized);
+    if (orphanReceipt !== undefined) {
+      changed = true;
+      return {
+        ...entry,
+        receipt: { ...receipt, outcome: "terminal" as const, code: "unsupported" },
+        orphanReceipt,
+      };
+    }
     const step = action === "install" ? "install" : "download";
     const local =
       plan.laptop.environmentId === environmentId && receipt.requestType !== "claim"
@@ -306,7 +323,7 @@ function refreshCommands(document: PlanDocument): PlanDocument {
       (!settled && !correctedInFlight) ||
       (wasUnsupported && (remoteReceipt === undefined || code === receipt.code))
     )
-      return receipt === entry.receipt ? entry : { ...entry, receipt };
+      return normalized;
     changed = true;
     const { code: _previousCode, ...binding } = receipt;
     return {

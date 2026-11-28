@@ -1,7 +1,10 @@
-import { T, useMessages } from "gt-react";
+import { msg, T, useMessages } from "gt-react";
 import { type Ref, useEffect, useId, useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
-import type { JonesInstallPlanSelection } from "@t3tools/contracts/jones/installPlan";
+import type {
+  JonesInstallPlanHostOperation,
+  JonesInstallPlanSelection,
+} from "@t3tools/contracts/jones/installPlan";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -45,6 +48,7 @@ import {
   readWritableTarget,
   requestInstallPlan,
   requireWritablePlan,
+  supportsSetupFence,
   type InstallPlanBinding,
 } from "./services";
 import {
@@ -52,8 +56,8 @@ import {
   canStopOperation,
   checkOrphanedPlanCommand,
   fencePanelOperation,
+  heldCleanupReceipt,
   inspectPanelCleanup,
-  latestPanelOperation,
   performPanelAction,
   recoverPanelCleanup,
   stopPanelDownload,
@@ -174,6 +178,9 @@ function InstallStatusPlan({
   const messages = useMessages();
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [detail, setDetail] = useState<EnvironmentId | "laptop" | null>(null);
+  const [attemptChoices, setAttemptChoices] = useState<ReadonlyMap<EnvironmentId, string>>(
+    () => new Map(),
+  );
   const allDevicesButton = useRef<HTMLButtonElement>(null);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [cleanupInspection, setCleanupInspection] = useState<{
@@ -819,52 +826,8 @@ function InstallStatusPlan({
                 (row?.launcherOutcomeUnconfirmed === true && !row.settled);
               const member = plan.devices.find((d) => d.environmentId === environmentId);
               const operations = member?.operations;
-              const operation = view.archived
-                ? member === undefined
-                  ? undefined
-                  : latestPanelOperation(member, true)
-                : operations?.find((op) => op.operationId === row?.operationId);
-              const receipt = operation?.receipt;
               const enrollment =
                 member === undefined ? "unknown" : planEnrollmentFor(member, device);
-              const receiptMessage =
-                operationAdmissionMessage(receipt?.code, messages) ?? receipt?.message;
-              const routeMessage =
-                enrollment === "route-changed" &&
-                member?.membership === "selected" &&
-                receipt?.code !== "admission-route-changed"
-                  ? operationAdmissionMessage("admission-route-changed", messages)
-                  : undefined;
-              const operationId = operation?.operationId;
-              const setupUnconfirmed =
-                operation?.step === "directive" && operationOutstanding(operation);
-              const launcherUnconfirmed =
-                operation?.step === "install" && receipt?.code === "launcher-unconfirmed";
-              const inspectKey =
-                receipt?.phase === "held" &&
-                receipt.code === "cleanup-unconfirmed" &&
-                receipt.jobId !== undefined &&
-                receipt.action.kind !== "install"
-                  ? `${plan.planId}:${environmentId}:${receipt.operationId}:${receipt.updatedAt}:cleanup`
-                  : null;
-              const cleanup = cleanupInspection?.key === inspectKey ? cleanupInspection : null;
-              const cleanupTarget =
-                inspectKey !== null && receipt?.jobId !== undefined
-                  ? {
-                      ...planTarget,
-                      environmentId,
-                      operationId: receipt.operationId,
-                      jobId: receipt.jobId,
-                    }
-                  : undefined;
-              const stopArchived =
-                archivedRecovery && operation !== undefined && canStopOperation(operation);
-              const fenceArchived =
-                archivedRecovery &&
-                operation !== undefined &&
-                canFenceArchivedOperation(operation, snapshot.updatedAt);
-              const abandonTarget = deviceAbandonTarget(plan, environmentId, view.archived);
-              const resumeArchived = archivedRecovery && abandonTarget?.resume === true;
               const canInspect = !view.archived || archivedRecovery || plan.cancelled === true;
               const hostRecoveryReason = view.deskReadOnly
                 ? (snapshot.native?.readOnly?.message ??
@@ -893,21 +856,95 @@ function InstallStatusPlan({
               const cleanupReason =
                 hostRecoveryReason ??
                 (!allowsOperationRecovery(enrollment, "cleanup") ? routeUnconfirmed : undefined);
-              const fenceReason = setupUnconfirmed
-                ? (recoveryReason ??
-                  (snapshot.native?.view.directiveFence !== 1 ||
-                  device?.fleetStatus?.fencePlanDirective !== 1
-                    ? "The host and Laptop must support fencing this original setup request."
-                    : undefined))
-                : (hostRecoveryReason ??
-                  (!allowsOperationRecovery(enrollment, "fence")
-                    ? routeUnconfirmed
-                    : operation?.request.kind === "operation-start" &&
-                        operation.request.input.admission !== undefined &&
-                        device?.observation.state?.capability.boundAdmission !== 1
-                      ? operationAdmissionMessage("admission-binding-required", messages)
-                      : undefined));
+              const canStopArchived = (attempt: JonesInstallPlanHostOperation) =>
+                archivedRecovery && member?.abandoning !== true && canStopOperation(attempt);
+              const canFenceArchived = (attempt: JonesInstallPlanHostOperation) =>
+                archivedRecovery &&
+                member?.abandoning !== true &&
+                (attempt.request.kind !== "plan-directive" || member?.membership === "selected") &&
+                canFenceArchivedOperation(attempt, snapshot.updatedAt);
+              const fenceReasonFor = (attempt: JonesInstallPlanHostOperation) => {
+                if (hostRecoveryReason !== undefined) return hostRecoveryReason;
+                if (!allowsOperationRecovery(enrollment, "fence")) return routeUnconfirmed;
+                if (attempt.request.kind === "plan-directive") {
+                  if (
+                    snapshot.native?.view.directiveFence !== 1 ||
+                    !supportsSetupFence(environmentId, member?.enrollmentId, device?.fleetStatus)
+                  )
+                    return messages(
+                      msg("The host and Laptop must support fencing this original setup request."),
+                    );
+                } else if (
+                  attempt.request.input.admission !== undefined &&
+                  device?.observation.state?.capability.boundAdmission !== 1
+                )
+                  return operationAdmissionMessage("admission-binding-required", messages);
+                return undefined;
+              };
+              const outstanding = view.archived
+                ? (operations?.filter(operationOutstanding) ?? [])
+                : [];
+              const operation = view.archived
+                ? (outstanding.find(
+                    (item) => item.operationId === attemptChoices.get(environmentId),
+                  ) ??
+                  outstanding.find(
+                    (item) =>
+                      (canStopArchived(item) && stopReason === undefined) ||
+                      (canFenceArchived(item) && fenceReasonFor(item) === undefined) ||
+                      (canInspect &&
+                        cleanupReason === undefined &&
+                        heldCleanupReceipt(item) !== undefined),
+                  ) ??
+                  outstanding[0] ??
+                  operations?.at(-1))
+                : operations?.find((item) => item.operationId === row?.operationId);
+              const operationId = operation?.operationId;
+              const receipt = operation?.receipt;
+              const setupUnconfirmed =
+                operation?.step === "directive" && operationOutstanding(operation);
+              const launcherUnconfirmed =
+                operation?.step === "install" && receipt?.code === "launcher-unconfirmed";
+              const receiptMessage =
+                operationAdmissionMessage(receipt?.code, messages) ?? receipt?.message;
+              const routeMessage =
+                enrollment === "route-changed" &&
+                member?.membership === "selected" &&
+                receipt?.code !== "admission-route-changed"
+                  ? operationAdmissionMessage("admission-route-changed", messages)
+                  : undefined;
+              const rowMatchesAttempt = row?.operationId === operationId;
+              const attemptHeld = rowMatchesAttempt
+                ? held
+                : operation !== undefined &&
+                  operationOutstanding(operation) &&
+                  (receipt === undefined || receipt.phase === "held" || launcherUnconfirmed);
+              const attemptCleanup = heldCleanupReceipt(operation);
+              const cleanupTarget =
+                attemptCleanup === undefined
+                  ? undefined
+                  : {
+                      ...planTarget,
+                      environmentId,
+                      operationId: attemptCleanup.receipt.operationId,
+                      jobId: attemptCleanup.jobId,
+                    };
+              const inspectKey =
+                cleanupTarget === undefined
+                  ? null
+                  : `${plan.planId}:${environmentId}:${cleanupTarget.operationId}:${cleanupTarget.jobId}:${receipt?.updatedAt}:cleanup`;
+              const cleanup = cleanupInspection?.key === inspectKey ? cleanupInspection : null;
+              const stopAvailable = view.archived
+                ? operation !== undefined && canStopArchived(operation)
+                : row?.actions.stop === true;
+              const fenceArchived = operation !== undefined && canFenceArchived(operation);
+              const fenceReason = operation === undefined ? undefined : fenceReasonFor(operation);
+              const abandonTarget = deviceAbandonTarget(plan, environmentId, view.archived);
+              const resumeArchived =
+                archivedRecovery && outstanding.length === 0 && abandonTarget?.resume === true;
               const recoveryDescription = `${descriptionId}-recovery-${environmentId}`;
+              const focusedAttempt =
+                view.archived && open && !rowMatchesAttempt && operation !== undefined;
               return (
                 <li key={environmentId}>
                   <div className="flex min-w-0 items-center gap-1">
@@ -947,7 +984,7 @@ function InstallStatusPlan({
                           else setDetail(environmentId);
                         }}
                       >
-                        {held ? (
+                        {(focusedAttempt ? attemptHeld : held) ? (
                           <TriangleAlertIcon aria-hidden className="size-3 shrink-0 text-warning" />
                         ) : updated && !editing ? (
                           <CheckIcon aria-hidden className="size-3 shrink-0 text-success" />
@@ -980,9 +1017,11 @@ function InstallStatusPlan({
                           )}
                           data-row-text
                         >
-                          {lineText}
-                          {view.archived && row?.hasRecoveryDuty ? " · Recovery pending" : null}
-                          {timer !== undefined ? (
+                          {focusedAttempt ? messages(msg("Recovery pending")) : lineText}
+                          {!focusedAttempt && view.archived && row?.hasRecoveryDuty
+                            ? " · Recovery pending"
+                            : null}
+                          {!focusedAttempt && timer !== undefined ? (
                             <>
                               {" · "}
                               <Elapsed since={timer.stepStartedAt} skewMs={timer.skewMs} />
@@ -1048,8 +1087,38 @@ function InstallStatusPlan({
                       className="space-y-1 px-3 pb-2 text-2xs text-muted-foreground"
                       aria-label={`${label} update status`}
                     >
-                      {row?.progress ? <ProgressSteps progress={row.progress} /> : null}
-                      {row?.attemptText ? <p>{row.attemptText}</p> : null}
+                      {outstanding.length > 1 && operationId !== undefined ? (
+                        <label className="block">
+                          <T>Update attempt</T>
+                          <select
+                            value={operationId}
+                            className="block w-full rounded border border-sidebar-border bg-sidebar px-1 py-0.5 text-sidebar-foreground"
+                            onChange={(event) => {
+                              const id = event.currentTarget.value;
+                              setAttemptChoices((choices) =>
+                                new Map(choices).set(environmentId, id),
+                              );
+                            }}
+                          >
+                            {outstanding.map((item) => (
+                              <option key={item.operationId} value={item.operationId}>
+                                {messages(
+                                  item.step === "directive"
+                                    ? msg("Setup · {operationId}")
+                                    : item.step === "download"
+                                      ? msg("Download · {operationId}")
+                                      : msg("Install · {operationId}"),
+                                  { operationId: item.operationId },
+                                )}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      {rowMatchesAttempt && row?.progress ? (
+                        <ProgressSteps progress={row.progress} />
+                      ) : null}
+                      {rowMatchesAttempt && row?.attemptText ? <p>{row.attemptText}</p> : null}
                       {view.archived ? (
                         <RunningBuild
                           version={device?.observation.state?.currentVersion}
@@ -1057,7 +1126,9 @@ function InstallStatusPlan({
                           fresh={device?.observation.freshness === "fresh"}
                         />
                       ) : null}
-                      {row?.queueReason !== undefined && row.queueReason !== lineText ? (
+                      {rowMatchesAttempt &&
+                      row?.queueReason !== undefined &&
+                      row.queueReason !== lineText ? (
                         <p>{row.queueReason}</p>
                       ) : null}
                       {device?.observation.freshness !== "fresh" ? (
@@ -1065,7 +1136,7 @@ function InstallStatusPlan({
                       ) : null}
                       {choice.checkLine === undefined ? null : <p>{choice.checkLine}</p>}
                       {device === undefined ? null : <HeardAgo at={choice.heardAt} />}
-                      {row?.operationId ? <OperationId value={row.operationId} /> : null}
+                      {operationId !== undefined ? <OperationId value={operationId} /> : null}
                       {receipt?.code ? <p>Code: {receipt.code}</p> : null}
                       {receiptMessage ? <p>{receiptMessage}</p> : null}
                       {routeMessage ? <p>{routeMessage}</p> : null}
@@ -1088,7 +1159,7 @@ function InstallStatusPlan({
                       ) : receipt?.stop?.result === "not-stoppable-phase" ? (
                         <p>This phase cannot be stopped. Read the operation outcome.</p>
                       ) : null}
-                      {held || (view.archived && setupUnconfirmed) ? (
+                      {attemptHeld || (view.archived && setupUnconfirmed) ? (
                         <p>
                           {setupUnconfirmed
                             ? view.archived
@@ -1118,7 +1189,7 @@ function InstallStatusPlan({
                       {cleanupTarget !== undefined && canInspect && cleanupReason !== undefined ? (
                         <p id={`${recoveryDescription}-cleanup`}>{cleanupReason}</p>
                       ) : null}
-                      {(row?.actions.stop || stopArchived) && stopReason !== undefined ? (
+                      {stopAvailable && stopReason !== undefined ? (
                         <p id={`${recoveryDescription}-stop`}>{stopReason}</p>
                       ) : null}
                       {fenceArchived && fenceReason !== undefined ? (
@@ -1151,7 +1222,7 @@ function InstallStatusPlan({
                             </Button>
                           ) : null}
                           {inspectKey !== null &&
-                          receipt !== undefined &&
+                          attemptCleanup !== undefined &&
                           cleanupTarget !== undefined &&
                           canInspect &&
                           cleanup?.inspection.recoveryToken !== undefined ? (
@@ -1170,7 +1241,7 @@ function InstallStatusPlan({
                                 void perform(inspectKey, async () => {
                                   const recovery = await recoverPanelCleanup(
                                     cleanupTarget,
-                                    receipt,
+                                    attemptCleanup.receipt,
                                     token,
                                     binding,
                                   );
@@ -1229,7 +1300,7 @@ function InstallStatusPlan({
                               {row.installLabel}
                             </Button>
                           ) : null}
-                          {(row?.actions.stop || stopArchived) && operationId !== undefined ? (
+                          {stopAvailable && operationId !== undefined ? (
                             <Button
                               variant="outline"
                               size="micro"
@@ -1270,7 +1341,7 @@ function InstallStatusPlan({
                               {setupUnconfirmed ? "Fence original setup" : "Fence original request"}
                             </Button>
                           ) : null}
-                          {(row?.actions.abandon || resumeArchived) &&
+                          {((!view.archived && row?.actions.abandon) || resumeArchived) &&
                           abandonTarget !== undefined ? (
                             <Button
                               variant="outline"
@@ -1331,7 +1402,7 @@ function InstallStatusPlan({
                               ? "Checking…"
                               : setupUnconfirmed
                                 ? "Check setup status"
-                                : held ||
+                                : attemptHeld ||
                                     launcherUnconfirmed ||
                                     (view.archived && operationId !== undefined)
                                   ? "Check update outcome"

@@ -34,7 +34,12 @@ interface FleetHostCommandInput {
 }
 const fleetHostCommand = createRuntimeCommand(connectionAtomRuntime, {
   label: "jones:fleet-host",
-  concurrency: { mode: "serial", key: (input: FleetHostCommandInput) => input.environmentId },
+  concurrency: {
+    mode: "serial",
+    // A mutation can refresh host authority before sending. Reads must not wait for that mutation.
+    key: ({ environmentId, request }: FleetHostCommandInput) =>
+      JSON.stringify([environmentId, request.action === "status" ? "status" : "mutation"]),
+  },
   execute: Effect.fn(function* (input: FleetHostCommandInput) {
     const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const entry = (yield* SubscriptionRef.get(registry.entries)).get(input.environmentId);

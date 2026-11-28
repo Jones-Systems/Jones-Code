@@ -13099,5 +13099,13 @@
   "26f58319308650a1": "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
   "7fd7bc99180bcfad": "This plan's exact reservation changed or expired. Check the original operation.",
   "096cbc9bd8370186": "The reviewed stage changed. Check the original operation and review again.",
-  "08ff07123c656e31": "The control changed before Stop was sent."
+  "08ff07123c656e31": "The control changed before Stop was sent.",
+  "6e83882a36f7baf4": "主机和笔记本电脑都必须支持阻止此原始设置请求。",
+  "c70d8d749a8df05f": "等待恢复",
+  "bb3f9bd07ac134b3": "设置 · {operationId}",
+  "07a31401a631c29b": "下载 · {operationId}",
+  "08226ed443dd4cb0": "安装 · {operationId}",
+  "d805857a3e243315": "更新尝试",
+  "18d6cbd59b2ef487": "原始跟随主机指令尚未确认。",
+  "47387fc33eca675a": "主机已确认解除指令。保存此确认需要读取权限。"
 }

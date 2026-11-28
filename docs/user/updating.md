@@ -80,12 +80,18 @@ check the original download or install outcome in **Recovery history**.
 Installation still needs your review.
 After closing the queue, use **Check setup status** on the original row for a
 late confirmation. If offered, **Fence original setup** lets the host confirm
-what happened or prevent that exact pending setup from applying. For a download
-or install request with an expired reservation and no receipt, **Fence original
+what happened or prevent that exact pending setup from applying. A host that
+supports historical setup recovery can do this after its enrollment changes,
+including when Automatic Updates is turned off. This keeps the current
+enrollment and setup in place. If the host remembers only the old setup ID, its
+outcome stays unconfirmed.
+
+For a download or install request with an expired reservation and no receipt, **Fence original
 request** asks the reachable host to prevent it from starting or return its
 existing receipt. You can fence the original request after enrollment changes
-when the same host is reachable and you still have permission. Fleet setup
-requests still require their original enrollment for this recovery.
+when the same host is reachable and you still have permission. If a device
+has more than one unresolved attempt, select the one you want to check, stop,
+or fence.
 
 If the host reports that enrollment changed before it accepted the download
 or install, check the original attempt in **Recovery history**. Once it is
@@ -214,6 +220,10 @@ scheduling this plan** and keeps unresolved attempts in history.
 ```sh
 t3 jones updates plan cancel "$plan_id" --environment-id "$laptop_id" --revision "$revision" --confirm --json
 ```
+
+Older desktops may have saved that a plan is closed without recording the
+revision that cancelled it. In that case the command shows the closed plan and
+reports that cancellation from the requested revision is unconfirmed.
 
 Use `--base-dir` when the server or desktop uses a custom state directory.
 After a timeout or lost connection, read the attempt or plan again before

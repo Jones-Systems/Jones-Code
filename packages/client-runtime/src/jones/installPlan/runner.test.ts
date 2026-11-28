@@ -7,9 +7,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom, AtomRegistry } from "effect/reactivity";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import type {
   JonesInstallPlan,
+  JonesInstallPlanDevice,
   JonesInstallPlanGrant,
   JonesInstallPlanHostOperation,
   JonesInstallPlanRequest,
@@ -27,10 +28,12 @@ import {
   type PreparedConnection,
 } from "../../connection/model.ts";
 import { EnvironmentRegistry } from "../../connection/registry.ts";
+import { ConnectionResolver } from "../../connection/resolver.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
 import { layerRemoteHttpClient } from "../../rpc/http.ts";
 import type * as RpcSession from "../../rpc/session.ts";
-import { runAtomCommand } from "../../state/runtime.ts";
+import { createRuntimeCommand, runAtomCommand } from "../../state/runtime.ts";
+import { requestFleetHost, type FleetHostRequest } from "../fleetUpdates/hostBridge.ts";
 import { createJonesUpdateAtoms, JonesOperationNotSentError } from "../updates/jonesUpdates.ts";
 import { matchPlanEnrollment, startPlan } from "./model.ts";
 import { advanceInstallPlan, matchesForwardRoute, type InstallPlanDriver } from "./runner.ts";
@@ -49,6 +52,7 @@ const source = "a".repeat(40),
   installed = "c".repeat(40);
 const now = "2026-10-27T05:00:00.000Z";
 const leaseUntil = "2026-10-27T05:02:00.000Z";
+const renewedLeaseUntil = "2026-10-27T05:04:00.000Z";
 const request: JonesOperationStartInput = {
   operationId: opId,
   environmentId: env,
@@ -216,6 +220,131 @@ function nextPlan(plan: JonesInstallPlan): JonesInstallPlan {
     laptop: { environmentId: plan.laptop.environmentId, operations: [] },
     devices: [{ ...plan.devices[0]!, environmentId: otherEnv, label: "Other", operations: [] }],
   };
+}
+
+async function followerFixture() {
+  const f = fixture();
+  const plan = f.plan();
+  f.setPlan({
+    ...plan,
+    devices: [{ ...plan.devices[0]!, route: "follower-operations", enrollmentId }],
+  });
+  const observed = await f.observe(env);
+  const fleet = {
+    ...enrolled(),
+    update: observed.observation.state,
+    follower: {
+      protocol: 1,
+      leaderSource: installed,
+      state: "waiting-for-leader",
+      planDirective: {
+        directiveId: previousDirectiveId,
+        targetSource: installed,
+        targetTree: tree,
+        mode: "manual-review",
+        issuedAt: now,
+      },
+    },
+  } as const;
+  f.observe.mockResolvedValue({ ...observed, fleetStatus: fleet });
+  const directive = {
+    directiveId: opId,
+    environmentId: env,
+    enrollmentId,
+    repository: "Jones-Systems/Jones-Code" as const,
+    targetSource: source,
+    targetTree: tree,
+    expectedDirectiveId: previousDirectiveId,
+  };
+  const applied = {
+    ...fleet,
+    follower: {
+      ...fleet.follower,
+      planDirective: {
+        ...fleet.follower.planDirective,
+        directiveId: opId,
+        targetSource: source,
+      },
+    },
+  };
+  const grant = {
+    ...f.grant,
+    step: "directive",
+    request: { kind: "plan-directive", input: directive },
+  } as const satisfies JonesInstallPlanGrant;
+  const reserve = (claimant: string, expiration = leaseUntil) => {
+    f.setPlan(
+      withReservation(f.plan(), {
+        operationId: grant.operationId,
+        step: grant.step,
+        request: grant.request,
+        lease: { claimant, reservedAt: now, leaseUntil: expiration },
+      }),
+    );
+    return { state: f.state(), grant: { ...grant, leaseUntil: expiration } };
+  };
+  f.desktop.mockImplementation(async (query) =>
+    query.type === "claim" ? reserve(query.claimant) : { state: f.state() },
+  );
+  return { ...f, observed, fleet, directive, applied, reserve };
+}
+
+function fleetTransport(onPrepare: () => void, fetchFn: typeof fetch) {
+  const target = new PrimaryConnectionTarget({
+    environmentId: env,
+    label: "Synthetic primary",
+    httpBaseUrl: "http://fleet.example.test",
+    wsBaseUrl: "ws://fleet.example.test/ws",
+  });
+  const prepared: PreparedConnection = {
+    environmentId: env,
+    label: target.label,
+    target,
+    httpBaseUrl: target.httpBaseUrl,
+    socketUrl: target.wsBaseUrl,
+    httpAuthorization: null,
+  };
+  const descriptor: ExecutionEnvironmentDescriptor = {
+    environmentId: env,
+    label: target.label,
+    platform: { os: "linux", arch: "x64" },
+    serverVersion: "0.0.45-preview.20261010.1.1",
+    orchestrationProtocolVersion: 1,
+    capabilities: { repositoryIdentity: true },
+  };
+  const layer = Layer.merge(
+    Layer.succeed(
+      ConnectionResolver,
+      ConnectionResolver.of({
+        prepare: () => Effect.die("Fleet requests must use the update route."),
+        prepareForUpdate: () =>
+          Effect.sync(() => {
+            onPrepare();
+            return { prepared, descriptor };
+          }),
+      }),
+    ),
+    layerRemoteHttpClient(fetchFn),
+  );
+  return Effect.gen(function* () {
+    const registry = AtomRegistry.make();
+    yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+    const command = createRuntimeCommand(Atom.runtime(layer), {
+      label: "test:fleet-directive",
+      execute: (input: FleetHostRequest) =>
+        requestFleetHost({ target, profile: Option.none(), enabled: true }, input),
+    });
+    const host: InstallPlanDriver["host"] = async (environmentId, input) => {
+      expect(environmentId).toBe(env);
+      const result = await runAtomCommand(registry, command, input, {
+        reportFailure: false,
+        reportDefect: false,
+      });
+      if (result._tag === "Success") return result.value;
+      throw new Error("Synthetic fleet host request failed.");
+    };
+    return host;
+  });
 }
 
 const readInput = { environmentId: env, operationIds: [opId] };
@@ -1480,6 +1609,166 @@ describe("bounded install plan runner", () => {
     expect(f.operation).not.toHaveBeenCalled();
   });
 
+  effectIt.effect.each([
+    "the plan closes",
+    "the Laptop gate closes",
+    "the Laptop gate names a different tree",
+    "the device is removed",
+    "the device is being abandoned",
+    "the device is ended",
+    "the device is verified elsewhere",
+    "the native state becomes read-only",
+    "the reservation lease is renewed",
+    "the reservation claimant changes",
+    "the recorded directive predecessor changes",
+    "an exact directive fence is reserved",
+    "the directive is already fenced",
+    "live permission is revoked during the native read",
+    "the live route changes during the native read",
+    "the live predecessor changes during the native read",
+    "the lease expires during the native read",
+  ] as const)("vetoes a directive when %s before dispatch", (change) =>
+    Effect.gen(function* () {
+      const f = yield* Effect.promise(followerFixture);
+      let prepared = false;
+      let currentTime = Date.parse(now);
+      f.desktop.mockImplementation(async (query): Promise<JonesInstallPlanResult> => {
+        if (query.type === "claim") return f.reserve(query.claimant);
+        const state = f.state();
+        if (!prepared) return { state };
+        const plan = f.plan();
+        const device = plan.devices[0]!;
+        const operation = device.operations[0]!;
+        const withPlan = (current: JonesInstallPlan | null) => ({ state: { ...state, current } });
+        const withDevice = (changes: Partial<JonesInstallPlanDevice>) =>
+          withPlan({ ...plan, devices: [{ ...device, ...changes }] });
+        const withOperation = (changes: Partial<JonesInstallPlanHostOperation>) =>
+          withDevice({ operations: [{ ...operation, ...changes }] });
+        switch (change) {
+          case "the plan closes":
+            return { state: { ...state, current: null, last: plan } };
+          case "the Laptop gate closes":
+            return withPlan({
+              ...plan,
+              laptop: { ...plan.laptop, gateClosed: { reason: "changed", at: now } },
+            });
+          case "the Laptop gate names a different tree":
+            return withPlan({
+              ...plan,
+              laptop: { ...plan.laptop, gate: { ...plan.laptop.gate!, activeTree: installed } },
+            });
+          case "the device is removed":
+            return withDevice({ membership: "removed", removedAt: now });
+          case "the device is being abandoned":
+            return withDevice({ abandoning: true });
+          case "the device is ended":
+            return withDevice({ ended: { at: now } });
+          case "the device is verified elsewhere":
+            return withDevice({ verifiedElsewhere: { version: "new", observedAt: currentTime } });
+          case "the native state becomes read-only":
+            return {
+              state: {
+                ...state,
+                readOnly: { code: "newer-schema", message: "Plan state is read-only." },
+              },
+            };
+          case "the reservation lease is renewed":
+            return withOperation({ lease: { ...operation.lease, leaseUntil: renewedLeaseUntil } });
+          case "the reservation claimant changes":
+            return withOperation({ lease: { ...operation.lease, claimant: "window:other" } });
+          case "the recorded directive predecessor changes":
+            return withOperation({
+              request: {
+                kind: "plan-directive",
+                input: { ...f.directive, expectedDirectiveId: null },
+              },
+            });
+          case "an exact directive fence is reserved":
+            return withOperation({ fence: { lease: operation.lease } });
+          case "the directive is already fenced":
+            return withOperation({ directiveFence: { outcome: "fenced", observedAt: now } });
+          case "live permission is revoked during the native read":
+            f.canDispatch.mockReturnValue(false);
+            return { state };
+          case "the live route changes during the native read":
+            f.authority.mockImplementation((device) => ({
+              canDispatch: true,
+              canReadReceipt: true,
+              enrollment: matchPlanEnrollment(
+                device,
+                { ...f.observed.observation.state!, environmentId: otherEnv },
+                f.fleet,
+              ),
+              fleetStatus: f.fleet,
+            }));
+            return { state };
+          case "the live predecessor changes during the native read":
+            f.authority.mockReturnValue({
+              canDispatch: true,
+              canReadReceipt: true,
+              enrollment: "match",
+              fleetStatus: f.applied,
+            });
+            return { state };
+          case "the lease expires during the native read":
+            currentTime = Date.parse(leaseUntil);
+            return { state };
+        }
+      });
+      const fetchFn = vi.fn<typeof fetch>(async () => Response.json(f.applied));
+      const host = yield* fleetTransport(() => {
+        prepared = true;
+      }, fetchFn);
+      f.host.mockImplementation(host);
+
+      yield* Effect.promise(() => advanceInstallPlan({ ...f.driver, now: () => currentTime }));
+
+      expect(prepared).toBe(true);
+      expect(fetchFn.mock.calls).toHaveLength(0);
+      expect(f.desktop.mock.calls.map(([query]) => query.type)).toEqual(["read", "claim", "read"]);
+      expect(f.operation).not.toHaveBeenCalled();
+    }),
+  );
+
+  effectIt.effect.each(["while open", "after closing during dispatch"] as const)(
+    "reports the exact dispatched directive to the original plan %s",
+    (when) =>
+      Effect.gen(function* () {
+        const f = yield* Effect.promise(followerFixture);
+        let closed = false;
+        const fetchFn = vi.fn<typeof fetch>(async () => {
+          if (when === "after closing during dispatch") {
+            f.setPlan(nextPlan(f.plan()));
+            closed = true;
+          }
+          return Response.json(f.applied);
+        });
+        const host = yield* fleetTransport(() => {}, fetchFn);
+        f.host.mockImplementation(host);
+
+        yield* Effect.promise(() => advanceInstallPlan({ ...f.driver, cancelled: () => closed }));
+
+        expect(fetchFn).toHaveBeenCalledTimes(1);
+        const [url, init] = fetchFn.mock.calls[0]!;
+        expect(new URL(String(url)).pathname).toBe("/api/jones-fleet-updates/plan-directive");
+        expect(init?.method).toBe("PUT");
+        expect(JSON.parse(String(init?.body))).toEqual(f.directive);
+        expect(f.desktop.mock.calls.map(([query]) => query.type)).toEqual([
+          "read",
+          "claim",
+          "read",
+          "report",
+        ]);
+        expect(f.desktop.mock.lastCall?.[0]).toEqual({
+          type: "report",
+          planId,
+          environmentId: env,
+          operationId: opId,
+          evidence: { kind: "directive", status: f.applied },
+        });
+      }),
+  );
+
   const directiveReplies = [
     "reply",
     "reply after disposal",
@@ -1488,73 +1777,12 @@ describe("bounded install plan runner", () => {
     "no recorded host effect",
   ] as const;
   it.each(directiveReplies)("reconciles the directive after %s", async (result) => {
-    const f = fixture(),
-      p = f.plan();
-    f.setPlan({
-      ...p,
-      devices: [{ ...p.devices[0]!, route: "follower-operations", enrollmentId }],
-    });
-    const observed = await f.observe(env);
-    const fleet = {
-      environmentId: env,
-      operationProtocol: 1 as const,
-      planDirectiveProtocol: 1 as const,
-      enrollment: {
-        environmentId: env,
-        enrollmentId,
-        enabled: true,
-        continueRunningThreads: false,
-      },
-      operation: null,
-      update: observed.observation.state,
-      follower: {
-        protocol: 1 as const,
-        leaderSource: installed,
-        state: "waiting-for-leader" as const,
-        planDirective: {
-          directiveId: previousDirectiveId,
-          targetSource: installed,
-          targetTree: tree,
-          mode: "manual-review" as const,
-          issuedAt: now,
-        },
-      },
-    };
-    f.observe.mockResolvedValue({ ...observed, fleetStatus: fleet });
-    const directive = {
-      directiveId: opId,
-      environmentId: env,
-      enrollmentId,
-      repository: "Jones-Systems/Jones-Code" as const,
-      targetSource: source,
-      targetTree: tree,
-      expectedDirectiveId: previousDirectiveId,
-    };
-    const state = (): JonesInstallPlanState => ({
-      schema: 1,
-      current: f.plan(),
-      last: null,
-      laptop: { observedAt: now, activationBlocked: false },
-      view: { complete: false },
-    });
-    const grant: JonesInstallPlanGrant = {
-      ...f.grant,
-      step: "directive",
-      request: { kind: "plan-directive", input: directive },
-    };
-    f.desktop.mockResolvedValue({ state: state(), grant });
-    const applied = {
-      ...fleet,
-      follower: {
-        ...fleet.follower,
-        planDirective: {
-          directiveId: opId,
-          targetSource: source,
-          targetTree: tree,
-          mode: "manual-review" as const,
-          issuedAt: now,
-        },
-      },
+    const f = await followerFixture();
+    const { observed, fleet, directive, applied } = f;
+    const directiveRequest = {
+      action: "planDirective",
+      input: directive,
+      beforeSend: expect.any(Function),
     };
     if (result === "reply") {
       f.observe.mockResolvedValueOnce({ ...observed, canOperate: false, fleetStatus: fleet });
@@ -1578,26 +1806,9 @@ describe("bounded install plan runner", () => {
       });
 
     await advanceInstallPlan({ ...f.driver, cancelled: () => disposed });
-    expect(f.host.mock.calls[0]?.[1]).toEqual({ action: "planDirective", input: directive });
+    expect(f.host.mock.calls[0]?.[1]).toEqual(directiveRequest);
     if (!replied) {
       expect(f.desktop.mock.calls.map(([input]) => input.type)).toEqual(["read", "claim"]);
-      const pending = f.plan();
-      f.setPlan({
-        ...pending,
-        devices: [
-          {
-            ...pending.devices[0]!,
-            operations: [
-              {
-                operationId: opId,
-                step: "directive",
-                request: { kind: "plan-directive", input: directive },
-                lease: { claimant: f.driver.claimant, reservedAt: now, leaseUntil },
-              },
-            ],
-          },
-        ],
-      });
       const resumed = { ...f.driver, claimant: "window:b", now: () => Date.parse(leaseUntil) };
       const update = observed.observation.state!;
       const limited = {
@@ -1608,7 +1819,6 @@ describe("bounded install plan runner", () => {
         },
       };
       if (result === "lost reply") {
-        f.desktop.mockResolvedValue({ state: state() });
         const { fleetStatus: _unavailable, ...withoutFleet } = limited;
         f.observe.mockResolvedValueOnce(withoutFleet);
         f.desktop.mockClear();
@@ -1642,13 +1852,11 @@ describe("bounded install plan runner", () => {
         expect(f.host).toHaveBeenCalledTimes(1);
         expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read"]);
         f.observe.mockResolvedValue({ ...observed, fleetStatus: fleet });
-        f.desktop.mockResolvedValue({
-          state: state(),
-          grant: {
-            ...grant,
-            leaseUntil: new Date(Date.parse(leaseUntil) + 120_000).toISOString(),
-          },
-        });
+        f.desktop.mockImplementation(async (query) =>
+          query.type === "claim"
+            ? f.reserve(query.claimant, renewedLeaseUntil)
+            : { state: f.state() },
+        );
         f.host.mockRejectedValueOnce({
           _tag: "FleetHostError",
           reason: "conflict",
@@ -1661,10 +1869,10 @@ describe("bounded install plan runner", () => {
           claimant: "window:b",
           expectedDirectiveId: previousDirectiveId,
         });
-        expect(f.host.mock.calls[1]?.[1]).toEqual({ action: "planDirective", input: directive });
+        expect(f.host.mock.calls[1]?.[1]).toEqual(directiveRequest);
         f.host.mockResolvedValueOnce(applied);
         await advanceInstallPlan(resumed);
-        expect(f.host.mock.calls[2]?.[1]).toEqual({ action: "planDirective", input: directive });
+        expect(f.host.mock.calls[2]?.[1]).toEqual(directiveRequest);
       }
     }
     expect(f.operation).not.toHaveBeenCalled();

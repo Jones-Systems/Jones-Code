@@ -5,11 +5,14 @@ import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
-import { JONES_INSTALL_PLAN_HISTORY_LIMIT } from "@t3tools/contracts/jones/installPlan";
+import {
+  JONES_INSTALL_PLAN_HISTORY_LIMIT,
+  type JonesInstallPlanCommandReceipt,
+} from "@t3tools/contracts/jones/installPlan";
 import { startPlan } from "@t3tools/client-runtime/jones/install-plan/model";
 import { readPrivateJson } from "../storage/privateJsonStore.ts";
 import { admitPlanWork, archiveCurrent, commitRevision } from "./journal.ts";
-import { createInstallPlanStore, type PlanSnapshot } from "./store.ts";
+import { createInstallPlanStore, retainedPlans, type PlanSnapshot } from "./store.ts";
 
 const roots = new Set<string>();
 afterEach(async () => {
@@ -354,6 +357,117 @@ describe("native install plan storage", () => {
       save((document) => ({ ...document, schema: 2 }) as PlanSnapshot["document"]),
     ).rejects.toMatchObject({ code: "bounds" });
     expect((await f.read()).document.schema).toBe(3);
+  });
+
+  it("protects the exact verified unsupported operation only until the command carries its proof", () => {
+    const original = plan();
+    const environmentId = EnvironmentId.make("host");
+    const operationId = "22222222-2222-4222-8222-222222222222";
+    const review = {
+      stagedHandle: "stage",
+      reviewedAt: original.createdAt,
+      targetSource: target.sourceSha,
+      currentVersion: "old",
+      expectedInstalledSource: "c".repeat(40),
+    };
+    const input = {
+      operationId,
+      environmentId,
+      action: {
+        kind: "install",
+        stagedHandle: review.stagedHandle,
+        currentVersion: review.currentVersion,
+        targetSource: target.sourceSha,
+      },
+      expectedInstalledSource: review.expectedInstalledSource,
+      correlation: { planId: original.planId, deviceKey: environmentId },
+    } as const;
+    const proof = {
+      ...input,
+      protocol: 1,
+      phase: "refused",
+      code: "unsupported",
+      updatedAt: original.createdAt,
+    } as const;
+    const closed = {
+      ...original,
+      dismissedAt: original.createdAt,
+      devices: [
+        {
+          environmentId,
+          label: "Host",
+          membership: "selected",
+          route: "operations",
+          addedAt: original.createdAt,
+          operations: [
+            {
+              operationId,
+              step: "install",
+              review,
+              request: { kind: "operation-start", input },
+              lease: {
+                claimant: "window",
+                reservedAt: original.createdAt,
+                leaseUntil: original.createdAt,
+              },
+              receipt: proof,
+              unsupportedReceiptVerified: true,
+            },
+          ],
+        },
+      ],
+    } as const;
+    const body = "e".repeat(64);
+    const command = {
+      commandId: "33333333-3333-4333-8333-333333333333",
+      environmentId,
+      targetSource: target.sourceSha,
+      action: "install",
+      stagedHandle: review.stagedHandle,
+      planId: original.planId,
+      expectedRevision: original.revision,
+    } as const;
+    const receipt = {
+      command,
+      bodyHash: body,
+      requestType: "claim",
+      planId: original.planId,
+      operationId,
+      outcome: "terminal",
+      code: "unsupported",
+    } as const;
+    const otherPlans = Array.from({ length: JONES_INSTALL_PLAN_HISTORY_LIMIT }, (_, i) =>
+      plan(`${String(i).padStart(8, "0")}-1234-4234-8234-123456789abc`),
+    );
+    const candidate = {
+      schema: 3,
+      documentRevision: 1,
+      current: otherPlans[0]!,
+      last: otherPlans[1]!,
+      older: [...otherPlans.slice(2), closed],
+    } as const;
+    const keepsDetail = (entry: {
+      body: string;
+      receipt: JonesInstallPlanCommandReceipt;
+      orphanReceipt?: typeof proof;
+    }) => {
+      const admitted = admitPlanWork({ ...candidate, commands: [entry] }, true);
+      expect(admitted).toBeDefined();
+      return retainedPlans(admitted!).some(({ planId }) => planId === original.planId);
+    };
+    expect(keepsDetail({ body, receipt })).toBe(true);
+    expect(keepsDetail({ body, receipt, orphanReceipt: proof })).toBe(false);
+    const { stagedHandle: _stage, ...download } = command;
+    for (const unbound of [
+      { ...receipt, command: { ...command, planId: otherPlans[0]!.planId } },
+      { ...receipt, command: { ...command, environmentId: original.laptop.environmentId } },
+      { ...receipt, bodyHash: "f".repeat(64) },
+      { ...receipt, command: { ...command, targetSource: review.expectedInstalledSource } },
+      { ...receipt, command: { ...download, action: "download-exact" as const } },
+      { ...receipt, command: { ...command, stagedHandle: "wrong-stage" } },
+    ]) {
+      expect(keepsDetail({ body, receipt: unbound })).toBe(false);
+    }
   });
 
   it("fails closed under a second process lock and resumes after its owner releases it", async () => {

@@ -720,6 +720,64 @@ describe("bound Install status actions", () => {
     }
   });
 
+  it("stops the exact active download behind a different outstanding operation", async () => {
+    const f = bindFixture();
+    const member = f.state.current!.devices[0]!;
+    const download = member.operations[0]!;
+    const earlier = {
+      ...download,
+      operationId: earlierOperationId,
+      receipt: { ...running, operationId: earlierOperationId },
+      request: {
+        kind: "operation-start" as const,
+        input: { ...input, operationId: earlierOperationId },
+      },
+    };
+    const state = f.state;
+    let operations = [earlier, download];
+    f.installPlan.mockImplementation(async (request) => {
+      if (request.type === "claim") {
+        expect(request.operationId).toBe(hostOperationId);
+        operations = [
+          earlier,
+          {
+            ...download,
+            stop: {
+              stopId: localStopId,
+              lease: { claimant: request.claimant, reservedAt: at, leaseUntil: grant.leaseUntil },
+            },
+          },
+        ];
+      }
+      return {
+        state: { ...state, current: { ...state.current!, devices: [{ ...member, operations }] } },
+        ...(request.type === "claim" ? { grant } : {}),
+      };
+    });
+    try {
+      await stopPanelDownload({
+        kind: "device",
+        planId: plan.planId,
+        environmentId: hostId,
+        operationId: hostOperationId,
+      });
+      expect(f.stop).toHaveBeenCalledExactlyOnceWith(hostId, {
+        action: "operationStop",
+        beforeSend: expect.any(Function),
+        input: { environmentId: hostId, operationId: hostOperationId, stopId: localStopId },
+      });
+      expect(f.installPlan).toHaveBeenLastCalledWith({
+        type: "report",
+        planId: plan.planId,
+        environmentId: hostId,
+        operationId: hostOperationId,
+        evidence: { kind: "receipt", receipt: hostReceipt },
+      });
+    } finally {
+      f.unbind();
+    }
+  });
+
   it.each(["changed enrollment", "different host", "expired in queue"] as const)(
     "qualifies exact archived Stop with %s",
     async (scope) => {
@@ -939,6 +997,15 @@ describe("bound Install status actions", () => {
     "unconfirmed fresh abandonment",
     "unsupported release on resume",
     "refused release on resume",
+    "new attempt before retry",
+    "abandonment cleared before retry",
+    "applied directive changed before retry",
+    "predecessor changed before retry",
+    "different live directive before retry",
+    "different enrollment before retry",
+    "permission revoked before retry",
+    "permission revoked after release",
+    "read scope lost after release",
   ] as const)("binds follower abandonment to exact release evidence after %s", async (scenario) => {
     const f = bindFixture();
     const current = f.state.current!;
@@ -953,30 +1020,26 @@ describe("bound Install status actions", () => {
       expectedDirectiveId: null,
     } as const;
     const resume = scenario !== "unconfirmed fresh abandonment";
+    const applied = {
+      directiveId: directive.directiveId,
+      targetSource: directive.targetSource,
+      targetTree: directive.targetTree,
+      mode: "manual-review" as const,
+      issuedAt: at,
+    };
+    const operation = {
+      operationId: directive.directiveId,
+      step: "directive" as const,
+      request: { kind: "plan-directive" as const, input: directive },
+      lease: { claimant: "window:a", reservedAt: at, leaseUntil: grant.leaseUntil },
+      directive: { kind: "applied" as const, observedAt: at, directive: applied },
+    };
     const device = {
       ...current.devices[0]!,
       route: "follower-operations" as const,
       enrollmentId,
       ...(resume ? { abandoning: true as const } : {}),
-      operations: [
-        {
-          operationId: directive.directiveId,
-          step: "directive" as const,
-          request: { kind: "plan-directive" as const, input: directive },
-          lease: { claimant: "window:a", reservedAt: at, leaseUntil: grant.leaseUntil },
-          directive: {
-            kind: "applied" as const,
-            observedAt: at,
-            directive: {
-              directiveId: directive.directiveId,
-              targetSource: directive.targetSource,
-              targetTree: directive.targetTree,
-              mode: "manual-review" as const,
-              issuedAt: at,
-            },
-          },
-        },
-      ],
+      operations: [operation],
     };
     let retained: JonesInstallPlan = {
       ...current,
@@ -991,29 +1054,95 @@ describe("bound Install status actions", () => {
     });
     const observed = await f.services.observe(hostId);
     let released = false;
-    const fleetStatus = () => ({
+    let canOperate = true;
+    let canRead = true;
+    let liveEnrollmentId: string = enrollmentId;
+    let liveDirectiveId: string = directive.directiveId;
+    const fleetStatus = (): FleetHostStatus => ({
       environmentId: hostId,
       operationProtocol: 1 as const,
       ...(scenario === "unsupported release on resume" ? {} : { releasePlanDirective: 1 as const }),
       enrollment: {
         environmentId: hostId,
-        enrollmentId,
+        enrollmentId: liveEnrollmentId,
         enabled: true,
         continueRunningThreads: false,
       },
       operation: null,
       update: observed.observation.state,
-      ...(!released && scenario === "lost release reply"
-        ? { releasableDirectiveId: directive.directiveId }
+      follower: {
+        protocol: 1,
+        leaderSource: source,
+        state: "waiting-for-leader",
+        ...(!released && scenario !== "refused release on resume"
+          ? {
+              planDirective: { ...applied, directiveId: liveDirectiveId },
+            }
+          : {}),
+      },
+      ...(!released &&
+      scenario !== "unconfirmed fresh abandonment" &&
+      scenario !== "refused release on resume"
+        ? { releasableDirectiveId: liveDirectiveId }
         : {}),
     });
-    const observe = () => ({ ...observed, fleetStatus: fleetStatus() });
-    const host = vi.fn<InstallPlanServices["host"]>(async () => {
+    const observe = () => ({ ...observed, canOperate, fleetStatus: fleetStatus() });
+    const revise = (patch: Partial<JonesInstallPlan["devices"][number]>) => {
+      retained = {
+        ...retained,
+        revision: retained.revision + 1,
+        devices: [{ ...device, ...patch }],
+      };
+    };
+    const sent = vi.fn();
+    const host = vi.fn<InstallPlanServices["host"]>(async (id, request) => {
+      if (request.action !== "releaseDirective") throw new Error("Unexpected host command.");
+      if (!(await request.beforeSend?.())) throw new Error("The release did not leave the queue.");
+      sent(id, request.input);
+      if (scenario.includes("before retry")) {
+        if (scenario === "new attempt before retry") revise({ addedAt: grant.leaseUntil });
+        if (scenario === "abandonment cleared before retry") {
+          const { abandoning: _abandonment, ...member } = device;
+          retained = { ...retained, revision: retained.revision + 1, devices: [member] };
+        }
+        if (scenario === "applied directive changed before retry")
+          revise({
+            operations: [
+              {
+                ...operation,
+                directive: {
+                  ...operation.directive,
+                  directive: { ...applied, issuedAt: grant.leaseUntil },
+                },
+              },
+            ],
+          });
+        if (scenario === "predecessor changed before retry")
+          revise({
+            operations: [
+              {
+                ...operation,
+                request: {
+                  ...operation.request,
+                  input: { ...directive, expectedDirectiveId: localStopId },
+                },
+              },
+            ],
+          });
+        if (scenario === "different live directive before retry") liveDirectiveId = localStopId;
+        if (scenario === "different enrollment before retry") liveEnrollmentId = localStopId;
+        if (scenario === "permission revoked before retry") canOperate = false;
+        if (await request.beforeSend?.()) sent(id, request.input);
+        throw new Error("No release was verified by the host.");
+      }
       if (scenario === "refused release on resume") throw new Error("Release was refused.");
-      if (!released) {
+      if (scenario === "lost release reply" && !released) {
         released = true;
         throw new Error("The release response was lost.");
       }
+      released = true;
+      if (scenario === "permission revoked after release") canOperate = false;
+      if (scenario === "read scope lost after release") canRead = false;
       return { ...fleetStatus(), releasedDirectiveId: directive.directiveId };
     });
     f.installPlan.mockImplementation(async (request) => {
@@ -1036,6 +1165,7 @@ describe("bound Install status actions", () => {
         ...f.services,
         devices: () => [observe()],
         observe: async () => observe(),
+        canReadReceipts: () => canRead,
         confirm: async () => true,
         host,
       },
@@ -1044,7 +1174,28 @@ describe("bound Install status actions", () => {
     f.store.update({ native: state() });
     try {
       const attempt = deviceAbandonTarget(retained, hostId, resume)!;
-      if (scenario !== "lost release reply") {
+      const request = {
+        action: "releaseDirective",
+        input: directive,
+        beforeSend: expect.any(Function),
+      };
+      if (scenario === "lost release reply" || scenario === "permission revoked after release") {
+        if (scenario === "lost release reply") {
+          await expect(abandonDevice(attempt)).rejects.toThrow("release response was lost");
+          expect(retained.devices[0]?.abandoning).toBe(true);
+        }
+        await abandonDevice(attempt);
+        expect(host).toHaveBeenCalledTimes(scenario === "lost release reply" ? 2 : 1);
+        expect(host).toHaveBeenLastCalledWith(hostId, request);
+        expect(retained.devices[0]?.membership).toBe("removed");
+      } else if (
+        scenario.includes("before retry") ||
+        scenario === "read scope lost after release"
+      ) {
+        await expect(abandonDevice(attempt)).rejects.toThrow();
+        expect(host).toHaveBeenCalledExactlyOnceWith(hostId, request);
+        expect(sent).toHaveBeenCalledExactlyOnceWith(hostId, directive);
+      } else {
         await expect(abandonDevice(attempt)).rejects.toThrow(
           scenario === "refused release on resume"
             ? "Release was refused."
@@ -1052,19 +1203,11 @@ describe("bound Install status actions", () => {
         );
         expect(retained.devices[0]?.abandoning).toBe(resume ? true : undefined);
         expect(host).toHaveBeenCalledTimes(scenario === "refused release on resume" ? 1 : 0);
+      }
+      if (scenario !== "lost release reply" && scenario !== "permission revoked after release")
         expect(
           f.installPlan.mock.calls.every(([request]) => request.type !== "abandon-device"),
         ).toBe(true);
-        return;
-      }
-      await expect(abandonDevice(attempt)).rejects.toThrow("release response was lost");
-      expect(retained.devices[0]?.abandoning).toBe(true);
-      await abandonDevice(attempt);
-      expect(host.mock.calls).toEqual([
-        [hostId, { action: "releaseDirective", input: directive }],
-        [hostId, { action: "releaseDirective", input: directive }],
-      ]);
-      expect(retained.devices[0]?.membership).toBe("removed");
     } finally {
       unbind();
       f.unbind();
@@ -1419,10 +1562,27 @@ describe("bound Install status actions", () => {
 
   it.each([
     "supported",
+    "historical enrollment",
+    "disabled enrollment",
     "old host",
+    "old host after enrollment change",
     "failed fleet read",
     "failed read after claim",
+    "missing enrollment",
+    "wrong fleet host",
+    "wrong ordinary host",
+    "mismatched grant revision",
+    "advanced archive in queue",
+    "different owner in queue",
+    "expired lease in queue",
+    "setup settled in queue",
+    "capability changes during retry",
     "mismatched proof",
+    "contradictory live directive",
+    "legacy fence without exact proof",
+    "enrollment changed in reply",
+    "late authorized readback",
+    "read permission lost after send",
   ] as const)("qualifies an explicit archived setup fence with a %s", async (scenario) => {
     const f = bindFixture();
     const current = f.state.current!;
@@ -1436,22 +1596,32 @@ describe("bound Install status actions", () => {
       targetTree: target.sourceTree,
       expectedDirectiveId: null,
     } as const;
+    const original = {
+      operationId: hostOperationId,
+      step: "directive" as const,
+      request: { kind: "plan-directive" as const, input: directive },
+      lease: { claimant: "forward-window", reservedAt: at, leaseUntil: grant.leaseUntil },
+    };
+    const applied = {
+      directiveId: directive.directiveId,
+      targetSource: directive.targetSource,
+      targetTree: directive.targetTree,
+      mode: "manual-review" as const,
+      issuedAt: at,
+    };
     const device = {
       ...current.devices[0]!,
       route: "follower-operations" as const,
       enrollmentId,
-      operations: [
-        {
-          operationId: hostOperationId,
-          step: "directive" as const,
-          request: { kind: "plan-directive" as const, input: directive },
-          lease: { claimant: "forward-window", reservedAt: at, leaseUntil: grant.leaseUntil },
-        },
-      ],
+      operations: [original],
     };
     let closed: JonesInstallPlan = { ...current, revision: 7, dismissedAt: at, devices: [device] };
+    const replace = (operation: JonesInstallPlan["devices"][number]["operations"][number]) => {
+      closed = { ...closed, devices: [{ ...device, operations: [operation] }] };
+    };
+    const newer = { ...plan, planId: localStopId };
     const state = () => ({
-      ...native(null, closed),
+      ...native(newer, closed),
       documentRevision: closed.revision,
       recoveryHistory: [
         {
@@ -1466,38 +1636,114 @@ describe("bound Install status actions", () => {
       view: { complete: false, recoveryHistory: 1 as const, directiveFence: 1 as const },
     });
     const observed = await f.services.observe(hostId);
-    const fleetStatus = {
-      environmentId: hostId,
+    const historical = scenario === "historical enrollment" || scenario === "disabled enrollment";
+    const newEnrollment = historical || scenario === "old host after enrollment change";
+    const fleetStatus: FleetHostStatus = {
+      environmentId: scenario === "wrong fleet host" ? environmentId : hostId,
       operationProtocol: 1 as const,
       planDirectiveProtocol: 1 as const,
       releasePlanDirective: 1 as const,
       ...(scenario === "old host" ? {} : { fencePlanDirective: 1 as const }),
+      ...(historical ? { fenceHistoricalPlanDirective: 1 as const } : {}),
       operation: null,
       update: observed.observation.state,
-      enrollment: {
-        environmentId: hostId,
-        enrollmentId,
-        enabled: true,
-        continueRunningThreads: false,
-      },
+      enrollment:
+        scenario === "missing enrollment"
+          ? null
+          : {
+              environmentId: hostId,
+              enrollmentId:
+                newEnrollment && scenario !== "disabled enrollment" ? localStopId : enrollmentId,
+              enabled: scenario !== "disabled enrollment",
+              continueRunningThreads: false,
+            },
     };
     const { fleetStatus: _previous, ...unknownFleet } = observed;
-    const observation: InstallStatusDevice =
-      scenario === "failed fleet read" ? unknownFleet : { ...unknownFleet, fleetStatus };
-    let latest = observation;
-    const host = vi.fn<InstallPlanServices["host"]>(async () => ({
-      ...fleetStatus,
-      directiveFence: {
-        protocol: 1,
-        outcome: "fenced",
-        input:
-          scenario === "mismatched proof"
-            ? { ...directive, expectedDirectiveId: localStopId }
-            : directive,
-      },
-    }));
+    let latest: InstallStatusDevice =
+      scenario === "failed fleet read"
+        ? unknownFleet
+        : {
+            ...unknownFleet,
+            fleetStatus,
+            ...(scenario === "wrong ordinary host"
+              ? {
+                  observation: {
+                    freshness: "fresh",
+                    state: { ...observed.observation.state!, environmentId },
+                  },
+                }
+              : {}),
+          };
+    let now = Date.parse(at);
+    let canRead = true;
+    const sent = vi.fn();
+    const proof: NonNullable<FleetHostStatus["directiveFence"]> =
+      scenario === "disabled enrollment"
+        ? { protocol: 1, outcome: "applied", input: directive, directive: applied }
+        : {
+            protocol: 1,
+            outcome: "fenced",
+            input:
+              scenario === "mismatched proof"
+                ? { ...directive, expectedDirectiveId: localStopId }
+                : directive,
+          };
+    const host = vi.fn<InstallPlanServices["host"]>(async (id, request) => {
+      if (request.action !== "fenceDirective") throw new Error("Unexpected host command.");
+      expect(id).toBe(hostId);
+      expect(request.input).toEqual(directive);
+      if (scenario === "advanced archive in queue") closed = { ...closed, revision: 9 };
+      if (scenario === "different owner in queue")
+        replace({ ...original, fence: { lease: { ...original.lease, claimant: "other-window" } } });
+      if (scenario === "setup settled in queue") {
+        replace({
+          ...closed.devices[0]!.operations[0]!,
+          directive: { kind: "applied", observedAt: at, directive: applied },
+        });
+      }
+      if (scenario === "expired lease in queue") now = Date.parse(grant.leaseUntil);
+      if (!(await request.beforeSend?.())) throw new Error("The fence did not leave the queue.");
+      sent(id, request.input);
+      if (scenario === "capability changes during retry") {
+        const { fencePlanDirective: _capability, ...oldFleet } = fleetStatus;
+        latest = { ...latest, fleetStatus: oldFleet };
+        if (await request.beforeSend?.()) sent(id, request.input);
+        throw new Error("The authorized retry was not sent.");
+      }
+      if (scenario === "late authorized readback") {
+        latest = { ...latest, canOperate: false };
+        closed = { ...closed, revision: 9 };
+        now = Date.parse(grant.leaseUntil);
+      }
+      if (scenario === "read permission lost after send") canRead = false;
+      return {
+        ...fleetStatus,
+        ...(scenario === "enrollment changed in reply"
+          ? {
+              fenceHistoricalPlanDirective: 1 as const,
+              enrollment: { ...fleetStatus.enrollment!, enrollmentId: localStopId },
+            }
+          : {}),
+        ...(scenario === "legacy fence without exact proof" ? {} : { directiveFence: proof }),
+        ...(scenario === "contradictory live directive"
+          ? {
+              follower: {
+                protocol: 1,
+                leaderSource: source,
+                state: "current",
+                planDirective: applied,
+              },
+            }
+          : {}),
+      };
+    });
     f.installPlan.mockImplementation(async (request) => {
       if (request.type === "claim") {
+        expect(request.expectedRevision).toBe(7);
+        replace({
+          ...original,
+          fence: { lease: { ...original.lease, claimant: request.claimant } },
+        });
         closed = { ...closed, revision: 8 };
         if (scenario === "failed read after claim") latest = unknownFleet;
         return {
@@ -1505,23 +1751,25 @@ describe("bound Install status actions", () => {
           grant: {
             ...grant,
             step: "fence",
-            request: { kind: "plan-directive-fence", input: directive, expectedRevision: 8 },
+            request: {
+              kind: "plan-directive-fence",
+              input: directive,
+              expectedRevision: scenario === "mismatched grant revision" ? 9 : 8,
+            },
           },
         };
       }
-      if (request.type === "report")
-        closed = {
-          ...closed,
-          revision: 9,
-          devices: [
-            {
-              ...device,
-              operations: [
-                { ...device.operations[0]!, directiveFence: { outcome: "fenced", observedAt: at } },
-              ],
-            },
-          ],
-        };
+      if (request.type === "report" && request.evidence.kind === "directive-fence") {
+        expect(request.evidence.expectedRevision).toBe(closed.revision);
+        const { proof: verified } = request.evidence;
+        replace({
+          ...closed.devices[0]!.operations[0]!,
+          ...(verified.outcome === "applied"
+            ? { directive: { kind: "applied", observedAt: at, directive: verified.directive } }
+            : { directiveFence: { outcome: verified.outcome, observedAt: at } }),
+        });
+        closed = { ...closed, revision: closed.revision + 1 };
+      }
       return {
         state: state(),
         ...(request.type === "read-history" ? { historyPlan: closed } : {}),
@@ -1530,9 +1778,11 @@ describe("bound Install status actions", () => {
     const unbind = bindInstallPlanServices(
       {
         ...f.services,
-        observe: async () => observation,
+        observe: async () => latest,
         devices: () => [latest],
+        canReadReceipts: () => canRead,
         host,
+        now: () => now,
       },
       f.store,
     );
@@ -1546,12 +1796,19 @@ describe("bound Install status actions", () => {
           operationId: hostOperationId,
           expectedRevision: 7,
         });
-      if (scenario === "supported") {
+      if (
+        scenario === "supported" ||
+        historical ||
+        scenario === "late authorized readback" ||
+        scenario === "enrollment changed in reply"
+      ) {
         await perform();
         expect(host).toHaveBeenCalledExactlyOnceWith(hostId, {
           action: "fenceDirective",
           input: directive,
+          beforeSend: expect.any(Function),
         });
+        expect(sent).toHaveBeenCalledExactlyOnceWith(hostId, directive);
         expect(f.installPlan).toHaveBeenCalledWith({
           type: "report",
           planId: closed.planId,
@@ -1559,30 +1816,46 @@ describe("bound Install status actions", () => {
           operationId: hostOperationId,
           evidence: {
             kind: "directive-fence",
-            expectedRevision: 8,
-            proof: { protocol: 1, input: directive, outcome: "fenced" },
+            expectedRevision: scenario === "late authorized readback" ? 9 : 8,
+            proof,
           },
         });
-      } else if (scenario === "mismatched proof") {
-        await expect(perform()).rejects.toThrow("did not return an exact setup fence proof");
-        expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual([
-          "read-history",
-          "claim",
-        ]);
-      } else if (scenario === "failed read after claim") {
-        await expect(perform()).rejects.toThrow(
-          "Fresh authorized operation capability is required",
-        );
-        expect(host).not.toHaveBeenCalled();
-        expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual([
-          "read-history",
-          "claim",
-        ]);
       } else {
-        await expect(perform()).rejects.toThrow("no longer eligible");
-        expect(host).not.toHaveBeenCalled();
-        expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(["read-history"]);
+        await expect(perform()).rejects.toThrow();
+        const refusalBeforeClaim = [
+          "failed fleet read",
+          "old host",
+          "old host after enrollment change",
+          "missing enrollment",
+          "wrong fleet host",
+          "wrong ordinary host",
+        ].includes(scenario);
+        expect(host).toHaveBeenCalledTimes(
+          refusalBeforeClaim ||
+            scenario === "failed read after claim" ||
+            scenario === "mismatched grant revision"
+            ? 0
+            : 1,
+        );
+        expect(sent).toHaveBeenCalledTimes(
+          [
+            "capability changes during retry",
+            "mismatched proof",
+            "contradictory live directive",
+            "legacy fence without exact proof",
+            "read permission lost after send",
+          ].includes(scenario)
+            ? 1
+            : 0,
+        );
+        const types = f.installPlan.mock.calls.map(([request]) => request.type);
+        expect(types.includes("claim")).toBe(!refusalBeforeClaim);
+        expect(types).not.toContain("report");
+        expect(closed.devices[0]?.operations[0]?.directiveFence).toBeUndefined();
+        if (scenario !== "setup settled in queue")
+          expect(closed.devices[0]?.operations[0]?.directive).toBeUndefined();
       }
+      expect(f.store.get().native?.current?.planId).toBe(newer.planId);
     } finally {
       unbind();
       f.unbind();
@@ -1714,6 +1987,114 @@ describe("bound Install status actions", () => {
       }
     },
   );
+
+  it("polls the open archive in a single bounded read of outstanding operation IDs", async () => {
+    const f = bindFixture();
+    const current = f.state.current!;
+    const device = current.devices[0]!;
+    const prototype = device.operations[0]!;
+    const makeOperation = (operationId: string) => ({
+      ...prototype,
+      receipt: { ...running, operationId },
+      operationId,
+      request: { kind: "operation-start" as const, input: { ...input, operationId } },
+    });
+    const pending = Array.from({ length: 16 }, (_, offset) =>
+      makeOperation(`00000000-0000-4000-8000-${String(offset).padStart(12, "0")}`),
+    );
+    const settled = {
+      ...makeOperation(localStopId),
+      receipt: { ...running, operationId: localStopId, phase: "stopped" as const },
+    };
+    let archived: JonesInstallPlan = {
+      ...current,
+      revision: 7,
+      dismissedAt: at,
+      devices: [{ ...device, operations: [settled, ...pending, makeOperation(hostStopId)] }],
+    };
+    const newer = { ...plan, planId: earlierOperationId };
+    const state = () => ({
+      ...native(newer, archived),
+      view: { complete: false, recoveryHistory: 1 as const },
+      documentRevision: archived.revision,
+    });
+    f.installPlan.mockImplementation(async (request) => {
+      if (request.type === "report" && request.evidence.kind === "receipt") {
+        const receipt = request.evidence.receipt;
+        const member = archived.devices[0]!;
+        expect(request.planId).toBe(archived.planId);
+        archived = {
+          ...archived,
+          revision: archived.revision + 1,
+          devices: [
+            {
+              ...member,
+              operations: member.operations.map((item) =>
+                item.operationId === request.operationId ? { ...item, receipt } : item,
+              ),
+            },
+          ],
+        };
+      }
+      return {
+        state: state(),
+        ...(request.type === "read-history" ? { historyPlan: archived } : {}),
+      };
+    });
+    const first = pending[0]!;
+    const last = pending.at(-1)!;
+    const mismatch = pending[1]!;
+    const terminal = { ...running, phase: "stopped" as const };
+    const operation = vi.fn<InstallPlanServices["operation"]>(async () => ({
+      receipts: [
+        { operationId: last.operationId, receipt: { ...terminal, operationId: last.operationId } },
+        {
+          operationId: first.operationId,
+          receipt: { ...terminal, operationId: first.operationId },
+        },
+        { operationId: mismatch.operationId, receipt: terminal },
+        { operationId: hostStopId, receipt: { ...terminal, operationId: hostStopId } },
+      ],
+    }));
+    const observed = await f.services.observe(hostId);
+    let now = Date.parse(at);
+    const unbind = bindInstallPlanServices({ ...f.services, operation, now: () => now }, f.store);
+    f.store.update({ native: state(), devices: [observed] });
+    const binding = installPlanServices()!;
+    const poller = startInstallStatusPoller(binding.services, { store: f.store });
+    const tick = async () => {
+      now += STATUS_POLL_CADENCE.regainedAfterMs + 1;
+      poller.poller.regained();
+      await vi.waitFor(() => expect(poller.poller.health(hostId)?.lastSuccessAt).toBe(now));
+    };
+    try {
+      await tick();
+      expect(operation).not.toHaveBeenCalled();
+      f.store.open(true, archived.planId);
+      await tick();
+      expect(operation).toHaveBeenCalledExactlyOnceWith(hostId, {
+        action: "operationRead",
+        input: { environmentId: hostId, operationIds: pending.map((item) => item.operationId) },
+      });
+      expect(
+        f.installPlan.mock.calls.flatMap(([request]) =>
+          request.type === "report" ? [request.operationId] : [],
+        ),
+      ).toEqual([first.operationId, last.operationId]);
+      expect(
+        f.installPlan.mock.calls.filter(([request]) => request.type === "read-history"),
+      ).toEqual([
+        [{ type: "read-history", planId: archived.planId }],
+        [{ type: "read-history", planId: archived.planId }],
+      ]);
+      expect(f.store.get().historyPlan?.revision).toBe(9);
+      expect(f.store.get().native?.current?.planId).toBe(newer.planId);
+    } finally {
+      poller.close();
+      unbind();
+      f.unbind();
+    }
+  });
 
   it.each(["operationReceipts", "operations"] as const)(
     "%s supports exact readback with disabled updates and requires current scope for explicit refresh",

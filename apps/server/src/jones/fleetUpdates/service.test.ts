@@ -7,23 +7,44 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServer from "effect/http/HttpServer";
 import * as TestClock from "effect/testing/TestClock";
-import { EnvironmentId, type JonesUpdateState } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  AuthSessionId,
+  EnvironmentHttpApi,
+  EnvironmentId,
+  type JonesUpdateState,
+} from "@t3tools/contracts";
+import { FLEET_UPDATES_HTTP_BASE } from "@t3tools/contracts/jones/fleet-updates";
 import type {
   FleetEnrollment,
   FleetHostOperation,
   FleetStageInput,
 } from "@t3tools/contracts/jones/fleet-updates";
+import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
+import * as AuthHttp from "../../auth/http.ts";
 import {
   AUTOMATIC_ACTIVATION_SPACING_MS,
   QUIET_INPUT_IDLE_MS,
   type HostWorkSnapshot,
 } from "../updates/followerPolicy.ts";
+import { fleetUpdatesHttpApiLayer } from "./http.ts";
 import type { FleetQuietSignals } from "./quietSignals.ts";
-import { FOLLOWER_STAGE_RETRY_MS, makeFleetUpdates, type FleetHostUpdater } from "./service.ts";
+import {
+  FleetUpdates,
+  FOLLOWER_STAGE_RETRY_MS,
+  makeFleetUpdates,
+  type FleetHostUpdater,
+} from "./service.ts";
 import { createFleetHostStore, FleetFollowerRecord, read, type FleetHostStore } from "./store.ts";
 
 const environmentId = EnvironmentId.make("fleet-host");
@@ -959,6 +980,10 @@ describe("plan-managed follower targets", () => {
     targetTree: "c".repeat(40),
     expectedDirectiveId: null,
   };
+  const replacementEnrollment = {
+    ...enrollment,
+    enrollmentId: "99999999-9999-4999-8999-999999999999",
+  };
   it.effect(
     "fences a delayed setup before it arrives, keeps current policy, and retains the exact fence after restart",
     () =>
@@ -1027,7 +1052,7 @@ describe("plan-managed follower targets", () => {
       }),
   );
 
-  it.effect("denies rollback replay through the Round 1 reader and application CAS", () =>
+  it.effect("durably denies Round 1 replay after fencing and restoring an old enrollment", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -1042,19 +1067,58 @@ describe("plan-managed follower targets", () => {
           directiveId: "66666666-6666-4666-8666-666666666666",
           expectedDirectiveId: directive.directiveId,
         };
+        yield* f.service.enroll({
+          enrollment: replacementEnrollment,
+          expectedEnrollmentId: enrollment.enrollmentId,
+        });
+        yield* f.service.leader({
+          environmentId,
+          enrollmentId: replacementEnrollment.enrollmentId,
+          repository: directive.repository,
+          committedSource: directive.targetSource,
+          committedTree: directive.targetTree,
+        });
+        const policy = (yield* f.service.status()).follower;
+        f.refreshPolicy.mockClear();
 
         // Round 1 (5cd471f61e44) reads the same journal with no fencedDirectives field in its schema.
         const { fencedDirectives: _unsupported, ...roundOneFields } = FleetFollowerRecord.fields;
         const isRoundOneFollower = Schema.is(Schema.Struct(roundOneFields));
         const journal = path.join(home, "runtime", "jones-fleet", "follower.json");
         const before = yield* Effect.promise(() => read(journal, isRoundOneFollower));
+        expect(before).not.toBeNull();
         expect(before?.directive?.directiveId).toBe(delayed.expectedDirectiveId);
         expect(before?.releasedDirectives?.includes(delayed.directiveId) ?? false).toBe(false);
-        expect((yield* f.service.fenceDirective(delayed)).directiveFence?.outcome).toBe("fenced");
+        const fenced = yield* f.service.fenceDirective(delayed);
+        const evidence = { protocol: 1, input: delayed, outcome: "fenced" };
+        expect(fenced.directiveFence).toEqual(evidence);
+        expect(fenced.follower).toEqual(policy);
+        expect(fenced.enrollment).toEqual(replacementEnrollment);
+        expect(f.refreshPolicy).not.toHaveBeenCalled();
+        expect(f.install).not.toHaveBeenCalled();
         const bytes = yield* fs.readFileString(journal);
         const after = yield* Effect.promise(() => read(journal, isRoundOneFollower));
-        expect(after?.directive).toEqual(before?.directive);
-        expect(after?.releasedDirectives?.includes(delayed.directiveId)).toBe(true);
+        expect(after).toMatchObject({ ...before, releasedDirectives: [delayed.directiveId] });
+
+        const saved = yield* fs.stat(journal);
+        const restarted = yield* fixture({ store: createFleetHostStore(home) });
+        expect((yield* restarted.service.fenceDirective(delayed)).directiveFence).toEqual(evidence);
+        expect(
+          (yield* restarted.service
+            .fenceDirective({ ...delayed, targetTree: "d".repeat(40) })
+            .pipe(Effect.flip)).reason,
+        ).toBe("conflict");
+        expect(Option.getOrThrow((yield* fs.stat(journal)).ino)).toBe(Option.getOrThrow(saved.ino));
+        yield* restarted.service.enroll({
+          enrollment,
+          expectedEnrollmentId: replacementEnrollment.enrollmentId,
+        });
+        expect((yield* restarted.service.status()).follower?.planDirective?.directiveId).toBe(
+          delayed.expectedDirectiveId,
+        );
+        expect((yield* restarted.service.planDirective(delayed).pipe(Effect.flip)).reason).toBe(
+          "conflict",
+        );
 
         // A delayed request that passed the initial read is still refused by the Round 1 CAS.
         yield* Effect.promise(() =>
@@ -1174,21 +1238,239 @@ describe("plan-managed follower targets", () => {
     }),
   );
 
-  it.effect("refuses to fence under a different enrollment without altering follower state", () =>
+  it.effect("recovers exact applied and superseded setup across same-host re-enrollment", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
       yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
-      const replacement = { ...enrollment, enrollmentId: "66666666-6666-4666-8666-666666666666" };
+      yield* f.service.planDirective(directive);
+      const successor = {
+        ...directive,
+        directiveId: "66666666-6666-4666-8666-666666666666",
+        expectedDirectiveId: directive.directiveId,
+      };
+      yield* f.service.planDirective(successor);
       yield* f.service.enroll({
-        enrollment: replacement,
+        enrollment: replacementEnrollment,
         expectedEnrollmentId: enrollment.enrollmentId,
       });
       const before = f.follower();
-      expect((yield* f.service.fenceDirective(directive).pipe(Effect.flip)).reason).toBe(
+      const recovered = yield* f.service.fenceDirective(successor);
+      expect(recovered.directiveFence).toEqual({
+        protocol: 1,
+        input: successor,
+        outcome: "applied",
+        directive: before?.directive,
+      });
+      expect(recovered.follower?.planDirective).toBeUndefined();
+      expect((yield* f.service.fenceDirective(directive)).directiveFence).toEqual({
+        protocol: 1,
+        input: directive,
+        outcome: "superseded",
+      });
+      expect(
+        (yield* f.service
+          .fenceDirective({ ...successor, expectedDirectiveId: null })
+          .pipe(Effect.flip)).reason,
+      ).toBe("conflict");
+      expect((yield* f.service.planDirective(successor).pipe(Effect.flip)).reason).toBe(
+        "not-enrolled",
+      );
+      expect((yield* f.service.releaseDirective(successor).pipe(Effect.flip)).reason).toBe(
         "not-enrolled",
       );
       expect(f.follower()).toBe(before);
+
+      const active = {
+        ...directive,
+        directiveId: "77777777-7777-4777-8777-777777777777",
+        enrollmentId: replacementEnrollment.enrollmentId,
+      };
+      yield* f.service.planDirective(active);
+      const replaced = f.follower();
+      // The successor now has only a release ID. It no longer proves the exact old request.
+      expect(replaced?.releasedDirectives).toEqual([successor.directiveId]);
+      expect((yield* f.service.fenceDirective(successor).pipe(Effect.flip)).reason).toBe(
+        "conflict",
+      );
+      // The remaining predecessor history has lost its copy of the issued directive.
+      expect((yield* f.service.fenceDirective(directive).pipe(Effect.flip)).reason).toBe(
+        "conflict",
+      );
+      expect(f.follower()).toBe(replaced);
+
+      const unseen = {
+        ...directive,
+        directiveId: "88888888-8888-4888-8888-888888888888",
+        expectedDirectiveId: successor.directiveId,
+      };
+      expect((yield* f.service.fenceDirective(unseen)).directiveFence).toEqual({
+        protocol: 1,
+        input: unseen,
+        outcome: "fenced",
+      });
+      expect((yield* f.service.status()).follower?.planDirective?.directiveId).toBe(
+        active.directiveId,
+      );
+      expect(f.follower()).toMatchObject({
+        ...replaced,
+        releasedDirectives: [successor.directiveId, unseen.directiveId],
+      });
     }),
+  );
+
+  it.effect("requires a qualified service and the exact connected environment to fence", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+      for (const [serviceMode, fleetOperationsSupported] of [
+        [false, true],
+        [true, false],
+      ] as const) {
+        const unqualified = yield* makeFleetUpdates({
+          environmentId,
+          serviceMode,
+          store: f.store,
+          updates: { ...f.updates, fleetOperationsSupported },
+          quiet: f.quiet,
+        });
+        const status = yield* unqualified.status();
+        expect(status.fencePlanDirective).toBeUndefined();
+        expect(status.fenceHistoricalPlanDirective).toBeUndefined();
+        expect((yield* unqualified.fenceDirective(directive).pipe(Effect.flip)).reason).toBe(
+          "binding",
+        );
+      }
+
+      const otherEnvironment = EnvironmentId.make("different-fleet-host");
+      expect(
+        (yield* f.service
+          .fenceDirective({ ...directive, environmentId: otherEnvironment })
+          .pipe(Effect.flip)).reason,
+      ).toBe("binding");
+      expect(f.follower()).toBeNull();
+    }),
+  );
+
+  it.effect(
+    "fences an unseen historical setup through the authenticated route on a disabled host",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const home = yield* fs.makeTempDirectoryScoped({ prefix: "jones-fence-http-" });
+          const store = createFleetHostStore(home);
+          const f = yield* fixture({ store });
+          const api = HttpApi.make("environment").add(EnvironmentHttpApi.groups.jonesFleetUpdates);
+          const auth = Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+            authenticateHttpRequest: (request) => {
+              if (request.headers.authorization === undefined)
+                return Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError());
+              return Effect.succeed({
+                sessionId: AuthSessionId.make("fleet-fixture-session"),
+                subject: "fleet-fixture",
+                method: "bearer-access-token",
+                scopes: [
+                  AuthOrchestrationReadScope,
+                  ...(request.headers.authorization === "Bearer fixture-operator"
+                    ? [AuthOrchestrationOperateScope]
+                    : []),
+                ],
+              });
+            },
+          });
+          const routes = HttpApiBuilder.layer(api).pipe(
+            Layer.provide(fleetUpdatesHttpApiLayer),
+            Layer.provide(Layer.succeed(FleetUpdates, f.service)),
+            Layer.provide(AuthHttp.layerAuthenticatedAuth),
+            Layer.provide(auth),
+            Layer.provide(HttpServer.layerServices),
+          );
+          const app = yield* Effect.acquireRelease(
+            Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
+            (app) => Effect.promise(() => app.dispose()),
+          );
+          const operator = "Bearer fixture-operator";
+          const fence = (authorization?: string, payload: unknown = directive) =>
+            Effect.promise(() =>
+              app.handler(
+                new Request(`http://fixture${FLEET_UPDATES_HTTP_BASE}/plan-directive/fence`, {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    ...(authorization === undefined ? {} : { authorization }),
+                  },
+                  body: JSON.stringify(payload),
+                }),
+              ),
+            );
+
+          // With no enrollment file, the host cannot bind the request to a persisted enrollment.
+          const unenrolled = yield* fence(operator);
+          expect(unenrolled.status).toBe(409);
+          expect(yield* Effect.promise(() => unenrolled.json())).toMatchObject({
+            reason: "not-enrolled",
+          });
+          expect(yield* Effect.promise(store.readFollower)).toBeNull();
+
+          const disabled = { ...replacementEnrollment, enabled: false };
+          yield* Effect.promise(() =>
+            store.editEnrollment(() => ({
+              ...disabled,
+              environmentId: EnvironmentId.make("different-fleet-host"),
+            })),
+          );
+          const foreign = yield* fence(operator);
+          expect(foreign.status).toBe(409);
+          expect(yield* Effect.promise(() => foreign.json())).toMatchObject({
+            reason: "not-enrolled",
+          });
+          expect(yield* Effect.promise(store.readFollower)).toBeNull();
+
+          // A disabled enrollment still identifies this host even without a follower journal.
+          yield* f.service.enroll({
+            enrollment: disabled,
+            expectedEnrollmentId: disabled.enrollmentId,
+          });
+          expect((yield* fence()).status).toBe(401);
+          expect((yield* fence("Bearer fixture-reader")).status).toBe(403);
+          expect(
+            (yield* fence(operator, { ...directive, repository: "fixture/other" })).status,
+          ).toBe(400);
+          expect(yield* Effect.promise(store.readFollower)).toBeNull();
+
+          const response = yield* fence(operator);
+          expect(response.status).toBe(200);
+          expect(response.headers.get("cache-control")).toBe("no-store");
+          expect(yield* Effect.promise(() => response.json())).toEqual({
+            ...(yield* f.service.status()),
+            fencePlanDirective: 1,
+            fenceHistoricalPlanDirective: 1,
+            enrollment: disabled,
+            directiveFence: { protocol: 1, input: directive, outcome: "fenced" },
+          });
+          expect(yield* Effect.promise(store.readFollower)).toEqual({
+            schema: 1,
+            leader: null,
+            operation: null,
+            lastAutomaticActivationAt: null,
+            fencedDirectives: [
+              {
+                directiveId: directive.directiveId,
+                bindingHash: expect.any(String),
+                rollbackDenied: true,
+              },
+            ],
+            releasedDirectives: [directive.directiveId],
+          });
+          const disabledRequest = { ...directive, enrollmentId: disabled.enrollmentId };
+          expect((yield* f.service.planDirective(disabledRequest).pipe(Effect.flip)).reason).toBe(
+            "not-enrolled",
+          );
+          expect(
+            (yield* f.service.releaseDirective(disabledRequest).pipe(Effect.flip)).reason,
+          ).toBe("not-enrolled");
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("replaces an inactive enrollment's directive without restoring it on release", () =>

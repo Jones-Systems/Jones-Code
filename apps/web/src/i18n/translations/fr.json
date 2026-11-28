@@ -13085,5 +13085,13 @@
   "26f58319308650a1": "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
   "7fd7bc99180bcfad": "This plan's exact reservation changed or expired. Check the original operation.",
   "096cbc9bd8370186": "The reviewed stage changed. Check the original operation and review again.",
-  "08ff07123c656e31": "The control changed before Stop was sent."
+  "08ff07123c656e31": "The control changed before Stop was sent.",
+  "6e83882a36f7baf4": "L’hôte et le portable doivent permettre de bloquer cette demande de configuration d’origine.",
+  "c70d8d749a8df05f": "Récupération en attente",
+  "bb3f9bd07ac134b3": "Configuration · {operationId}",
+  "07a31401a631c29b": "Téléchargement · {operationId}",
+  "08226ed443dd4cb0": "Installation · {operationId}",
+  "d805857a3e243315": "Tentative de mise à jour",
+  "18d6cbd59b2ef487": "La directive d’origine de l’hôte suiveur reste à confirmer.",
+  "47387fc33eca675a": "L’hôte a confirmé la libération. Une autorisation de lecture est nécessaire pour l’enregistrer."
 }

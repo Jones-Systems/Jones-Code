@@ -13084,5 +13084,13 @@
   "26f58319308650a1": "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
   "7fd7bc99180bcfad": "This plan's exact reservation changed or expired. Check the original operation.",
   "096cbc9bd8370186": "The reviewed stage changed. Check the original operation and review again.",
-  "08ff07123c656e31": "The control changed before Stop was sent."
+  "08ff07123c656e31": "The control changed before Stop was sent.",
+  "6e83882a36f7baf4": "Хост и ноутбук должны поддерживать блокировку исходного запроса настройки.",
+  "c70d8d749a8df05f": "Ожидается восстановление",
+  "bb3f9bd07ac134b3": "Настройка · {operationId}",
+  "07a31401a631c29b": "Загрузка · {operationId}",
+  "08226ed443dd4cb0": "Установка · {operationId}",
+  "d805857a3e243315": "Попытка обновления",
+  "18d6cbd59b2ef487": "Исходная директива ведомого хоста не подтверждена.",
+  "47387fc33eca675a": "Хост подтвердил снятие директивы. Для сохранения требуется разрешение на чтение."
 }

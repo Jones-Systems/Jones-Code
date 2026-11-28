@@ -700,9 +700,7 @@ export function confirmsInstallPlanCancellation(
     result.state.laptop.environmentId === action.environmentId &&
     plan?.laptop.environmentId === action.environmentId &&
     plan.cancelled === true &&
-    (plan.cancelledFromRevision === undefined
-      ? action.expectedRevision < plan.revision
-      : action.expectedRevision === plan.cancelledFromRevision)
+    action.expectedRevision === plan.cancelledFromRevision
   );
 }
 

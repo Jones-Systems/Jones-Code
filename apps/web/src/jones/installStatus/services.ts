@@ -186,6 +186,32 @@ export function hasCurrentPlanEnrollment(
   );
 }
 
+export function exactFleetEnrollment(
+  environmentId: EnvironmentId,
+  status: FleetHostStatus | null | undefined,
+) {
+  return status?.environmentId === environmentId &&
+    status.enrollment?.environmentId === environmentId &&
+    (status.update?.environmentId === undefined || status.update.environmentId === environmentId)
+    ? status.enrollment
+    : undefined;
+}
+
+export function supportsSetupFence(
+  environmentId: EnvironmentId,
+  enrollmentId: string | undefined,
+  status: FleetHostStatus | null | undefined,
+) {
+  const enrollment = exactFleetEnrollment(environmentId, status);
+  return (
+    enrollmentId !== undefined &&
+    enrollment !== undefined &&
+    (enrollment.enabled && enrollment.enrollmentId === enrollmentId
+      ? status?.fencePlanDirective === 1
+      : status?.fenceHistoricalPlanDirective === 1)
+  );
+}
+
 export interface InstallPlanBinding {
   readonly services: InstallPlanServices;
   readonly store: InstallStatusStore;
@@ -239,16 +265,28 @@ export function currentPlanHostAuthority(
     direct?.canOperate !== false &&
     status !== undefined;
   const hasReadScope = hasOperationReadScope(services, environmentId);
+  const canRecoverOperation =
+    hasOperationScope &&
+    status.capability.operations === 1 &&
+    directStatus?.capability.operations === 1;
+  const currentFleet = current?.fleetStatus;
+  const directFleet = direct?.fleetStatus;
   return {
     status,
     canDispatch:
       hasOperationScope &&
       supportsInstallPlanMutations(status.capability) &&
       (directStatus === undefined || supportsInstallPlanMutations(directStatus.capability)),
-    canRecoverOperation:
-      hasOperationScope &&
-      status.capability.operations === 1 &&
-      directStatus?.capability.operations === 1,
+    canRecoverOperation,
+    canFenceSetup:
+      canRecoverOperation &&
+      direct?.canOperate === true &&
+      device.route === "follower-operations" &&
+      enrollment !== "identity-changed" &&
+      supportsSetupFence(environmentId, device.enrollmentId, currentFleet) &&
+      supportsSetupFence(environmentId, device.enrollmentId, directFleet) &&
+      currentFleet?.enrollment?.enrollmentId === directFleet?.enrollment?.enrollmentId &&
+      currentFleet?.enrollment?.enabled === directFleet?.enrollment?.enabled,
     canReadReceipt:
       active === binding &&
       hasReadScope &&

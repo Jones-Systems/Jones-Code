@@ -373,7 +373,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer, 
         });
         yield* fs.makeDirectory(target.directory!, { recursive: true, mode: 0o700 });
         const requests: JonesInstallPlanCliRequest[] = [];
-        let receiptMode: "empty" | "archived" | "wrong-environment" = "empty";
+        let receiptMode: "empty" | "archived" | "wrong-environment" | "legacy" | "other-revision" =
+          "empty";
         const archived: JonesInstallPlan = {
           schema: 1,
           planId: operationId,
@@ -393,6 +394,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer, 
           cancelledFromRevision: 4,
           dismissedAt: observedAt,
         };
+        const { cancelledFromRevision: _revision, ...legacy } = archived;
         yield* serve(
           NodeNet.createServer((socket) => {
             socket.setEncoding("utf8");
@@ -427,7 +429,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer, 
                                     environmentId: EnvironmentId.make("another-laptop"),
                                   },
                                 }
-                              : archived,
+                              : receiptMode === "legacy"
+                                ? legacy
+                                : receiptMode === "other-revision"
+                                  ? { ...archived, cancelledFromRevision: 3 }
+                                  : archived,
                         }),
                   },
                 }) + "\n",
@@ -470,6 +476,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer, 
           message: "The desktop did not return the requested plan ID.",
         });
         yield* onLaptop(run(baseDir, ...cancel, "--confirm"));
+        receiptMode = "legacy";
+        expect(yield* Effect.flip(onLaptop(run(baseDir, ...cancel, "--confirm")))).toMatchObject({
+          message:
+            "This plan is closed, but the desktop has no record of which revision cancelled it.",
+        });
+        const printedLegacy = JSON.parse(String((yield* TestConsole.logLines).at(-1))) as unknown;
+        expect(printedLegacy).toMatchObject({ historyPlan: legacy });
+        receiptMode = "other-revision";
+        expect(yield* Effect.flip(onLaptop(run(baseDir, ...cancel, "--confirm")))).toMatchObject({
+          message:
+            "Cancellation from the requested revision is unconfirmed. Read plan status again.",
+        });
         receiptMode = "wrong-environment";
         expect(yield* Effect.flip(onLaptop(run(baseDir, ...cancel, "--confirm")))).toMatchObject({
           message: "Cancellation is unconfirmed. Read plan status again.",
