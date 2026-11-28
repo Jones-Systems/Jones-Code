@@ -1,8 +1,11 @@
-import { makeClientLaunchHarness as makeHarness } from "./ClientLaunch.testkit.ts";
+import {
+  clientLaunchTestAdapter,
+  makeClientLaunchHarness as makeHarness,
+} from "./ClientLaunch.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as LinkedThreads from "../../linkedThreads/LinkedThreads.ts";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
-import { assert, it } from "@effect/vitest";
+import { assert, it, vi } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
@@ -11,6 +14,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   OrchestratorMcpFailure,
+  type ServerProvider,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -23,6 +27,7 @@ import * as ClientLaunch from "./ClientLaunchService.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as ServerConfig from "../../../config.ts";
 import * as McpInvocationContext from "../../../mcp/McpInvocationContext.ts";
+import * as OrchestrationMcp from "../../../mcp/OrchestratorMcpService.ts";
 import { launchThread } from "../../../mcp/toolkits/project/handlers.ts";
 import { clientLaunchIds } from "./ClientLaunchIdentity.ts";
 import * as Deferred from "effect/Deferred";
@@ -41,6 +46,14 @@ import * as CommandReceiptStore from "../../../orchestration-v2/CommandReceiptSt
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as Selector from "../../accountRouting/selectAutoAccount.ts";
+import * as ProjectStore from "../../../orchestration-v2/ProjectStore.ts";
+import * as ProviderInstances from "../../../provider/ProviderInstanceRegistry.ts";
+import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
+import { buildUnavailableProviderSnapshot } from "../../../provider/unavailableProviderSnapshot.ts";
+import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
+import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
+import * as SecretRequests from "../../../secrets/SecretRequests.ts";
 
 const projectId = ProjectId.make("project:launch-test");
 const modelSelection = {
@@ -74,6 +87,155 @@ const caller = Effect.gen(function* () {
     limits: modes,
   } satisfies Caller;
 });
+
+it.effect("Auto launches and local delegation bind a concrete account before replay", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "jones-mcp-auto-" });
+    const config = yield* ProviderReplayHarness.makeReplayServerConfig("mcp-auto").pipe(
+      Effect.provideService(FileSystem.FileSystem, {
+        ...fs,
+        makeTempDirectory: () => Effect.succeed(cwd),
+      }),
+    );
+    const winnerId = ProviderInstanceId.make("codex-routed");
+    const representative: ServerProvider = {
+      ...(yield* buildUnavailableProviderSnapshot({
+        driverKind: "codex",
+        instanceId: modelSelection.instanceId,
+        reason: "Synthetic fixture",
+      })),
+      availability: "available",
+      enabled: true,
+      installed: true,
+      status: "ready",
+    };
+    const firstWinner = { ...representative, instanceId: winnerId };
+    let currentWinner = firstWinner;
+    const selected = { ...modelSelection, instanceId: winnerId };
+    using select = vi.spyOn(Selector, "selectAutoAccount").mockImplementation((request) =>
+      Effect.sync(() => {
+        assert.equal(request.projectId, projectId);
+        assert.equal(request.cwd, cwd);
+        assert.deepEqual(request.modelSelection, modelSelection);
+        assert.isTrue(request.candidateAllowed?.(currentWinner));
+        return { ...modelSelection, instanceId: currentWinner.instanceId };
+      }),
+    );
+    const adapters = [
+      clientLaunchTestAdapter,
+      { ...clientLaunchTestAdapter, instanceId: winnerId },
+    ];
+    const project = {
+      id: projectId,
+      title: "Auto",
+      workspaceRoot: cwd,
+      repositoryIdentity: null,
+      faviconPath: null,
+      defaultModelSelection: modelSelection,
+      defaultThreadEnvMode: null,
+      scripts: [],
+      createdAt: "2026-06-20T00:00:00.000Z",
+      updatedAt: "2026-06-20T00:00:00.000Z",
+      deletedAt: null,
+    };
+    const h = makeHarness({
+      adapters,
+      providers: [representative, firstWinner],
+      projectRecord: project,
+      serverSettings: {
+        projectSettingsOverrides: {
+          [projectId]: { providerInstances: { [winnerId]: { enabled: true } } },
+        },
+      },
+      serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd }),
+    });
+    const dependencies = Layer.mergeAll(
+      h.layer,
+      Layer.mock(ProviderInstances.ProviderInstanceRegistry)({ getCatalogSource: () => undefined }),
+      Layer.mock(ProjectStore.ProjectStoreV2)({}),
+      ProviderAdapterRegistry.layerFromAdapters(adapters),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+      Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+      Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd }),
+      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+    );
+    yield* Effect.gen(function* () {
+      const context = yield* caller;
+      const auto = {
+        projectId,
+        title: "Auto",
+        modelSelection,
+        message: "Start some work",
+        accountRouting: { mode: "auto" as const },
+        workspaceStrategy: { type: "root" as const },
+      };
+      const launch = (request: Parameters<typeof launchThread>[0]) =>
+        launchThread(request, gate).pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, context.scope),
+        );
+      const keyed = yield* launch({ ...auto, clientRequestId: "auto-1" });
+      assert.deepEqual(keyed.modelSelection, selected);
+      currentWinner = representative;
+      const replayed = yield* launch({ ...auto, clientRequestId: "auto-1" });
+      assert.equal(replayed.threadId, keyed.threadId);
+      assert.deepEqual(replayed.modelSelection, selected);
+      const conflict = yield* launch({
+        ...auto,
+        clientRequestId: "auto-1",
+        accountRouting: undefined,
+        modelSelection: selected,
+      }).pipe(Effect.flip);
+      assert.equal(conflict.code, "request_conflict");
+      assert.lengthOf(select.mock.calls, 1);
+      const unkeyed = yield* launch(auto);
+      assert.deepEqual(unkeyed.modelSelection, modelSelection);
+      assert.lengthOf(select.mock.calls, 2);
+
+      const mcp = yield* OrchestrationMcp.OrchestratorMcpService;
+      const scope = {
+        ...context.scope,
+        client: undefined,
+        thread: {
+          threadId: unkeyed.threadId,
+          providerInstanceId: modelSelection.instanceId,
+          providerSessionId: "synthetic-active-parent",
+        },
+      };
+      assert.isTrue((yield* mcp.capabilities(scope)).features.accountAutoRouting);
+      currentWinner = firstWinner;
+      const task = {
+        task: "Delegate fresh work",
+        clientRequestId: "auto-child",
+        accountRouting: auto.accountRouting,
+        target: { providerInstanceId: modelSelection.instanceId, model: modelSelection.model },
+      };
+      const denied = yield* mcp
+        .delegateTask(scope, {
+          ...task,
+          target: { ...task.target, environmentId: EnvironmentId.make("linked-peer") },
+        })
+        .pipe(Effect.flip);
+      assert.equal(denied.code, "invalid_request");
+      const missingDirectory = yield* mcp
+        .delegateTask(scope, {
+          ...task,
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(missingDirectory.code, "invalid_request");
+      assert.lengthOf(select.mock.calls, 2);
+      const child = yield* mcp.delegateTask(scope, task);
+      assert.equal(child.providerInstanceId, winnerId);
+      currentWinner = representative;
+      const retried = yield* mcp.delegateTask(scope, task);
+      assert.equal(retried.taskId, child.taskId);
+      assert.equal(retried.providerInstanceId, winnerId);
+      assert.lengthOf(select.mock.calls, 3);
+    }).pipe(Effect.provide(OrchestrationMcp.layer.pipe(Layer.provideMerge(dependencies))));
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
 const failAfter = (
   launches: ThreadLaunch.ThreadLaunchService["Service"],
   step: "claim" | "thread" | "message",

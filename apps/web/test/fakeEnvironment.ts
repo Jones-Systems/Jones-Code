@@ -38,6 +38,7 @@ import {
   type OrchestrationV2TurnItem,
   type TerminalMetadataStreamEvent,
   type ResolvedKeybindingsConfig,
+  type ServerConfigStreamEvent,
 } from "@t3tools/contracts";
 import type {
   ConnectionAttemptError,
@@ -116,6 +117,7 @@ const decodeServerConfig = Schema.decodeUnknownSync(ServerConfig);
 const makeServerConfig = (
   providers: ReadonlyArray<unknown>,
   supportsIssues = false,
+  settings: unknown = {},
 ): ServerConfig => ({
   ...decodeServerConfig({
     environment: {
@@ -135,7 +137,7 @@ const makeServerConfig = (
       otlpTracesEnabled: false,
       otlpMetricsEnabled: false,
     },
-    settings: {},
+    settings,
     threadSnapshotPagination: true,
     threadResumeCompletionMarker: true,
     shellResumeCompletionMarker: true,
@@ -435,6 +437,7 @@ const json = (body: unknown, status = 200) =>
 // Keyed by thread id: a live thread subscription's queue, for pushing events to it.
 const shellSubscribers = new Set<Queue.Queue<OrchestrationV2ShellStreamItem>>();
 const threadSubscribers = new Map<string, Queue.Queue<OrchestrationV2ThreadStreamItem>>();
+const configSubscribers = new Set<Queue.Queue<ServerConfigStreamEvent>>();
 let terminalMetadataSubscriber: Queue.Queue<TerminalMetadataStreamEvent> | null = null;
 let threads: ReadonlyArray<FakeThread> = [];
 let dispatched: OrchestrationV2Command[] = [];
@@ -460,6 +463,15 @@ const subscribe = <A>(first: ReadonlyArray<A>, register?: (queue: Queue.Queue<A>
       }
       return Stream.fromQueue(queue);
     }),
+  );
+
+const subscribeServerConfig = () =>
+  subscribe<ServerConfigStreamEvent>(
+    [{ version: 1, type: "snapshot", config: serverConfig() }],
+    (queue) => {
+      configSubscribers.add(queue);
+      return () => configSubscribers.delete(queue);
+    },
   );
 
 let sendHandler:
@@ -573,8 +585,7 @@ const handlers: Record<string, (input: never) => unknown> = {
         if (vcsStatusSubscriber === queue) vcsStatusSubscriber = null;
       };
     }),
-  [WS_METHODS.subscribeServerConfig]: () =>
-    subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig() }]),
+  [WS_METHODS.subscribeServerConfig]: subscribeServerConfig,
 };
 
 // Unanswered calls stay pending, like a server that has not replied yet.
@@ -590,8 +601,7 @@ const client = new Proxy(handlers, {
 const session: EnvironmentConnectionLease["session"] = {
   client: client as unknown as WsRpcProtocolClient,
   initialConfig: Effect.sync(serverConfig),
-  subscribeServerConfig: () =>
-    subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig() }]),
+  subscribeServerConfig,
   ready: Effect.void,
   probe: Effect.void,
   inboundFrames: Effect.succeed(0),
@@ -635,6 +645,7 @@ export function installFakeEnvironment(
     /** Commands left unanswered even when accepting, until `rejectPendingCommand`. */
     readonly holdCommand?: (command: OrchestrationV2Command) => boolean;
     readonly providers?: ReadonlyArray<unknown>;
+    readonly settings?: unknown;
     readonly activeThreadReorder?: boolean;
   },
 ): Disposable {
@@ -643,6 +654,7 @@ export function installFakeEnvironment(
     ...makeServerConfig(
       options?.providers ?? [CODEX_PROVIDER],
       fixtures.some((thread) => (thread.issues?.length ?? 0) > 0),
+      options?.settings,
     ),
     keybindings: options?.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
   };
@@ -697,6 +709,14 @@ export function installFakeEnvironment(
       pendingAssetUrls = [];
     },
   };
+}
+
+export async function updateFakeServerConfig(update: (config: ServerConfig) => ServerConfig) {
+  baseServerConfig = update(baseServerConfig);
+  for (const queue of configSubscribers)
+    await Effect.runPromise(
+      Queue.offer(queue, { version: 1, type: "snapshot", config: serverConfig() }),
+    );
 }
 
 /** Answers the oldest unanswered command with the server's rejection. */
@@ -773,9 +793,15 @@ export async function emitThreadEvent(
   );
 }
 
-export function runningRun(threadId: ThreadId, id: string, ordinal: number, userMessageId: string) {
+export function runningRun(
+  threadId: ThreadId,
+  id: string,
+  ordinal: number,
+  userMessageId: string,
+  modelSelection?: ModelSelection,
+) {
   return {
-    ...run(threadId, RunId.make(id), ordinal, userMessageId),
+    ...run(threadId, RunId.make(id), ordinal, userMessageId, modelSelection),
     status: "running" as const,
     completedAt: null,
   };
@@ -791,7 +817,7 @@ export async function emitVcsStatus(event: VcsStatusStreamEvent): Promise<void> 
 export interface DeferredFakeSend {
   readonly method: string;
   readonly payload: OrchestrationV2Command | OrchestrationV2ThreadLaunchInput;
-  readonly commit: () => Promise<void>;
+  readonly commit: (modelSelection?: ModelSelection) => Promise<void>;
   readonly acknowledge: () => void;
   readonly loseAcknowledgement: () => void;
   readonly reject: () => void;
@@ -808,7 +834,7 @@ export function deferFakeSends(): {
   sendHandler = (method, payload) =>
     Effect.callback<unknown, OrchestrationDispatchCommandError>((resume) => {
       let committed: FakeThread | undefined;
-      const commit = async () => {
+      const commit = async (modelSelection?: ModelSelection) => {
         if (committed) return;
         if ("type" in payload && payload.type !== "message.dispatch")
           throw new OrchestrationDispatchCommandError({
@@ -832,7 +858,13 @@ export function deferFakeSends(): {
           return;
         }
         const runId = RunId.make(`synthetic-${messageId}`);
-        const nextRun = runningRun(threadId, runId, (prior?.runs.length ?? 0) + 1, messageId);
+        const nextRun = runningRun(
+          threadId,
+          runId,
+          (prior?.runs.length ?? 0) + 1,
+          messageId,
+          modelSelection,
+        );
         const nextItem = {
           ...userItem(threadId, runId, messageId, prior?.items.length ?? 0, text),
           messageId,
@@ -842,6 +874,7 @@ export function deferFakeSends(): {
           ...prior,
           id: threadId,
           title: prior?.title ?? ("title" in payload ? payload.title : "Synthetic send"),
+          ...(modelSelection ? { modelSelection } : {}),
           runs: [...(prior?.runs ?? []), nextRun],
           items: [...(prior?.items ?? []), nextItem],
         };

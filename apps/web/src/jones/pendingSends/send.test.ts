@@ -7,7 +7,11 @@ import {
   ThreadId,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
-import type { PreparedThreadTurn, StartThreadTurnInput } from "@t3tools/client-runtime/operations";
+import {
+  AccountAutoRoutingSessionError,
+  type PreparedThreadTurn,
+  type StartThreadTurnInput,
+} from "@t3tools/client-runtime/operations";
 import { createPendingSendStore } from "./store";
 import { sendPendingTurn } from "./send";
 import { startFanoutThread } from "../../components/chat/chatViewSend";
@@ -54,6 +58,36 @@ describe("prepared pending turn", () => {
     await result;
     expect(store.getSnapshot()).toMatchObject([{ delivery: "failed", working: false }]);
     expect(dispatch).not.toHaveBeenCalled();
+  });
+  it("restores an unsent draft on capability loss and preserves uncertain earlier attempts", async () => {
+    const unsupported = () =>
+      AsyncResult.failure<never, Error>(
+        Cause.fail(
+          new AccountAutoRoutingSessionError({ message: "Automatic accounts unavailable" }),
+        ),
+      );
+    const prepare = async () => AsyncResult.success(prepared);
+    const first = createPendingSendStore();
+    await sendPendingTurn({
+      environmentId,
+      input,
+      store: first,
+      prepare,
+      dispatch: async () => unsupported(),
+    });
+    expect(first.getSnapshot()[0]?.delivery).toBe("failed");
+
+    const issued = createPendingSendStore();
+    await sendPendingTurn({
+      environmentId,
+      input,
+      store: issued,
+      prepare,
+      dispatch: vi.fn().mockResolvedValueOnce(failure()).mockResolvedValueOnce(unsupported()),
+    });
+    expect(issued.getSnapshot()[0]?.delivery).toBe("uncertain");
+    await issued.getSnapshot()[0]!.retry!();
+    expect(issued.getSnapshot()[0]?.delivery).toBe("uncertain");
   });
   it("manual Retry is single-flight and dispatches the same prepared object without preparation or reconnect dispatch", async () => {
     const store = createPendingSendStore();

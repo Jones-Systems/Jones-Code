@@ -99,31 +99,38 @@ const isAgentModePick = (
   selection.id === ACP_SESSION_MODE_OPTION_ID ||
   descriptors.some((descriptor) => descriptor.id === selection.id && descriptor.role === "mode");
 
+interface AgentModePick {
+  readonly callerRuntimeMode: RuntimeMode;
+  readonly picked: ReadonlyArray<ProviderOptionSelection> | undefined;
+  readonly descriptors: ReadonlyArray<ProviderOptionDescriptor>;
+  readonly held: ReadonlyArray<ProviderOptionSelection> | undefined;
+}
+
 /**
  * An agent's own session mode can skip the approvals a runtime mode asks for, and T3 cannot rank
  * it against one. So only a full-access caller may pick one. `held` is the selection the caller
  * already runs with or the thread already has; repeating it grants nothing new.
  */
-export function refuseAgentModePick(input: {
-  readonly callerRuntimeMode: RuntimeMode;
-  readonly picked: ReadonlyArray<ProviderOptionSelection> | undefined;
-  readonly descriptors: ReadonlyArray<ProviderOptionDescriptor>;
-  readonly held: ReadonlyArray<ProviderOptionSelection> | undefined;
-}): Effect.Effect<void, OrchestratorMcpFailure> {
-  if (input.callerRuntimeMode === "full-access") return Effect.void;
+export function agentModePickProblem(input: AgentModePick): OrchestratorMcpFailure | undefined {
+  if (input.callerRuntimeMode === "full-access") return undefined;
   const pick = input.picked?.find(
     (selection) =>
       isAgentModePick(selection, input.descriptors) &&
       !input.held?.some((held) => held.id === selection.id && held.value === selection.value),
   );
   return pick === undefined
-    ? Effect.void
-    : Effect.fail(
-        new OrchestratorMcpFailure({
-          code: "runtime_mode_escalation_denied",
-          message: `Option ${pick.id} sets the agent's own mode, which T3 cannot hold to ${input.callerRuntimeMode}. Only a full-access caller may set it; leave it out.`,
-        }),
-      );
+    ? undefined
+    : new OrchestratorMcpFailure({
+        code: "runtime_mode_escalation_denied",
+        message: `Option ${pick.id} sets the agent's own mode, which T3 cannot hold to ${input.callerRuntimeMode}. Only a full-access caller may set it; leave it out.`,
+      });
+}
+
+export function refuseAgentModePick(
+  input: AgentModePick,
+): Effect.Effect<void, OrchestratorMcpFailure> {
+  const problem = agentModePickProblem(input);
+  return problem === undefined ? Effect.void : Effect.fail(problem);
 }
 
 /** `options` without the agent's own mode, for work that starts where only full access may pick one. */

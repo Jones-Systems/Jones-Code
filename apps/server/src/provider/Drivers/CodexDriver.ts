@@ -15,6 +15,8 @@ import { ChildProcessSpawner } from "effect/process";
 
 import type * as CodexUsageHistory from "../../usage/CodexUsageHistory.ts";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
+import { registerAccountObserver } from "../../jones/accountRouting/accountObservation.ts";
+import { codexAllowance } from "../../jones/accountRouting/codexEvidence.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as ServerConfig from "../../config.ts";
@@ -30,6 +32,7 @@ import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
   makeCodexSkillsProbe,
+  probeCodexAutoRouting,
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
 import { resolveCodexLaunchArgs } from "../codexLaunchArgs.ts";
@@ -420,6 +423,26 @@ export const CodexDriver: ProviderDriver<
         Effect.forkScoped,
       );
     }
+    registerAccountObserver(orchestrationAdapter, (cwd) =>
+      probeCodexAutoRouting({
+        instanceId,
+        settings: effectiveConfig,
+        environment: processEnv,
+        cwd,
+      }).pipe(
+        Effect.map((result) =>
+          result === undefined
+            ? undefined
+            : {
+                models: result.models,
+                allowance: (model: string, now: number) => codexAllowance(result.quota, model, now),
+              },
+        ),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, pathService),
+      ),
+    );
     return {
       instanceId,
       driverKind: DRIVER_KIND,

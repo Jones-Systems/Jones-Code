@@ -2,7 +2,9 @@ import { PreparedThreadTurnJson } from "@t3tools/client-runtime/jones/preparedTh
 import type { PreparedThreadTurn } from "@t3tools/client-runtime/operations";
 import {
   ORCHESTRATION_V2_WS_METHODS,
+  type AccountRouting,
   type CommandId,
+  type ModelSelection,
   type MessageId,
   type ProjectId,
   type ThreadId,
@@ -12,6 +14,7 @@ import {
   LaunchDeliveryEvidence,
 } from "@t3tools/contracts/jones/deliveryEvidence";
 import * as Schema from "effect/Schema";
+import { sameModelSelection } from "../accountRouting/selection";
 
 export const QueuedThreadIssuance = Schema.Union([
   Schema.Struct({ state: Schema.Literal("unissued") }),
@@ -29,6 +32,8 @@ interface QueuedThreadTurnIdentity {
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
   readonly creation?: { readonly projectId: ProjectId };
+  readonly accountRouting?: AccountRouting;
+  readonly modelSelection?: ModelSelection;
 }
 
 export function queuedThreadTurnMatches(
@@ -41,7 +46,11 @@ export function queuedThreadTurnMatches(
     payload.threadId === message.threadId &&
     (prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread
       ? prepared.payload.projectId === message.creation?.projectId &&
-        prepared.payload.initialMessage?.messageId === message.messageId
-      : prepared.payload.messageId === message.messageId)
+        prepared.payload.initialMessage?.messageId === message.messageId &&
+        prepared.payload.accountRouting?.mode === message.accountRouting?.mode &&
+        (message.accountRouting === undefined ||
+          (prepared.payload.reuseExistingThread !== true &&
+            sameModelSelection(message.modelSelection, prepared.payload.modelSelection)))
+      : message.accountRouting === undefined && prepared.payload.messageId === message.messageId)
   );
 }

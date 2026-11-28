@@ -688,15 +688,17 @@ export default function ChatView(props: ChatViewProps) {
   const composerRuntimeMode = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.runtimeMode ?? null,
   );
-  const composerActiveProvider = useComposerDraftStore(
-    (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
-  );
-  const composerModelSelectionExplicit = useComposerDraftStore(
-    (store) => store.getComposerDraft(composerDraftTarget)?.modelSelectionExplicit === true,
-  );
+  const composerActiveProvider = useComposerDraftStore((store) => {
+    const draft = store.getComposerDraft(composerDraftTarget);
+    return serverThread && draft?.accountRouting ? null : (draft?.activeProvider ?? null);
+  });
+  const composerModelSelectionExplicit = useComposerDraftStore((store) => {
+    const draft = store.getComposerDraft(composerDraftTarget);
+    return draft?.modelSelectionExplicit === true && !(serverThread && draft.accountRouting);
+  });
   const composerSelectedModelSelection = useComposerDraftStore((store) => {
     const draft = store.getComposerDraft(composerDraftTarget);
-    return draft?.activeProvider
+    return draft?.activeProvider && !(serverThread && draft.accountRouting)
       ? (draft.modelSelectionByProvider[draft.activeProvider] ?? null)
       : null;
   });
@@ -4004,6 +4006,17 @@ export default function ChatView(props: ChatViewProps) {
                             {!composerMounted ? null : (
                               <ChatComposer
                                 canOperateThread={canOperateThread}
+                                freshAccountRoutingCapability={
+                                  isLocalDraftThread && draftThread !== null
+                                    ? !draftThread.promotedTo &&
+                                      activeProject !== null &&
+                                      !needsLoadBalancing &&
+                                      !isEnvironmentChanging &&
+                                      !activeEnvironmentUnavailable &&
+                                      serverConfig?.environment.capabilities.accountAutoRouting ===
+                                        true
+                                    : undefined
+                                }
                                 reportedModelSelection={reportedModelSelection}
                                 multipleModelSelections={multipleModelSelections}
                                 supportsMultipleModels={

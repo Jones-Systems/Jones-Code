@@ -198,6 +198,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   providerWorkspaceSnapshotsOnDemand: Schema.optionalKey(Schema.Boolean),
   /** Honors `modelCatalogOnly`; older servers drop the field and probe every provider. */
   modelCatalogRefresh: Schema.optionalKey(Schema.Boolean),
+  /** Supports usage-aware native account selection on fresh launches. */
+  accountAutoRouting: Schema.optionalKey(Schema.Boolean),
   usagePriceOverrides: Schema.optionalKey(Schema.Boolean),
   /** An enrolled adapter can explicitly read one configured, canonically validated saved report. */
   savedTokenAccounting: Schema.optionalKey(Schema.Boolean),

@@ -31,6 +31,7 @@ export interface QuotaProbeBinding {
 }
 const bindings = new Map<ProviderInstanceId, Binding>();
 const proofs = new WeakMap<QualifiedQuota, PrivateQuotaProof>();
+const routingProofs = new WeakMap<QualifiedQuota, { readonly ordinaryUsageAllowed: boolean }>();
 
 export function resetQuotaBinding(instanceId: ProviderInstanceId): void {
   bindings.set(instanceId, {
@@ -106,6 +107,46 @@ export function makeQualifiedQuota(input: {
 }): QualifiedQuota {
   const probe = input.probeBinding ?? beginQuotaProbe(input.instanceId, input.probeId);
   const binding = bindings.get(input.instanceId);
+  return buildQualifiedQuota(input, probe, binding);
+}
+
+type QuotaInput = Parameters<typeof makeQualifiedQuota>[0];
+
+/** For a direct, context-bound probe. It has no effect on the registry/failover proof. */
+export function makeAccountRoutingQuota(
+  input: QuotaInput & { readonly accountId: string; readonly ordinaryUsageAllowed: boolean },
+): QualifiedQuota {
+  const binding: Binding = {
+    key: NodeCrypto.randomBytes(32),
+    bindingGeneration: NodeCrypto.randomUUID(),
+    identityTag: null,
+    probeGeneration: NodeCrypto.randomUUID(),
+  };
+  const quota = buildQualifiedQuota(
+    input,
+    {
+      instanceId: input.instanceId,
+      probeId: input.probeId,
+      bindingGeneration: binding.bindingGeneration,
+      probeGeneration: binding.probeGeneration,
+    },
+    binding,
+    false,
+  );
+  if (input.accountId.trim()) {
+    routingProofs.set(quota, { ordinaryUsageAllowed: input.ordinaryUsageAllowed });
+  }
+  return quota;
+}
+
+export const readAccountRoutingQuotaProof = (quota: QualifiedQuota) => routingProofs.get(quota);
+
+function buildQualifiedQuota(
+  input: QuotaInput,
+  probe: QuotaProbeBinding,
+  binding: Binding | undefined,
+  publishDefaultProof = true,
+): QualifiedQuota {
   const currentProbe =
     binding &&
     probe.instanceId === input.instanceId &&
@@ -205,7 +246,12 @@ export function makeQualifiedQuota(input: {
         observedAt: input.probeCompletedAt,
       })),
   };
-  if (currentProbe && input.ordinaryUsageAllowed === true && quota.status === "qualified") {
+  if (
+    publishDefaultProof &&
+    currentProbe &&
+    input.ordinaryUsageAllowed === true &&
+    quota.status === "qualified"
+  ) {
     proofs.set(quota, {
       instanceId: input.instanceId,
       probeId: input.probeId,

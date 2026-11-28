@@ -13,6 +13,7 @@ import {
   PreparationState,
   OrchestratorMcpClientRequestId,
   NonNegativeInt,
+  AccountRouting,
   ModelSelection,
   TrimmedNonEmptyString,
   ThreadId,
@@ -155,6 +156,12 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     title: TrimmedNonEmptyString,
     generateTitle: Schema.optional(Schema.Boolean),
     modelSelection: Schema.optional(ModelSelection),
+    accountRouting: Schema.optional(
+      AccountRouting.annotate({
+        description:
+          "For a fresh local launch, select an eligible account in the Codex or Claude family of the explicit modelSelection.",
+      }),
+    ),
     runtimeMode: Schema.optional(RuntimeMode),
     interactionMode: Schema.optional(ProviderInteractionMode),
     workspaceStrategy: Schema.optional(

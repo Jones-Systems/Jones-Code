@@ -60,11 +60,10 @@ import {
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
-import { beginQuotaProbe, makeQualifiedQuota } from "./qualifiedQuota.ts";
+import { beginQuotaProbe, makeAccountRoutingQuota, makeQualifiedQuota } from "./qualifiedQuota.ts";
 import {
   codexRateLimitsFailureMessage,
   codexRateLimitsToLimits,
-  type CodexRateLimitSnapshot,
   type CodexResetCreditsSummary,
 } from "./codexUsageLimits.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -73,7 +72,7 @@ const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnErro
 
 type CodexRateLimitsProbe =
   | {
-      readonly snapshot: CodexRateLimitSnapshot;
+      readonly snapshot: QualifiedQuotaMap[string];
       readonly rateLimitsByLimitId?: QualifiedQuotaMap | null | undefined;
       readonly quotaReceivedAt?: string | undefined;
       readonly ordinaryUsageAllowed?: boolean | null | undefined;
@@ -93,6 +92,38 @@ const CodexRoutingConfig = Schema.Struct({
   ),
 });
 const decodeCodexRoutingConfig = Schema.decodeUnknownOption(CodexRoutingConfig);
+const decodeCodexAutoRoute = Schema.decodeUnknownOption(
+  Schema.Struct({
+    model_provider: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    openai_base_url: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    chatgpt_base_url: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    forced_login_method: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  }),
+);
+
+export function isNativeCodexAutoRoute(config: unknown, environment: NodeJS.ProcessEnv): boolean {
+  const decoded = decodeCodexAutoRoute(config);
+  if (
+    Option.isNone(decoded) ||
+    (decoded.value.model_provider ?? "openai") !== "openai" ||
+    decoded.value.forced_login_method === "api" ||
+    !!environment.OPENAI_API_KEY ||
+    !!environment.CODEX_API_KEY
+  ) {
+    return false;
+  }
+  const matchesDefault = (value: string | null | undefined, expected: string) => {
+    if (value == null || value.trim() === "") return true;
+    const url = URL.parse(value);
+    return url?.href.replace(/\/$/, "") === expected;
+  };
+  return (
+    matchesDefault(decoded.value.openai_base_url, "https://api.openai.com/v1") &&
+    matchesDefault(environment.OPENAI_BASE_URL, "https://api.openai.com/v1") &&
+    matchesDefault(decoded.value.chatgpt_base_url, "https://chatgpt.com/backend-api") &&
+    matchesDefault(environment.CHATGPT_BASE_URL, "https://chatgpt.com/backend-api")
+  );
+}
 
 const CodexCyberAccessConfig = Schema.Struct({
   daybreak: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
@@ -758,6 +789,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   readonly cwd: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly skipNativeUsage?: boolean;
+  readonly routingCwd?: string;
 }) {
   const spawnedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -782,12 +814,13 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
 
   const accountResponse = yield* client.request("account/read", {});
   if (!accountResponse.account && accountResponse.requiresOpenaiAuth) {
-    return {
+    const signedOut: CodexAppServerProviderSnapshot = {
       account: accountResponse,
       version,
       models: [],
       skills: [],
-    } satisfies CodexAppServerProviderSnapshot;
+    };
+    return signedOut;
   }
 
   // Optional discovery must finish before the outer timeout can discard the account result.
@@ -805,7 +838,10 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
         : withCodexDiscoveryDeadline(requestAllCodexModels(client), deadlineMs),
       // The shared catalog must exclude config from the server's launch project.
       withCodexDiscoveryDeadline(
-        client.request("config/read", { includeLayers: false }),
+        client.request("config/read", {
+          includeLayers: false,
+          ...(input.routingCwd === undefined ? {} : { cwd: input.routingCwd }),
+        }),
         deadlineMs,
         CODEX_CONFIG_PROBE_TIMEOUT_MS,
       ).pipe(
@@ -815,7 +851,10 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
           const nativeUsage =
             !input.skipNativeUsage &&
             config !== undefined &&
-            codexRoutesSpendNativeQuota(accountResponse, config.config);
+            codexRoutesSpendNativeQuota(accountResponse, config.config) &&
+            (input.routingCwd === undefined ||
+              (accountResponse.account?.type === "chatgpt" &&
+                isNativeCodexAutoRoute(config.config, input.environment ?? {})));
           const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> = nativeUsage
             ? readCodexRateLimits(client, deadlineMs)
             : Effect.undefined;
@@ -848,6 +887,71 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       (config === undefined || cyberAccess?.features?.api_key_cyber_access_programs === false),
     skills: skillsResponse ? parseCodexSkillsListResponse(skillsResponse, input.cwd) : [],
   } satisfies CodexAppServerProviderSnapshot;
+});
+
+/** Read native subscription allowance and its model catalog in the launch directory. */
+export const probeCodexAutoRouting = Effect.fn("probeCodexAutoRouting")(function* (input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly settings: CodexSettings;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly cwd: string;
+}) {
+  const { instanceId, settings, environment, cwd } = input;
+  if (!settings.enabled || settings.setupMode === "managed") return undefined;
+  const attemptedAt = DateTime.formatIso(yield* DateTime.now);
+  const probeTimeoutMs = Math.min(
+    CODEX_AUTH_PROBE_TIMEOUT_MS,
+    resolveProviderProbeTimeoutMs("codex", CODEX_AUTH_PROBE_TIMEOUT_MS, environment),
+  );
+  const result = yield* probeCodexAppServerProvider({
+    probeTimeoutMs,
+    binaryPath: settings.binaryPath,
+    homePath: settings.homePath,
+    launchArgs: resolveCodexLaunchArgs(settings.launchArgs, environment),
+    cwd: process.cwd(),
+    routingCwd: cwd,
+    environment: providerProbeEnvironment(environment),
+  }).pipe(
+    Effect.timeoutOption(probeTimeoutMs),
+    Effect.scoped,
+    Effect.orElseSucceed(() => Option.none()),
+  );
+  if (Option.isNone(result)) return undefined;
+  const { nativeUsage, account, rateLimits, models, serviceTier } = result.value;
+  if (
+    !nativeUsage ||
+    account.account?.type !== "chatgpt" ||
+    !rateLimits ||
+    "failure" in rateLimits ||
+    !rateLimits.accountId?.trim() ||
+    typeof rateLimits.ordinaryUsageAllowed !== "boolean" ||
+    models === undefined
+  ) {
+    return undefined;
+  }
+  const map = rateLimits.rateLimitsByLimitId;
+  const hasMap = !!map && Object.keys(map).length > 0;
+  const legacyLimitId = rateLimits.snapshot.limitId ?? "codex";
+  const quota = makeAccountRoutingQuota({
+    instanceId,
+    probeId: NodeCrypto.randomUUID(),
+    attemptedAt,
+    probeCompletedAt: DateTime.formatIso(yield* DateTime.now),
+    quotaReceivedAt: rateLimits.quotaReceivedAt,
+    rateLimitsByLimitId: hasMap ? map : { [legacyLimitId]: rateLimits.snapshot },
+    ordinaryUsageAllowed: rateLimits.ordinaryUsageAllowed,
+    accountId: rateLimits.accountId,
+    models,
+    // The legacy bucket can prove a block but cannot certify a complete set of model limits.
+    ...(hasMap ? {} : { failureCode: "missing_map" as const }),
+  });
+  return {
+    quota,
+    models: applyConfiguredCodexCyberAccess(
+      applyConfiguredCodexServiceTier(models, serviceTier),
+      result.value,
+    ),
+  };
 });
 
 // Old CLIs can exit before initialize reports the version needed for compatibility advice.

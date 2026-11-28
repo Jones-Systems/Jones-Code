@@ -1,3 +1,4 @@
+import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { randomHex } from "../../lib/uuid";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
@@ -20,10 +21,11 @@ export function buildQueuedThreadCreationStartTurnInput(input: {
   readonly settings: ThreadSettingsSnapshot;
   readonly serverResolvesWorktreeBase: boolean;
   readonly serverSupportsRepoFreshness?: boolean;
+  readonly serverSupportsAccountAutoRouting?: boolean;
   readonly inlineMessageContext?: boolean;
 }) {
   const { message, creation, settings } = input;
-  return buildProjectThreadStartTurnInput({
+  const start = buildProjectThreadStartTurnInput({
     projectId: creation.projectId,
     projectCwd: input.projectCwd,
     threadId: message.threadId,
@@ -54,4 +56,11 @@ export function buildQueuedThreadCreationStartTurnInput(input: {
     serverResolvesWorktreeBase: input.serverResolvesWorktreeBase,
     worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
   });
+  return message.accountRouting === undefined
+    ? start
+    : ({
+        ...start,
+        accountRouting: message.accountRouting,
+        serverSupportsAccountAutoRouting: input.serverSupportsAccountAutoRouting === true,
+      } satisfies StartThreadTurnInput);
 }

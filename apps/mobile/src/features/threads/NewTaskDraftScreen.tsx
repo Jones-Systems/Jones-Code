@@ -654,11 +654,13 @@ export function NewTaskDraftScreen(props: {
     const draft = getComposerDraftSnapshot(draftKey);
     if (appAtomRegistry.get(composerContextImportsAtom)[draftKey]) return null;
     const modelSelection =
+      draft.automaticAccountModel ??
       resolveSelectableModelSelection(
         selectedEnvironmentServerConfig,
         draft.modelSelection ?? null,
         selectedProject.id,
-      ) ?? flow.selectedModel;
+      ) ??
+      flow.selectedModel;
     const workspaceSelection = flow.resolveWorkspaceSelection(draft.workspaceSelection);
     const workspaceMode = workspaceSelection.mode;
     const selectedBranchName = workspaceSelection.branch;
@@ -675,6 +677,7 @@ export function NewTaskDraftScreen(props: {
     }
     if (
       environmentConnected &&
+      draft.automaticAccountModel === undefined &&
       isModelSelectionUnavailable(
         selectedEnvironmentServerConfig,
         modelSelection,
@@ -1128,6 +1131,7 @@ export function NewTaskDraftScreen(props: {
         draftMode={{
           content: heroViewport,
           controls: draftControls,
+          automaticAccountLabel: flow.automaticAccountLabel,
           editorRef: promptInputRef,
           sendBlockedReason: setupBlockReason,
           interactionLocked: isComposerInteractionLocked,

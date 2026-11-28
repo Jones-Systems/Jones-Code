@@ -166,6 +166,7 @@ export interface ThreadComposerProps {
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
   readonly sendBlockedReason?: string | null;
+  readonly automaticAccountLabel?: string | undefined;
   readonly interactionLocked?: boolean;
   readonly draftKey?: string;
   readonly queuedEdit?: {
@@ -700,6 +701,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       <ComposerModelControl
         size={usesLargeControls ? "large" : "regular"}
         modelOption={currentModelOption}
+        automaticAccountLabel={props.automaticAccountLabel}
         selection={currentModelSelection}
         provider={selectedProviderStatus?.driver}
         reportedSelection={props.reportedModelSelection}

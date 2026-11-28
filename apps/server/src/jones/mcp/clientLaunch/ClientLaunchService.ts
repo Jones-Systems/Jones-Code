@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Receipts from "../../../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../../../orchestration-v2/EventSink.ts";
@@ -21,6 +22,9 @@ import * as Git from "../../../vcs/GitVcsDriver.ts";
 import type { Caller } from "../../../mcp/threadAccess.ts";
 import { unavailable } from "../../../mcp/threadAccess.ts";
 import { callerLinkOrigin } from "../../../mcp/linkOrigin.ts";
+import { existingAccountRoutingWorkspaceRequired } from "../accountRouting.ts";
+import { resolveAutoLaunchModel } from "../launchModelSelection.ts";
+import { recordedLaunchClaim } from "../../orchestration/deliveryEvidence.ts";
 import type { StartedModes, ThreadStartGate } from "../../../mcp/McpToolAccess.ts";
 import {
   clientLaunchIds,
@@ -230,6 +234,13 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
     if (problem !== null)
       return yield* new OrchestratorMcpFailure({ code: "invalid_request", message: problem });
   }
+  const autoModelSelection = input.accountRouting === undefined ? undefined : input.modelSelection;
+  if (input.accountRouting !== undefined && autoModelSelection === undefined)
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message:
+        "Auto account routing requires an explicit modelSelection with a provider and model.",
+    });
   const projectId = input.projectId ?? caller.caller!.projectId;
   const ids = clientLaunchIds(caller.scope.requestNamespace, input.clientRequestId);
   const digest = yield* Effect.try({
@@ -245,6 +256,12 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
     return yield* new OrchestratorMcpFailure({
       code: "launch_fenced",
       message: "This launch key has an authoritative rejection.",
+    });
+  const priorClaim = yield* readClaim(ids.commandId);
+  if (priorClaim !== undefined && priorClaim.request_digest !== digest)
+    return yield* new OrchestratorMcpFailure({
+      code: "request_conflict",
+      message: "The key belongs to a different launch request.",
     });
   const launches = yield* ThreadLaunch.ThreadLaunchService;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -320,19 +337,28 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
         code: "invalid_request",
         message: "The project was not found.",
       });
+    if (
+      autoModelSelection !== undefined &&
+      (workspaceStrategy.type === "worktree" || workspaceStrategy.type === "auto")
+    )
+      return yield* existingAccountRoutingWorkspaceRequired();
+    let cwd = project.workspaceRoot;
     if (workspaceStrategy.type === "existing_worktree") {
       const fs = yield* FileSystem.FileSystem;
       const git = yield* Git.GitVcsDriver;
       const real = (path: string) => fs.realPath(path).pipe(Effect.orElseSucceed(() => path));
-      const paths = yield* git.listWorktreePaths(project.workspaceRoot).pipe(
-        Effect.flatMap((paths) => Effect.forEach(paths, real)),
-        Effect.orElseSucceed((): ReadonlyArray<string> => []),
-      );
-      if (!paths.includes(yield* real(workspaceStrategy.worktreePath)))
+      const paths = yield* git
+        .listWorktreePaths(project.workspaceRoot)
+        .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+      const requested = yield* real(workspaceStrategy.worktreePath);
+      const checks = yield* Effect.forEach(paths, real);
+      const registered = paths[checks.indexOf(requested)];
+      if (registered === undefined)
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
           message: "worktreePath must be one of the project's git worktrees.",
         });
+      cwd = registered;
     }
     if (workspaceStrategy.type === "worktree")
       yield* launches.checkWorktreeBase({ projectId, workspaceStrategy }).pipe(
@@ -351,6 +377,17 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
       modes,
       Effect.succeed(project),
     );
+    const admittedModelSelection =
+      autoModelSelection === undefined
+        ? modelSelection
+        : yield* resolveAutoLaunchModel({
+            caller,
+            projectId,
+            modelSelection: autoModelSelection,
+            runtimeMode,
+            interactionMode: modes.interactionMode,
+            cwd,
+          });
     const sql = yield* SqlClient.SqlClient;
     yield* sql
       .withTransaction(
@@ -398,7 +435,10 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
           modes,
           invoke({
             ...common,
-            modelSelection,
+            ...(autoModelSelection !== undefined && workspaceStrategy.type === "existing_worktree"
+              ? { workspaceStrategy: { ...workspaceStrategy, worktreePath: cwd } }
+              : {}),
+            modelSelection: admittedModelSelection,
             runtimeMode,
             interactionMode: modes.interactionMode,
             ...(modes.linkOrigin === undefined ? {} : { linkOrigin: modes.linkOrigin }),
@@ -431,10 +471,22 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
   const state = yield* lookup(caller.scope.requestNamespace, input.clientRequestId);
   const shell = yield* threads.getThreadShell(ids.threadId).pipe(Effect.mapError(unavailable));
   if (shell === null) return yield* unavailable();
+  let modelSelection = shell.modelSelection;
+  if (autoModelSelection !== undefined) {
+    const originalReceipt = yield* readReceipt(ids.commandId);
+    if (originalReceipt === undefined) return yield* unavailable();
+    const sink = yield* EventSink.EventSinkV2;
+    const events = yield* sink
+      .readByCommandId({ commandId: ids.commandId })
+      .pipe(Stream.runCollect, Effect.mapError(unavailable));
+    const original = recordedLaunchClaim(common, originalReceipt, events);
+    if (original === undefined) return yield* unavailable();
+    modelSelection = original.modelSelection;
+  }
   return {
     threadId: ids.threadId,
     projectId: shell.projectId,
-    modelSelection: shell.modelSelection,
+    modelSelection,
     runId: state.runId,
     status: state.runStatus,
     replayed,

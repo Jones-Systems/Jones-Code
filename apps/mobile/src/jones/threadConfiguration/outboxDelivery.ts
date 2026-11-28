@@ -168,6 +168,9 @@ export function preserveQueuedThreadIssuance(
     threadId: previous.threadId,
     messageId: previous.messageId,
     commandId: previous.commandId,
+    ...(previous.accountRouting !== undefined || next.accountRouting !== undefined
+      ? { accountRouting: previous.accountRouting, modelSelection: previous.modelSelection }
+      : {}),
     ...(previous.creation === undefined
       ? {}
       : {

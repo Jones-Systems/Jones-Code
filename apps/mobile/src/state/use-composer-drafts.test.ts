@@ -14,20 +14,30 @@ import {
   v2ThreadShell,
 } from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import {
   CommandId,
   ComposerContextId,
+  ComposerContextRecord,
   EnvironmentId,
+  ForwardCompatibleArray,
   MessageId,
+  ModelSelection,
+  ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationV2Command,
+  OrchestrationV2ThreadLaunchInput,
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
   ProviderInstanceId,
+  ProviderInteractionMode,
+  ProviderOptionSelection,
+  RuntimeMode,
   RuntimeRequestId,
   ThreadId,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ShellSnapshot,
-  type ModelSelection,
 } from "@t3tools/contracts";
 import { onTestFinished, vi } from "vite-plus/test";
 
@@ -35,7 +45,10 @@ import { buildIncomingShareDraft } from "../features/sharing/incoming-share-mode
 import { composerContextSendBlockReason } from "../lib/composerContext";
 
 const composerDraftFileMocks = vi.hoisted(() => {
-  let document = JSON.stringify({ schemaVersion: 1, drafts: {} });
+  const MAIN_FILE = "drafts.json";
+  const AUTO_ARCHIVE_FILE = "signed-out-auto-account-outbox.json";
+  const documents = new Map([[MAIN_FILE, JSON.stringify({ schemaVersion: 1, drafts: {} })]]);
+  let archiveWriteError: Error | null = null;
   let readError: Error | null = null;
   let writeError: Error | null = null;
   let releaseRead: (() => void) | null = null;
@@ -57,10 +70,25 @@ const composerDraftFileMocks = vi.hoisted(() => {
       releaseRead = null;
     },
     getDocument() {
-      return document;
+      return documents.get(MAIN_FILE) ?? "";
+    },
+    getAutoArchive() {
+      return documents.get(AUTO_ARCHIVE_FILE);
+    },
+    getQueuedMessage(messageId: string) {
+      return documents.get(`${encodeURIComponent(messageId)}.json`);
     },
     setDocument(value: unknown) {
-      document = JSON.stringify(value);
+      documents.set(MAIN_FILE, JSON.stringify(value));
+    },
+    resetOtherDocuments() {
+      for (const name of documents.keys()) {
+        if (name !== MAIN_FILE) documents.delete(name);
+      }
+      archiveWriteError = null;
+    },
+    setArchiveWriteError(error: Error | null) {
+      archiveWriteError = error;
     },
     setReadError(error: Error | null) {
       readError = error;
@@ -88,21 +116,35 @@ const composerDraftFileMocks = vi.hoisted(() => {
       }
     },
     File: class {
-      exists = true;
       size = 3;
       parentDirectory = null;
       uri = "file:///documents/attachment.png";
+      private staged: string | undefined;
+
+      constructor(
+        _directory: unknown,
+        readonly name = MAIN_FILE,
+      ) {}
+
+      get exists() {
+        return this.name !== AUTO_ARCHIVE_FILE || documents.has(this.name);
+      }
 
       create() {}
 
       async copy() {}
 
-      moveSync() {}
+      moveSync(destination: { readonly name: string }) {
+        if (this.staged === undefined) throw new Error("Missing staged draft contents");
+        documents.set(destination.name, this.staged);
+        writes.push(this.staged);
+        onWrite?.();
+      }
 
       async text() {
         await readBarrier;
         if (readError) throw readError;
-        return document;
+        return documents.get(this.name) ?? "";
       }
 
       async base64() {
@@ -110,21 +152,18 @@ const composerDraftFileMocks = vi.hoisted(() => {
       }
 
       write(value: string) {
-        if (writeError) {
-          throw writeError;
+        if (this.name.startsWith(`${AUTO_ARCHIVE_FILE}.`) && archiveWriteError) {
+          throw archiveWriteError;
         }
+        if (writeError) throw writeError;
         if (nextWriteBarrier) {
           const barrier = nextWriteBarrier;
           nextWriteBarrier = null;
           return barrier.then(() => {
-            document = value;
-            writes.push(value);
-            onWrite?.();
+            this.staged = value;
           });
         }
-        document = value;
-        writes.push(value);
-        onWrite?.();
+        this.staged = value;
       }
     },
   };
@@ -193,6 +232,18 @@ import {
 } from "./question-attachment-preparation";
 import { threadOutboxManager } from "./thread-outbox";
 import {
+  decodeQueuedThreadMessage,
+  QueuedThreadMessageSchema,
+  type QueuedThreadMessage,
+} from "./thread-outbox-model";
+import { decodePreparedThreadTurn } from "@t3tools/client-runtime/jones/preparedThreadTurn";
+import {
+  acceptedQueuedThreadDelivery,
+  observeQueuedThreadDelivery,
+  withIssuedQueuedThreadTurn,
+} from "../jones/threadConfiguration/outboxDelivery";
+import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
+import {
   appendComposerDraftAttachments,
   captureComposerDraftInsertion,
   countComposerDraftAttachmentsAfterSelection,
@@ -243,6 +294,160 @@ const DRAFT: ComposerDraft = {
   text: "hello",
   attachments: [],
 };
+
+// Embedded v1 composer document and v1–v4 outbox reader from 4ed713e00.
+const embeddedComposerDraft = Schema.Struct({
+  importedHistoryCorrelation: Schema.optional(Schema.String),
+  text: Schema.String,
+  context: Schema.optional(
+    Schema.Struct({
+      version: Schema.Literal(1),
+      records: ForwardCompatibleArray(ComposerContextRecord),
+    }),
+  ),
+  attachments: Schema.Array(DraftComposerAttachmentSchema),
+  importedShareIds: Schema.optional(Schema.Array(Schema.String)),
+  modelSelection: Schema.optional(ModelSelection),
+  runtimeMode: Schema.optional(RuntimeMode),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  freshContext: Schema.optional(Schema.Boolean),
+  workspaceSelection: Schema.optional(
+    Schema.Struct({
+      mode: Schema.Literals(["local", "worktree"]),
+      branch: Schema.NullOr(Schema.String),
+      worktreePath: Schema.NullOr(Schema.String),
+      startFromOrigin: Schema.optional(Schema.Boolean),
+      pullRequestReference: Schema.optional(Schema.String),
+      followsCurrentCheckout: Schema.optional(Schema.Boolean),
+    }),
+  ),
+  project: Schema.optional(
+    Schema.Struct({ environmentId: EnvironmentId, projectId: ProjectId, createdAt: Schema.String }),
+  ),
+});
+const embeddedQueuedCreation =
+  QueuedThreadMessageSchema.fields.creation.schema.members[0].mapFields(
+    ({ repositories: _repositories, startsFromRepositoryDefaults: _defaults, ...fields }) => fields,
+  );
+const [embeddedAuto, embeddedRoot, embeddedExisting, currentWorktree] =
+  OrchestrationV2ThreadLaunchWorkspaceStrategy.members;
+const embeddedLaunchInput = OrchestrationV2ThreadLaunchInput.mapFields(
+  ({ accountRouting: _routing, ...fields }) => ({
+    ...fields,
+    workspaceStrategy: Schema.Union([
+      embeddedAuto,
+      embeddedRoot,
+      embeddedExisting,
+      currentWorktree.mapFields(({ repositories: _repositories, ...worktree }) => worktree),
+    ]),
+  }),
+);
+const embeddedPreparedTurn = Schema.Union([
+  Schema.Struct({
+    method: Schema.Literal(ORCHESTRATION_V2_WS_METHODS.launchThread),
+    payload: embeddedLaunchInput,
+  }),
+  Schema.Struct({
+    method: Schema.Literal(ORCHESTRATION_V2_WS_METHODS.dispatchCommand),
+    payload: OrchestrationV2Command,
+  }),
+]).check(
+  Schema.makeFilter((value) =>
+    value.method === ORCHESTRATION_V2_WS_METHODS.launchThread
+      ? value.payload.threadId !== undefined &&
+        value.payload.creationSource !== undefined &&
+        value.payload.generateTitle !== undefined &&
+        value.payload.initialMessage?.messageId !== undefined
+      : value.payload.type === "message.dispatch" &&
+        value.payload.createdBy === "user" &&
+        value.payload.dispatchMode.type !== "defer_start",
+  ),
+);
+const [embeddedUnissued, currentIssued] =
+  QueuedThreadMessageSchema.fields.issuance.schema.members[0].members;
+const embeddedQueuedMessage = QueuedThreadMessageSchema.mapFields(
+  ({ accountRouting: _routing, restoreToDraft: _restore, ...fields }) => ({
+    ...fields,
+    schemaVersion: Schema.Literals([1, 2, 3, 4]),
+    creation: Schema.optional(embeddedQueuedCreation),
+    issuance: Schema.optional(
+      Schema.Union([
+        embeddedUnissued,
+        currentIssued.mapFields((fields) => ({
+          ...fields,
+          prepared: Schema.toCodecJson(embeddedPreparedTurn),
+        })),
+      ]),
+    ),
+  }),
+);
+const decodeEmbeddedComposerDocument = Schema.decodeUnknownSync(
+  Schema.Struct({
+    schemaVersion: Schema.Literal(1),
+    drafts: Schema.Record(Schema.String, embeddedComposerDraft),
+    stickyModelSelection: Schema.optional(ModelSelection),
+    modelOptionMemory: Schema.optional(
+      Schema.Record(
+        Schema.String,
+        Schema.Record(Schema.String, Schema.Array(ProviderOptionSelection)),
+      ),
+    ),
+    cloudAccountId: Schema.optional(Schema.String),
+    signedOutDrafts: Schema.optional(
+      Schema.Record(
+        Schema.String,
+        Schema.Struct({
+          drafts: Schema.Record(Schema.String, embeddedComposerDraft),
+          queuedMessages: Schema.Array(embeddedQueuedMessage),
+        }),
+      ),
+    ),
+  }),
+);
+
+function archivedAutoLaunch() {
+  const queued = {
+    environmentId: EnvironmentId.make("cloud-environment"),
+    threadId: ThreadId.make("auto-thread"),
+    messageId: MessageId.make("auto-message"),
+    commandId: CommandId.make("auto-command"),
+    text: "Start this task with Auto",
+    attachments: [],
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      model: "gpt-5.4",
+    },
+    accountRouting: { mode: "auto" },
+    creation: {
+      projectId: ProjectId.make("project"),
+      workspaceMode: "local",
+      branch: null,
+      worktreePath: null,
+    },
+    issuance: { state: "unissued" },
+    createdAt: "2026-08-31T12:00:00.000Z",
+  } satisfies QueuedThreadMessage;
+  return withIssuedQueuedThreadTurn(
+    queued,
+    decodePreparedThreadTurn({
+      method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+      payload: {
+        commandId: queued.commandId,
+        threadId: queued.threadId,
+        projectId: queued.creation.projectId,
+        title: "Auto launch",
+        creationSource: "mobile",
+        generateTitle: true,
+        accountRouting: queued.accountRouting,
+        modelSelection: queued.modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        workspaceStrategy: { type: "root" },
+        initialMessage: { messageId: queued.messageId, text: queued.text, attachments: [] },
+      },
+    }),
+  );
+}
 
 it.each(["picker open", "reading image"] as const)(
   "recovers only accepted screenshots when a question is cancelled while %s",
@@ -313,6 +518,7 @@ afterEach(() => {
   vi.useRealTimers();
   resetComposerDraftsLoadState();
   composerDraftFileMocks.setDocument({ schemaVersion: 1, drafts: {} });
+  composerDraftFileMocks.resetOtherDocuments();
   composerDraftFileMocks.setReadError(null);
   composerDraftFileMocks.setWriteError(null);
   composerDraftFileMocks.setNextWriteBarrier(null);
@@ -1591,6 +1797,136 @@ describe("mobile composer drafts", () => {
       expect(persisted.cloudDrafts.accountId).toBe("account-a");
     },
   );
+
+  it.each([false, true])(
+    "keeps Auto isolated across downgrade and restores the original issued command once (live row retained: %s)",
+    async (alreadyQueued) => {
+      const load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+      const enqueue = vi.spyOn(threadOutboxManager, "enqueue");
+      onTestFinished(() => {
+        load.mockRestore();
+        enqueue.mockRestore();
+      });
+      const auto = archivedAutoLaunch();
+      const ordinary: QueuedThreadMessage = {
+        environmentId: auto.environmentId,
+        threadId: ThreadId.make("ordinary-thread"),
+        messageId: MessageId.make("ordinary-message"),
+        commandId: CommandId.make("ordinary-command"),
+        text: "Send later",
+        attachments: [],
+        createdAt: auto.createdAt,
+      };
+      const directKey = "direct-environment:direct-thread";
+      const cloudKey = `${auto.environmentId}:draft-thread`;
+      appAtomRegistry.set(composerDraftsAtom, { [directKey]: DRAFT, [cloudKey]: DRAFT });
+      appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {
+        queued: [auto, ordinary],
+      });
+      await archiveCloudComposerDrafts("owner", new Set([auto.environmentId]), [
+        auto.environmentId,
+      ]);
+
+      const siblingBeforeDowngrade = composerDraftFileMocks.getAutoArchive()!;
+      const archive = JSON.parse(siblingBeforeDowngrade);
+      expect(archive).toMatchObject({
+        schemaVersion: 1,
+        accounts: { owner: [{ schemaVersion: 5, accountRouting: { mode: "auto" } }] },
+      });
+      const main = decodeEmbeddedComposerDocument(JSON.parse(composerDraftFileMocks.getDocument()));
+      expect(main.drafts).toEqual({ [directKey]: DRAFT });
+      expect(main.signedOutDrafts?.owner?.drafts).toEqual({ [cloudKey]: DRAFT });
+      expect(main.signedOutDrafts?.owner?.queuedMessages).toEqual([
+        { ...ordinary, schemaVersion: 3 },
+      ]);
+      for (const schemaVersion of [1, 2, 3, 4]) {
+        const legacy = {
+          ...main,
+          signedOutDrafts: {
+            owner: { drafts: {}, queuedMessages: [{ ...ordinary, schemaVersion }] },
+          },
+        };
+        expect(
+          decodePersistedComposerState(legacy).cloudDrafts.signedOut.owner?.queuedMessages,
+        ).toEqual([ordinary]);
+      }
+      expect(() =>
+        decodeEmbeddedComposerDocument({
+          ...main,
+          signedOutDrafts: { owner: { drafts: {}, queuedMessages: archive.accounts.owner } },
+        }),
+      ).toThrow();
+
+      // The old app reads and rewrites the main file while the Auto archive is still on disk.
+      const edited = { text: "Edited on the older build", attachments: [] };
+      composerDraftFileMocks.setDocument({ ...main, drafts: { [directKey]: edited } });
+      const retained = observeQueuedThreadDelivery(auto, acceptedQueuedThreadDelivery(auto));
+      appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {});
+      if (alreadyQueued) {
+        await threadOutboxManager.enqueue(retained);
+        enqueue.mockClear();
+      }
+      appAtomRegistry.set(composerDraftsAtom, {});
+      appAtomRegistry.set(composerCloudDraftsAtom, { accountId: null, signedOut: {} });
+      resetComposerDraftsLoadState();
+      await restoreCloudComposerDrafts("other-account");
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(composerDraftFileMocks.getAutoArchive()).toBe(siblingBeforeDowngrade);
+      expect(getComposerDraftSnapshot(directKey)).toEqual(edited);
+      expect(getComposerDraftSnapshot(cloudKey).text).toBe("");
+
+      await restoreCloudComposerDrafts("owner");
+      expect(
+        enqueue.mock.calls.filter(([message]) => message.messageId === auto.messageId),
+      ).toEqual(alreadyQueued ? [] : [[auto]]);
+      const restoredAuto = Object.values(
+        appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
+      )
+        .flat()
+        .filter((message) => message.messageId === auto.messageId);
+      expect(restoredAuto).toEqual([alreadyQueued ? retained : auto]);
+      const queuedFile = composerDraftFileMocks.getQueuedMessage(auto.messageId)!;
+      expect(decodeQueuedThreadMessage(JSON.parse(queuedFile))).toEqual(
+        alreadyQueued ? retained : auto,
+      );
+      expect(getComposerDraftSnapshot(cloudKey)).toEqual(DRAFT);
+      expect(JSON.parse(composerDraftFileMocks.getAutoArchive()!)).toEqual({
+        schemaVersion: 1,
+        accounts: {},
+      });
+
+      resetComposerDraftsLoadState();
+      await restoreCloudComposerDrafts("owner");
+      expect(enqueue).toHaveBeenCalledTimes(alreadyQueued ? 1 : 2);
+    },
+  );
+
+  it("keeps the live Auto row when the sibling archive write fails", async () => {
+    const load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+    onTestFinished(() => load.mockRestore());
+    const auto = archivedAutoLaunch();
+    appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, { queued: [auto] });
+    const originalDraftsFile = composerDraftFileMocks.getDocument();
+    composerDraftFileMocks.setArchiveWriteError(new Error("Auto archive unavailable"));
+
+    const archive = () =>
+      archiveCloudComposerDrafts("owner", new Set([auto.environmentId]), [auto.environmentId]);
+    await expect(archive()).rejects.toMatchObject({
+      operation: "write",
+      fileName: "signed-out-auto-account-outbox.json",
+    });
+    expect(composerDraftFileMocks.getAutoArchive()).toBeUndefined();
+    expect(composerDraftFileMocks.getDocument()).toBe(originalDraftsFile);
+    expect(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).toEqual({
+      queued: [auto],
+    });
+
+    composerDraftFileMocks.setArchiveWriteError(null);
+    await archive();
+    expect(JSON.parse(composerDraftFileMocks.getAutoArchive()!)).toMatchObject({
+      accounts: { owner: [{ commandId: auto.commandId, schemaVersion: 5 }] },
+    });
+  });
 
   it("fails sign-out preservation before cleanup if a durable backup cannot be written", async () => {
     const load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);

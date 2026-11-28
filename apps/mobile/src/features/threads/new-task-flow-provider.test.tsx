@@ -7,6 +7,9 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerConfig,
   type VcsListRefsResult,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -47,7 +50,7 @@ vi.mock("../../state/atom-registry", () => ({
 vi.mock("../../state/entities", () => ({
   useProjects: mocks.projects,
   useThreadShells: () => [],
-  useEnvironmentServerConfig: () => mocks.serverConfig() ?? null,
+  useEnvironmentServerConfig: (id: EnvironmentId | null) => mocks.serverConfig(id) ?? null,
   useServerConfigs: () => new Map(),
 }));
 vi.mock("../../state/vcs", () => ({
@@ -133,6 +136,7 @@ function setup() {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.useFakeTimers();
   vi.clearAllMocks();
+  mocks.serverConfig.mockReset();
   const registry = AtomRegistry.make();
   mocks.registry.mockReturnValue(registry);
   const projects = [project("one", "a"), project("one", "b"), project("two", "b")];
@@ -461,3 +465,107 @@ it.each([
     expect(screen.current.selectedProject).toEqual(screen.projects[expectedProject]);
   },
 );
+
+it("offers fresh Auto picks only for the destination and keeps the choice with the draft", async () => {
+  using screen = setup();
+  const accounts = [
+    ["codex_personal", "codex", "gpt-5.4"],
+    ["codex_work", "codex", "gpt-5.4"],
+    ["claude_personal", "claudeAgent", "opus"],
+    ["claude_work", "claudeAgent", "opus"],
+  ] as const;
+  const settings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    providerInstances: Object.fromEntries(
+      accounts.map(([instanceId, driver]) => [
+        instanceId,
+        { driver: ProviderDriverKind.make(driver), enabled: true },
+      ]),
+    ),
+  };
+  const providers = accounts.map(([instanceId, driver, model]) => ({
+    instanceId: ProviderInstanceId.make(instanceId),
+    driver: ProviderDriverKind.make(driver),
+    enabled: true,
+    installed: true,
+    auth: { status: "authenticated" },
+    models: [{ slug: model, name: model, capabilities: null, isDefault: true }],
+  }));
+  const config = {
+    providers,
+    settings,
+    environment: { capabilities: { accountAutoRouting: true } },
+  } as unknown as ServerConfig;
+  mocks.serverConfig.mockImplementation((id) =>
+    id === "one" ? config : { ...config, environment: { capabilities: {} } },
+  );
+  await screen.render(true);
+
+  const pickerOptions = () => screen.current.providerGroups.flatMap((group) => group.models);
+  const auto = pickerOptions().find((option) => option.label === "Codex Auto")!;
+  expect(auto.selection.instanceId).toBe("codex_personal");
+  expect(
+    pickerOptions().find((option) => option.label === "Claude Auto")?.selection.instanceId,
+  ).toBe("claude_personal");
+  expect(screen.current.selectedModelKey).not.toBe(auto.key);
+  act(() => {
+    screen.current.setSelectedModelKey(auto.key, [{ id: "reasoningEffort", value: "high" }]);
+    screen.current.setPrompt("Keep this prompt");
+  });
+  const draftKey = screen.current.draftKey!;
+  const representative = {
+    ...auto.selection,
+    options: [{ id: "reasoningEffort", value: "high" }],
+  };
+  expect(screen.snapshot(draftKey)).toMatchObject({
+    text: "Keep this prompt",
+    automaticAccountModel: representative,
+  });
+  expect(screen.snapshot(draftKey).modelSelection).toBeUndefined();
+
+  await screen.render(false);
+  await screen.render(true);
+  expect(screen.current.selectedModelKey).toBe(auto.key);
+  expect(screen.current.automaticAccountLabel).toBe("Codex Auto");
+  const metadata = {
+    threadId: "thread",
+    messageId: "message",
+    commandId: "command",
+    createdAt: "2026-11-26T12:00:00Z",
+  };
+  expect(screen.current.buildPendingTaskMessage(metadata)).toMatchObject({
+    environmentId: "one",
+    accountRouting: { mode: "auto" },
+    modelSelection: representative,
+  });
+
+  act(() => screen.current.selectEnvironment(EnvironmentId.make("two")));
+  expect(pickerOptions().map((option) => option.label)).not.toContain("Codex Auto");
+  expect(pickerOptions().map((option) => option.label)).not.toContain("Claude Auto");
+  expect(screen.current.buildPendingTaskMessage(metadata)).toMatchObject({
+    environmentId: "two",
+    accountRouting: { mode: "auto" },
+    modelSelection: representative,
+  });
+
+  const manual = pickerOptions().find((option) => option.key === "codex_personal:gpt-5.4")!;
+  act(() => screen.current.setSelectedModelKey(manual.key));
+  expect(screen.current.automaticAccountLabel).toBeUndefined();
+  expect(screen.current.buildPendingTaskMessage(metadata)?.accountRouting).toBeUndefined();
+  expect(screen.current.buildPendingTaskMessage(metadata)?.modelSelection).toEqual(
+    manual.selection,
+  );
+
+  mocks.serverConfig.mockReturnValue({
+    ...config,
+    providers: providers.map((provider) =>
+      provider.instanceId === "codex_work"
+        ? { ...provider, auth: { status: "unauthenticated" } }
+        : provider,
+    ),
+  });
+  await screen.render(true);
+  expect(pickerOptions().map((option) => option.label)).not.toContain("Codex Auto");
+  expect(pickerOptions().map((option) => option.label)).toContain("Claude Auto");
+  expect(screen.current.buildPendingTaskMessage(metadata)?.accountRouting).toBeUndefined();
+});

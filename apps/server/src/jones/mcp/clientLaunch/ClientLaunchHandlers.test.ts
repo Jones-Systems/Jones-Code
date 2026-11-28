@@ -363,6 +363,19 @@ it.effect.each(["t3_thread_launch", "t3_thread_launch_fence"] as const)(
 );
 const unsupportedKeyedRequests: ReadonlyArray<Schema.JsonObject> = [
   { ...request, scratch: false },
+  { ...request, accountRouting: { mode: "auto" } },
+  {
+    ...request,
+    modelSelection,
+    accountRouting: { mode: "auto" },
+    workspaceStrategy: { type: "worktree" },
+  },
+  {
+    ...request,
+    modelSelection,
+    accountRouting: { mode: "auto" },
+    workspaceStrategy: { type: "auto" },
+  },
   {
     ...request,
     attachments: [

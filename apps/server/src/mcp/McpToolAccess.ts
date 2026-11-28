@@ -394,6 +394,7 @@ export const startsOrContinuesThreads = <P, A, E, R>(
   },
   handle: (params: P, gate: ThreadStartGate) => Effect.Effect<A, E, R>,
   linked: "stamped" | { readonly refused: string },
+  checkForwarding?: (params: P) => Effect.Effect<void, OrchestratorMcpFailure>,
 ) => {
   const started = Effect.fn("McpToolAccess.startsOrContinuesThreads.started")(function* (
     caller: Caller,
@@ -438,7 +439,10 @@ export const startsOrContinuesThreads = <P, A, E, R>(
         };
         return yield* handle(params, gate);
       }),
-    (params: P) => Effect.flatMap(writingCaller, (caller) => started(caller, params)),
+    (params: P) =>
+      Effect.flatMap(writingCaller, (caller) => started(caller, params)).pipe(
+        Effect.tap(() => checkForwarding?.(params) ?? Effect.void),
+      ),
   );
 };
 

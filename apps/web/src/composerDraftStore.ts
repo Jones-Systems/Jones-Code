@@ -12,6 +12,7 @@ import {
 } from "./components/chat/composerAttachmentFiles";
 import { elementContextToPreviewAnnotation } from "./lib/elementContext";
 import {
+  AccountRouting,
   ResponseContextRecord,
   ElementContextDetails,
   DEFAULT_MODEL,
@@ -355,6 +356,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   modelSelectionByProvider: Schema.optionalKey(Schema.Record(ProviderInstanceId, ModelSelection)),
   activeProvider: Schema.optionalKey(Schema.NullOr(ProviderInstanceId)),
   modelSelectionExplicit: Schema.optionalKey(Schema.Boolean),
+  accountRouting: Schema.optionalKey(AccountRouting),
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
 });
@@ -487,6 +489,7 @@ export interface ComposerThreadDraftState {
   modelSelectionByProvider: Partial<Record<ProviderInstanceId, ModelSelection>>;
   activeProvider: ProviderInstanceId | null;
   modelSelectionExplicit?: boolean;
+  accountRouting?: AccountRouting;
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
 }
@@ -661,12 +664,13 @@ interface ComposerDraftStoreState {
     modelSelection: ModelSelection | null | undefined,
     opts?: {
       explicit?: boolean;
+      accountRouting?: AccountRouting;
       /** Replace existing options even when the incoming selection has none. */
       replaceOptions?: boolean;
     },
   ) => void;
   /** Lets the thread's model show again once the server accepted this exact pick. */
-  releaseModelSelection: (threadRef: ScopedThreadRef, modelSelection: ModelSelection) => void;
+  releaseModelSelection: (threadRef: ComposerThreadTarget, modelSelection: ModelSelection) => void;
   applyStickyState: (threadRef: ComposerThreadTarget) => void;
   setProviderModelOptions: (
     threadRef: ComposerThreadTarget,
@@ -956,6 +960,7 @@ function composerDraftContent({
   modelSelectionByProvider: _modelSelectionByProvider,
   activeProvider: _activeProvider,
   modelSelectionExplicit: _modelSelectionExplicit,
+  accountRouting: _accountRouting,
   runtimeMode: _runtimeMode,
   interactionMode: _interactionMode,
   ...content
@@ -2363,6 +2368,12 @@ function normalizePersistedDraftsByThreadId(
             modelSelectionByProvider: compactModelSelectionByProvider(modelSelectionByProvider),
             activeProvider,
             ...(modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
+            ...(modelSelectionExplicit &&
+            activeProvider !== null &&
+            modelSelectionByProvider[activeProvider] !== undefined &&
+            Schema.is(AccountRouting)(draftCandidate.accountRouting)
+              ? { accountRouting: draftCandidate.accountRouting }
+              : {}),
           }
         : {}),
       ...(runtimeMode ? { runtimeMode } : {}),
@@ -2405,6 +2416,7 @@ function stripLegacyModelSeedsFromEmptyDraftSessions(
         activeProvider: _activeProvider,
         modelSelectionByProvider: _modelSelectionByProvider,
         modelSelectionExplicit: _modelSelectionExplicit,
+        accountRouting: _accountRouting,
         ...retained
       } = draft;
       return retained.runtimeMode || retained.interactionMode ? [[threadKey, retained]] : [];
@@ -2532,6 +2544,7 @@ export function partializeComposerDraftStoreState(
             ),
             activeProvider: draft.activeProvider,
             ...(draft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
+            ...(draft.accountRouting ? { accountRouting: draft.accountRouting } : {}),
           }
         : {}),
       ...(draft.runtimeMode ? { runtimeMode: draft.runtimeMode } : {}),
@@ -2812,6 +2825,7 @@ function toHydratedThreadDraft(
     modelSelectionByProvider,
     activeProvider,
     ...(persistedDraft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
+    ...(persistedDraft.accountRouting ? { accountRouting: persistedDraft.accountRouting } : {}),
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
   };
@@ -3333,6 +3347,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const stickyMap = state.stickyModelSelectionByProvider;
             const stickyActiveProvider = state.stickyActiveProvider;
             const existing = state.draftsByThreadKey[threadKey];
+            if (existing?.accountRouting) return state;
             const base = existing ?? createEmptyThreadDraft();
             const nextMap = compactModelSelectionByProvider(stickyMap);
             if (
@@ -3442,16 +3457,27 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               opts?.explicit !== true &&
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
               base.activeProvider === nextActiveProvider &&
-              base.modelSelectionExplicit !== true
+              base.modelSelectionExplicit !== true &&
+              base.accountRouting === undefined
             ) {
               return state;
             }
-            const { modelSelectionExplicit: _previousExplicit, ...restBase } = base;
+            const {
+              modelSelectionExplicit: _previousExplicit,
+              accountRouting: _previousAccountRouting,
+              ...restBase
+            } = base;
             const nextDraft: ComposerThreadDraftState = {
               ...restBase,
               modelSelectionByProvider: nextMap,
               activeProvider: nextActiveProvider,
               ...(opts?.explicit === true ? { modelSelectionExplicit: true as const } : {}),
+              ...(normalized &&
+              opts?.explicit === true &&
+              opts.accountRouting &&
+              state.draftThreadsByThreadKey[threadKey]
+                ? { accountRouting: opts.accountRouting }
+                : {}),
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
@@ -3463,7 +3489,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           });
         },
         releaseModelSelection: (threadRef, modelSelection) => {
-          const threadKey = scopedThreadKey(threadRef);
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          if (!threadKey) return;
           set((state) => {
             const draft = state.draftsByThreadKey[threadKey];
             // A newer pick, even of the same model, is still waiting for its own reply.
@@ -3473,7 +3500,11 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             ) {
               return state;
             }
-            const { modelSelectionExplicit: _explicit, ...retained } = draft;
+            const {
+              modelSelectionExplicit: _explicit,
+              accountRouting: _routing,
+              ...retained
+            } = draft;
             const next = { ...retained, activeProvider: null, modelSelectionByProvider: {} };
             const draftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(next)) delete draftsByThreadKey[threadKey];
@@ -3501,6 +3532,12 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           set((state) => {
             const existing = state.draftsByThreadKey[threadKey];
             const base = existing ?? createEmptyThreadDraft();
+            const { accountRouting, ...draftWithoutAccountRouting } = base;
+            const retainAccountRouting =
+              accountRouting !== undefined &&
+              state.draftThreadsByThreadKey[threadKey] !== undefined &&
+              base.activeProvider === instanceKey;
+            const persistSticky = options?.persistSticky === true && !retainAccountRouting;
 
             const nextMap = { ...base.modelSelectionByProvider };
             // Traits apply to the model the composer shows, which on a started
@@ -3516,7 +3553,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             let nextStickyMap = state.stickyModelSelectionByProvider;
             let nextOptionsByModel = state.stickyOptionsByModelByProvider;
             let nextStickyActiveProvider = state.stickyActiveProvider;
-            if (options?.persistSticky === true) {
+            if (persistSticky) {
               nextStickyMap = { ...state.stickyModelSelectionByProvider };
               const stickyBase =
                 nextStickyMap[instanceKey] ??
@@ -3555,14 +3592,14 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   [instanceKey]: rememberedByModel,
                 };
               }
-              nextStickyActiveProvider = options.instanceId
+              nextStickyActiveProvider = options?.instanceId
                 ? instanceKey
                 : (base.activeProvider ?? instanceKey);
             }
 
-            const { modelSelectionExplicit: _previousExplicit, ...restBase } = base;
             const nextDraft: ComposerThreadDraftState = {
-              ...restBase,
+              ...draftWithoutAccountRouting,
+              ...(retainAccountRouting ? { accountRouting } : {}),
               ...(options?.instanceId ? { activeProvider: instanceKey } : {}),
               modelSelectionByProvider: nextMap,
               modelSelectionExplicit: true,
@@ -3576,7 +3613,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
 
             return {
               draftsByThreadKey: nextDraftsByThreadKey,
-              ...(options?.persistSticky === true
+              ...(persistSticky
                 ? {
                     stickyModelSelectionByProvider: nextStickyMap,
                     stickyOptionsByModelByProvider: nextOptionsByModel,

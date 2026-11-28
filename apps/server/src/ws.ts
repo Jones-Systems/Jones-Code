@@ -153,6 +153,7 @@ import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as McpSignIn from "./mcpApps/McpSignIn.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
+import { resolveLaunchAutoAccount } from "./jones/accountRouting/launchIngress.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
@@ -1571,6 +1572,8 @@ export const layerWsRpc = (
         | ServerSettings.ServerSettingsService
         | DocumentText.DocumentText
       >();
+      const autoLaunchContext =
+        yield* Effect.context<Effect.Services<ReturnType<typeof resolveLaunchAutoAccount>>>();
       const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
       const projectStore = yield* ProjectStore.ProjectStoreV2;
       const projectService = yield* ProjectService.ProjectService;
@@ -2439,54 +2442,56 @@ export const layerWsRpc = (
             Effect.andThen(
               startup
                 .enqueueCommand(
-                  threadLaunch
-                    .checkWorktreeBase({
-                      commandId: input.commandId,
-                      projectId: input.projectId,
-                      workspaceStrategy: input.workspaceStrategy,
-                    })
-                    .pipe(
-                      Effect.andThen(
-                        ThreadMessageIntake.launchThread({
-                          commandId: input.commandId,
-                          ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
-                          ...(input.reuseExistingThread === undefined
-                            ? {}
-                            : { reuseExistingThread: input.reuseExistingThread }),
-                          projectId: input.projectId,
-                          title: input.title,
-                          ...(input.generateTitle === undefined
-                            ? {}
-                            : { generateTitle: input.generateTitle }),
-                          modelSelection: input.modelSelection,
-                          runtimeMode: input.runtimeMode,
-                          interactionMode: input.interactionMode,
-                          workspaceStrategy: input.workspaceStrategy,
-                          ...(input.workspaceStrategy.type === "worktree" &&
-                          input.workspaceStrategy.baseFreshness === "fetch-now" &&
-                          currentSession.scopes.includes(AuthSourceControlWriteScope)
-                            ? { syncPrimaryOnFreshFetch: true as const }
-                            : {}),
-                          ...(input.initialMessage === undefined
-                            ? {}
-                            : {
-                                initialMessage: {
-                                  ...(input.initialMessage.messageId === undefined
-                                    ? {}
-                                    : { messageId: input.initialMessage.messageId }),
-                                  text: input.initialMessage.text,
-                                  attachments: input.initialMessage.attachments,
-                                  ...(input.initialMessage.context === undefined
-                                    ? {}
-                                    : { context: input.initialMessage.context }),
-                                },
-                              }),
-                          createdBy: "user",
-                          creationSource: input.creationSource ?? "web",
-                        }),
-                      ),
-                      Effect.provide(intakeContext),
+                  resolveLaunchAutoAccount(input).pipe(
+                    Effect.provide(autoLaunchContext),
+                    Effect.tap(() =>
+                      threadLaunch.checkWorktreeBase({
+                        commandId: input.commandId,
+                        projectId: input.projectId,
+                        workspaceStrategy: input.workspaceStrategy,
+                      }),
                     ),
+                    Effect.flatMap((modelSelection) =>
+                      ThreadMessageIntake.launchThread({
+                        commandId: input.commandId,
+                        ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+                        ...(input.reuseExistingThread === undefined
+                          ? {}
+                          : { reuseExistingThread: input.reuseExistingThread }),
+                        projectId: input.projectId,
+                        title: input.title,
+                        ...(input.generateTitle === undefined
+                          ? {}
+                          : { generateTitle: input.generateTitle }),
+                        modelSelection,
+                        runtimeMode: input.runtimeMode,
+                        interactionMode: input.interactionMode,
+                        workspaceStrategy: input.workspaceStrategy,
+                        ...(input.workspaceStrategy.type === "worktree" &&
+                        input.workspaceStrategy.baseFreshness === "fetch-now" &&
+                        currentSession.scopes.includes(AuthSourceControlWriteScope)
+                          ? { syncPrimaryOnFreshFetch: true as const }
+                          : {}),
+                        ...(input.initialMessage === undefined
+                          ? {}
+                          : {
+                              initialMessage: {
+                                ...(input.initialMessage.messageId === undefined
+                                  ? {}
+                                  : { messageId: input.initialMessage.messageId }),
+                                text: input.initialMessage.text,
+                                attachments: input.initialMessage.attachments,
+                                ...(input.initialMessage.context === undefined
+                                  ? {}
+                                  : { context: input.initialMessage.context }),
+                              },
+                            }),
+                        createdBy: "user",
+                        creationSource: input.creationSource ?? "web",
+                      }),
+                    ),
+                    Effect.provide(intakeContext),
+                  ),
                 )
                 .pipe(
                   // A resumed launch is a retry of one already counted.

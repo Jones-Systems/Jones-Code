@@ -1,4 +1,9 @@
 import { T, useGT, useLocale, useMessages } from "gt-react";
+import { AccountRoutingChoices } from "../../jones/accountRouting/AccountRoutingChoices";
+import type {
+  AccountRoutingFamily,
+  ComposerAccountRoutingPicker,
+} from "../../jones/accountRouting/composerAccountRouting";
 import { useLegendListRef } from "~/hooks/useLegendListRef";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
@@ -352,6 +357,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   model: string;
   selectedModels?: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }>;
   onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
+  accountRouting?: ComposerAccountRoutingPicker | undefined;
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey?: string | null;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
@@ -381,11 +387,18 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     instanceEntries,
     getModelDisabledReason,
     onInstanceModelChange,
-    onToggleModel,
+    onToggleModel: onToggleManualModel,
     onRequestClose,
     onOpenProviderSetup,
   } = props;
   const [searchQuery, setSearchQuery] = useState("");
+  const [browsingAccountRouting, setBrowsingAccountRouting] = useState<AccountRoutingFamily | null>(
+    props.accountRouting?.active === "unavailable" ? null : (props.accountRouting?.active ?? null),
+  );
+  const automaticChoice = props.accountRouting?.choices.find(
+    (choice) => choice.family === browsingAccountRouting,
+  );
+  const onToggleModel = automaticChoice ? undefined : onToggleManualModel;
   const modelListRef = useRef<LegendListRef | null>(null);
   const pickerContentRef = useRef<HTMLDivElement>(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes this picker's mount to global keydown handlers
@@ -402,9 +415,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   });
   const activeModelSlug =
     activeModel?.slug ?? (props.model === ANTIGRAVITY_DEFAULT_MODEL ? "" : props.model);
-  const activeModelKey = activeModelSlug
-    ? modelPickerModelKey(props.activeInstanceId, activeModelSlug)
-    : null;
+  const activeModelKey =
+    activeModelSlug && (!props.accountRouting?.active || automaticChoice)
+      ? modelPickerModelKey(props.activeInstanceId, activeModelSlug)
+      : null;
   const selectedModelKeys = props.selectedModels?.map((selection) => {
     const entry = instanceEntries.find((entry) => entry.instanceId === selection.instanceId);
     const model = resolveModelPickerSelectedModel({
@@ -465,6 +479,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   };
 
   const handleSelectInstance = (instanceId: ProviderInstanceId | "favorites") => {
+    setBrowsingAccountRouting(null);
     setSelectedInstanceId(instanceId);
     // Focusing the search on touch raises the on-screen keyboard on every provider tap.
     if (window.matchMedia("(pointer: coarse)").matches) return;
@@ -511,7 +526,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     }
     const resolvedModel = resolveSelectableModel(entry.driverKind, modelSlug, options);
     if (!resolvedModel) return null;
-    if (additive && onToggleModel) {
+    if (automaticChoice && props.accountRouting) {
+      props.accountRouting.select(instanceId, resolvedModel);
+    } else if (additive && onToggleModel) {
       onToggleModel(instanceId, resolvedModel);
     } else {
       onInstanceModelChange(instanceId, resolvedModel);
@@ -669,7 +686,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const instanceOrder = instanceEntries.map((entry) => entry.instanceId);
 
   const filteredModels = (() => {
-    let result = flatModels;
+    let result = automaticChoice
+      ? flatModels.filter((model) => model.instanceId === automaticChoice.representative.instanceId)
+      : flatModels;
 
     if (searchQuery.trim()) {
       const candidates =
@@ -684,6 +703,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         isFavorite: favoritesSet.has(providerModelKey(model.instanceId, model.slug)),
       }));
     }
+
+    if (automaticChoice) return result;
 
     if (lockedProvider !== null) {
       result = result.filter((m) => matchesLockedProvider(m));
@@ -706,7 +727,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   })();
 
   const legacySection = (() => {
-    if (isSearching || selectedInstanceId === "favorites") {
+    if (automaticChoice || isSearching || selectedInstanceId === "favorites") {
       return null;
     }
     const currentModels: ModelPickerItem[] = [];
@@ -731,7 +752,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   // backend as a collapsible heading. Search and Favorites stay flat.
   const subProviderSections = (() => {
     const subProviders =
-      isSearching || selectedInstanceId === "favorites"
+      automaticChoice || isSearching || selectedInstanceId === "favorites"
         ? undefined
         : subProvidersByInstance.get(selectedInstanceId);
     if (!subProviders || selectedInstanceId === "favorites") return null;
@@ -776,8 +797,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     ];
   })();
 
-  const selectedEntry =
-    selectedInstanceId === "favorites" ? undefined : entryByInstanceId.get(selectedInstanceId);
+  const selectedEntry = automaticChoice
+    ? entryByInstanceId.get(automaticChoice.representative.instanceId)
+    : selectedInstanceId === "favorites"
+      ? undefined
+      : entryByInstanceId.get(selectedInstanceId);
   const providerSetupEntries =
     !isSearching && canOpenProviderSetup
       ? instanceEntries.filter(
@@ -947,7 +971,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       >
         {showSidebar && (
           <ModelPickerSidebar
-            selectedInstanceId={selectedInstanceId}
+            selectedInstanceId={automaticChoice ? undefined : selectedInstanceId}
             onSelectInstance={handleSelectInstance}
             onFocusSearch={focusSearchInput}
             instanceEntries={sidebarInstanceEntries}
@@ -1110,6 +1134,18 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               onTouchStart={(e) => e.stopPropagation()}
             />
 
+            {props.accountRouting && (
+              <AccountRoutingChoices
+                choices={props.accountRouting.choices}
+                browsing={automaticChoice?.family ?? null}
+                onSelect={({ family, representative }) => {
+                  setSearchQuery("");
+                  setBrowsingAccountRouting(family);
+                  props.accountRouting?.select(representative.instanceId, representative.model);
+                }}
+              />
+            )}
+
             <ModelPickerList
               listRef={modelListRef}
               itemKeys={filteredItemKeys}
@@ -1199,7 +1235,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                         : modelKey === activeModelKey
                     }
                     favoriteStarOnHover={selectedInstanceId === "favorites" && !isSearching}
-                    showInstanceBadge={badgedInstanceIds.has(model.instanceId)}
+                    showInstanceBadge={!automaticChoice && badgedInstanceIds.has(model.instanceId)}
                     showNewBadge={model.badge === "new"}
                     unavailable={model.isUnavailable === true}
                     jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
@@ -1213,7 +1249,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               setupEntries={providerSetupEntries}
               updateRequiredNotices={updateRequiredNotices}
               emptyLabel={
-                selectedInstanceId === "favorites" && !isSearching
+                !automaticChoice && selectedInstanceId === "favorites" && !isSearching
                   ? gt("No favorites yet")
                   : workspaceModelsScanning
                     ? gt("Searching project models...")

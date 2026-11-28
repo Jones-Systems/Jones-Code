@@ -104,6 +104,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   readonly projection?: OrchestrationV2ThreadProjection;
   readonly projectionRequests?: ThreadId[];
   readonly advertiseServerResolvedCommandContext?: boolean;
+  readonly advertiseAccountAutoRouting?: boolean;
   readonly advertiseThreadStop?: boolean;
   readonly advertiseQueuedRunStart?: boolean;
   readonly advertiseQueuedToolBoundaryDelivery?: boolean;
@@ -159,6 +160,9 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
         capabilities: {
           repositoryIdentity: true,
           serverResolvedCommandContext: input.advertiseServerResolvedCommandContext === true,
+          ...(input.advertiseAccountAutoRouting === undefined
+            ? {}
+            : { accountAutoRouting: input.advertiseAccountAutoRouting }),
           ...(input.advertiseQueuedRunStart === undefined
             ? {}
             : { queuedRunStart: input.advertiseQueuedRunStart }),
@@ -1398,6 +1402,104 @@ const refsResult = (refs: VcsListRefsResult["refs"], isRepo = true): VcsListRefs
 const withBaseRef = (baseRef: string) => ({
   ...automaticWorktreeLaunch,
   workspaceStrategy: { ...automaticWorktreeLaunch.workspaceStrategy, baseRef },
+});
+
+describe("automatic account launches", () => {
+  const turn = {
+    ...automaticWorktreeTurn,
+    accountRouting: { mode: "auto" } as const,
+    serverSupportsAccountAutoRouting: true,
+    serverResolvesWorktreeBase: true,
+  };
+
+  it.effect("submits the intent and concrete model together on a capable connection", () =>
+    Effect.gen(function* () {
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands: [],
+        projects: [],
+        launches,
+        advertiseAccountAutoRouting: true,
+      });
+
+      yield* startThreadTurn(turn).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
+
+      expect(launches).toEqual([{ ...automaticWorktreeLaunch, accountRouting: { mode: "auto" } }]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("refuses unsupported or non-creation intent before processing attachments", () =>
+    Effect.gen(function* () {
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        launches,
+        persistAttachments: () => Effect.die("Unexpected attachment upload"),
+      });
+      const message = {
+        ...turn.message,
+        attachments: [
+          {
+            type: "image" as const,
+            name: "draft.png",
+            mimeType: "image/png",
+            sizeBytes: 1,
+            dataUrl: "data:image/png;base64,AA==",
+          },
+        ],
+      };
+      const { bootstrap: _create, ...followUp } = turn;
+
+      for (const input of [
+        { ...turn, message, serverSupportsAccountAutoRouting: false },
+        { ...followUp, message },
+      ]) {
+        const outcome = yield* Effect.result(
+          startThreadTurn(input).pipe(
+            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          ),
+        );
+        expect(outcome).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "OrchestrationDispatchCommandError" },
+        });
+      }
+      expect(launches).toEqual([]);
+      expect(commands).toEqual([]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("blocks a prepared launch after reconnecting to an older server", () =>
+    Effect.gen(function* () {
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands: [],
+        projects: [],
+        launches,
+        advertiseAccountAutoRouting: true,
+      });
+      const prepared = yield* prepareThreadTurn(turn).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
+      const legacy = yield* makeSupervisor({ commands: [], projects: [], launches });
+      yield* SubscriptionRef.set(supervisor.session, yield* SubscriptionRef.get(legacy.session));
+
+      const outcome = yield* Effect.result(
+        dispatchPreparedThreadTurn(prepared).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        ),
+      );
+      expect(outcome).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "AccountAutoRoutingSessionError" },
+      });
+      expect(launches).toEqual([]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
 });
 
 describe("prepared thread turns", () => {

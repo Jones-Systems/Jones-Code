@@ -41,6 +41,11 @@ import { msg } from "gt-react-native";
 
 import * as Dialog from "../components/ui/Dialog";
 import { m } from "../i18n/messages";
+import {
+  automaticAccountHoldReason,
+  preparedUsesAutomaticAccounts,
+} from "../jones/accountRouting/outbox";
+import { canUseAutomaticAccounts } from "../jones/accountRouting/selection";
 import { legacyQueuedThreadMessageAccepted } from "../jones/threadConfiguration/legacyOutbox";
 import {
   acceptedQueuedThreadDelivery,
@@ -110,6 +115,7 @@ import {
 import {
   environmentThreadDetails,
   environmentThreadShells,
+  observeMobileAutomaticLaunch,
   threadEnvironment,
   threadFamilies,
 } from "./threads";
@@ -594,7 +600,13 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
         currentDraft,
       );
       const settings = {
-        ...selectionSettings,
+        ...(queuedMessage.accountRouting === undefined
+          ? selectionSettings
+          : creation &&
+              selectionSettings.modelSelection &&
+              currentDraft.automaticAccountModel === undefined
+            ? { automaticAccountModel: selectionSettings.modelSelection }
+            : {}),
         ...(queuedMessage.runtimeMode && currentDraft.runtimeMode === mergedDraft.runtimeMode
           ? { runtimeMode: queuedMessage.runtimeMode }
           : {}),
@@ -629,11 +641,13 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
           ...mergedDraft,
           ...settings,
           modelSelection:
-            selectionSettings.modelSelection === undefined
-              ? mergedDraft.modelSelection
-              : restoredDraft.modelSelection,
+            "modelSelection" in settings
+              ? restoredDraft.modelSelection
+              : mergedDraft.modelSelection,
         },
-        selectionSettings.modelSelection === undefined ? originalDraft : restoredDraft,
+        "modelSelection" in settings || "automaticAccountModel" in settings
+          ? restoredDraft
+          : originalDraft,
       );
       rollback = { snapshot: originalDraft, merged: rollbackDraft };
       yield* storage("flush-drafts", queuedMessage.messageId, () => flushComposerDrafts());
@@ -961,6 +975,17 @@ export function createThreadOutboxDelivery(): {
     blockedRecoveries.set(queuedMessage.messageId, { message: queuedMessage, unsubscribe });
   });
 
+  const autoRoutingSupported = (message: QueuedThreadMessage) =>
+    canUseAutomaticAccounts(
+      appAtomRegistry.get(serverEnvironment.configValueAtom(message.environmentId)),
+    );
+  const holdAutomaticLaunch = (message: QueuedThreadMessage, issued: boolean) =>
+    setThreadComposerError(
+      scopedThreadKey(message.environmentId, message.threadId),
+      automaticAccountHoldReason(issued),
+      message.messageId,
+    );
+
   const deliverPreparedMessage = Effect.fn("ThreadOutbox.deliverPreparedMessage")(
     function* (
       queuedMessage: QueuedThreadMessage,
@@ -982,6 +1007,10 @@ export function createThreadOutboxDelivery(): {
 
       let message = queuedMessage;
       if (message.issuance?.state === "unissued" && prepared !== undefined) {
+        if (message.accountRouting !== undefined && !autoRoutingSupported(message)) {
+          holdAutomaticLaunch(message, false);
+          return;
+        }
         const issued = withIssuedQueuedThreadTurn(message, prepared);
         // The request, including its resolved attachments and workspace, is durable before the RPC starts.
         const persisted = yield* storage("persist-issued-request", message.messageId, () =>
@@ -1003,6 +1032,22 @@ export function createThreadOutboxDelivery(): {
       let sequence: number | undefined;
       let rejection: unknown;
       let evidence = queuedThreadDeliveryEvidence(message);
+      if (
+        (evidence === undefined || threadTurnDeliveryStatus(evidence) === "unknown") &&
+        preparedUsesAutomaticAccounts(issuance.prepared) &&
+        !autoRoutingSupported(message)
+      ) {
+        holdAutomaticLaunch(message, true);
+        const observed = yield* deliveryCommand(observeMobileAutomaticLaunch, {
+          environmentId: message.environmentId,
+          input: issuance.prepared,
+        });
+        if (!AsyncResult.isSuccess(observed) || observed.value === undefined) {
+          return yield* retryDelivery;
+        }
+        sequence = observed.value;
+        evidence = acceptedQueuedThreadDelivery(message);
+      }
       if (evidence === undefined || threadTurnDeliveryStatus(evidence) === "unknown") {
         const result = yield* deliveryCommand(threadEnvironment.dispatchPreparedTurn, {
           environmentId: message.environmentId,
@@ -1100,12 +1145,20 @@ export function createThreadOutboxDelivery(): {
       !isQueuedMessagePayloadCurrent(message, revision)
     )
       return;
+    if (message.accountRouting !== undefined && !autoRoutingSupported(message)) {
+      holdAutomaticLaunch(message, false);
+      return;
+    }
     const result = yield* deliveryCommand(threadEnvironment.prepareTurn, {
       environmentId: message.environmentId,
       input,
     });
     if (AsyncResult.isFailure(result)) {
       if (!readEnvironmentScope(message.environmentId, AuthOrchestrationOperateScope)) return;
+      if (message.accountRouting !== undefined && !autoRoutingSupported(message)) {
+        holdAutomaticLaunch(message, false);
+        return;
+      }
       const failure = reportCommandFailure(message, result, "start-turn");
       if (failure?.action === "restore")
         return yield* restoreQueuedMessage(message, failure.message);
@@ -1295,6 +1348,10 @@ export function createThreadOutboxDelivery(): {
       serverEnvironment.configValueAtom(queuedMessage.environmentId),
     );
     if (!serverConfig) return yield* retryDelivery;
+    if (queuedMessage.accountRouting !== undefined && !canUseAutomaticAccounts(serverConfig)) {
+      holdAutomaticLaunch(queuedMessage, false);
+      return;
+    }
     const settings = resolveQueuedThreadSettings(
       queuedMessage,
       {
@@ -1304,7 +1361,10 @@ export function createThreadOutboxDelivery(): {
       },
       serverConfig.providers,
     );
-    if (isModelSelectionUnavailable(serverConfig, settings.modelSelection, creation.projectId)) {
+    if (
+      queuedMessage.accountRouting === undefined &&
+      isModelSelectionUnavailable(serverConfig, settings.modelSelection, creation.projectId)
+    ) {
       const { title, detail } = describeUnavailableModelSelection(
         serverConfig,
         settings.modelSelection,
@@ -1327,7 +1387,14 @@ export function createThreadOutboxDelivery(): {
       serverEnvironment.configValueAtom(queuedMessage.environmentId),
     );
     if (!currentConfig) return yield* retryDelivery;
-    if (isModelSelectionUnavailable(currentConfig, settings.modelSelection, creation.projectId)) {
+    if (queuedMessage.accountRouting !== undefined && !canUseAutomaticAccounts(currentConfig)) {
+      holdAutomaticLaunch(persistedMessage, false);
+      return;
+    }
+    if (
+      queuedMessage.accountRouting === undefined &&
+      isModelSelectionUnavailable(currentConfig, settings.modelSelection, creation.projectId)
+    ) {
       const { title, detail } = describeUnavailableModelSelection(
         currentConfig,
         settings.modelSelection,
@@ -1388,6 +1455,7 @@ export function createThreadOutboxDelivery(): {
         attachments: prepared.attachments,
         settings: sendSettings,
         serverResolvesWorktreeBase: true,
+        serverSupportsAccountAutoRouting: canUseAutomaticAccounts(currentConfig),
         serverSupportsRepoFreshness:
           "repoFreshness" in currentConfig.environment.capabilities &&
           currentConfig.environment.capabilities.repoFreshness === true,
@@ -1500,6 +1568,15 @@ export function createThreadOutboxDelivery(): {
     const creation = nextQueuedMessage.creation;
     const shellStatus = shellStatuses.get(nextQueuedMessage.environmentId) ?? "empty";
     const serverConfig = serverConfigs.get(nextQueuedMessage.environmentId);
+    if (
+      nextQueuedMessage.accountRouting !== undefined &&
+      environment?.connectionState === "connected" &&
+      serverConfig &&
+      !canUseAutomaticAccounts(serverConfig)
+    ) {
+      holdAutomaticLaunch(nextQueuedMessage, false);
+      return { _tag: "Wait" };
+    }
     let familyRead: ThreadFamilyRead | undefined;
     if (
       thread === undefined &&

@@ -1,4 +1,5 @@
 import { WorkspaceRetirementOutcome } from "./jones/workspaceRetirement.ts";
+import { AccountRouting } from "./jones/accountRouting.ts";
 import { CheckoutRecoveryOffer } from "./jones/workspaceRecreation.ts";
 import { GuardedThreadSettlement } from "./jones/guardedThreadSettlement.ts";
 import {
@@ -4426,6 +4427,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   title: TrimmedNonEmptyString,
   generateTitle: Schema.optional(Schema.Boolean),
   modelSelection: ModelSelection,
+  accountRouting: Schema.optionalKey(AccountRouting),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,

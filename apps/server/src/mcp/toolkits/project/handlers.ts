@@ -1,18 +1,17 @@
 import type { Tool } from "effect/ai";
 import { claimForCaller } from "../../../jones/linkedThreads/launch.ts";
 import * as ClientLaunch from "../../../jones/mcp/clientLaunch/ClientLaunchService.ts";
+import { clientLaunchIds } from "../../../jones/mcp/clientLaunch/ClientLaunchIdentity.ts";
 import { inheritsLinkedDelegationModes } from "../../../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 import {
   CommandId,
   MessageId,
-  type ModelSelection,
   ThreadId,
   OrchestratorMcpFailure,
   type OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
   type TaskFolderError,
   type Project as ProjectRecord,
-  type ServerProvider,
   T3_PROJECT_FILE_NAME,
 } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
@@ -38,6 +37,7 @@ import * as ServerSettings from "../../../serverSettings.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as DateTime from "effect/DateTime";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import {
   resolveProjectFileBackedSetting,
   resolveProjectSettings,
@@ -50,7 +50,14 @@ import {
   resolveRuntimeMode,
 } from "../../delegatedTaskModes.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
+import {
+  existingAccountRoutingWorkspaceRequired,
+  localAccountRoutingRequired,
+} from "../../../jones/mcp/accountRouting.ts";
+import {
+  resolveAutoLaunchModel,
+  validateLaunchModel,
+} from "../../../jones/mcp/launchModelSelection.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
 
@@ -291,6 +298,26 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
 ) {
   const keyedCaller = input.clientRequestId === undefined ? undefined : yield* readCaller();
   const modes = yield* gate.start;
+  if (input.accountRouting !== undefined) {
+    if (modes.linkOrigin !== undefined) return yield* localAccountRoutingRequired();
+    if (input.delegatedFrom !== undefined || input.workflowRun !== undefined)
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "A linked delegation or workflow launch requires a concrete modelSelection.",
+      });
+    if (input.modelSelection === undefined)
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message:
+          "Auto account routing requires an explicit modelSelection with a provider and model.",
+      });
+    if (
+      input.scratch === true ||
+      input.workspaceStrategy?.type === "worktree" ||
+      input.workspaceStrategy?.type === "auto"
+    )
+      return yield* existingAccountRoutingWorkspaceRequired();
+  }
   // Jones replay owns local keyed launches; linked keyed launches use upstream's hashed id
   // below and keep their origin.
   if (
@@ -299,6 +326,7 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
     modes.linkOrigin === undefined
   ) {
     if (
+      input.accountRouting === undefined &&
       input.modelSelection?.options?.length &&
       keyedCaller.limits.runtimeMode !== "full-access" &&
       (yield* ClientLaunch.lookupForCaller(keyedCaller, input.clientRequestId)).state === "absent"
@@ -429,60 +457,14 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
           ),
         }
       : input.workspaceStrategy;
-  let validatedModelSelection = input.modelSelection;
-  if (!replaying && input.modelSelection !== undefined) {
-    const requestedSelection = input.modelSelection;
-    const { instanceId, model } = requestedSelection;
-    const registry = yield* ProviderRegistry.ProviderRegistry;
-    // The thread runs in this folder, whose own provider config can add models.
-    const cwd =
-      workspaceStrategy?.type === "existing_worktree"
-        ? workspaceStrategy.worktreePath
-        : project?.workspaceRoot;
-    const validateSelection = Effect.fn("mcp.validateLaunchModelSelection")(function* (
-      providers: ReadonlyArray<ServerProvider>,
-    ): Effect.fn.Return<ModelSelection, OrchestratorMcpFailure> {
-      const provider = OrchestrationMcp.withWorkspaceModels(providers, cwd).find(
-        (candidate) => candidate.instanceId === instanceId,
-      );
-      // Checked with the same provider snapshot that validates the options below.
-      yield* refuseAgentModePick({
-        callerRuntimeMode: context.limits.runtimeMode,
-        picked: requestedSelection.options,
-        descriptors: providerOptionDescriptors(provider),
-        held:
-          caller?.modelSelection.instanceId === instanceId
-            ? caller.modelSelection.options
-            : undefined,
-      });
-      if (provider === undefined) return requestedSelection;
-      yield* OrchestrationMcp.requireAdvertisedModel(provider, model);
-      const options = yield* OrchestrationMcp.validateModelOptions(
-        provider,
-        model,
-        requestedSelection.options,
-      );
-      return options === undefined || options === requestedSelection.options
-        ? requestedSelection
-        : { ...requestedSelection, options };
-    });
-    const checked = validateSelection(yield* registry.getProviders);
-    validatedModelSelection = yield* cwd === undefined
-      ? checked
-      : checked.pipe(
-          Effect.catchIf(
-            (error) => error.code === "model_unavailable",
-            () =>
-              Project.ProjectService.pipe(
-                Effect.flatMap((projects) => projects.workspaceScanDirectory(cwd)),
-                Effect.flatMap((scanCwd) =>
-                  registry.refreshWorkspaceSnapshot({ instanceId, cwd, scanCwd }),
-                ),
-                Effect.flatMap(validateSelection),
-              ),
-          ),
-        );
-  }
+  const cwd =
+    workspaceStrategy?.type === "existing_worktree"
+      ? workspaceStrategy.worktreePath
+      : project?.workspaceRoot;
+  const validatedModelSelection =
+    !replaying && input.accountRouting === undefined && input.modelSelection !== undefined
+      ? yield* validateLaunchModel(context, input.modelSelection, cwd)
+      : input.modelSelection;
   const projectSettings =
     replaying || project === undefined
       ? undefined
@@ -493,13 +475,17 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
         );
   // An outside caller that names no workspace follows the new-threads-in-a-worktree
   // default, as the composer does.
-  const requestedStrategy =
+  const wantsDefaultWorktree =
     workspaceStrategy === undefined &&
     caller === undefined &&
     project !== undefined &&
     projectSettings !== undefined &&
     (projectSettings.defaultThreadEnvMode ??
-      (yield* projectFileThreadEnvMode(project.workspaceRoot))) === "worktree"
+      (yield* projectFileThreadEnvMode(project.workspaceRoot))) === "worktree";
+  if (input.accountRouting !== undefined && wantsDefaultWorktree)
+    return yield* existingAccountRoutingWorkspaceRequired();
+  const requestedStrategy =
+    wantsDefaultWorktree && project !== undefined
       ? yield* defaultWorktreeStrategy(project.workspaceRoot)
       : workspaceStrategy;
   // An omitted startFromOrigin follows the new-worktree setting, as the composer and
@@ -531,7 +517,32 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
   // project's effective defaults, as the composer does. Its mode stays
   // within the ceiling it was approved with.
   const projectDefaults = caller === undefined ? projectSettings : undefined;
+  let startedRuntimeMode =
+    projectDefaults !== undefined &&
+    input.runtimeMode === undefined &&
+    !inheritsLinkedDelegationModes({
+      delegatedFrom: input.delegatedFrom,
+      linkOrigin,
+      narrowedTo: scope.client?.narrowedTo,
+    })
+      ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
+          Effect.orElseSucceed(() => runtimeMode),
+        )
+      : runtimeMode;
+  let routedModelSelection;
+  if (input.accountRouting !== undefined) {
+    if (cwd === undefined || input.modelSelection === undefined) return yield* unavailable();
+    routedModelSelection = yield* resolveAutoLaunchModel({
+      caller: context,
+      projectId,
+      modelSelection: input.modelSelection,
+      runtimeMode: startedRuntimeMode,
+      interactionMode,
+      cwd,
+    });
+  }
   const modelSelection =
+    routedModelSelection ??
     validatedModelSelection ??
     launchedModel ??
     caller?.modelSelection ??
@@ -554,19 +565,7 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
       message:
         "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
     });
-  let startedRuntimeMode =
-    projectDefaults !== undefined &&
-    input.runtimeMode === undefined &&
-    !inheritsLinkedDelegationModes({
-      delegatedFrom: input.delegatedFrom,
-      linkOrigin,
-      narrowedTo: scope.client?.narrowedTo,
-    })
-      ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
-          Effect.orElseSucceed(() => runtimeMode),
-        )
-      : runtimeMode;
-  if (!replaying) {
+  if (!replaying && input.accountRouting === undefined) {
     const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
     startedRuntimeMode = yield* resolveRuntimeMode(startedRuntimeMode, input.runtimeMode, {
       modelSelection,
@@ -652,12 +651,24 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
   };
 });
 
-export const layer = McpToolAccess.toLayer(ProjectToolkit, {
+const handlers = (
+  launchLanes: KeyedLock.KeyedLock<CommandId>,
+): McpToolAccess.Handlers<typeof ProjectToolkit.tools> => ({
   t3_thread_launch: McpToolAccess.startsOrContinuesThreads(
     (input: Tool.Parameters<typeof ProjectToolkit.tools.t3_thread_launch>) => input,
-    launchThread,
+    (input, gate) =>
+      input.clientRequestId === undefined
+        ? launchThread(input, gate)
+        : Effect.gen(function* () {
+            const scope = yield* McpInvocationContext.McpInvocationContext;
+            const { commandId } = clientLaunchIds(scope.requestNamespace, input.clientRequestId!);
+            // Replay the winner of a concurrent admission before looking at mutable usage.
+            return yield* launchLanes.withLock(commandId, launchThread(input, gate));
+          }),
     // The launched thread carries the caller's link, if it has one.
     "stamped",
+    (input) =>
+      input.accountRouting === undefined ? Effect.void : Effect.fail(localAccountRoutingRequired()),
   ),
   // Jones hook: capability checks precede every launch-state read or fence write.
   t3_thread_launch_lookup: McpToolAccess.reads((input) =>
@@ -796,3 +807,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
     { linkedCallers: "allowed" },
   ),
 });
+
+export const layer = McpToolAccess.toLayer(
+  ProjectToolkit,
+  Effect.map(KeyedLock.make<CommandId>(), handlers),
+);

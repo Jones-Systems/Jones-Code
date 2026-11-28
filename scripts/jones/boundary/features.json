@@ -4,6 +4,29 @@
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "features": [
     {
+      "id": "account-auto-routing",
+      "tests": [
+        "apps/server/src/jones/accountRouting/policy.test.ts",
+        "apps/server/src/jones/accountRouting/launchIngress.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
+        "apps/server/src/cli/thread.test.ts",
+        "apps/mobile/src/jones/accountRouting/outbox.test.ts",
+        "apps/mobile/src/features/threads/new-task-flow-provider.test.tsx",
+        "apps/mobile/src/state/thread-outbox.test.ts",
+        "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts",
+        "apps/mobile/src/state/use-composer-drafts.test.ts",
+        "apps/mobile/src/state/threadOutboxDelivery.test.ts",
+        "apps/mobile/src/jones/threadConfiguration/outboxRecovery.test.ts",
+        "apps/web/src/jones/pendingSends/send.test.ts",
+        "apps/web/src/jones/accountRouting/composerAccountRouting.browser.test.tsx",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/contracts/src/jones/accountRouting.test.ts"
+      ],
+      "scope": "Opt-in native Codex and Claude account selection for fresh launches in an existing execution directory. Promptless, contextual provider authentication and ordinary allowance govern admission. The existing immutable launch claim records a concrete instance for replay and follow-ups. Web and desktop share a fresh-thread picker. Mobile persists Auto intent in version 5 outbox rows, preserves the legacy draft file through sign-out, and reconciles by the original command ID. The CLI checks the active MCP capability. Local keyed and unkeyed MCP launches and explicit local delegation use contextual admission. Shared-file hooks expose the optional wire intent and capability, attach provider observations, and integrate existing launch, picker and outbox paths. Shared integration tests reuse the established transport, renderer and delivery harnesses. Native recovery, scheduled selections, and persisted server event shapes retain their existing contracts."
+    },
+    {
       "id": "mobile-orchestrator",
       "tests": [
         "apps/mobile/src/jones/mobileOrchestrator/queues.test.ts",

@@ -51,7 +51,7 @@ No. T3 Code stays within the TOS of Claude Code, Codex, Google Antigravity, Grok
 
 ## Can I add a bunch of accounts for one provider?
 
-T3 Code intentionally does not include an automatic multi-account switcher to avoid risking provider TOS bans. Adding a separate work/personal account is supported ([Codex](./providers-codex.md#use-multiple-accounts), [Claude](./providers-claude.md#multiple-accounts-and-presets)). For larger pools managed externally (e.g. via [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)), T3 Code can display pooled limits under Usage ([Connect a hub](./usage.md#connect-a-cliproxyapi-hub)).
+Yes. You can add separate work and personal accounts for [Codex](./providers-codex.md#use-multiple-accounts) or [Claude](./providers-claude.md#multiple-accounts-and-presets). For a new thread, **Codex Auto** and **Claude Auto** can select a native subscription on the environment running the thread. For pools you manage with CLIProxyAPI, you can [connect a hub](./usage.md#connect-a-cliproxyapi-hub) to see its limits under Usage. [Automatic account selection](./usage.md#choose-an-account-for-a-new-thread)
 
 ## Can I use an API key or OpenRouter instead of a subscription?
 

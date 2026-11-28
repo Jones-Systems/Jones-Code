@@ -1,6 +1,10 @@
 import { namedClipboardTarget, writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { withMessageContext } from "../../jones/composer/messageContext";
 import {
+  acknowledgeAccountRouting,
+  canRouteAccountForSelection,
+} from "../../jones/accountRouting/composerAccountRouting";
+import {
   resolveFirstSendWorktreePreparation,
   usesVerifiedDefault,
 } from "../../jones/composer/firstSendWorktree";
@@ -27,6 +31,7 @@ import {
   formatOutgoingPrompt,
   optimisticMessageAttachments,
   planComposerTurn,
+  presentThreadShellFromProjection,
   deriveComposerSendTitle,
   snapshotComposerSend,
   makeThreadErrorSetter,
@@ -783,13 +788,42 @@ export function useComposerSend(input: ComposerSendInput) {
       onAdvanceActivePendingUserInput();
       return;
     }
+    const submittedComposerDraft = useComposerDraftStore
+      .getState()
+      .getComposerDraft(composerDraftTarget);
+    const accountRouting = isLocalDraftThread ? submittedComposerDraft?.accountRouting : undefined;
+    const serverSupportsAccountAutoRouting = () =>
+      appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+        .accountAutoRouting === true;
+    const accountRoutingUnavailable = () =>
+      m(
+        msg(
+          "Automatic account selection is unavailable here. Choose an account in the model picker.",
+        ),
+      );
+    if (
+      accountRouting &&
+      (!draftId ||
+        !draftThread ||
+        !serverSupportsAccountAutoRouting() ||
+        !sendCtx ||
+        sendCtx.multipleModelSelections !== null ||
+        submittedComposerDraft?.activeProvider !== sendCtx.selectedModelSelection.instanceId ||
+        !canRouteAccountForSelection(
+          providerInstanceEntries,
+          sendCtx.selectedModelSelection.instanceId,
+        ))
+    ) {
+      setThreadError(activeThread.id, accountRoutingUnavailable());
+      return;
+    }
     if (!sendCtx?.providerAvailable) {
       notifyDirectAnnotationAttached();
       return;
     }
-    const submittedComposerDraft = useComposerDraftStore
-      .getState()
-      .getComposerDraft(composerDraftTarget);
+    const submittedModelPick = submittedComposerDraft?.accountRouting
+      ? null
+      : submittedComposerDraft;
     const multipleModelSelections = sendCtx.multipleModelSelections;
     const approvalFeedbackTarget = pendingApprovalsRef.current.find(
       (approval) =>
@@ -1236,7 +1270,12 @@ export function useComposerSend(input: ComposerSendInput) {
       if (isCurrentRouteThread() && composerRef.current?.hasPendingAttachments() === true)
         return true;
       const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
-      return composerDraftContentChanged(draftBeforePreparation, draft);
+      return (
+        composerDraftContentChanged(draftBeforePreparation, draft) ||
+        ((submittedComposerDraft?.accountRouting !== undefined ||
+          draft?.accountRouting !== undefined) &&
+          submittedComposerDraft?.modelSelectionByProvider !== draft?.modelSelectionByProvider)
+      );
     };
     sendInFlightRef.current = true;
     const sendGeneration = ++composerSendGenerationRef.current;
@@ -1634,19 +1673,21 @@ export function useComposerSend(input: ComposerSendInput) {
       optimisticBlobPreviews.release(optimisticMessage);
     }
     setOptimisticUserMessages((existing) => [...existing, optimisticMessage]);
-    pendingSends.attachThread(
-      environmentId,
-      threadIdForSend,
-      isLocalDraftThread
-        ? presentThreadShell(environmentId, {
-            ...activeThread.source,
-            providerInstanceId: ctxSelectedModelSelection.instanceId,
-            modelSelection: ctxSelectedModelSelection,
-            runtimeMode,
-            interactionMode: DEFAULT_INTERACTION_MODE,
-          })
-        : activeThread,
-    );
+    if (!accountRouting) {
+      pendingSends.attachThread(
+        environmentId,
+        threadIdForSend,
+        isLocalDraftThread
+          ? presentThreadShell(environmentId, {
+              ...activeThread.source,
+              providerInstanceId: ctxSelectedModelSelection.instanceId,
+              modelSelection: ctxSelectedModelSelection,
+              runtimeMode,
+              interactionMode: DEFAULT_INTERACTION_MODE,
+            })
+          : activeThread,
+      );
+    }
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
       const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -1856,6 +1897,9 @@ export function useComposerSend(input: ComposerSendInput) {
       if (liveFileBlockReason !== null) {
         throw new Error(liveFileBlockReason);
       }
+      if (accountRouting && !serverSupportsAccountAutoRouting()) {
+        throw new Error(accountRoutingUnavailable());
+      }
       return turnAttachments;
     });
     if (failure === null && turnAttachmentsResult._tag === "Failure") {
@@ -1877,7 +1921,7 @@ export function useComposerSend(input: ComposerSendInput) {
             attachments: [],
             idleCompaction: "onReturn",
           },
-          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedComposerDraft),
+          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedModelPick),
           runtimeMode,
           interactionMode: DEFAULT_INTERACTION_MODE,
         },
@@ -1935,7 +1979,11 @@ export function useComposerSend(input: ComposerSendInput) {
       pendingSends.whenAccepted(environmentId, threadIdForSend, messageIdForSend, () => {
         turnStartSucceeded = true;
         if (sentDraftThreadRef) input.onNewThreadAccepted?.(sentDraftThreadRef);
-        acknowledgeComposerSelection(recoveryTarget(), submittedComposerDraft);
+        if (accountRouting) {
+          acknowledgeAccountRouting(recoveryTarget(), submittedComposerDraft);
+        } else {
+          acknowledgeComposerSelection(recoveryTarget(), submittedModelPick);
+        }
         if (checkoutPullRequestUrl)
           linkCheckoutPullRequest(
             scopeThreadRef(environmentId, threadIdForSend),
@@ -1978,7 +2026,13 @@ export function useComposerSend(input: ComposerSendInput) {
               ),
             }),
           },
-          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedComposerDraft),
+          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedModelPick),
+          ...(accountRouting
+            ? {
+                accountRouting,
+                serverSupportsAccountAutoRouting: serverSupportsAccountAutoRouting(),
+              }
+            : {}),
           titleSeed: title,
           runtimeMode,
           interactionMode: DEFAULT_INTERACTION_MODE,
@@ -1987,6 +2041,30 @@ export function useComposerSend(input: ComposerSendInput) {
           ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,
         },
+      }).then((result) => {
+        if (
+          accountRouting &&
+          result._tag === "Success" &&
+          "projection" in result.value &&
+          result.value.threadId === threadIdForSend
+        ) {
+          const accepted = result.value;
+          pendingSends.attachThread(
+            environmentId,
+            accepted.threadId,
+            presentThreadShellFromProjection(
+              environmentId,
+              accepted.threadId,
+              accepted.projection,
+              {
+                updatedAt: accepted.projection.updatedAt,
+                lastVisitedAt: accepted.projection.thread.lastVisitedAt,
+              },
+            ),
+          );
+          pendingSends.confirmThreadCreation(environmentId, accepted.threadId, messageIdForSend);
+        }
+        return result;
       });
       if (backgroundThreadRef) {
         try {

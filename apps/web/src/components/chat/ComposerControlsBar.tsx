@@ -32,6 +32,7 @@ import {
 } from "./ComposerModelEffort";
 import type { useComposerProviderModel } from "./useComposerProviderModel";
 import { resolveComposerControlsOwnership } from "./composerControlsOwnership";
+import type { ComposerAccountRoutingPicker } from "../../jones/accountRouting/composerAccountRouting";
 
 /**
  * The composer footer controls: the model picker (which also holds effort, speed and
@@ -85,6 +86,7 @@ export function ComposerControlsBar(props: {
   providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   keybindings: ChatComposerProps["keybindings"];
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>;
+  accountRouting?: ComposerAccountRoutingPicker | undefined;
   terminalOpen: boolean;
   modelPickerOpen: boolean;
   onModelPickerOpenChange: (open: boolean) => void;
@@ -218,6 +220,7 @@ export function ComposerControlsBar(props: {
       instanceEntries={providerInstanceEntries}
       keybindings={keybindings}
       modelOptionsByInstance={modelOptionsByInstance}
+      accountRouting={props.accountRouting}
       size={controlSize}
       triggerClassName={cn(
         "group/model-trigger",

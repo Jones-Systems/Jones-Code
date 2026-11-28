@@ -1,5 +1,9 @@
 import { AsyncResult } from "effect/reactivity";
-import type { PreparedThreadTurn, StartThreadTurnInput } from "@t3tools/client-runtime/operations";
+import {
+  AccountAutoRoutingSessionError,
+  type PreparedThreadTurn,
+  type StartThreadTurnInput,
+} from "@t3tools/client-runtime/operations";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { readPreparedThreadTurnDeliveryEvidence } from "@t3tools/client-runtime/jones/deliveryEvidence";
@@ -31,13 +35,14 @@ export async function sendPendingTurn<A, P, D>(args: {
     store.finish(key, false);
     return AsyncResult.failure<A, P | D>(prepared.cause);
   }
-  const finish = (result: AtomCommandResult<A, D>) => {
-    store.finish(
-      key,
-      result._tag === "Success"
-        ? "accepted"
-        : readPreparedThreadTurnDeliveryEvidence(squashAtomCommandFailure(result), prepared.value),
-    );
+  const finish = (result: AtomCommandResult<A, D>, firstAttempt: boolean) => {
+    if (result._tag === "Success") return store.finish(key, "accepted");
+    const error = squashAtomCommandFailure(result);
+    // A refused retry does not settle an earlier attempt that could have reached the server.
+    if (firstAttempt && error instanceof AccountAutoRoutingSessionError) {
+      return store.finish(key, "rejected");
+    }
+    store.finish(key, readPreparedThreadTurnDeliveryEvidence(error, prepared.value));
   };
   const send = async () => {
     const entry = store.get(environmentId, input.threadId, input.message.messageId);
@@ -45,12 +50,13 @@ export async function sendPendingTurn<A, P, D>(args: {
       return;
     store.issuing(key);
     const result = await args.dispatch(prepared.value);
-    finish(result);
+    finish(result, false);
     return result;
   };
   store.prepared(key, prepared.value, send);
+  const firstAttempt = !store.get(environmentId, input.threadId, input.message.messageId)?.issued;
   store.issuing(key);
   const result = await args.dispatch(prepared.value);
-  finish(result);
+  finish(result, firstAttempt);
   return result;
 }
