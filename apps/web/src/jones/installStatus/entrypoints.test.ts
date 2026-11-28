@@ -2278,12 +2278,18 @@ describe("bound Install status actions", () => {
     }
   });
 
-  it.each(["observe", "queued receipt read", "first report"] as const)(
-    "expires an archive poll during %s without starting more work",
+  it.each([
+    "observe",
+    "queued archive receipt read",
+    "queued current receipt read",
+    "first report",
+  ] as const)(
+    "expires an Install Status poll during %s without starting more work",
     async (delay) => {
       vi.useFakeTimers();
       const f = bindFixture();
       const current = f.state.current!;
+      const pollingCurrent = delay === "queued current receipt read";
       const device = current.devices[0]!;
       const first = device.operations[0]!;
       const second = {
@@ -2301,7 +2307,7 @@ describe("bound Install status actions", () => {
         devices: [{ ...device, operations: [first, second] }],
       };
       const state = {
-        ...native(null, archived),
+        ...native(pollingCurrent ? current : null, pollingCurrent ? null : archived),
         view: { complete: false, recoveryHistory: 1 as const },
       };
       const entered = deferred();
@@ -2316,7 +2322,7 @@ describe("bound Install status actions", () => {
       const observed = await f.services.observe(hostId);
       const sent = vi.fn();
       const operation = vi.fn<InstallPlanServices["operation"]>(async (_id, request) => {
-        if (delay === "queued receipt read") {
+        if (delay === "queued archive receipt read" || pollingCurrent) {
           entered.resolve();
           await release.promise;
           if ("beforeSend" in request && request.beforeSend && !(await request.beforeSend()))
@@ -2347,7 +2353,7 @@ describe("bound Install status actions", () => {
         f.store,
       );
       f.store.update({ native: state, devices: [observed] });
-      f.store.open(true, archived.planId);
+      f.store.open(true, pollingCurrent ? undefined : archived.planId);
       const status = startInstallStatusPoller(installPlanServices()!.services, { store: f.store });
       try {
         now += STATUS_POLL_CADENCE.regainedAfterMs + 1;
@@ -2362,7 +2368,9 @@ describe("bound Install status actions", () => {
         expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(
           delay === "observe"
             ? []
-            : ["read", "read-history", ...(delay === "first report" ? ["report"] : [])],
+            : pollingCurrent
+              ? ["read"]
+              : ["read", "read-history", ...(delay === "first report" ? ["report"] : [])],
         );
       } finally {
         release.resolve();

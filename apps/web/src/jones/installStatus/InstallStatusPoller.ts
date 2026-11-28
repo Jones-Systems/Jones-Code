@@ -122,10 +122,13 @@ export function startInstallStatusPoller(
         );
     }
     const plan = read.state.current;
-    if (stillCurrent() && plan !== null && store.get().native?.current?.planId === plan.planId)
+    if (plan === null) return;
+    const stillPollingPlan = () =>
+      stillCurrent() && store.get().native?.current?.planId === plan.planId;
+    if (stillPollingPlan())
       await refreshDeviceEvidence(binding, environmentId, plan, observed, {
         refreshInstallOutcome: false,
-        stillCurrent,
+        stillCurrent: stillPollingPlan,
       });
   };
   const poller = createStatusPoller({

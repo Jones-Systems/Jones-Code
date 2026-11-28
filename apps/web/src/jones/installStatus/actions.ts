@@ -120,7 +120,7 @@ export type PanelOperationTarget = PlanTarget & {
   readonly operationId: string;
 };
 
-export function latestPanelOperation(device: JonesInstallPlanDevice, archived: boolean) {
+function latestPanelOperation(device: JonesInstallPlanDevice, archived: boolean) {
   const operations = archived ? device.operations : deviceActiveOperations(device);
   return operations.find(operationOutstanding) ?? operations.at(-1);
 }
@@ -1022,9 +1022,16 @@ export async function refreshDeviceEvidence(
         operationIds: [operation.operationId],
         ...(checkLauncher ? { refreshInstallOutcome: operation.operationId } : {}),
       },
+      ...(options.stillCurrent === undefined
+        ? {}
+        : {
+            beforeSend: () =>
+              stillCurrent() && canRead() && canReadDeviceReceipts(binding, device, observed),
+          }),
     });
     receipt = exactReadReceipt(result, operation.operationId);
   } catch (error) {
+    if (options.stillCurrent !== undefined && isJonesOperationNotSentError(error)) return undefined;
     if (!explain) throw error;
     return checkLauncher
       ? `Read status on ${label}. The launcher query had no confirmed reply.`
