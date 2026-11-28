@@ -62,6 +62,7 @@
     "apps/web/src/jones/workstreams/personalSettings.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalSidebarOrder.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalSidebarOrder.ts",
+    "apps/web/src/jones/workstreams/personalSidebarPlacement.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalThreadDrag.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalThreadAssignmentMenu.ts",
     "apps/web/src/jones/workstreams/linkedThreadWorkstreamMenu.browser.test.tsx",

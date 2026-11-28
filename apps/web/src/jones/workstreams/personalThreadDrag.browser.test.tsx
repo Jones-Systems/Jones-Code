@@ -96,7 +96,7 @@ function fixture() {
           .map((entry) => (
             <li
               key={personalThreadKey(entry)}
-              data-thread-item={personalThreadKey(entry)}
+              data-thread-item={scopedThreadKey(scopeThreadRef(entry.environmentId, entry.id))}
               className="h-12"
             >
               {entry.title}
@@ -314,11 +314,7 @@ describe("personal thread pointer placement", () => {
               {rows
                 .filter((thread) => thread.pinnedAt != null)
                 .map((thread) => (
-                  <li
-                    key={thread.id}
-                    data-thread-item={personalThreadKey(thread)}
-                    style={{ height: 73 }}
-                  >
+                  <li key={thread.id} data-thread-item={shellKey(thread)} style={{ height: 73 }}>
                     {thread.title}
                   </li>
                 ))}
@@ -341,6 +337,7 @@ describe("personal thread pointer placement", () => {
                   neighbor,
                   after,
                   state,
+                  savedOrder: { state, readRoster: () => rows },
                   activeThreads: visible,
                   orderRoster: rows,
                   activeKeysById: new Map(
@@ -365,6 +362,9 @@ describe("personal thread pointer placement", () => {
                   },
                   onAssignmentFailure: (failure) => {
                     throw new Error(failure.reason);
+                  },
+                  onPositionRejected: () => {
+                    throw new Error("Unexpected position rejection in the saved-order fixture");
                   },
                   onPositionFailure: (_saved, cause) => {
                     throw cause;

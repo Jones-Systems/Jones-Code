@@ -72,6 +72,13 @@ export function showPersonalAssignment(workstreamName: string | null, pinned: bo
     }),
   );
 }
+export function showPersonalPositionRejected() {
+  toastManager.add({
+    type: "warning",
+    title: "Thread can't be placed here",
+    description: "This position conflicts with saved thread order. Choose another position.",
+  });
+}
 export function showPersonalFailure(failure: PersonalWorkstreamsFailure) {
   const persistent = ["offline", "read_only", "update_required"].includes(failure.reason);
   const key = persistent
