@@ -293,6 +293,16 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
   };
   const invoke = (request: ThreadLaunch.ThreadLaunchInput) =>
     launches.launch(request).pipe(Effect.mapError(unavailable));
+  const readOriginal = Effect.fn("ClientLaunchService.readOriginal")(function* () {
+    const receipt = yield* readReceipt(ids.commandId);
+    if (receipt === undefined) return yield* unavailable();
+    const sink = yield* EventSink.EventSinkV2;
+    const events = yield* sink
+      .readByCommandId({ commandId: ids.commandId })
+      .pipe(Stream.runCollect, Effect.mapError(unavailable));
+    const original = recordedLaunchClaim(common, receipt, events);
+    return original === undefined ? yield* unavailable() : original;
+  });
   let originLink: LinkedThreadOriginLink | undefined;
   let replayed = receipt?.status === "accepted";
   const continueAccepted = Effect.fn("ClientLaunchService.continueAccepted")(function* () {
@@ -315,11 +325,27 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
       state.initialMessage === "pending" ||
       (state.initialMessage === "accepted" && state.preparation === "unscheduled")
     ) {
+      const original = autoModelSelection === undefined ? undefined : yield* readOriginal();
+      let workspace = workspaceStrategy;
+      if (original !== undefined && workspaceStrategy.type === "existing_worktree") {
+        const fs = yield* FileSystem.FileSystem;
+        const checkout = original.worktreePath;
+        if (
+          checkout === null ||
+          (yield* fs.realPath(checkout).pipe(Effect.orElseSucceed(() => undefined))) !== checkout
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The original Auto launch worktree is unavailable.",
+          });
+        workspace = { ...workspaceStrategy, worktreePath: checkout };
+      }
       yield* gate.continueWithin(
         shell,
         invoke({
           ...common,
-          modelSelection: shell.modelSelection,
+          workspaceStrategy: workspace,
+          modelSelection: original?.modelSelection ?? shell.modelSelection,
           runtimeMode: shell.runtimeMode,
           interactionMode: shell.interactionMode,
         }),
@@ -359,7 +385,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
           code: "invalid_request",
           message: "worktreePath must be one of the project's git worktrees.",
         });
-      cwd = registered;
+      cwd = autoModelSelection === undefined ? registered : requested;
     }
     if (workspaceStrategy.type === "worktree")
       yield* launches.checkWorktreeBase({ projectId, workspaceStrategy }).pipe(
@@ -476,18 +502,10 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
   const state = yield* lookup(caller.scope.requestNamespace, input.clientRequestId);
   const shell = yield* threads.getThreadShell(ids.threadId).pipe(Effect.mapError(unavailable));
   if (shell === null) return yield* unavailable();
-  let modelSelection = shell.modelSelection;
-  if (autoModelSelection !== undefined) {
-    const originalReceipt = yield* readReceipt(ids.commandId);
-    if (originalReceipt === undefined) return yield* unavailable();
-    const sink = yield* EventSink.EventSinkV2;
-    const events = yield* sink
-      .readByCommandId({ commandId: ids.commandId })
-      .pipe(Stream.runCollect, Effect.mapError(unavailable));
-    const original = recordedLaunchClaim(common, originalReceipt, events);
-    if (original === undefined) return yield* unavailable();
-    modelSelection = original.modelSelection;
-  }
+  const modelSelection =
+    autoModelSelection === undefined
+      ? shell.modelSelection
+      : (yield* readOriginal()).modelSelection;
   return {
     threadId: ids.threadId,
     projectId: shell.projectId,

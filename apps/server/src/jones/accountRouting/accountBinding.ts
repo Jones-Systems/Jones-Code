@@ -2,9 +2,11 @@
 import * as NodeCrypto from "node:crypto";
 import type {
   CommandId,
+  MessageId,
   OrchestrationV2ThreadLaunchInput,
   ProjectId,
   ProviderInstanceId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -42,11 +44,17 @@ export interface AutoLaunchCommit {
   readonly workspace: AutoLaunchWorkspace;
 }
 
+export interface AutoLaunchAcceptance {
+  readonly sequence: number;
+  readonly firstMessage: { readonly messageId: MessageId; readonly runId: RunId } | null;
+}
+
 export interface AutoLaunchDecision extends AutoLaunchWorkspace {
   readonly projectId: ProjectId;
   readonly threadId: ThreadId | null;
   readonly digest: string;
   readonly refusal: string | null;
+  readonly acceptance?: AutoLaunchAcceptance;
 }
 
 export const autoLaunchRequest = (
@@ -77,7 +85,8 @@ export const matchesAutoLaunch = (
     (request.threadId ?? null) === decision.threadId);
 
 export const isReservedAutoLaunchCommand = (commandId: CommandId) =>
-  /^(server:|jones:|native:|voice-command-)/.test(commandId) || commandId.includes(":native:v2:");
+  /^(server:|jones:|native:|voice-command-|mcp-launch:)/.test(commandId) ||
+  commandId.includes(":native:v2:");
 
 export const AutoLaunchIntent = Context.Reference<
   { readonly request: AutoLaunchRequest; readonly workspace?: AutoLaunchWorkspace } | undefined

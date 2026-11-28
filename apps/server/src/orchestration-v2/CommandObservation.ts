@@ -105,6 +105,26 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
       WHERE thread_id = ${input.threadId} AND json_extract(payload_json, '$.userMessageId') = ${input.messageId} LIMIT 2`;
         const births = events.filter((e) => e.event_type === "run.created");
         const receipt = receipts[0];
+        const autoLaunch =
+          births.length === 0 &&
+          (receipt === undefined ||
+            (receipt.command_type === "thread.create" && receipt.status === "accepted"))
+            ? yield* eventSink.readAutoLaunch?.(input.commandId) ?? Effect.undefined
+            : undefined;
+        const acceptedAuto =
+          autoLaunch?.refusal === null &&
+          autoLaunch.threadId === input.threadId &&
+          autoLaunch.acceptance?.firstMessage?.messageId === input.messageId &&
+          (receipt === undefined || receipt.result_sequence === autoLaunch.acceptance.sequence)
+            ? {
+                sequence: autoLaunch.acceptance.sequence,
+                runId: autoLaunch.acceptance.firstMessage.runId,
+              }
+            : undefined;
+        const acceptedSequence =
+          receipt?.status === "accepted"
+            ? receipt.result_sequence
+            : (acceptedAuto?.sequence ?? null);
         let correlation: OrchestrationCommandObservation["correlation"] = "missing";
         let turn: OrchestrationCommandObservation["turn"] = null;
         let created = yield* Effect.forEach(births, (e) => compiledDecodeEffect1(e.payload_json));
@@ -192,13 +212,14 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
         else if (births.length > 1 || runs.length > 1) correlation = "ambiguous";
         else if (
           correlation === "missing" &&
-          receipt?.status === "accepted" &&
-          (births.length === 1 || releaseBinding) &&
-          events.some((e) => e.sequence === receipt.result_sequence)
+          acceptedSequence !== null &&
+          (acceptedAuto !== undefined ||
+            ((births.length === 1 || releaseBinding) &&
+              events.some((e) => e.sequence === acceptedSequence)))
         ) {
-          if (receipt.result_sequence <= snapshotSequence && runs[0] !== undefined) {
+          if (acceptedSequence <= snapshotSequence && runs[0] !== undefined) {
             const run = yield* compiledDecodeEffect1(runs[0].payload_json);
-            if (run.id !== created[0]!.id) correlation = "mismatched";
+            if (run.id !== (acceptedAuto?.runId ?? created[0]?.id)) correlation = "mismatched";
             else {
               const messages = yield* sql<{
                 messageId: MessageId;
@@ -230,8 +251,8 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
         return {
           ...input,
           snapshotSequence,
-          commandStatus: receipt?.status ?? "not_found",
-          acceptedSequence: receipt?.status === "accepted" ? receipt.result_sequence : null,
+          commandStatus: receipt?.status ?? (acceptedAuto === undefined ? "not_found" : "accepted"),
+          acceptedSequence,
           correlation,
           turn,
           target,

@@ -57,6 +57,7 @@ import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { makeCommandObservationQuery } from "./CommandObservation.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -2459,6 +2460,7 @@ it.effect(
           "voice-command-native",
           "public:native:v2:create",
           "jones:codex-failover:id:continue",
+          "mcp-launch:v1:" + "a".repeat(64),
         ].map((id) => ({
           ...input,
           threadId: ThreadId.make("new-auto-thread"),
@@ -2574,6 +2576,43 @@ it.effect.each([false, true])(
       assert.isNull(final.projection.thread.worktreePath);
       assert.equal(final.projection.messages.length, withPrompt ? 1 : 0);
       assert.isEmpty(harness.createWorktree.mock.calls);
+      if (input.initialMessage !== undefined) {
+        yield* preparationSettled(created.threadId);
+        const sql = yield* SqlClient.SqlClient;
+        const messageId = input.initialMessage.messageId;
+        const accepted = (yield* sink.readAutoLaunch!(input.commandId))?.acceptance;
+        assert.equal(accepted?.firstMessage?.messageId, messageId);
+        yield* sql`DELETE FROM orchestration_events WHERE command_id = ${input.commandId}
+          AND event_type IN ('run.created', 'message.updated')`;
+        const observation = yield* makeCommandObservationQuery().pipe(
+          Effect.provide(ProjectionStore.layer),
+        );
+        const observed = yield* observation.observe({
+          threadId: created.threadId,
+          commandId: input.commandId,
+          messageId,
+        });
+        assert.equal(observed.commandStatus, "accepted");
+        assert.oneOf(observed.correlation, ["pending", "exact"]);
+        assert.equal(observed.acceptedSequence, accepted?.sequence);
+        const unrelated = yield* observation.observe({
+          threadId: created.threadId,
+          commandId: input.commandId,
+          messageId: MessageId.make("unrelated-message"),
+        });
+        assert.equal(unrelated.correlation, "missing");
+        const recovered = yield* launches
+          .launch(input)
+          .pipe(Effect.provideService(AutoLaunchIntent, { request }));
+        assert.isTrue(recovered.resumed);
+        assert.equal(recovered.sequence, accepted?.sequence);
+        assert.lengthOf(recovered.projection.runs, 1);
+        assert.equal(
+          (yield* launches.getDeliveryEvidence(original, { autoRequest: request })).initialMessage
+            .status,
+          "accepted",
+        );
+      }
     }).pipe(Effect.provide(harness.layer));
   },
 );

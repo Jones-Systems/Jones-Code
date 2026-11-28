@@ -152,6 +152,10 @@
       "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/orchestration-v2/CommandObservation.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
       "to": "apps/server/src/jones/accountRouting/accountBinding.ts"
     },

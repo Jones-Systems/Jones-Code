@@ -2202,7 +2202,24 @@ const layerBase: Layer.Layer<
                 cause: "Auto launch does not match the accepted project and workspace.",
               });
             yield* assertPublicNativeCommand(input.commandId);
-            yield* autoAccountBindings.recordLaunch(input.autoLaunch, input.threadId, null);
+            const run = input.events.find(
+              (event) => event.type === "run.created" && event.threadId === input.threadId,
+            );
+            const firstMessage =
+              run?.type === "run.created" &&
+              input.events.some(
+                (event) =>
+                  event.type === "message.updated" &&
+                  event.threadId === input.threadId &&
+                  event.payload.role === "user" &&
+                  event.payload.id === run.payload.userMessageId,
+              )
+                ? { messageId: run.payload.userMessageId, runId: run.payload.id }
+                : null;
+            yield* autoAccountBindings.recordLaunch(input.autoLaunch, input.threadId, null, {
+              sequence: receipt.resultSequence,
+              firstMessage,
+            });
           }
           yield* ownerSelections.commit({
             threadId: input.threadId,

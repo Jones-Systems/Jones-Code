@@ -40,6 +40,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as Git from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as CommandReceiptStore from "../../../orchestration-v2/CommandReceiptStore.ts";
@@ -112,11 +113,12 @@ it.effect("Auto launches and local delegation bind a concrete account before rep
     };
     const firstWinner = { ...representative, instanceId: winnerId };
     let currentWinner = firstWinner;
+    let expectedCwd = cwd;
     const selected = { ...modelSelection, instanceId: winnerId };
     using select = vi.spyOn(Selector, "selectAutoAccount").mockImplementation((request) =>
       Effect.sync(() => {
         assert.equal(request.projectId, projectId);
-        assert.equal(request.cwd, cwd);
+        assert.equal(request.cwd, expectedCwd);
         assert.deepEqual(request.modelSelection, modelSelection);
         const selection = { ...modelSelection, instanceId: currentWinner.instanceId };
         assert.isTrue(request.candidateAllowed?.(currentWinner, selection));
@@ -240,6 +242,63 @@ it.effect("Auto launches and local delegation bind a concrete account before rep
       assert.equal(retried.taskId, child.taskId);
       assert.equal(retried.providerInstanceId, winnerId);
       assert.lengthOf(select.mock.calls, 3);
+
+      const firstCheckout = `${yield* fs.realPath(cwd)}/checkout-a`;
+      const otherCheckout = `${yield* fs.realPath(cwd)}/checkout-b`;
+      const alias = `${cwd}/checkout-alias`;
+      yield* fs.makeDirectory(firstCheckout);
+      yield* fs.makeDirectory(otherCheckout);
+      yield* fs.symlink(firstCheckout, alias);
+      expectedCwd = firstCheckout;
+      const git = yield* Git.GitVcsDriver;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const worktree = {
+        ...auto,
+        clientRequestId: "auto-worktree-alias",
+        workspaceStrategy: { type: "existing_worktree" as const, worktreePath: alias },
+      };
+      const stopAfterShell = failAfter(launches, "thread");
+      const interrupted = yield* launch(worktree).pipe(
+        Effect.provideService(Git.GitVcsDriver, {
+          ...git,
+          listWorktreePaths: () => Effect.succeed([firstCheckout, otherCheckout]),
+        }),
+        Effect.provideService(ThreadLaunch.ThreadLaunchService, {
+          ...stopAfterShell,
+          launch: (request) =>
+            stopAfterShell
+              .launch(request)
+              .pipe(
+                Effect.provideService(ThreadManagement.ThreadManagementService, context.threads),
+              ),
+        }),
+        Effect.exit,
+      );
+      assert.isTrue(Exit.isFailure(interrupted));
+      assert.equal(
+        (yield* ClientLaunch.lookupForCaller(context, worktree.clientRequestId)).initialMessage,
+        "pending",
+      );
+      yield* fs.remove(alias);
+      yield* fs.symlink(otherCheckout, alias);
+      let workspace: ThreadLaunch.ThreadLaunchWorkspaceStrategy | undefined;
+      const observeRetry = failAfter(launches, "claim");
+      yield* launch(worktree).pipe(
+        Effect.provideService(ThreadLaunch.ThreadLaunchService, {
+          ...observeRetry,
+          launch: (request) => {
+            workspace = request.workspaceStrategy;
+            return observeRetry
+              .launch(request)
+              .pipe(
+                Effect.provideService(ThreadManagement.ThreadManagementService, context.threads),
+              );
+          },
+        }),
+        Effect.exit,
+      );
+      assert.deepEqual(workspace, { type: "existing_worktree", worktreePath: firstCheckout });
+      assert.lengthOf(select.mock.calls, 4);
     }).pipe(Effect.provide(OrchestrationMcp.layer.pipe(Layer.provideMerge(dependencies))));
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
@@ -263,7 +322,10 @@ const failAfter = (
             runtimeMode: request.runtimeMode,
             interactionMode: request.interactionMode,
             branch: null,
-            worktreePath: null,
+            worktreePath:
+              request.workspaceStrategy.type === "existing_worktree"
+                ? request.workspaceStrategy.worktreePath
+                : null,
             createdBy: "agent",
             creationSource: "mcp",
           })

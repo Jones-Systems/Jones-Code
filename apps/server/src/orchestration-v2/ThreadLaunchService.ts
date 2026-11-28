@@ -2110,6 +2110,48 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
             "read-receipt",
             request.threadId,
           )("The launch command belongs to another request or was refused.");
+        const proof = autoDecision.acceptance;
+        const first = proof?.firstMessage;
+        if (
+          autoDecision.threadId !== null &&
+          proof !== undefined &&
+          (request.initialMessage === undefined ||
+            (first != null &&
+              (request.initialMessage.messageId === undefined ||
+                request.initialMessage.messageId === first.messageId)))
+        ) {
+          const threadId = autoDecision.threadId;
+          const projection = yield* threads
+            .getThreadProjection(threadId)
+            .pipe(Effect.mapError(mapError(request, "read-receipt", threadId)));
+          if (
+            projection.thread.projectId !== request.projectId ||
+            projection.thread.deletedAt !== null
+          )
+            return yield* mapError(
+              request,
+              "read-receipt",
+              threadId,
+            )("The recorded Auto launch thread is no longer available.");
+          // Accepted launches do not need the original events after compaction. A run
+          // still preparing continues through the existing scheduling path below.
+          if (
+            request.initialMessage === undefined ||
+            (first != null &&
+              projection.runs.some(
+                (run) =>
+                  run.id === first.runId &&
+                  run.userMessageId === first.messageId &&
+                  run.status !== "preparing",
+              ))
+          )
+            return {
+              threadId,
+              projection,
+              resumed: true,
+              ...(first == null ? {} : { sequence: proof.sequence }),
+            };
+        }
         // The creation can commit between the receipt and sidecar reads.
         if (Option.isNone(priorLaunchReceipt))
           priorLaunchReceipt = yield* readReceipt(request, request.commandId);
@@ -2978,6 +3020,28 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
         if (decision !== undefined) {
           if (!matchesAutoLaunch(autoRequest, decision)) return unknown;
           if (decision.refusal !== null) return autoLaunchDeliveryEvidence(input, "rejected");
+          const first = decision.acceptance?.firstMessage;
+          if (
+            decision.threadId !== null &&
+            decision.acceptance !== undefined &&
+            (input.initialMessage === undefined || first != null)
+          ) {
+            return {
+              ...unknown,
+              creation: { status: "accepted", threadId: decision.threadId },
+              initialMessage:
+                input.initialMessage !== undefined &&
+                first != null &&
+                (input.initialMessage.messageId === undefined ||
+                  input.initialMessage.messageId === first.messageId)
+                  ? {
+                      status: "accepted",
+                      commandId: initialMessageCommandId(input.commandId),
+                      messageId: first.messageId,
+                    }
+                  : unknown.initialMessage,
+            };
+          }
           const evidence = yield* launchDeliveryEvidence(receipts, eventSink, input);
           return evidence.creation.status === "accepted" &&
             evidence.creation.threadId === decision.threadId

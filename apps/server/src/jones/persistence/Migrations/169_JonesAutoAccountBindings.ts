@@ -16,6 +16,12 @@ export default Effect.gen(function* () {
     project_root TEXT NOT NULL,
     worktree_path TEXT,
     refusal_message TEXT,
-    CHECK (thread_id IS NOT NULL OR refusal_message IS NOT NULL)
+    accepted_sequence INTEGER,
+    first_message_id TEXT,
+    first_run_id TEXT,
+    CHECK ((refusal_message IS NULL AND thread_id IS NOT NULL AND accepted_sequence IS NOT NULL)
+      OR (refusal_message IS NOT NULL AND accepted_sequence IS NULL)),
+    CHECK ((first_message_id IS NULL AND first_run_id IS NULL) OR
+      (accepted_sequence IS NOT NULL AND first_message_id IS NOT NULL AND first_run_id IS NOT NULL))
   )`;
 });
