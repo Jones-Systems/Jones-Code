@@ -1,10 +1,7 @@
 import { useEffect, useState } from "react";
 import { isClosedPersonalWorkstream } from "@t3tools/contracts/jones/workstreamsPersonal";
 import {
-  acceptedPersonalWorkstreamClose,
   personalThreadKey,
-  personalWorkstreamClosedLifecycle,
-  type PersonalResult,
   type PersonalThreadRef,
   type PersonalWorkstreamHistory,
   type PersonalWorkstreamsController,
@@ -28,15 +25,13 @@ function WorkstreamHistory({
   controller,
   onClose,
   onOpenThread,
-  lifecycle,
-  reopen,
+  canReopen,
 }: {
   workstream: PersonalWorkstreamView;
-  lifecycle: "completed" | "abandoned";
   controller: PersonalWorkstreamsController;
   onClose: () => void;
   onOpenThread: ((thread: PersonalThreadRef) => void) | undefined;
-  reopen: (() => Promise<PersonalResult<unknown>>) | undefined;
+  canReopen: boolean;
 }) {
   const [history, setHistory] = useState<PersonalWorkstreamHistory | null>(null);
   const [busy, setBusy] = useState(false);
@@ -61,7 +56,7 @@ function WorkstreamHistory({
         <DialogHeader>
           <DialogTitle>{workstream.name}</DialogTitle>
           <DialogDescription>
-            {lifecycle === "completed" ? "Completed" : "Abandoned"}
+            {workstream.lifecycle === "completed" ? "Completed" : "Abandoned"}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -103,11 +98,11 @@ function WorkstreamHistory({
         </DialogPanel>
         <DialogFooter>
           <Button
-            disabled={busy || !reopen}
+            disabled={busy || !canReopen}
             onClick={() => {
-              if (!reopen) return;
               setBusy(true);
-              void reopen()
+              void controller
+                .setLifecycle(id, "active")
                 .then((result) => {
                   if (result.ok) onClose();
                   else showPersonalFailure(result.failure);
@@ -133,22 +128,10 @@ export function ClosedWorkstreams({
   onOpenThread: ((thread: PersonalThreadRef) => void) | undefined;
 }) {
   const [selection, setSelection] = useState<string | null>(null);
-  const closed = state.workstreams.flatMap((workstream) => {
-    const lifecycle = personalWorkstreamClosedLifecycle(state, workstream);
-    return lifecycle ? [{ workstream, lifecycle }] : [];
-  });
-  const selected = closed.find(({ workstream }) => workstream.id === selection);
-  let reopen: (() => Promise<PersonalResult<unknown>>) | undefined;
-  if (selected && state.canCreate) {
-    const { workstream } = selected;
-    const request = acceptedPersonalWorkstreamClose(state, workstream.id);
-    const cancel = controller.cancelOperation;
-    if (isClosedPersonalWorkstream(workstream.lifecycle)) {
-      reopen = () => controller.setLifecycle(workstream.id, "active");
-    } else if (request && request.status !== "applied" && cancel) {
-      reopen = () => cancel(request.requestId);
-    }
-  }
+  const closed = state.workstreams.filter((workstream) =>
+    isClosedPersonalWorkstream(workstream.lifecycle),
+  );
+  const workstream = closed.find(({ id }) => id === selection);
   if (!closed.length) return null;
 
   return (
@@ -158,31 +141,30 @@ export function ClosedWorkstreams({
           Closed Workstreams
         </summary>
         <ul className="pl-3">
-          {closed.map(({ workstream, lifecycle }) => (
-            <li key={workstream.id}>
+          {closed.map((entry) => (
+            <li key={entry.id}>
               <Button
                 variant="ghost"
                 className="w-full justify-between"
-                onClick={() => setSelection(workstream.id)}
+                onClick={() => setSelection(entry.id)}
               >
-                <span className="truncate">{workstream.name}</span>
+                <span className="truncate">{entry.name}</span>
                 <span className="text-xs">
-                  {lifecycle === "completed" ? "Completed" : "Abandoned"}
+                  {entry.lifecycle === "completed" ? "Completed" : "Abandoned"}
                 </span>
               </Button>
             </li>
           ))}
         </ul>
       </details>
-      {selected ? (
+      {workstream ? (
         <WorkstreamHistory
-          key={selected.workstream.id}
+          key={workstream.id}
           controller={controller}
-          workstream={selected.workstream}
-          lifecycle={selected.lifecycle}
+          workstream={workstream}
           onOpenThread={onOpenThread}
           onClose={() => setSelection(null)}
-          reopen={reopen}
+          canReopen={state.canCreate}
         />
       ) : null}
     </>
